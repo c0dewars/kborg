@@ -521,7 +521,10 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_else(|e| panic!("{e}"))
             .as_nanos();
-        let dir = std::env::temp_dir().join(format!("kborg-theme-{}-{stamp}", std::process::id()));
+        let dir = std::env::temp_dir()
+            .canonicalize()
+            .unwrap_or_else(|e| panic!("test temporary root: {e}"))
+            .join(format!("kborg-theme-{}-{stamp}", std::process::id()));
         let mut file = ThemeFile {
             schema_version: 1,
             id: "my-test".into(),
