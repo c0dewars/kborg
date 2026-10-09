@@ -1,0 +1,22 @@
+{
+  "retrievedAtUtc": "2026-10-09T23:47:46.4093731Z",
+  "version": "0.2.0",
+  "sourceCommit": "252e25161a91af476cbea620e29d277592d27ec7",
+  "files": [
+    {
+      "url": "https://raw.githubusercontent.com/rustls/rustls-platform-verifier/252e25161a91af476cbea620e29d277592d27ec7/LICENSE-APACHE",
+      "file": "LICENSE-APACHE",
+      "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
+    },
+    {
+      "url": "https://raw.githubusercontent.com/rustls/rustls-platform-verifier/252e25161a91af476cbea620e29d277592d27ec7/LICENSE-MIT",
+      "file": "LICENSE-MIT",
+      "sha256": "1c7cf76689c837a68ed8d704994e52a0f2940c087958f860d17f3186afbdcc0c"
+    }
+  ],
+  "repository": "https://github.com/rustls/rustls-platform-verifier",
+  "originalManifestMatched": null,
+  "name": "rustls-platform-verifier-android",
+  "sourceBasis": "published crate .cargo_vcs_info.json",
+  "schema": 1
+}

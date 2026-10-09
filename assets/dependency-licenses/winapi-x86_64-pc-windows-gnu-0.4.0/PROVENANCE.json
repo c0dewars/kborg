@@ -1,0 +1,22 @@
+{
+  "schema": 1,
+  "sourceCommit": "9497609ef44cc9bcd16cd2411c0ee6ccaf5483aa",
+  "retrievedAtUtc": "2026-10-09T23:48:14.9000543Z",
+  "files": [
+    {
+      "sha256": "b40930bbcf80744c86c46a12bc9da056641d722716c378f5659b9e555ef833e1",
+      "url": "https://raw.githubusercontent.com/retep998/winapi-rs/9497609ef44cc9bcd16cd2411c0ee6ccaf5483aa/LICENSE-APACHE",
+      "file": "LICENSE-APACHE"
+    },
+    {
+      "sha256": "5b19674a1db628a475850a131956ed49521b744e3dda8f5a94141f9aba681219",
+      "url": "https://raw.githubusercontent.com/retep998/winapi-rs/9497609ef44cc9bcd16cd2411c0ee6ccaf5483aa/LICENSE-MIT",
+      "file": "LICENSE-MIT"
+    }
+  ],
+  "name": "winapi-x86_64-pc-windows-gnu",
+  "originalManifestMatched": true,
+  "repository": "https://github.com/retep998/winapi-rs",
+  "sourceBasis": "Historical upstream original Cargo.toml matched published crate Cargo.toml.orig exactly; package omits VCS metadata, full source revision not independently proven",
+  "version": "0.4.0"
+}

@@ -6,7 +6,7 @@ $env:Path=[Environment]::GetEnvironmentVariable('Path','User')+';'+[Environment]
 $docker=(Get-Command docker).Source
 $kind=Join-Path $root '.local/tools/kind.exe'
 $kubectl=Join-Path $root '.local/tools/kubectl-v1.34.11.exe'
-$binary=Join-Path $root 'target/debug/k8borg.exe'
+$binary=Join-Path $root 'target/debug/kborg.exe'
 $kubectlSha=(Get-Content -LiteralPath ($kubectl+'.sha256') -Raw).Trim().ToLowerInvariant()
 if ((Get-FileHash $kubectl -Algorithm SHA256).Hash.ToLowerInvariant() -ne $kubectlSha -or $kubectlSha -notmatch '^[a-f0-9]{64}$') {throw 'Version-matched kubectl checksum mismatch'}
 if ((Get-FileHash $kind -Algorithm SHA256).Hash.ToLowerInvariant() -ne '4b22adaa135368c5a465d56bbd8e520cbea87272a06ca00b6078e7b81515c9fc') {throw 'kind checksum mismatch'}
@@ -16,7 +16,7 @@ $busyImage='busybox@sha256:bdf57e528e45e4433820e045b29b4597825a1c9e38353532d90a0
 $daemon=(& $docker info --format '{{json .}}')|ConvertFrom-Json
 if ($daemon.MemTotal -lt 10GB -or $daemon.NCPU -lt 4) {throw 'Insufficient Docker VM capacity'}
 $run=[Guid]::NewGuid().ToString('N').Substring(0,12)
-$name="k8borg-metrics-$run"
+$name="kborg-metrics-$run"
 $node="$name-control-plane"
 $context="kind-$name"
 $dir=Join-Path $root ".local/$name"
@@ -82,8 +82,8 @@ try {
     if (@($csr.spec.usages|Where-Object {$_ -notin @('digital signature','key encipherment','server auth')}).Count -ne 0) {throw 'Unexpected CSR usages'}
     $csrPath=Join-Path $dir 'kubelet.csr'
     [IO.File]::WriteAllBytes($csrPath,[Convert]::FromBase64String($csr.spec.request))
-    D @('cp',$csrPath,"${node}:/var/lib/k8borg-kubelet.csr")
-    $csrText=(D @('exec',$node,'openssl','req','-in','/var/lib/k8borg-kubelet.csr','-noout','-text')) -join "`n"
+    D @('cp',$csrPath,"${node}:/var/lib/kborg-kubelet.csr")
+    $csrText=(D @('exec',$node,'openssl','req','-in','/var/lib/kborg-kubelet.csr','-noout','-text')) -join "`n"
     $csrText | Set-Content -LiteralPath (Join-Path $dir 'csr-public-inspection.txt')
     if ($csrText -notmatch ('CN\s*=\s*'+[Regex]::Escape("system:node:$node")) -or $csrText -notmatch [Regex]::Escape("DNS:$node") -or $csrText -notmatch [Regex]::Escape("IP Address:$ip")) {throw 'Kubelet CSR subject/SAN mismatch'}
     $sanLine=[Regex]::Match($csrText,'X509v3 Subject Alternative Name:\s*\r?\n\s*([^\r\n]+)').Groups[1].Value.Trim()
@@ -91,16 +91,16 @@ try {
     $expectedSans=@("DNS:$node","IP Address:$ip")|Sort-Object
     if (($sans -join '|') -ne ($expectedSans -join '|')) {throw 'Unexpected additional kubelet serving CSR SANs'}
     K @('certificate','approve',$csr.metadata.name)
-    D @('exec',$node,'openssl','req','-new','-newkey','rsa:2048','-nodes','-keyout','/var/lib/k8borg-metrics.key','-out','/var/lib/k8borg-metrics.csr','-subj','/CN=metrics-server.kube-system.svc')
+    D @('exec',$node,'openssl','req','-new','-newkey','rsa:2048','-nodes','-keyout','/var/lib/kborg-metrics.key','-out','/var/lib/kborg-metrics.csr','-subj','/CN=metrics-server.kube-system.svc')
     $ext=Join-Path $dir 'metrics-ext.cnf'
     "subjectAltName=DNS:metrics-server.kube-system.svc,DNS:metrics-server.kube-system.svc.cluster.local`nextendedKeyUsage=serverAuth`nkeyUsage=digitalSignature,keyEncipherment"|Set-Content -LiteralPath $ext
-    D @('cp',$ext,"${node}:/var/lib/k8borg-metrics-ext.cnf")
-    D @('exec',$node,'openssl','x509','-req','-in','/var/lib/k8borg-metrics.csr','-CA','/etc/kubernetes/pki/ca.crt','-CAkey','/etc/kubernetes/pki/ca.key','-CAcreateserial','-days','1','-extfile','/var/lib/k8borg-metrics-ext.cnf','-out','/var/lib/k8borg-metrics.crt')
-    D @('cp',"${node}:/var/lib/k8borg-metrics.crt",(Join-Path $dir 'metrics.crt'))
-    D @('cp',"${node}:/var/lib/k8borg-metrics.key",(Join-Path $dir 'metrics.key'))
+    D @('cp',$ext,"${node}:/var/lib/kborg-metrics-ext.cnf")
+    D @('exec',$node,'openssl','x509','-req','-in','/var/lib/kborg-metrics.csr','-CA','/etc/kubernetes/pki/ca.crt','-CAkey','/etc/kubernetes/pki/ca.key','-CAcreateserial','-days','1','-extfile','/var/lib/kborg-metrics-ext.cnf','-out','/var/lib/kborg-metrics.crt')
+    D @('cp',"${node}:/var/lib/kborg-metrics.crt",(Join-Path $dir 'metrics.crt'))
+    D @('cp',"${node}:/var/lib/kborg-metrics.key",(Join-Path $dir 'metrics.key'))
     [IO.File]::WriteAllBytes((Join-Path $dir 'ca.crt'),[Convert]::FromBase64String($ca))
-    K @('-n','kube-system','create','secret','tls','k8borg-metrics-tls',"--cert=$(Join-Path $dir 'metrics.crt')","--key=$(Join-Path $dir 'metrics.key')")
-    K @('-n','kube-system','create','configmap','k8borg-kubelet-ca',"--from-file=ca.crt=$(Join-Path $dir 'ca.crt')")
+    K @('-n','kube-system','create','secret','tls','kborg-metrics-tls',"--cert=$(Join-Path $dir 'metrics.crt')","--key=$(Join-Path $dir 'metrics.key')")
+    K @('-n','kube-system','create','configmap','kborg-kubelet-ca',"--from-file=ca.crt=$(Join-Path $dir 'ca.crt')")
     $source=Join-Path $dir 'components-v0.8.1.yaml'
     Invoke-WebRequest 'https://github.com/kubernetes-sigs/metrics-server/releases/download/v0.8.1/components.yaml' -OutFile $source
     $manifest=Get-Content -LiteralPath $source -Raw
@@ -108,7 +108,7 @@ try {
     $manifest=$manifest.Replace('  insecureSkipTLSVerify: true',"  insecureSkipTLSVerify: false`n  caBundle: $ca").Replace('registry.k8s.io/metrics-server/metrics-server:v0.8.1',$metricsImage)
     $manifest=$manifest.Replace('        - --secure-port=10250',"        - --secure-port=10250`n        - --tls-cert-file=/certs/tls.crt`n        - --tls-private-key-file=/certs/tls.key`n        - --kubelet-certificate-authority=/kubelet-ca/ca.crt")
     $manifest=$manifest.Replace('      nodeSelector:',"        - mountPath: /certs`n          name: serving-cert`n          readOnly: true`n        - mountPath: /kubelet-ca`n          name: kubelet-ca`n          readOnly: true`n      nodeSelector:")
-    $manifest=$manifest.Replace('      - emptyDir: {}',"      - name: serving-cert`n        secret:`n          secretName: k8borg-metrics-tls`n      - name: kubelet-ca`n        configMap:`n          name: k8borg-kubelet-ca`n      - emptyDir: {}")
+    $manifest=$manifest.Replace('      - emptyDir: {}',"      - name: serving-cert`n        secret:`n          secretName: kborg-metrics-tls`n      - name: kubelet-ca`n        configMap:`n          name: kborg-kubelet-ca`n      - emptyDir: {}")
     if ($manifest.Contains('--kubelet-insecure-tls') -or $manifest.Contains('insecureSkipTLSVerify: true')) {throw 'Insecure metrics transport prohibited'}
     $secure=Join-Path $dir 'metrics-secure.yaml'
     $manifest|Set-Content -LiteralPath $secure
@@ -116,14 +116,14 @@ try {
     K @('apply','-f',$secure)
     K @('-n','kube-system','rollout','status','deployment/metrics-server','--timeout=150s')
     K @('wait','--for=condition=Available','apiservice/v1beta1.metrics.k8s.io','--timeout=90s')
-    $namespace="k8borg-metrics-fixture-$run"
-    Apply @{apiVersion='v1';kind='Namespace';metadata=@{name=$namespace;labels=@{'k8borg.dev/run-id'=$run;'pod-security.kubernetes.io/enforce'='restricted'}}}
+    $namespace="kborg-metrics-fixture-$run"
+    Apply @{apiVersion='v1';kind='Namespace';metadata=@{name=$namespace;labels=@{'kborg.dev/run-id'=$run;'pod-security.kubernetes.io/enforce'='restricted'}}}
     Apply @{apiVersion='v1';kind='ServiceAccount';metadata=@{name='reader';namespace=$namespace};automountServiceAccountToken=$false}
     Apply @{apiVersion='rbac.authorization.k8s.io/v1';kind='Role';metadata=@{name='reader';namespace=$namespace};rules=@(@{apiGroups=@('');resources=@('configmaps');verbs=@('get','list','watch')},@{apiGroups=@('metrics.k8s.io');resources=@('pods');verbs=@('get','list')})}
     Apply @{apiVersion='rbac.authorization.k8s.io/v1';kind='RoleBinding';metadata=@{name='reader';namespace=$namespace};subjects=@(@{kind='ServiceAccount';name='reader';namespace=$namespace});roleRef=@{apiGroup='rbac.authorization.k8s.io';kind='Role';name='reader'}}
-    Apply @{apiVersion='rbac.authorization.k8s.io/v1';kind='ClusterRole';metadata=@{name="k8borg-metrics-reader-$run"};rules=@(@{apiGroups=@('metrics.k8s.io');resources=@('nodes');verbs=@('get','list')})}
-    Apply @{apiVersion='rbac.authorization.k8s.io/v1';kind='ClusterRoleBinding';metadata=@{name="k8borg-metrics-reader-$run"};subjects=@(@{kind='ServiceAccount';name='reader';namespace=$namespace});roleRef=@{apiGroup='rbac.authorization.k8s.io';kind='ClusterRole';name="k8borg-metrics-reader-$run"}}
-    Apply @{apiVersion='v1';kind='ConfigMap';metadata=@{name='watch';namespace=$namespace;labels=@{revision='initial'}};data=@{sample='K8BORG_METRICS_PAYLOAD_CANARY'}}
+    Apply @{apiVersion='rbac.authorization.k8s.io/v1';kind='ClusterRole';metadata=@{name="kborg-metrics-reader-$run"};rules=@(@{apiGroups=@('metrics.k8s.io');resources=@('nodes');verbs=@('get','list')})}
+    Apply @{apiVersion='rbac.authorization.k8s.io/v1';kind='ClusterRoleBinding';metadata=@{name="kborg-metrics-reader-$run"};subjects=@(@{kind='ServiceAccount';name='reader';namespace=$namespace});roleRef=@{apiGroup='rbac.authorization.k8s.io';kind='ClusterRole';name="kborg-metrics-reader-$run"}}
+    Apply @{apiVersion='v1';kind='ConfigMap';metadata=@{name='watch';namespace=$namespace;labels=@{revision='initial'}};data=@{sample='KBORG_METRICS_PAYLOAD_CANARY'}}
     $containers=@()
     foreach ($container in @('first','second')) {$containers+=@{name=$container;image=$busyImage;command=@('sh','-c','while true; do sleep 1; done');securityContext=@{allowPrivilegeEscalation=$false;readOnlyRootFilesystem=$true;capabilities=@{drop=@('ALL')}};resources=@{requests=@{cpu='10m';memory='8Mi'};limits=@{cpu='100m';memory='32Mi'}}}}
     Apply @{apiVersion='v1';kind='Pod';metadata=@{name='sample';namespace=$namespace};spec=@{automountServiceAccountToken=$false;securityContext=@{runAsNonRoot=$true;runAsUser=1000;seccompProfile=@{type='RuntimeDefault'}};containers=$containers}}
@@ -155,7 +155,7 @@ try {
     $watchProcess.Kill();$watchProcess.WaitForExit();$watchProcess=$null
 $kindProcess=$null
     $watchText=Get-Content -LiteralPath $stdout -Raw
-    if ($watchText.Contains('K8BORG_METRICS_PAYLOAD_CANARY')) {throw 'Watch payload leak'}
+    if ($watchText.Contains('KBORG_METRICS_PAYLOAD_CANARY')) {throw 'Watch payload leak'}
     $records=@(Get-Content -LiteralPath $stdout|Where-Object {$_}|ForEach-Object {$_|ConvertFrom-Json})
     if (@($records|Where-Object {@($_.items|Where-Object {$_.metadata.name -eq 'watch' -and $_.metadata.labels.revision -eq 'live'}).Count -gt 0}).Count -eq 0) {throw 'Real minimum-version watch update missing'}
     $api=(K @('get','apiservice','v1beta1.metrics.k8s.io','-o','json'))|ConvertFrom-Json

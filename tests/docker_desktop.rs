@@ -1,4 +1,4 @@
-use k8borg::{
+use kborg::{
     cli::runtime,
     gateway::{Connection, Gateway},
     policy::{Action, Approval},
@@ -7,13 +7,13 @@ use std::{path::PathBuf, time::Duration};
 
 fn options(identity: &str, writable: bool) -> Connection {
     let path = std::env::var(format!(
-        "K8BORG_TEST_{}_CONFIG",
+        "KBORG_TEST_{}_CONFIG",
         identity.to_ascii_uppercase()
     ))
     .unwrap_or_else(|_| panic!("run scripts/Test-DockerDesktop.ps1 first"));
     Connection {
         kubeconfig: Some(PathBuf::from(path)),
-        context: Some("k8borg-test".into()),
+        context: Some("kborg-test".into()),
         writable,
         logs: true,
         ..Default::default()
@@ -47,7 +47,9 @@ fn isolated_cluster_acceptance() {
             .get("configmaps", &ns, "canary")
             .await
             .unwrap_or_else(|e| panic!("configmap: {e}"));
-        assert!(!config.to_string().contains("K8BORG_TEST_CANARY"));
+        assert!(!config.to_string().contains("KBORG_TEST_CANARY"));
+        let yaml = kborg::inspect::yaml(&config).unwrap_or_else(|e| panic!("{e}"));
+        assert!(!yaml.contains("KBORG_TEST_CANARY"));
         let pod = items[0]["metadata"]["name"]
             .as_str()
             .unwrap_or_else(|| panic!("missing pod name"));
@@ -55,8 +57,25 @@ fn isolated_cluster_acceptance() {
             .logs(&ns, pod, None, false)
             .await
             .unwrap_or_else(|e| panic!("logs: {e}"));
-        assert!(logs.contains("K8Borg fixture"));
+        assert!(logs.contains("KBorg fixture"));
         assert!(!logs.chars().any(|c| c == '\x1b' || c == '\r'));
+        assert_eq!(
+            reader
+                .containers(&ns, pod)
+                .await
+                .unwrap_or_else(|e| panic!("{e}")),
+            vec!["sample"]
+        );
+        let mut follow = reader
+            .follow_logs(&ns, pod, Some("sample".into()), false)
+            .await
+            .unwrap_or_else(|e| panic!("{e}"));
+        let line = tokio::time::timeout(Duration::from_secs(10), follow.next())
+            .await
+            .unwrap_or_else(|e| panic!("{e}"))
+            .unwrap_or_else(|e| panic!("{e}"));
+        assert!(line.is_some());
+        drop(follow);
         let denied = Gateway::connect(options("denied", false))
             .await
             .unwrap_or_else(|e| panic!("denied connect: {e}"));
@@ -138,6 +157,57 @@ fn isolated_cluster_acceptance() {
             .execute(reset, approval)
             .await
             .unwrap_or_else(|e| panic!("{e}"));
+        let delete = operator
+            .get("deployments", &ns, "sample")
+            .await
+            .unwrap_or_else(|e| panic!("{e}"));
+        let original = delete["spec"]["template"]["spec"]["containers"][0]["image"]
+            .as_str()
+            .unwrap_or_else(|| panic!("missing image"))
+            .to_string();
+        let replacement = if original.starts_with("busybox@") {
+            format!("docker.io/library/{original}")
+        } else {
+            format!(
+                "busybox@{}",
+                original
+                    .split_once('@')
+                    .unwrap_or_else(|| panic!("image must be pinned"))
+                    .1
+            )
+        };
+        tokio::time::sleep(Duration::from_secs(5)).await;
+        let edited = operator
+            .prepare(
+                "deployments",
+                &ns,
+                "sample",
+                Action::SetImage {
+                    container: "sample".into(),
+                    image: replacement.clone(),
+                },
+            )
+            .await
+            .unwrap_or_else(|e| panic!("image dry-run: {e}"));
+        assert!(edited.summary.contains(&replacement));
+        let approval = Approval::confirm(
+            edited.target.clone(),
+            edited.action.clone(),
+            &format!("{ns}/sample"),
+        )
+        .unwrap_or_else(|e| panic!("{e}"));
+        operator
+            .execute(edited, approval)
+            .await
+            .unwrap_or_else(|e| panic!("image execute: {e}"));
+        let changed = operator
+            .get("deployments", &ns, "sample")
+            .await
+            .unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(
+            changed["spec"]["template"]["spec"]["containers"][0]["image"],
+            replacement
+        );
         let delete = operator
             .prepare("services", &ns, "delete-me", Action::Delete)
             .await

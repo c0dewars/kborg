@@ -1,0 +1,49 @@
+{
+  "schema": 1,
+  "utc": "2026-10-09T23:46:53Z",
+  "platform": "Linux",
+  "kernel": "6.18.33.2-microsoft-standard-WSL2",
+  "logical_cpus": 16,
+  "memory_total_kib": 15937180,
+  "binary_sha256": "be49aa0ad312f0d8dadfb03860669249987746bbf01d2db2d3918601391695c2",
+  "binary_bytes": 11049904,
+  "scope": "Read-only existing Docker Desktop fixture; 100 aliases of ONE cluster/identity, not 100 clusters",
+  "method": "Linux procfs sampled at 2 ms; includes process startup; warm cache; one run per workload",
+  "cpu_tick_seconds": 0.01,
+  "limitation": "A sampled RSS peak may miss short transients; zero ticks means below accounting resolution",
+  "overview_100_aliases": {
+    "seconds": 0.131356,
+    "peak_rss_kib": 11404,
+    "cpu_ticks": 9,
+    "cpu_seconds": 0.09,
+    "average_one_core_cpu_percent": 68.5159,
+    "exit_code": 0,
+    "contexts": 100,
+    "distinct_clusters": 1,
+    "distinct_identities": 1,
+    "successful_rows": 100,
+    "maximum_configured_concurrency": 4,
+    "minimum_pod_count": 1,
+    "maximum_pod_count": 1
+  },
+  "log_opt_in": {
+    "denied_without_flag": true,
+    "stdout_bytes": 0
+  },
+  "live_log_follow": {
+    "seconds": 17.531821,
+    "peak_rss_kib": 9928,
+    "cpu_ticks": 0,
+    "cpu_seconds": 0.0,
+    "average_one_core_cpu_percent": 0.0,
+    "exit_code": 1,
+    "lines": 31,
+    "stdout_bytes": 2096,
+    "container_selected": true,
+    "terminal_controls_absent": true,
+    "bounded_stop_reported": true,
+    "stop_reason": "idle/transport timeout",
+    "raw_logs_retained": false
+  },
+  "temporary_credential_copy_removed": true
+}

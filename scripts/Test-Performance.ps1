@@ -2,7 +2,7 @@ param([int]$Samples=30,[string]$ReaderConfig)
 $ErrorActionPreference='Stop'
 if ($Samples -lt 5 -or $Samples -gt 100) { throw 'Samples must be5..100.' }
 $projectRoot=Split-Path -Parent $PSScriptRoot
-$binary=Join-Path $projectRoot 'target/release/k8borg.exe'
+$binary=Join-Path $projectRoot 'target/release/kborg.exe'
 if (-not (Test-Path -LiteralPath $binary)) { throw 'Run cargo build --locked --release first.' }
 $scratch=Join-Path $projectRoot ('.local/performance-'+[Guid]::NewGuid().ToString('N'))
 [void](New-Item -ItemType Directory -Path $scratch)

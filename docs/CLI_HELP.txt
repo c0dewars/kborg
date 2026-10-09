@@ -1,43 +1,58 @@
-K8Borg 0.2 — Kubernetes operations, under your control
+KBorg 0.3 — Kubernetes operations, under your control
 
-  k8borg                         Interactive resource browser (READ ONLY)
-  k8borg demo                    Offline sample cluster; no credentials
-  k8borg startup on|off          Persist startup animation preference
-  k8borg copilot context RESOURCE NAME --output NEW.json
-  k8borg copilot login --cli ABSOLUTE_PATH --host github.com
-  k8borg contexts                List contexts without connecting
-  k8borg doctor                  Verify selected context and pod access
-  k8borg resources               Discover API resources (Secrets excluded)
-  k8borg watch <resource>       Bounded live snapshots; --json emits JSONL
-  k8borg metrics pods|nodes    CPU/memory with measurement timestamp/window
-  k8borg list <resource>          Bounded resource table; --json for pipelines
-  k8borg get <resource> <name>    Redacted JSON object
-  k8borg logs <pod> [container]  Bounded logs; --allow-logs required
-  k8borg scale <name> <replicas>  Deployment scale with terminal approval
-  k8borg restart <name>          Guarded deployment rollout
-  k8borg delete <resource> <name> Guarded deletion; no force
+  kborg                          Interactive resource browser (READ ONLY)
+  kborg demo                     Offline sample cluster; no credentials
+  kborg startup on|off           Persist startup animation preference
+  kborg contexts                 List contexts without connecting
+  kborg overview CONTEXT...       Independent pod summaries, 1..100 contexts
+  kborg doctor                   Verify selected context and pod access
+  kborg resources                Bounded API discovery (Secrets excluded)
+  kborg watch RESOURCE            Bounded live snapshots; --json emits JSONL
+  kborg metrics pods|nodes        CPU/memory with timestamp/window
+  kborg list RESOURCE             Bounded resource table; --json for pipelines
+  kborg get RESOURCE NAME         Redacted JSON; --yaml for YAML inspection
+  kborg logs POD [CONTAINER]      --allow-logs; optional --follow or --previous
+  kborg scale NAME REPLICAS       Deployment scale with terminal approval
+  kborg restart NAME              Guarded deployment rollout
+  kborg set-image NAME CONTAINER IMAGE   Reviewed deployment image change
+  kborg delete RESOURCE NAME      Guarded deletion; no force
+  kborg exec POD CONTAINER -- COMMAND [ARG...]   Bounded noninteractive exec
+  kborg attach POD CONTAINER      Bounded stdout/stderr attachment, no stdin
+  kborg forward POD LOCAL REMOTE SECONDS   Loopback only, up to 300 seconds
+  kborg audit pending             Uncertain local outcomes; never auto-retries
+  kborg config init|validate FILE Strict schema-1 JSON configuration
+  kborg completions bash|zsh|fish|powershell   Static completion script
+  kborg copilot context RESOURCE NAME --output NEW.json
+  kborg copilot login --cli ABSOLUTE_PATH --host github.com
 
-Options (may appear before or after commands):
+Options (put KBorg flags before exec's -- separator):
   --context NAME     --namespace NAME / -n NAME ("*" for all on reads)
-  --kubeconfig FILE  --write (explicit mutation opt-in; default READ ONLY)
-  --poll (UI polling fallback)    --allow-logs       --theme ID       --color=never       --json
-  --no-splash (or K8BORG_NO_SPLASH)    --demo            --readonly       --version          --help
+  --kubeconfig FILE  --config FILE  --write (default READ ONLY)  --readonly
+  --allow-logs       --allow-exec   --allow-attach   --allow-forward
+  --poll            --theme ID     --color=never    --json       --yaml
+  --no-mouse        --follow          --previous     --no-splash      --demo       --help
+
+Exec/attach/forward require --write AND their separate --allow-* flag.
+All writes and subresource operations require exact terminal confirmation.
+Exec has no stdin/TTY, a 30s deadline and bounded output; disconnect cannot
+guarantee remote process termination. Log follow stops after 60s/256KiB.
+Overview permits 4 concurrent contexts with a 30s global deadline.
 
 Themes:
-  theme list | use ID | reset | new ID --base BUILTIN
-  theme validate FILE | preview FILE | install FILE
+  theme list | use ID | reset | new ID --base BUILTIN | clone-current ID
+  theme validate FILE | preview FILE | install FILE | replace FILE
   theme export ID --output FILE | remove ID
+Replacement preserves an original .json.bak and refuses to overwrite it.
 
 TUI keys:
-  Up/Down, j/k: select   Tab: resource list/table   Enter: details
-  /: filter cached rows   r: refresh   c: contexts   n: namespaces
-  m: pod/node metrics    w: live watch / polling toggle
-  R: API discovery       l: pod logs  L: previous pod logs
-  t: theme picker        ?: help      Esc: close dialog    q: quit
-  s: scale deployment    x: restart   Delete: guarded delete (needs --write)
+  Up/Down, j/k: select   Tab: resources/table   Enter: JSON   y: YAML
+  /: cache filter   r: refresh   c: contexts   n: namespace   o: overview
+  m: metrics   w: watch/poll   R: discovery   l/L: logs/previous   f: follow
+  a: actions   e: image edit   s: scale   x: restart   Delete: guarded delete
+  t: themes    ?: help        Esc: close/cancel       q: quit
   PgUp/PgDown: scroll details/logs     Mouse: click rows / scroll
 
-Security: TLS required; Secret reads, auth helpers, impersonation, AI,
-plugins, generic edits, exec/attach and port-forward are disabled in 0.2.
-All real clusters are labeled PRODUCTION; context names do not establish trust.
-Live clusters use bounded LIST/WATCH with reconnect; --poll selects 5s polling.
+TLS verification is mandatory. Secret reads, auth helpers, impersonation,
+generic patches, automatic AI requests and generic extensions remain disabled.
+All real clusters are labeled PRODUCTION; this is a target warning, not a
+production certification. See docs/REMAINING_WORK.md for release gates.

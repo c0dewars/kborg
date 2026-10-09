@@ -1,3 +1,5 @@
+#[path = "discovery.rs"]
+mod discovery;
 use crate::{
     Result,
     policy::{Action, Approval, Policy, Target},
@@ -32,6 +34,9 @@ pub struct Connection {
     pub demo: bool,
     pub writable: bool,
     pub logs: bool,
+    pub allow_exec: bool,
+    pub allow_attach: bool,
+    pub allow_port_forward: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -211,6 +216,7 @@ pub struct Gateway {
     session: String,
     policy: Policy,
     logs: bool,
+    operation_capabilities: [bool; 3],
     demo: Vec<Value>,
     pub kinds: Vec<Kind>,
 }
@@ -248,6 +254,11 @@ impl Gateway {
                     writable: options.writable,
                 },
                 logs: true,
+                operation_capabilities: [
+                    options.allow_exec,
+                    options.allow_attach,
+                    options.allow_port_forward,
+                ],
                 demo: demo_objects(),
                 kinds: kinds(),
             });
@@ -358,6 +369,11 @@ impl Gateway {
                 writable: options.writable,
             },
             logs: options.logs,
+            operation_capabilities: [
+                options.allow_exec,
+                options.allow_attach,
+                options.allow_port_forward,
+            ],
             demo: vec![],
             kinds: kinds(),
         })
@@ -415,32 +431,7 @@ impl Gateway {
     }
     pub async fn discover(&mut self) -> Result<Vec<Kind>> {
         if let Some(client) = &self.client {
-            let discovery =
-                tokio::time::timeout(OPERATION_BUDGET, kube::Discovery::new(client.clone()).run())
-                    .await
-                    .map_err(|_| "discovery budget exceeded; narrow the API surface")?
-                    .map_err(api_error)?;
-            let mut found = Vec::new();
-            for group in discovery.groups().take(100) {
-                for (ar, caps) in group.recommended_resources() {
-                    if !ar.plural.contains('/')
-                        && ar.plural != "secrets"
-                        && ar.kind != "Secret"
-                        && caps.operations.iter().any(|s| s == "list")
-                        && found.len() < 200
-                    {
-                        found.push(Kind {
-                            plural: ar.plural,
-                            kind: ar.kind,
-                            group: ar.group,
-                            version: ar.version,
-                            namespaced: caps.scope == kube::discovery::Scope::Namespaced,
-                        });
-                    }
-                }
-            }
-            found.sort_by_key(Kind::key);
-            self.kinds = found;
+            self.kinds = discovery::collect(client).await?;
         }
         Ok(self.kinds.clone())
     }
@@ -545,6 +536,79 @@ impl Gateway {
         safety::redact(&mut value);
         Ok(value)
     }
+    /// Container names from the pod spec, including init and ephemeral containers.
+    pub async fn containers(&self, ns: &str, name: &str) -> Result<Vec<String>> {
+        let pod = self.get("pods", ns, name).await?;
+        let mut names = Vec::new();
+        for field in ["containers", "initContainers", "ephemeralContainers"] {
+            if let Some(containers) = pod["spec"][field].as_array() {
+                for container in containers {
+                    if let Some(name) = container["name"].as_str().filter(|n| safety::valid_id(n)) {
+                        if !names.iter().any(|n| n == name) {
+                            names.push(name.to_owned());
+                        }
+                        if names.len() > 1000 {
+                            return Err("container listing exceeded limit".into());
+                        }
+                    }
+                }
+            }
+        }
+        if self.is_demo() && names.is_empty() {
+            names.push("app".into());
+        }
+        Ok(names)
+    }
+    /// Explicit opt-in is checked here immediately before opening the log request.
+    pub async fn follow_logs(
+        &self,
+        ns: &str,
+        name: &str,
+        container: Option<String>,
+        previous: bool,
+    ) -> Result<crate::logs::LogFeed> {
+        if !self.logs {
+            return Err("logs may contain sensitive data; opt in with --allow-logs".into());
+        }
+        if !safety::valid_id(ns)
+            || name.is_empty()
+            || name.len() > 253
+            || !name
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'.')
+            || container.as_deref().is_some_and(|c| !safety::valid_id(c))
+        {
+            return Err("invalid log target or container".into());
+        }
+        if previous {
+            return Err("previous container logs support snapshots only; omit --follow".into());
+        }
+        if self.is_demo() {
+            let text = self.logs(ns, name, container, false).await?;
+            return Ok(crate::logs::LogFeed::new(futures_util::io::Cursor::new(
+                text.into_bytes(),
+            )));
+        }
+        let pods: Api<Pod> = Api::namespaced(self.client.clone().ok_or("no client")?, ns);
+        let stream = tokio::time::timeout(
+            OPERATION_BUDGET,
+            pods.log_stream(
+                name,
+                &LogParams {
+                    container,
+                    follow: true,
+                    tail_lines: Some(200),
+                    limit_bytes: Some(256 * 1024),
+                    timestamps: true,
+                    ..Default::default()
+                },
+            ),
+        )
+        .await
+        .map_err(|_| "log connection timeout")?
+        .map_err(api_error)?;
+        Ok(crate::logs::LogFeed::new(stream))
+    }
     pub async fn logs(
         &self,
         ns: &str,
@@ -561,6 +625,9 @@ impl Gateway {
         {
             return Err("invalid log target".into());
         }
+        if container.as_deref().is_some_and(|c| !safety::valid_id(c)) {
+            return Err("invalid log container".into());
+        }
         if !self.logs {
             return Err("logs may contain sensitive data; opt in with --allow-logs".into());
         }
@@ -572,7 +639,7 @@ impl Gateway {
             }) {
                 return Err("demo pod not found in selected namespace".into());
             }
-            return Ok("2026-10-09T20:00:00Z INFO K8Borg demo started\n2026-10-09T20:00:01Z WARN connection retry\n2026-10-09T20:00:02Z INFO request served".into());
+            return Ok("2026-10-09T20:00:00Z INFO KBorg demo started\n2026-10-09T20:00:01Z WARN connection retry\n2026-10-09T20:00:02Z INFO request served".into());
         }
         let pods: Api<Pod> = Api::namespaced(self.client.clone().ok_or("no client")?, ns);
         let output = pods
@@ -590,6 +657,32 @@ impl Gateway {
             .await
             .map_err(api_error)?;
         Ok(safety::safe_lines(&output, 256 * 1024))
+    }
+    pub(crate) fn operation_api(&self, namespace: &str, capability: usize) -> Result<Api<Pod>> {
+        if !self.policy.writable {
+            return Err("READ ONLY: operations require --write".into());
+        }
+        if !self
+            .operation_capabilities
+            .get(capability)
+            .copied()
+            .unwrap_or(false)
+        {
+            return Err("operation requires its explicit capability flag".into());
+        }
+        if !safety::valid_id(namespace)
+            || ["kube-system", "kube-public", "kube-node-lease"].contains(&namespace)
+        {
+            return Err("operation namespace is prohibited".into());
+        }
+        let client = self
+            .client
+            .clone()
+            .ok_or("remote operations are unavailable in demo mode")?;
+        Ok(Api::namespaced(client, namespace))
+    }
+    pub(crate) fn operation_session(&self) -> &str {
+        &self.session
     }
     pub async fn prepare(
         &self,
@@ -631,15 +724,22 @@ impl Gateway {
                 json!({"metadata":{"uid":target.uid,"resourceVersion":target.version},"spec":{"replicas":replicas}})
             }
             Action::Restart => {
-                json!({"metadata":{"uid":target.uid,"resourceVersion":target.version},"spec":{"template":{"metadata":{"annotations":{"k8borg.dev/restartedAt":timestamp}}}}})
+                json!({"metadata":{"uid":target.uid,"resourceVersion":target.version},"spec":{"template":{"metadata":{"annotations":{"kborg.dev/restartedAt":timestamp}}}}})
+            }
+            Action::SetImage { container, image } => {
+                crate::edit::expected_spec(&object, container, image)?;
+                json!({"metadata":{"uid":target.uid,"resourceVersion":target.version},"spec":{"template":{"spec":{"containers":[{"name":container,"image":image}]}}}})
             }
             Action::Delete => Value::Null,
         };
         let effect = match &action {
             Action::Scale(n) => format!("scale replicas {} -> {n}", object["spec"]["replicas"]),
             Action::Restart => format!(
-                "set pod-template annotation k8borg.dev/restartedAt={timestamp}; triggers rollout"
+                "set pod-template annotation kborg.dev/restartedAt={timestamp}; triggers rollout"
             ),
+            Action::SetImage { container, image } => {
+                crate::edit::expected_spec(&object, container, image)?.1
+            }
             Action::Delete => {
                 "delete object; background cascading; server default grace period; no force".into()
             }
@@ -676,14 +776,19 @@ impl Gateway {
         if !self.is_demo() {
             let response = self.perform(&prepared, true).await?;
             match &prepared.action {
+                Action::SetImage { container, image } => {
+                    let (expected, _) = crate::edit::expected_spec(&object, container, image)?;
+                    crate::edit::check_admission(&response, &expected, &object)?;
+                }
                 Action::Scale(n) if response["spec"]["replicas"] != *n => {
                     return Err(
                         "admission changed the requested replica count; operation blocked".into(),
                     );
                 }
                 Action::Restart => {
+                    crate::edit::check_metadata(&response, &object)?;
                     let mut expected = object["spec"].clone();
-                    expected["template"]["metadata"]["annotations"]["k8borg.dev/restartedAt"]=prepared.patch["spec"]["template"]["metadata"]["annotations"]["k8borg.dev/restartedAt"].clone();
+                    expected["template"]["metadata"]["annotations"]["kborg.dev/restartedAt"]=prepared.patch["spec"]["template"]["metadata"]["annotations"]["kborg.dev/restartedAt"].clone();
                     if response["spec"] != expected {
                         return Err("admission changed additional deployment fields during dry-run; operation blocked for review".into());
                     }
@@ -729,6 +834,21 @@ impl Gateway {
                     .map_err(api_error)?;
                 serde_json::to_value(response).map_err(|_| "cannot decode scale response".into())
             }
+            Action::SetImage { .. } => {
+                let response = api
+                    .patch(
+                        &prepared.target.name,
+                        &PatchParams {
+                            dry_run,
+                            ..Default::default()
+                        },
+                        &Patch::Strategic(&prepared.patch),
+                    )
+                    .await
+                    .map_err(api_error)?;
+                serde_json::to_value(response)
+                    .map_err(|_| "cannot decode deployment response".into())
+            }
             Action::Restart => {
                 let response = api
                     .patch(
@@ -770,6 +890,14 @@ impl Gateway {
                     for v in &mut self.demo {
                         if v["metadata"]["uid"] == prepared.target.uid {
                             v["spec"]["replicas"] = json!(n);
+                        }
+                    }
+                }
+                Action::SetImage { container, image } => {
+                    for object in &mut self.demo {
+                        if object["metadata"]["uid"] == prepared.target.uid {
+                            object["spec"] =
+                                crate::edit::expected_spec(object, &container, &image)?.0;
                         }
                     }
                 }
@@ -816,7 +944,7 @@ fn start_audit(prepared: &Prepared, context: &str) -> Result<PathBuf> {
         .map_err(|_| "clock error")?
         .as_nanos();
     let path = dir.join(format!("{stamp}-{}.jsonl", std::process::id()));
-    let record = json!({"schema_version":1,"stage":"intent","context":context,"namespace":prepared.target.namespace,"resource":prepared.target.resource,"name":prepared.target.name,"uid":prepared.target.uid,"resourceVersion":prepared.target.version,"action":format!("{:?}",prepared.action),"timestamp_unix_ns":stamp.to_string()});
+    let record = json!({"schema_version":1,"stage":"intent","context":context,"namespace":prepared.target.namespace,"resource":prepared.target.resource,"name":prepared.target.name,"uid":prepared.target.uid,"resourceVersion":prepared.target.version,"action":prepared.action.operation_name(),"timestamp_unix_ns":stamp.to_string()});
     safety::write_new(&path, format!("{record}\n").as_bytes())?;
     Ok(path)
 }
@@ -838,25 +966,25 @@ fn api_error(error: kube::Error) -> String {
     }
 }
 fn demo_objects() -> Vec<Value> {
-    let object = |kind: &str, name: &str, status: Value, spec: Value| json!({"apiVersion":if kind=="Deployment"{"apps/v1"}else{"v1"},"kind":kind,"metadata":{"name":name,"namespace":"demo","uid":format!("demo-{name}"),"resourceVersion":"1"},"spec":spec,"status":status});
+    let object = |kind: &str, name: &str, status: Value, spec: Value| json!({"apiVersion":if kind=="Deployment"{"apps/v1"}else{"v1"},"kind":kind,"metadata":{"name":name,"namespace":"demo","uid":format!("demo-{kind}-{name}"),"resourceVersion":"1"},"spec":spec,"status":status});
     vec![
         object(
             "Pod",
             "api-7d4f9",
             json!({"phase":"Running","containerStatuses":[{"ready":true,"restartCount":0}]}),
-            json!({"nodeName":"demo-node"}),
+            json!({"nodeName":"demo-node","containers":[{"name":"app","image":"example/demo:v1"}]}),
         ),
         object(
             "Pod",
             "worker-6a1bc",
             json!({"phase":"Running","containerStatuses":[{"ready":false,"restartCount":7,"state":{"waiting":{"reason":"CrashLoopBackOff"}}}]}),
-            json!({"nodeName":"demo-node"}),
+            json!({"nodeName":"demo-node","containers":[{"name":"app","image":"example/demo:v1"}]}),
         ),
         object(
             "Deployment",
             "api",
             json!({"readyReplicas":2,"availableReplicas":2}),
-            json!({"replicas":2}),
+            json!({"replicas":2,"template":{"spec":{"containers":[{"name":"app","image":"example/demo:v1"}]}}}),
         ),
         object(
             "Service",
@@ -897,6 +1025,45 @@ pub fn summary(object: &Value) -> String {
 mod tests {
     use super::*;
     use crate::cli::runtime;
+    #[test]
+    fn offline_image_edit_is_reviewed_and_updates_the_sample() {
+        runtime().unwrap_or_else(|e| panic!("{e}")).block_on(async {
+            let mut gateway = Gateway::connect(Connection {
+                demo: true,
+                writable: true,
+                ..Default::default()
+            })
+            .await
+            .unwrap_or_else(|e| panic!("{e}"));
+            let reviewed = gateway
+                .prepare(
+                    "deployments",
+                    "demo",
+                    "api",
+                    Action::SetImage {
+                        container: "app".into(),
+                        image: "example/demo:v2".into(),
+                    },
+                )
+                .await
+                .unwrap_or_else(|e| panic!("{e}"));
+            let approval =
+                Approval::confirm(reviewed.target.clone(), reviewed.action.clone(), "demo/api")
+                    .unwrap_or_else(|e| panic!("{e}"));
+            gateway
+                .execute(reviewed, approval)
+                .await
+                .unwrap_or_else(|e| panic!("{e}"));
+            let object = gateway
+                .get("deployments", "demo", "api")
+                .await
+                .unwrap_or_else(|e| panic!("{e}"));
+            assert_eq!(
+                object["spec"]["template"]["spec"]["containers"][0]["image"],
+                "example/demo:v2"
+            );
+        });
+    }
     #[test]
     fn offline_details_and_logs_respect_exact_namespace_and_target() {
         runtime().unwrap_or_else(|e| panic!("{e}")).block_on(async {
@@ -944,7 +1111,7 @@ mod tests {
     }
     #[test]
     fn malicious_auth_and_insecure_tls_are_rejected_before_network() {
-        let dir = std::env::temp_dir().join(format!("k8borg-security-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("kborg-security-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap_or_else(|e| panic!("{e}"));
         let rt = runtime().unwrap_or_else(|e| panic!("{e}"));
         for (i, user, cluster) in [
@@ -1042,6 +1209,77 @@ mod tests {
         });
     }
     #[test]
+    fn all_operation_capabilities_require_write_and_safe_namespace() {
+        let rt = runtime().unwrap_or_else(|e| panic!("{e}"));
+        rt.block_on(async {
+            let mut gateway = Gateway::connect(Connection {
+                demo: true,
+                writable: true,
+                allow_exec: true,
+                allow_attach: true,
+                allow_port_forward: true,
+                ..Default::default()
+            })
+            .await
+            .unwrap_or_else(|e| panic!("{e}"));
+            let service = tower::service_fn(|_: http::Request<kube::client::Body>| async {
+                Ok::<_, std::convert::Infallible>(http::Response::new(http_body_util::Full::new(
+                    bytes::Bytes::new(),
+                )))
+            });
+            gateway.client = Some(Client::new(service, "test"));
+            for capability in 0..3 {
+                assert!(gateway.operation_api("test", capability).is_ok());
+                for namespace in ["", "*", "kube-system", "kube-public", "kube-node-lease"] {
+                    assert!(gateway.operation_api(namespace, capability).is_err());
+                }
+                gateway.policy.writable = false;
+                assert!(gateway.operation_api("test", capability).is_err());
+                gateway.policy.writable = true;
+                gateway.operation_capabilities[capability] = false;
+                assert!(gateway.operation_api("test", capability).is_err());
+                gateway.operation_capabilities[capability] = true;
+            }
+        });
+    }
+
+    #[test]
+    fn image_edit_uses_narrow_patch_preconditions_and_rejects_stale_server_state() {
+        let rt = runtime().unwrap_or_else(|e| panic!("{e}"));
+        rt.block_on(async {
+            let service = tower::service_fn(|request: http::Request<kube::client::Body>| async move {
+                use http_body_util::BodyExt;
+                let object = json!({"apiVersion":"apps/v1","kind":"Deployment","metadata":{"name":"api","namespace":"test","uid":"old-uid","resourceVersion":"7"},"spec":{"replicas":1,"template":{"spec":{"containers":[{"name":"api","image":"nginx:1","env":[{"name":"TOKEN","value":"private-canary"}]}]}}}});
+                let patching = request.method() == http::Method::PATCH;
+                let dry = request.uri().query().is_some_and(|q| q.contains("dryRun=All"));
+                let mut response = object;
+                let mut status = http::StatusCode::OK;
+                if patching {
+                    assert_eq!(request.headers()["content-type"], "application/strategic-merge-patch+json");
+                    let body = request.into_body().collect().await.unwrap_or_else(|e| panic!("{e}")).to_bytes();
+                    let patch: Value = serde_json::from_slice(&body).unwrap_or_else(|e| panic!("{e}"));
+                    assert_eq!(patch["metadata"]["uid"], "old-uid");
+                    assert_eq!(patch["metadata"]["resourceVersion"], "7");
+                    assert!(!String::from_utf8_lossy(&body).contains("private-canary"));
+                    assert_eq!(patch["spec"]["template"]["spec"]["containers"], json!([{"name":"api","image":"nginx:2"}]));
+                    if dry { response["spec"]["template"]["spec"]["containers"][0]["image"] = json!("nginx:2"); }
+                    else {
+                        status = http::StatusCode::CONFLICT;
+                        response = json!({"apiVersion":"v1","kind":"Status","status":"Failure","message":"stale UID/resourceVersion","reason":"Conflict","code":409});
+                    }
+                }
+                Ok::<_, std::convert::Infallible>(http::Response::builder().status(status).body(http_body_util::Full::new(bytes::Bytes::from(response.to_string()))).unwrap_or_else(|e| panic!("{e}")))
+            });
+            let mut gateway = Gateway::connect(Connection { demo: true, writable: true, ..Default::default() }).await.unwrap_or_else(|e| panic!("{e}"));
+            gateway.client = Some(Client::new(service, "test"));
+            let prepared = gateway.prepare("deployments", "test", "api", Action::SetImage { container: "api".into(), image: "nginx:2".into() }).await.unwrap_or_else(|e| panic!("{e}"));
+            assert!(prepared.summary.contains("- nginx:1\n+ nginx:2"));
+            assert!(!prepared.summary.contains("private-canary"));
+            assert!(gateway.perform(&prepared, false).await.is_err());
+        });
+    }
+
+    #[test]
     fn repeated_pagination_token_stops_before_an_unbounded_loop() {
         let rt = runtime().unwrap_or_else(|e| panic!("{e}"));
         rt.block_on(async {
@@ -1066,7 +1304,7 @@ mod tests {
     #[test]
     fn duplicate_kubeconfig_names_are_rejected_before_selection() {
         let path =
-            std::env::temp_dir().join(format!("k8borg-duplicate-{}.json", std::process::id()));
+            std::env::temp_dir().join(format!("kborg-duplicate-{}.json", std::process::id()));
         let config = json!({"apiVersion":"v1","kind":"Config","contexts":[
             {"name":"ambiguous","context":{"cluster":"first"}},
             {"name":"ambiguous","context":{"cluster":"second"}}

@@ -10,3 +10,12 @@ pub mod tui;
 pub mod watch;
 
 pub type Result<T> = std::result::Result<T, String>;
+
+pub mod audit;
+pub mod completions;
+pub mod config;
+pub mod edit;
+pub mod inspect;
+pub mod logs;
+pub mod ops;
+pub mod overview;

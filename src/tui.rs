@@ -28,22 +28,31 @@ use std::{
 
 struct Terminal;
 impl Terminal {
-    fn enter() -> Result<Self> {
+    fn enter(mouse: bool) -> Result<Self> {
+        if std::env::var("TERM").is_ok_and(|term| term == "dumb") {
+            return Err(
+                "TERM=dumb cannot run the interactive UI; use CLI JSON/YAML commands".into(),
+            );
+        }
         if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
             return Err("interactive mode needs a terminal; use list/get --json or --help".into());
         }
         terminal::enable_raw_mode().map_err(|_| "cannot enable raw mode")?;
+        let guard = Self;
         if execute!(
             io::stdout(),
             EnterAlternateScreen,
             DisableLineWrap,
-            EnableMouseCapture,
             cursor::Hide
         )
         .is_err()
         {
             let _ = terminal::disable_raw_mode();
             return Err("cannot enter alternate screen".into());
+        }
+        if mouse {
+            execute!(io::stdout(), EnableMouseCapture)
+                .map_err(|_| "cannot enable mouse capture")?;
         }
         std::panic::set_hook(Box::new(|_| {
             let _ = terminal::disable_raw_mode();
@@ -55,9 +64,9 @@ impl Terminal {
                 cursor::Show,
                 style::ResetColor
             );
-            eprintln!("K8Borg encountered an internal error; no object contents recorded.");
+            eprintln!("KBorg encountered an internal error; no object contents recorded.");
         }));
-        Ok(Self)
+        Ok(guard)
     }
 }
 impl Drop for Terminal {
@@ -80,7 +89,11 @@ enum Task {
     Watch(String, String),
     Metrics(crate::metrics::MetricsScope, String),
     Get(String, String, String),
-    Logs(String, String, bool),
+    Yaml(String, String, String),
+    Overview(Connection, Vec<String>),
+    Containers(String, String, bool, bool),
+    Logs(String, String, Option<String>, bool),
+    Follow(String, String, Option<String>, u64),
     Discover,
     Prepare(String, String, String, Option<String>, Action),
     Execute(Box<Prepared>, Approval),
@@ -89,6 +102,8 @@ enum Reply {
     Connected(String, String, String, Vec<Kind>),
     Items(Value),
     Detail(String),
+    Containers(String, String, Vec<String>, bool, bool),
+    Following,
     Catalog(Vec<Kind>),
     Prepared(Box<Prepared>),
     Notice(String),
@@ -130,16 +145,84 @@ impl WatchSlot {
 }
 type WatchMailbox = std::sync::Arc<WatchSlot>;
 
+#[derive(Default)]
+struct LogState {
+    text: String,
+    dirty: bool,
+}
+#[derive(Default)]
+struct LogSlot {
+    generation: std::sync::atomic::AtomicU64,
+    state: std::sync::Mutex<LogState>,
+    abort: std::sync::Mutex<Option<tokio::task::AbortHandle>>,
+}
+impl LogSlot {
+    fn cancel(&self) -> u64 {
+        let generation = self
+            .generation
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+            + 1;
+        if let Ok(mut abort) = self.abort.lock()
+            && let Some(handle) = abort.take()
+        {
+            handle.abort();
+        }
+        if let Ok(mut state) = self.state.lock() {
+            *state = LogState::default();
+        }
+        generation
+    }
+    fn append(&self, generation: u64, line: &str) -> bool {
+        if let Ok(mut state) = self.state.lock() {
+            if self.generation.load(std::sync::atomic::Ordering::SeqCst) != generation {
+                return false;
+            }
+            // A single bounded mailbox, never one queued message per log line.
+            let line = safety::safe_text(line, 4096);
+            if state.text.len() + line.len() < crate::logs::MAX_LOG_BYTES {
+                state.text.push_str(&line);
+                state.text.push('\n');
+                state.dirty = true;
+                return true;
+            }
+            if state.text.len() <= crate::logs::MAX_LOG_BYTES {
+                state
+                    .text
+                    .push_str("[Stopped: display reached 256 KiB; start a new session]\n");
+                state.dirty = true;
+            }
+        }
+        false
+    }
+    fn take(&self) -> Option<String> {
+        let mut state = self.state.lock().ok()?;
+        if !state.dirty {
+            return None;
+        }
+        state.dirty = false;
+        Some(state.text.clone())
+    }
+}
+
 struct Worker {
     tx: tokio::sync::mpsc::Sender<(u64, Task)>,
     rx: Receiver<(u64, Reply)>,
     watch: WatchMailbox,
+    logs: std::sync::Arc<LogSlot>,
+}
+impl Drop for Worker {
+    fn drop(&mut self) {
+        self.logs.cancel();
+        self.watch.invalidate(u64::MAX);
+    }
 }
 fn worker() -> Worker {
     let (tx, mut commands) = tokio::sync::mpsc::channel::<(u64, Task)>(4);
     let (results, rx) = mpsc::sync_channel(4);
     let watch: WatchMailbox = std::sync::Arc::new(WatchSlot::default());
     let watch_results = watch.clone();
+    let logs = std::sync::Arc::new(LogSlot::default());
+    let log_results = logs.clone();
     std::thread::spawn(move || {
         let rt = match runtime() {
             Ok(rt) => rt,
@@ -196,7 +279,33 @@ fn worker() -> Worker {
                                 Ok(match task {
                                     Task::List(k,n) => Reply::Items(g.list(&k,&n).await?),
                                     Task::Get(k,n,name) => Reply::Detail(serde_json::to_string_pretty(&g.get(&k,&n,&name).await?).map_err(|_| "serialization failed")?),
-                                    Task::Logs(n,name,previous) => Reply::Detail(g.logs(&n,&name,None,previous).await?),
+                                    Task::Yaml(k,n,name) => Reply::Detail(crate::inspect::yaml(&g.get(&k,&n,&name).await?)?),
+                                    Task::Overview(options,names) => Reply::Detail(crate::overview::text(&crate::overview::collect(&options,&names).await?)),
+                                    Task::Containers(n,name,previous,follow) => {
+                                        let names = g.containers(&n,&name).await?;
+                                        Reply::Containers(n,name,names,previous,follow)
+                                    },
+                                    Task::Logs(n,name,container,previous) => Reply::Detail(g.logs(&n,&name,container,previous).await?),
+                                    Task::Follow(n,name,container,generation) => {
+                                        if log_results.generation.load(std::sync::atomic::Ordering::SeqCst) != generation {return Ok(Reply::Following);}
+                                        let mut feed = g.follow_logs(&n,&name,container,false).await?;
+                                        let mailbox = log_results.clone();
+                                        let job = tokio::spawn(async move {
+                                            loop {
+                                                match feed.next().await {
+                                                    Ok(Some(line)) => {if !mailbox.append(generation,&line) {break;}},
+                                                    Ok(None) => {mailbox.append(generation,"[Log stream ended]"); break;},
+                                                    Err(error) => {mailbox.append(generation,&format!("[Stopped: {error}]")); break;}
+                                                }
+                                            }
+                                        });
+                                        if let Ok(mut handle) = log_results.abort.lock() {
+                                            if log_results.generation.load(std::sync::atomic::Ordering::SeqCst) == generation {
+                                                *handle = Some(job.abort_handle());
+                                            } else {job.abort();}
+                                        } else {job.abort();}
+                                        Reply::Following
+                                    },
                                     Task::Metrics(scope,n) => Reply::Metrics(crate::metrics::collect(g,scope,&n).await.map(|v| v.text())),
                                     Task::Discover => Reply::Catalog(g.discover().await?),
                                     Task::Prepare(k,n,name,uid,a) => {
@@ -221,13 +330,28 @@ fn worker() -> Worker {
             if let Some(job) = watch_job { job.abort(); }
         });
     });
-    Worker { tx, rx, watch }
+    Worker {
+        tx,
+        rx,
+        watch,
+        logs,
+    }
 }
 
 enum Modal {
     None,
     Input(&'static str, String),
     Detail(String, usize),
+    Follow(String, usize),
+    Containers(String, String, Vec<String>, usize, bool, bool),
+    Image(
+        String,
+        String,
+        String,
+        Option<String>,
+        Option<String>,
+        String,
+    ),
     Picker(&'static str, Vec<String>, usize),
     Themes(Vec<Theme>, usize, Theme),
     Confirm(Box<Prepared>, String),
@@ -351,6 +475,7 @@ impl App {
         self.watch_blocked = false;
         self.sticky_status = false;
         self.worker.watch.invalidate(self.epoch);
+        self.worker.logs.cancel();
     }
     fn connect(&mut self) {
         self.namespace_override = false;
@@ -414,7 +539,21 @@ impl App {
                         self.items.len()
                     );
                 }
-                Reply::Detail(text) => self.modal = Modal::Detail(text, 0),
+                Reply::Detail(text) => {
+                    let width = terminal::size()
+                        .map(|s| usize::from(s.0).saturating_sub(2))
+                        .unwrap_or(78)
+                        .max(1);
+                    self.modal = Modal::Detail(wrap_text(&text.replace('\t', " | "), width), 0);
+                }
+                Reply::Containers(n, name, names, previous, follow) => {
+                    if names.is_empty() {
+                        self.status = "No containers found in the selected pod.".into();
+                    } else {
+                        self.modal = Modal::Containers(n, name, names, 0, previous, follow);
+                    }
+                }
+                Reply::Following => {}
                 Reply::Catalog(k) => {
                     self.kinds = k;
                     self.kind_index = 0;
@@ -429,6 +568,10 @@ impl App {
                     self.refresh = true;
                 }
                 Reply::Failure(error) => {
+                    if matches!(self.modal, Modal::Follow(..)) {
+                        self.worker.logs.cancel();
+                        self.modal = Modal::Detail(format!("LOGS unavailable\n{error}"), 0);
+                    }
                     if self.connecting_epoch == Some(epoch) {
                         self.connecting_epoch = None;
                     }
@@ -491,6 +634,12 @@ impl App {
                 self.status = snapshot.message;
             }
         }
+        if let Some(text) = self.worker.logs.take()
+            && let Modal::Follow(_, offset) = &self.modal
+        {
+            self.modal = Modal::Follow(text, *offset);
+            changed = true;
+        }
         changed
     }
     fn theme_picker(&mut self) -> Result<()> {
@@ -505,7 +654,9 @@ impl App {
             return;
         }
         let allowed = match &action {
-            Action::Scale(_) | Action::Restart => self.kind() == "deployments.apps",
+            Action::Scale(_) | Action::Restart | Action::SetImage { .. } => {
+                self.kind() == "deployments.apps"
+            }
             Action::Delete => matches!(
                 self.kind().as_str(),
                 "pods" | "deployments.apps" | "services" | "jobs.batch"
@@ -528,12 +679,97 @@ impl App {
         self.sticky_status = false;
         let modal = std::mem::replace(&mut self.modal, Modal::None);
         match modal {
+            Modal::Follow(text, mut offset) => match code {
+                KeyCode::Esc | KeyCode::Char('q') => {
+                    self.worker.logs.cancel();
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    offset = (offset + 1).min(text.lines().count().saturating_sub(1));
+                    self.modal = Modal::Follow(text, offset);
+                }
+                KeyCode::Up | KeyCode::Char('k') => {
+                    self.modal = Modal::Follow(text, offset.saturating_sub(1))
+                }
+                KeyCode::PageDown => {
+                    self.modal = Modal::Follow(text, (offset + 15).min(256 * 1024))
+                }
+                KeyCode::PageUp => self.modal = Modal::Follow(text, offset.saturating_sub(15)),
+                KeyCode::End => {
+                    offset = text.lines().count().saturating_sub(10);
+                    self.modal = Modal::Follow(text, offset);
+                }
+                _ => self.modal = Modal::Follow(text, offset),
+            },
+            Modal::Containers(n, name, names, mut index, previous, follow) => match code {
+                KeyCode::Esc => {}
+                KeyCode::Down | KeyCode::Char('j') => {
+                    index = (index + 1).min(names.len().saturating_sub(1));
+                    self.modal = Modal::Containers(n, name, names, index, previous, follow);
+                }
+                KeyCode::Up | KeyCode::Char('k') => {
+                    self.modal =
+                        Modal::Containers(n, name, names, index.saturating_sub(1), previous, follow)
+                }
+                KeyCode::Enter => {
+                    if let Some(container) = names.get(index) {
+                        if follow {
+                            let generation = self.worker.logs.cancel();
+                            self.modal = Modal::Follow("Connecting to logs...".into(), 0);
+                            self.send(Task::Follow(n, name, Some(container.clone()), generation));
+                        } else {
+                            self.send(Task::Logs(n, name, Some(container.clone()), previous));
+                        }
+                    }
+                }
+                _ => self.modal = Modal::Containers(n, name, names, index, previous, follow),
+            },
+            Modal::Image(k, n, name, uid, container, mut text) => match code {
+                KeyCode::Esc => {}
+                KeyCode::Enter => {
+                    if let Some(container) = container {
+                        self.send(Task::Prepare(
+                            k,
+                            n,
+                            name,
+                            uid,
+                            Action::SetImage {
+                                container,
+                                image: text,
+                            },
+                        ));
+                    } else if safety::valid_id(&text) {
+                        self.modal = Modal::Image(k, n, name, uid, Some(text), String::new());
+                    } else {
+                        self.status = "Enter a valid deployment container name.".into();
+                        self.modal = Modal::Image(k, n, name, uid, None, text);
+                    }
+                }
+                KeyCode::Backspace => {
+                    text.pop();
+                    self.modal = Modal::Image(k, n, name, uid, container, text);
+                }
+                KeyCode::Char(c) if c.is_ascii_graphic() && text.len() < 512 => {
+                    text.push(c);
+                    self.modal = Modal::Image(k, n, name, uid, container, text);
+                }
+                _ => self.modal = Modal::Image(k, n, name, uid, container, text),
+            },
             Modal::Input(label, mut text) => match code {
                 KeyCode::Esc => {}
                 KeyCode::Enter => {
                     if label == "Filter" {
                         self.filter = text;
                         self.selected = 0;
+                    } else if label == "Overview contexts (comma separated, max 4)" {
+                        let names: Vec<String> =
+                            text.split(',').map(|name| name.trim().to_owned()).collect();
+                        if names.len() > 4 {
+                            self.status="TUI overview allows up to 4 explicit contexts; CLI supports up to 100.".into();
+                        } else if let Err(error) = crate::overview::validate(&names) {
+                            self.status = error;
+                        } else {
+                            self.send(Task::Overview(self.options.connection.clone(), names));
+                        }
                     } else if label == "Namespace" {
                         if text == "*" || safety::valid_id(&text) {
                             self.namespace = text;
@@ -580,7 +816,24 @@ impl App {
                 }
                 KeyCode::Enter => {
                     if let Some(value) = list.get(index) {
-                        if label == "Context" {
+                        if label == "Actions" {
+                            let keys = [
+                                KeyCode::Enter,
+                                KeyCode::Char('y'),
+                                KeyCode::Char('l'),
+                                KeyCode::Char('L'),
+                                KeyCode::Char('f'),
+                                KeyCode::Char('m'),
+                                KeyCode::Char('o'),
+                                KeyCode::Char('s'),
+                                KeyCode::Char('e'),
+                                KeyCode::Char('x'),
+                                KeyCode::Delete,
+                            ];
+                            if let Some(key) = keys.get(index) {
+                                return self.key(*key);
+                            }
+                        } else if label == "Context" {
                             if !self.busy {
                                 self.options.connection.context = Some(value.clone());
                                 self.connect();
@@ -747,10 +1000,64 @@ impl App {
                         self.changed();
                     }
                 }
-                KeyCode::Char('l') | KeyCode::Char('L') => {
+                KeyCode::Char('a') => {
+                    self.modal = Modal::Picker(
+                        "Actions",
+                        [
+                            "Inspect JSON",
+                            "Inspect YAML",
+                            "Logs snapshot",
+                            "Previous logs",
+                            "Follow logs (bounded)",
+                            "Metrics",
+                            "Context overview",
+                            "Scale deployment",
+                            "Change deployment image",
+                            "Restart deployment",
+                            "Delete selected resource",
+                        ]
+                        .into_iter()
+                        .map(str::to_owned)
+                        .collect(),
+                        0,
+                    );
+                }
+                KeyCode::Char('y') => {
+                    if let Some((k, n, name)) = self.selected_target() {
+                        self.send(Task::Yaml(k, n, name));
+                    }
+                }
+                KeyCode::Char('o') => {
+                    self.modal = Modal::Input(
+                        "Overview contexts (comma separated, max 4)",
+                        self.context.clone(),
+                    );
+                }
+                KeyCode::Char('e') => {
+                    if !self.options.connection.writable {
+                        self.status =
+                            "READ ONLY: enable --write before requesting a mutation.".into();
+                    } else if self.kind() != "deployments.apps" {
+                        self.status = "Image edits apply to deployments.".into();
+                    } else if let Some((k, n, name)) = self.selected_target() {
+                        self.modal =
+                            Modal::Image(k, n, name, self.selected_uid(), None, String::new());
+                    }
+                }
+                KeyCode::Char('l') | KeyCode::Char('L') | KeyCode::Char('f') => {
+                    if !self.options.connection.logs {
+                        self.status =
+                            "Logs may contain sensitive data; opt in with --allow-logs.".into();
+                        return Ok(false);
+                    }
                     if let Some((k, n, name)) = self.selected_target() {
                         if k == "pods" {
-                            self.send(Task::Logs(n, name, code == KeyCode::Char('L')));
+                            self.send(Task::Containers(
+                                n,
+                                name,
+                                code == KeyCode::Char('L'),
+                                code == KeyCode::Char('f'),
+                            ));
                         } else {
                             self.status = "Logs apply to Pods; choose a pod.".into();
                         }
@@ -826,7 +1133,7 @@ fn draw(app: &App) -> Result<()> {
             &mut out,
             0,
             w,
-            "K8Borg: enlarge terminal to at least 50x12 (q to quit)",
+            "KBorg: enlarge terminal to at least 50x12 (q to quit)",
             fg,
             bg,
         )
@@ -841,7 +1148,7 @@ fn draw(app: &App) -> Result<()> {
     } else {
         "PRODUCTION / READ ONLY"
     };
-    let header = format!(" K8Borg >_  | {mode} | {}", app.theme.name);
+    let header = format!(" KBorg >_  | {mode} | {}", app.theme.name);
     row(
         &mut out,
         0,
@@ -964,7 +1271,7 @@ fn draw(app: &App) -> Result<()> {
         &mut out,
         h - 2,
         w,
-        " Enter details | l logs | / filter | r refresh | s scale | x restart | Del delete",
+        " Enter details | y YAML | l logs | f follow | a actions | / filter | r refresh",
         color("accent"),
         bg,
     )
@@ -973,7 +1280,7 @@ fn draw(app: &App) -> Result<()> {
         &mut out,
         h - 1,
         w,
-        " q quit | AI / plugins / exec / forwarding disabled | No telemetry",
+        " q quit | ? help | e image edit | o context overview | No telemetry",
         color("muted"),
         bg,
     )
@@ -988,6 +1295,42 @@ fn draw(app: &App) -> Result<()> {
                 Modal::Input(label, text) => vec![
                     format!(" {label}: {text}_"),
                     " Enter apply | Esc cancel".into(),
+                ],
+                Modal::Follow(text, offset) => std::iter::once(
+                    " LIVE LOGS (60s / 256KiB) — PgUp/PgDown; End latest; Esc cancels".into(),
+                )
+                .chain(text.lines().skip(*offset).map(|s| format!(" {s}")))
+                .collect(),
+                Modal::Containers(_, name, names, index, previous, follow) => {
+                    std::iter::once(format!(
+                        " CONTAINER for {name} — {} — Enter select / Esc cancel",
+                        if *follow {
+                            "follow"
+                        } else if *previous {
+                            "previous"
+                        } else {
+                            "snapshot"
+                        }
+                    ))
+                    .chain(names.iter().enumerate().map(|(i, name)| {
+                        format!(" {} {name}", if i == *index { ">" } else { " " })
+                    }))
+                    .collect()
+                }
+                Modal::Image(_, _, name, _, container, text) => vec![
+                    format!(
+                        " CHANGE IMAGE {name} — {}",
+                        container.as_deref().unwrap_or("enter container name")
+                    ),
+                    format!(
+                        " {}: {text}_",
+                        if container.is_some() {
+                            "Image (tag/digest)"
+                        } else {
+                            "Container"
+                        }
+                    ),
+                    " Enter continue to server dry-run/review | Esc cancel".into(),
                 ],
                 Modal::Detail(text, offset) => std::iter::once(
                     " DETAILS / LOGS / METRICS — PgUp/PgDown scroll; Esc close".into(),
@@ -1099,7 +1442,7 @@ fn wrap_text(text: &str, width: usize) -> String {
 pub fn run(options: Options) -> Result<()> {
     let first_run = options.theme.is_none() && themes::first_run()?;
     let theme = themes::find(options.theme.as_deref().unwrap_or(&themes::selected()))?;
-    let _terminal = Terminal::enter()?;
+    let _terminal = Terminal::enter(options.mouse)?;
     if options.splash && themes::animation_enabled() && !startup_animation(&theme, options.color)? {
         return Ok(());
     }
@@ -1246,7 +1589,7 @@ fn startup_animation(theme: &Theme, color: bool) -> Result<bool> {
         "       \\     ---+---      /       ",
         "        '--.    |     .--'        ",
         "            '--------'            ",
-        "             K8BORG               ",
+        "             KBORG               ",
         " Kubernetes under your control    ",
     ];
     let started = Instant::now();
@@ -1366,9 +1709,13 @@ mod layout_tests {
                     connection: Connection::default(),
                     theme: None,
                     color: false,
+                    mouse: false,
                     json: false,
                     splash: false,
                     poll: false,
+                    yaml: false,
+                    follow: false,
+                    previous: false,
                     command: vec![],
                 },
                 theme: themes::builtins().remove(0),
@@ -1397,7 +1744,12 @@ mod layout_tests {
                 connected: true,
                 refresh: false,
                 last_refresh: Instant::now(),
-                worker: Worker { tx, rx, watch },
+                worker: Worker {
+                    tx,
+                    rx,
+                    watch,
+                    logs: std::sync::Arc::new(LogSlot::default()),
+                },
             },
             replies,
             commands,
@@ -1405,6 +1757,64 @@ mod layout_tests {
     }
     fn object(name: &str) -> Value {
         serde_json::json!({"kind":"Deployment","metadata":{"name":name,"namespace":"test","uid":format!("uid-{name}")}})
+    }
+    #[test]
+    fn log_mailbox_is_bounded_and_cancel_discards_obsolete_producer() {
+        let slot = LogSlot::default();
+        let generation = slot.cancel();
+        let line = "x".repeat(4096);
+        for _ in 0..1000 {
+            if !slot.append(generation, &line) {
+                break;
+            }
+        }
+        let text = slot.take().unwrap_or_default();
+        assert!(text.len() <= crate::logs::MAX_LOG_BYTES + 1024);
+        assert!(text.contains("display reached"));
+        slot.cancel();
+        assert!(!slot.append(generation, "obsolete private log"));
+        assert!(slot.take().is_none());
+    }
+    #[test]
+    fn escape_cancels_log_modal_and_scope_change_rejects_old_logs() {
+        let (mut app, _replies, _commands) = harness();
+        let generation = app.worker.logs.cancel();
+        app.modal = Modal::Follow("live".into(), 0);
+        assert!(app.key(KeyCode::Esc).is_ok());
+        assert!(matches!(app.modal, Modal::None));
+        assert!(!app.worker.logs.append(generation, "old"));
+        let generation = app.worker.logs.cancel();
+        app.changed();
+        assert!(!app.worker.logs.append(generation, "different scope"));
+    }
+    #[test]
+    fn image_form_captures_target_uid_and_readonly_never_opens_it() {
+        let (mut app, _replies, mut commands) = harness();
+        app.kind_index = 1;
+        app.items = vec![object("first")];
+        assert!(app.key(KeyCode::Char('e')).is_ok());
+        assert!(matches!(app.modal, Modal::None));
+        app.options.connection.writable = true;
+        assert!(app.key(KeyCode::Char('e')).is_ok());
+        app.items = vec![object("replacement")];
+        for c in "app".chars() {
+            assert!(app.key(KeyCode::Char(c)).is_ok());
+        }
+        assert!(app.key(KeyCode::Enter).is_ok());
+        for c in "nginx:1.30".chars() {
+            assert!(app.key(KeyCode::Char(c)).is_ok());
+        }
+        assert!(app.key(KeyCode::Enter).is_ok());
+        match commands.try_recv() {
+            Ok((_, Task::Prepare(_, ns, name, uid, Action::SetImage { container, image }))) => {
+                assert_eq!(
+                    (ns.as_str(), name.as_str(), uid.as_deref()),
+                    ("test", "first", Some("uid-first"))
+                );
+                assert_eq!((container.as_str(), image.as_str()), ("app", "nginx:1.30"));
+            }
+            _ => panic!("image form changed selected target"),
+        }
     }
     fn snapshot(name: &str) -> crate::watch::WatchSnapshot {
         crate::watch::WatchSnapshot {

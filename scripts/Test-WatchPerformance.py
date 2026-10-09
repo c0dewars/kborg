@@ -52,9 +52,9 @@ def main():
               'method': f'One sequential {options.duration} s run per mode; procfs sampled at 100 ms and PTY 120x35; warm filesystem cache',
               'scope': 'One existing Docker Desktop cluster, one small isolated read-only namespace; no cluster writes',
               'request_count_limitation': 'TLS network traffic does not prove HTTP request counts; no API audit or request instrumentation used'}
-    with tempfile.TemporaryDirectory(prefix='k8borg-watch-perf-') as directory:
-        environment = os.environ.copy(); environment['K8BORG_CONFIG_DIR'] = directory
-        environment['K8BORG_NO_SPLASH'] = '1'
+    with tempfile.TemporaryDirectory(prefix='kborg-watch-perf-') as directory:
+        environment = os.environ.copy(); environment['KBORG_CONFIG_DIR'] = directory
+        environment['KBORG_NO_SPLASH'] = '1'
         subprocess.run([str(binary), 'theme', 'use', 'catppuccin-mocha'], env=environment, check=True, stdout=subprocess.DEVNULL)
         prefix = [str(binary), '--kubeconfig', str(fixture), '--json']
         listed = subprocess.run([*prefix, 'list', 'pods'], env=environment, check=True, capture_output=True, timeout=20)

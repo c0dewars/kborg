@@ -92,21 +92,21 @@ impl Theme {
 const PALETTES: &[(&str, &str, [&str; 7])] = &[
     (
         "k8borg-dark",
-        "K8Borg Dark",
+        "KBorg Dark",
         [
             "#0B1220", "#F8FAFC", "#94A3B8", "#2DD4BF", "#4ADE80", "#FBBF24", "#FB7185",
         ],
     ),
     (
         "k8borg-light",
-        "K8Borg Light",
+        "KBorg Light",
         [
             "#F8FAFC", "#0B1220", "#475569", "#0F766E", "#166534", "#92400E", "#BE123C",
         ],
     ),
     (
         "k8borg-high-contrast",
-        "K8Borg High Contrast",
+        "KBorg High Contrast",
         [
             "#000000", "#FFFFFF", "#FFFFFF", "#00FFFF", "#00FF00", "#FFFF00", "#FF8080",
         ],
@@ -411,19 +411,9 @@ pub fn use_theme(id: &str) -> Result<()> {
     })
 }
 fn save_preference(preference: &Preference) -> Result<()> {
-    let dir = safety::config_dir()?;
-    safety::checked_path(&dir)?;
-    std::fs::create_dir_all(&dir).map_err(|_| "cannot create config directory")?;
-    let path = dir.join("appearance.json");
-    safety::checked_path(&path)?;
-    let temp = dir.join(format!("appearance-{}.tmp", std::process::id()));
+    let path = safety::config_dir()?.join("appearance.json");
     let bytes = serde_json::to_vec(preference).map_err(|_| "cannot serialize preference")?;
-    safety::write_new(&temp, &bytes)?;
-    // Windows rename cannot replace; preference is non-sensitive and fallback-safe on interruption.
-    if path.exists() {
-        std::fs::remove_file(&path).map_err(|_| "cannot replace preference")?;
-    }
-    std::fs::rename(temp, path).map_err(|_| "cannot commit preference".into())
+    safety::atomic_write(&path, &bytes)
 }
 pub fn install(path: &Path) -> Result<String> {
     let file = load_file(path)?;
@@ -481,8 +471,89 @@ pub fn remove(id: &str) -> Result<()> {
     std::fs::remove_file(path).map_err(|_| "cannot remove custom theme".into())
 }
 
+/// Replace an installed custom theme only after retaining its prior bytes.
+/// An existing backup is never overwritten; the user must archive it explicitly.
+pub fn replace(path: &Path) -> Result<String> {
+    let file = load_file(path)?;
+    replace_in_dir(&file, &themes_dir()?)
+}
+fn replace_in_dir(file: &ThemeFile, dir: &Path) -> Result<String> {
+    file.resolve()?;
+    let destination = dir.join(format!("{}.json", file.id));
+    let previous = safety::read_small(&destination, safety::MAX_FILE)?;
+    let backup = dir.join(format!("{}.json.bak", file.id));
+    let bytes = serde_json::to_vec_pretty(file).map_err(|_| "cannot serialize theme")?;
+    safety::write_new(&backup, &previous).map_err(
+        |_| "cannot preserve theme backup; archive any existing .json.bak before replacing",
+    )?;
+    safety::atomic_write(&destination, &bytes)?;
+    Ok(file.id.clone())
+}
+/// Create an independent resolved custom theme from the current palette.
+pub fn create_from_current(id: &str) -> Result<PathBuf> {
+    let current = find(&selected())?;
+    if current.terminal {
+        return Err("host palette cannot be copied as fixed RGB".into());
+    }
+    let file = ThemeFile {
+        schema_version: 1,
+        id: id.into(),
+        name: id.into(),
+        base: "k8borg-dark".into(),
+        colors: current
+            .colors
+            .into_iter()
+            .map(|(key, value)| (key, value.hex()))
+            .collect(),
+    };
+    file.resolve()?;
+    let destination = themes_dir()?.join(format!("{id}.json"));
+    let bytes = serde_json::to_vec_pretty(&file).map_err(|_| "cannot serialize theme")?;
+    safety::write_new(&destination, &bytes)?;
+    Ok(destination)
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn replacement_retains_original_backup_and_refuses_backup_overwrite_or_builtin() {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_else(|e| panic!("{e}"))
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("kborg-theme-{}-{stamp}", std::process::id()));
+        let mut file = ThemeFile {
+            schema_version: 1,
+            id: "my-test".into(),
+            name: "Original".into(),
+            base: "catppuccin-mocha".into(),
+            colors: BTreeMap::new(),
+        };
+        let original = serde_json::to_vec(&file).unwrap_or_else(|e| panic!("{e}"));
+        let target = dir.join("my-test.json");
+        safety::write_new(&target, &original).unwrap_or_else(|e| panic!("{e}"));
+        file.name = "Updated".into();
+        assert!(replace_in_dir(&file, &dir).is_ok());
+        assert_eq!(
+            safety::read_small(&dir.join("my-test.json.bak"), safety::MAX_FILE)
+                .unwrap_or_else(|e| panic!("{e}")),
+            original
+        );
+        assert_eq!(
+            load_file(&target).unwrap_or_else(|e| panic!("{e}")).name,
+            "Updated"
+        );
+        file.name = "Not Applied".into();
+        assert!(replace_in_dir(&file, &dir).is_err());
+        assert_eq!(
+            load_file(&target).unwrap_or_else(|e| panic!("{e}")).name,
+            "Updated"
+        );
+        file.id = "catppuccin-mocha".into();
+        assert!(replace_in_dir(&file, &dir).is_err());
+        std::fs::remove_dir_all(&dir).unwrap_or_else(|e| panic!("{e}"));
+    }
+
     use super::*;
     #[test]
     fn all_builtins_meet_fixed_palette_targets() {
