@@ -21,8 +21,8 @@ This first iteration is a working local-testing release. The development guide r
 
 ## Evidence
 
-- `scripts/Check.ps1`: formatting, all-target Clippy with warnings denied, 16 unit/security tests, documentation tests and optimized release build.
-- `scripts/Test-DockerDesktop.ps1`: live acceptance passed on the installed Docker Desktop cluster. Latest successful run: `ce9ab33e089d`, namespace `k8borg-tests-ce9ab33e089d`; sanitized evidence in `test-results/ce9ab33e089d.json`.
+- `scripts/Check.ps1`: formatting, all-target Clippy with warnings denied, 21 unit/security tests, documentation tests and optimized release build.
+- `scripts/Test-DockerDesktop.ps1`: live acceptance passed on the installed Docker Desktop cluster. Latest successful Windows run: `cf72c4dd96b3`, namespace `k8borg-tests-cf72c4dd96b3`; sanitized evidence in `test-results/cf72c4dd96b3.json`. WSL native Linux acceptance also passed against this isolated fixture.
 - Live checks exercise reader access and logs, real authorization denial, ConfigMap redaction, blocked Secret access, server-side dry-run authorization, scale/restart/delete, and stale resourceVersion rejection.
 - Unit checks exercise read-only policy, write scope/scale limits, replay/expiry/target mismatch, malicious authentication configuration, invalid TLS, oversized response rejection before JSON decoding, terminal controls, redaction, and theme validation.
 - Theme CLI lifecycle checks cover creation, validation, preference, export, installation, removal and reset. Terminal smoke checks exercise startup, theme dialog, complete wrapped write-review display at 80 columns (canceled), and normal shutdown with terminal restoration. This is not a terminal compatibility matrix.
@@ -33,7 +33,7 @@ The live test is intentionally ignored by ordinary `cargo test`; the harness sup
 
 The implementation was reviewed against its trust boundaries during development. Changes made during that review include bounded response bodies before deserialization, disabling automatic write retries, admission-effect checks, strict API-group selection for writes, single-use approval binding, rejection of truncated confirmation displays, and owned-namespace/cluster-CA verification for cleanup. Tests cover several of these failure paths.
 
-This is a self-review, not an independent penetration test or external audit. A client policy cannot constrain an operator's use of other clients. Production roles and admission policies must independently restrict allowed write fields and scopes.
+An independent agent source review and user/developer acceptance pass are recorded in docs/SECURITY_REVIEW.md and docs/USER_ACCEPTANCE.md. These are automated team reviews, not an external penetration test or independent organizational audit. A client policy cannot constrain an operator's use of other clients. Production roles and admission policies must independently restrict allowed write fields and scopes.
 
 ## Production release gates and remaining work
 
@@ -42,9 +42,9 @@ This is a self-review, not an independent penetration test or external audit. A 
 3. **Local storage:** harden Windows configuration/audit ACLs outside the harness and close same-user path replacement races; implement stronger atomic preference replacement. Local audit remains operator-mutable and must complement protected Kubernetes audit.
 4. **Scale and responsiveness:** replace polling with bounded watch/reconnect handling; bound discovery cost across many API groups; prove budgets and UI latency on large clusters and slow networks.
 5. **Terminal support:** verify Windows Terminal, PowerShell, cmd, Linux/macOS terminals, SSH and multiplexers; add reliable 256/16-color mapping, Unicode width handling and accessibility evidence. Current conservative ASCII rendering and true-color palettes have limitations.
-6. **Supply chain and distribution:** validate all transitive dependency licenses/advisories, generate release SBOM and provenance, sign/package artifacts, document update/rollback and supported Kubernetes versions. CI currently provides a baseline, not the full planned platform matrix.
+6. **Supply chain and distribution:** validate all transitive dependency licenses/advisories, generate release SBOM and provenance, sign/package artifacts, document update/rollback and supported Kubernetes versions. CI now builds/tests/packages six native Windows/Linux/macOS x64/ARM64 targets; verify each job and retain artifact evidence.
 7. **Product scope:** metrics, general editing, true watches, simultaneous multi-context views and advanced workflows remain unimplemented. Exec/attach, port forwarding, arbitrary plugins and shell handoff remain disabled until their security designs and tests are complete.
-8. **Optional AI:** absent in this release. Implement only behind the planned separate, opt-in boundary with redaction, explicit data-transfer consent and no autonomous write authority.
+8. **Optional AI:** GitHub Copilot alone is eligible. Local minimized diagnostic export and explicit trusted CLI login are implemented; automatic model requests remain absent. GitHub.com and Enterprise Cloud *.ghe.com host selection are supported; an actual identity/subscription login requires user acceptance. Automatic diagnosis must have an isolated opt-in boundary, per-request transfer review and no autonomous write authority.
 
 Redaction masks known fields; arbitrary application text, labels and logs can still contain confidential information. Secrets are blocked by resource name, not by a universal classifier of all CRD data. Use synthetic fixtures for this iteration.
 
@@ -55,3 +55,10 @@ No additional runtime is required beyond the installed Rust/linker and Docker De
 See `README.md` for exact commands and `docs/DEVELOPMENT_GUIDE.md` for the full roadmap.
 
 
+
+
+## Follow-up release work
+
+Two-second skippable ASCII startup and persisted disabling are implemented. First-run selection defaults to Catppuccin Mocha; disabling animation before first launch preserves onboarding. CLI output never animates. The private source repository is https://github.com/c0dewars/k8borg.
+
+Native WSL/Linux, Windows unit/lint checks, Docker Desktop acceptance, advisory audit and measured performance are recorded in their dedicated reports. One hundred aliases to a single API server are explicitly distinct from 100 independent Kubernetes clusters. Visual refinement follows feature completion and must retain these measured resource budgets.

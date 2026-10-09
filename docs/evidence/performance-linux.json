@@ -1,0 +1,56 @@
+{
+  "schema": 1,
+  "utc": "2026-10-09T21:45:41Z",
+  "platform": "Linux",
+  "kernel": "6.18.33.2-microsoft-standard-WSL2",
+  "binary_bytes": 8947952,
+  "binary_sha256": "c617b8fe44de253871867e521bd0ff7591952a60d8e2470ba4cf8406ed4579a8",
+  "method": "GNU time per CLI process; procfs samples and PTY for TUI; warmed filesystem cache",
+  "scope": "100 context aliases; one cluster if fixture supplied, zero otherwise; not100 clusters",
+  "demo_cli": {
+    "samples": 30,
+    "median_wall_ms": 1.8655,
+    "p95_wall_ms": 2.176,
+    "max_peak_rss_kib": 5676,
+    "total_cpu_ms": 0.0
+  },
+  "hundred_context_listing": {
+    "samples": 30,
+    "median_wall_ms": 2.4345,
+    "p95_wall_ms": 2.797,
+    "max_peak_rss_kib": 6956,
+    "total_cpu_ms": 0.0
+  },
+  "demo_tui": {
+    "duration_seconds": 30,
+    "peak_rss_kib": 5972,
+    "cpu_seconds": 0.01,
+    "average_one_core_cpu_percent": 0.033,
+    "terminal_bytes": 79593,
+    "includes_initial_connection_and_render": true
+  },
+  "live_sequential_context_reads": {
+    "samples": 100,
+    "median_wall_ms": 5.6419999999999995,
+    "p95_wall_ms": 6.409,
+    "max_peak_rss_kib": 9676,
+    "total_cpu_ms": 0.0
+  },
+  "live_bounded_concurrency": {
+    "samples": 100,
+    "median_wall_ms": 11.2915,
+    "p95_wall_ms": 21.321,
+    "max_peak_rss_kib": 9648,
+    "total_cpu_ms": 0.0,
+    "workers": 8,
+    "batch_wall_seconds": 0.178
+  },
+  "live_tui": {
+    "duration_seconds": 30,
+    "peak_rss_kib": 9992,
+    "cpu_seconds": 0.01,
+    "average_one_core_cpu_percent": 0.033,
+    "terminal_bytes": 79593,
+    "includes_initial_connection_and_render": true
+  }
+}

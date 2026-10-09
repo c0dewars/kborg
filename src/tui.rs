@@ -994,18 +994,13 @@ fn startup_animation(theme: &Theme, color: bool) -> Result<bool> {
             Color::Reset
         };
         let fg = if color {
-            theme
-                .get(if frame.is_multiple_of(2) {
-                    "accent"
-                } else {
-                    "text"
-                })
-                .color()
+            theme.get("accent").color()
         } else {
             Color::Reset
         };
         let y = height.saturating_sub(14) / 2;
         for (index, line) in LOGO.iter().enumerate() {
+            let line = line.replace("[O]", &format!("[{}]", ["|", "/", "-", "\\"][frame % 4]));
             let padding = usize::from(width).saturating_sub(line.len()) / 2;
             row(
                 &mut out,

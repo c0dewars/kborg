@@ -6,6 +6,12 @@ $binary=Join-Path $projectRoot 'target/release/k8borg.exe'
 if (-not (Test-Path -LiteralPath $binary)) { throw 'Run cargo build --locked --release first.' }
 $scratch=Join-Path $projectRoot ('.local/performance-'+[Guid]::NewGuid().ToString('N'))
 [void](New-Item -ItemType Directory -Path $scratch)
+$acl=Get-Acl -LiteralPath $scratch
+$acl.SetAccessRuleProtection($true,$false)
+$identity=[Security.Principal.WindowsIdentity]::GetCurrent().Name
+$rule=[Security.AccessControl.FileSystemAccessRule]::new($identity,'FullControl','ContainerInherit,ObjectInherit','None','Allow')
+$acl.AddAccessRule($rule)
+Set-Acl -LiteralPath $scratch -AclObject $acl
 function Measure-Command {
     param([string[]]$Arguments)
     $process=[Diagnostics.Process]::new()

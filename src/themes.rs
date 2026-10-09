@@ -365,6 +365,8 @@ struct Preference {
     theme: String,
     #[serde(default = "enabled")]
     startup_animation: bool,
+    #[serde(default = "enabled")]
+    onboarding_complete: bool,
 }
 fn enabled() -> bool {
     true
@@ -376,7 +378,10 @@ fn preference() -> Result<Preference> {
 pub fn first_run() -> Result<bool> {
     let path = safety::config_dir()?.join("appearance.json");
     safety::checked_path(&path)?;
-    Ok(!path.exists())
+    if !path.exists() {
+        return Ok(true);
+    }
+    Ok(!preference()?.onboarding_complete)
 }
 pub fn animation_enabled() -> bool {
     preference().map(|p| p.startup_animation).unwrap_or(true)
@@ -386,6 +391,7 @@ pub fn set_animation(enabled: bool) -> Result<()> {
     save_preference(&Preference {
         theme,
         startup_animation: enabled,
+        onboarding_complete: preference().map(|p| p.onboarding_complete).unwrap_or(false),
     })
 }
 pub fn selected() -> String {
@@ -401,6 +407,7 @@ pub fn use_theme(id: &str) -> Result<()> {
     save_preference(&Preference {
         theme: id.into(),
         startup_animation: animation_enabled(),
+        onboarding_complete: true,
     })
 }
 fn save_preference(preference: &Preference) -> Result<()> {

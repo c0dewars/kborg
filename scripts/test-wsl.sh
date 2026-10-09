@@ -11,6 +11,27 @@ cargo test --locked
 cargo clippy --locked --all-targets -- -D warnings
 cargo build --locked --release
 if [ -n "$fixture" ]; then
+    python3 - "$fixture" <<'PY'
+import base64, hashlib, json, pathlib, re, sys, urllib.parse
+def require(condition, message):
+    if not condition:
+        raise RuntimeError(message)
+directory = pathlib.Path(sys.argv[1]).resolve(strict=True)
+record = json.loads((directory / 'environment.json').read_text())
+run_id = record.get('runId', '')
+require(re.fullmatch(r'[a-f0-9]{12}', run_id), 'Invalid fixture identity')
+require(record['namespace'] == 'k8borg-tests-' + run_id, 'Invalid test namespace')
+require(directory.name == run_id and directory.parent.name == '.local', 'Expected owned local fixture directory')
+endpoint = urllib.parse.urlparse(record['server'])
+require(endpoint.scheme == 'https' and endpoint.hostname in ('localhost', '127.0.0.1', 'kubernetes.docker.internal'), 'Expected local HTTPS cluster')
+for identity in ('reader', 'operator', 'denied'):
+    config = json.loads((directory / (identity + '.kubeconfig')).read_text())
+    require(len(config['contexts']) == len(config['clusters']) == len(config['users']) == 1, 'Expected single-context fixture')
+    require(config['contexts'][0]['context']['namespace'] == record['namespace'], 'Namespace mismatch')
+    cluster = config['clusters'][0]['cluster']
+    require(cluster['server'] == record['server'] and not cluster.get('insecure-skip-tls-verify'), 'TLS endpoint mismatch')
+    require(hashlib.sha256(base64.b64decode(cluster['certificate-authority-data'])).hexdigest() == record['caSha256'], 'Fixture CA mismatch')
+PY
     export K8BORG_TEST_READER_CONFIG="$fixture/reader.kubeconfig"
     export K8BORG_TEST_OPERATOR_CONFIG="$fixture/operator.kubeconfig"
     export K8BORG_TEST_DENIED_CONFIG="$fixture/denied.kubeconfig"
