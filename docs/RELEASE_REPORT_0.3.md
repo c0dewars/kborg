@@ -1,6 +1,6 @@
 # KBorg 0.3 delivery report
 
-Updated 2026-10-10. Product: **KBorg**. Executable: `kborg`. Private repository: https://github.com/c0 dewars/kborg. The original local checkout remains `C:\Users\Garcia\Desktop\projects\k8 borg`; this avoids breaking existing local paths. The new logo is saved in the project and `outputs/KBorg-logo.png`. Existing settings and theme identifiers remain compatible.
+Updated 2026-10-10. Product: **KBorg**. Executable: `kborg`. Private repository: https://github.com/c0dewars/kborg. The original local checkout remains `C:\Users\Garcia\Desktop\projects\k8borg`; this avoids breaking existing local paths. The new logo is saved in the project and `outputs/KBorg-logo.png`. Existing settings and theme identifiers remain compatible.
 
 ## Delivered workflows
 

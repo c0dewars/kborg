@@ -274,7 +274,10 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_else(|e| panic!("{e}"))
             .as_nanos();
-        std::env::temp_dir().join(format!("kborg-{label}-{}-{stamp}", std::process::id()))
+        std::env::temp_dir()
+            .canonicalize()
+            .unwrap_or_else(|e| panic!("test temporary root: {e}"))
+            .join(format!("kborg-{label}-{}-{stamp}", std::process::id()))
     }
     #[test]
     fn atomic_repeated_replacement_and_leftover_stage_preserve_settings() {

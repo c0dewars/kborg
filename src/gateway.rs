@@ -1111,7 +1111,10 @@ mod tests {
     }
     #[test]
     fn malicious_auth_and_insecure_tls_are_rejected_before_network() {
-        let dir = std::env::temp_dir().join(format!("kborg-security-{}", std::process::id()));
+        let dir = std::env::temp_dir()
+            .canonicalize()
+            .unwrap_or_else(|e| panic!("test temporary root: {e}"))
+            .join(format!("kborg-security-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap_or_else(|e| panic!("{e}"));
         let rt = runtime().unwrap_or_else(|e| panic!("{e}"));
         for (i, user, cluster) in [
@@ -1303,8 +1306,10 @@ mod tests {
     }
     #[test]
     fn duplicate_kubeconfig_names_are_rejected_before_selection() {
-        let path =
-            std::env::temp_dir().join(format!("kborg-duplicate-{}.json", std::process::id()));
+        let path = std::env::temp_dir()
+            .canonicalize()
+            .unwrap_or_else(|e| panic!("test temporary root: {e}"))
+            .join(format!("kborg-duplicate-{}.json", std::process::id()));
         let config = json!({"apiVersion":"v1","kind":"Config","contexts":[
             {"name":"ambiguous","context":{"cluster":"first"}},
             {"name":"ambiguous","context":{"cluster":"second"}}
