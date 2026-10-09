@@ -49,6 +49,11 @@ try {
         Copy-Item -LiteralPath (Join-Path $projectRoot $file) -Destination $stage
     }
     Copy-Item -LiteralPath (Join-Path $projectRoot 'docs') -Destination $stage -Recurse
+    $brandAssets = Join-Path $stage 'assets'
+    New-Item -ItemType Directory -Path $brandAssets | Out-Null
+    foreach ($file in @('kborg-logo.png','LOGO.md')) {
+        Copy-Item -LiteralPath (Join-Path $projectRoot "assets/$file") -Destination $brandAssets
+    }
     $notices = Join-Path $stage 'theme-notices'
     New-Item -ItemType Directory -Path $notices | Out-Null
     Copy-Item -Path (Join-Path $projectRoot 'assets/upstream/*') -Destination $notices -Recurse
