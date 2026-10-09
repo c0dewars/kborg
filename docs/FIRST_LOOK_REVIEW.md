@@ -74,3 +74,11 @@ This is distinct from the original findings above. The original assessment remai
 - P3 explicit demo namespace: the exact original CLI reproduction still returned the demo pod: `--demo -n other get pods api-7d4f9`. Although raw_get/logs now correctly check ns, demo connect still hardcoded `namespace: demo` and discarded options.namespace. Reported this remaining cause to the root agent before final rebuild. Keep this finding open until the exact CLI reproduction fails or yields the requested scope.
 
 The mouse/write-inflight and stale-epoch write-result corrections were not interactive reproduced by this reviewer; do not attribute their regression-test evidence to this independent PTY pass.
+
+## Final exact CLI closure (2026-10-09)
+
+Independently verified the rebuilt release executable SHA-256 equals `23c6695f76be3d269ebc2d292736aa84f85d7722b34f34046997467956b815be` (root identifies source commit 99e32c5). No PTY or long-running process was opened for this final check.
+
+Exact original reproduction `--demo -n other get pods api-7d4f9` now fails with exit 1 and `demo object not found`. `--demo -n other --json list pods` returns an empty items array with exit 0. `--demo -n demo get pods api-7d4f9` succeeds with the expected demo pod. Wrong-namespace logs and missing-pod logs both fail with exit 1. The original demo scope defect is closed on this hash.
+
+All original reproduced defects have now received a correction: the two UI defects were independently PTY-verified on the preceding 0f492478 candidate; the final namespace behavior is exact-command verified here; CLI discovery's control flow is independently source-verified. The root reports separate live CRD and supported-version tests, but this reviewer did not run/read those tests and does not claim them as independent evidence. Preserve the original local-testing verdict and the stated coverage limitations.

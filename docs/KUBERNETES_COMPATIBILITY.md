@@ -48,3 +48,7 @@ From PowerShell 7 in the project root:
 ```
 
 The harness requires the existing Docker daemon to expose at least 10 GiB memory and 4 CPUs. It downloads the pinned, checksum-verified kind tool and official kubectl matching the selected server patch version into ignored `.local/tools/`. It provisions the restricted fixtures through `Test-KindFixture.ps1`, runs the unit and live suites, checks custom-resource diagnostics through `Test-KindDiagnosticCRD.ps1`, and verifies cleanup before proceeding to the next version. These tools are test prerequisites; K8Borg itself does not use Docker or kubectl to access Kubernetes.
+
+## Final 1.36 regression
+
+The final 1.34-schema candidate, source99e32c5, also passed native Windows acceptance against Docker Desktop1.36.1 using fresh owned namespace k8borg-tests-8e7ed664f6c6. The restricted RBAC, logs/redaction, scale/restart/delete, stale-version rejection and doctor/JSON checks passed. Sanitized evidence is in evidence/compat-kubernetes-1.36.json. This namespace is retained for local reader testing; short-lived credentials expire after one hour.

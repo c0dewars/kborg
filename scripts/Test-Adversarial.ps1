@@ -94,7 +94,7 @@ foreach ($command in @(@('scale','api','2'),@('restart','api'),@('delete','deplo
 }
 Invoke-Case 'noninteractive-copilot-login-refused' @('copilot','login','--cli',$Executable,'--host','github.com') $true 'interactive terminal'
 Invoke-Case 'copilot-untrusted-host-refused' @('copilot','login','--cli',$Executable,'--host','https://github.com@evil.example') $true 'Copilot host must'
-Invoke-Case 'secret-read-disabled' @('--demo','list','secrets') $true 'Secrets'
+Invoke-Case 'secret-read-disabled' @('--demo','list','secrets') $true 'disabled resource'
 Invoke-Case 'object-name-traversal-refused' @('--demo','get','pods','../api') $true 'invalid object name'
 Invoke-Case 'unknown-yes-option-refused' @('--demo','scale','api','2','--yes') $true 'unknown option'
 $bundle = Join-Path $fixtures 'context.json'
@@ -108,4 +108,5 @@ $evidence = Join-Path $root 'docs/evidence/adversarial.json'
 New-Item -ItemType Directory -Path (Split-Path -Parent $evidence) -Force | Out-Null
 $report | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $evidence -Encoding utf8
 Write-Host "$($records.Count) cases; $($failures.Count) failed. Evidence: $evidence"
-if ($failures.Count) { $failures | Format-Table case,exit_code,timed_out,response_excerpt; exit 1 }
+if ($failures.Count) { $failures | ForEach-Object { [PSCustomObject]$_ } | Format-Table case,exit_code,timed_out,response_excerpt; exit 1 }
+
