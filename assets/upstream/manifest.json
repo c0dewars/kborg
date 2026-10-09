@@ -1,0 +1,130 @@
+[
+  {
+    "revision": "07d02aa110ef9eb7e7427afca5c73ba9cf7f8ebd",
+    "sourceAsset": "palette.json",
+    "family": "catppuccin",
+    "sha256": "4bc114bb6b3c9a9c9e156564aa84625aef32c5da514d9dd431cf1fcad433a05f",
+    "repository": "catppuccin/palette",
+    "localAsset": "assets/upstream/catppuccin/palette.json"
+  },
+  {
+    "revision": "07d02aa110ef9eb7e7427afca5c73ba9cf7f8ebd",
+    "sourceAsset": "LICENSE",
+    "family": "catppuccin",
+    "sha256": "814096d2c34cc216c624738a49356f32b7237733b4f7edb0685f4e50ef5074ba",
+    "repository": "catppuccin/palette",
+    "localAsset": "assets/upstream/catppuccin/LICENSE"
+  },
+  {
+    "revision": "e22ebcc048b8aff586f9bc94db30ff5347070b42",
+    "sourceAsset": "README.md",
+    "family": "dracula",
+    "sha256": "3f798014d8e25a4c15f6ad26bc767d99bfc367ec3f9883bd4b5ce0fe562647d0",
+    "repository": "dracula/dracula-theme",
+    "localAsset": "assets/upstream/dracula/README.md"
+  },
+  {
+    "revision": "e22ebcc048b8aff586f9bc94db30ff5347070b42",
+    "sourceAsset": "LICENSE",
+    "family": "dracula",
+    "sha256": "38b806a7e799cca4e9821e6f8d65cf0d8bfaaddbe454b41f12e5baad52d310f1",
+    "repository": "dracula/dracula-theme",
+    "localAsset": "assets/upstream/dracula/LICENSE"
+  },
+  {
+    "revision": "1cef71605416a222e57225b544540ce0fcec18d4",
+    "sourceAsset": "src/nord.css",
+    "family": "nord",
+    "sha256": "b931ac3732582b2066b2d6cadec02d9820ba7081e6e3e404c31cb62d9315a962",
+    "repository": "nordtheme/nord",
+    "localAsset": "assets/upstream/nord/src_nord.css"
+  },
+  {
+    "revision": "1cef71605416a222e57225b544540ce0fcec18d4",
+    "sourceAsset": "license",
+    "family": "nord",
+    "sha256": "25ac8188d670bd2ad2ce2f4f55ab88573010ee9f7a4502543cb1eea1e2274f8a",
+    "repository": "nordtheme/nord",
+    "localAsset": "assets/upstream/nord/license"
+  },
+  {
+    "revision": "ef8864bb42bf244f0295d1c5a403b27e3d139695",
+    "sourceAsset": "colors/gruvbox.vim",
+    "family": "gruvbox",
+    "sha256": "55116926ba2b625837d9ae89349a5688d60d0b32acdbd8887e1c0d225f079c3d",
+    "repository": "morhetz/gruvbox",
+    "localAsset": "assets/upstream/gruvbox/colors_gruvbox.vim"
+  },
+  {
+    "revision": "ef8864bb42bf244f0295d1c5a403b27e3d139695",
+    "sourceAsset": "README.md",
+    "family": "gruvbox",
+    "sha256": "6e6575904dc53bdfc5745ec3edcf019b3e44b43b9a96570d59a33465ed2b954c",
+    "repository": "morhetz/gruvbox",
+    "localAsset": "assets/upstream/gruvbox/README.md"
+  },
+  {
+    "revision": "cdc07ac78467a233fd62c493de29a17e0cf2b2b6",
+    "sourceAsset": "lua/tokyonight/colors/init.lua",
+    "family": "tokyo-night",
+    "sha256": "1b47ec0b2ff532c4d1e653bddb3e95c106586522e392c03e05e13bb5c597c619",
+    "repository": "folke/tokyonight.nvim",
+    "localAsset": "assets/upstream/tokyo-night/lua_tokyonight_colors_init.lua"
+  },
+  {
+    "revision": "cdc07ac78467a233fd62c493de29a17e0cf2b2b6",
+    "sourceAsset": "lua/tokyonight/colors/night.lua",
+    "family": "tokyo-night",
+    "sha256": "a8d87bf7aeb44617de4168d26fd9c1167bf3e7278acb0e155855caf6267b9c2d",
+    "repository": "folke/tokyonight.nvim",
+    "localAsset": "assets/upstream/tokyo-night/lua_tokyonight_colors_night.lua"
+  },
+  {
+    "revision": "cdc07ac78467a233fd62c493de29a17e0cf2b2b6",
+    "sourceAsset": "lua/tokyonight/colors/storm.lua",
+    "family": "tokyo-night",
+    "sha256": "a96775b3b2bae3da751322806f7daaf2f8c9242cf4b52493732c62dc45c8894c",
+    "repository": "folke/tokyonight.nvim",
+    "localAsset": "assets/upstream/tokyo-night/lua_tokyonight_colors_storm.lua"
+  },
+  {
+    "revision": "cdc07ac78467a233fd62c493de29a17e0cf2b2b6",
+    "sourceAsset": "lua/tokyonight/colors/moon.lua",
+    "family": "tokyo-night",
+    "sha256": "16ea5a874f8833b0204da774153988e576a9d76ee1373e827f03d000c96483a5",
+    "repository": "folke/tokyonight.nvim",
+    "localAsset": "assets/upstream/tokyo-night/lua_tokyonight_colors_moon.lua"
+  },
+  {
+    "revision": "cdc07ac78467a233fd62c493de29a17e0cf2b2b6",
+    "sourceAsset": "lua/tokyonight/colors/day.lua",
+    "family": "tokyo-night",
+    "sha256": "dd4314852645c9f0b41d11412b3ae379856e5034aa4c0429ebbfb5fd05007a4d",
+    "repository": "folke/tokyonight.nvim",
+    "localAsset": "assets/upstream/tokyo-night/lua_tokyonight_colors_day.lua"
+  },
+  {
+    "revision": "cdc07ac78467a233fd62c493de29a17e0cf2b2b6",
+    "sourceAsset": "LICENSE",
+    "family": "tokyo-night",
+    "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+    "repository": "folke/tokyonight.nvim",
+    "localAsset": "assets/upstream/tokyo-night/LICENSE"
+  },
+  {
+    "revision": "62f656a02f93c5190a8753159e34b385588d5ff3",
+    "sourceAsset": "README.md",
+    "family": "solarized",
+    "sha256": "f10571c994648365faab9c4f83bdd7699aa2cd056f111af5e29099c2673c5bc1",
+    "repository": "altercation/solarized",
+    "localAsset": "assets/upstream/solarized/README.md"
+  },
+  {
+    "revision": "62f656a02f93c5190a8753159e34b385588d5ff3",
+    "sourceAsset": "LICENSE",
+    "family": "solarized",
+    "sha256": "494aefdabf86acce06bd63001ad8aedad4ee38da23509d3f917d95aa3368b9a6",
+    "repository": "altercation/solarized",
+    "localAsset": "assets/upstream/solarized/LICENSE"
+  }
+]
