@@ -1,0 +1,454 @@
+{
+  "schema_version": 1,
+  "tested_at_utc": "2026-10-09T21:51:46.0632378Z",
+  "executable_sha256": "5449f83eb19757c9a048b126594719cf2d6c82565a8ca7388b4b9d8382330b53",
+  "run_id": "7ba7b55237d5",
+  "source_revision": "4e20eb2b1a6c56826665b1f8131f899ab6ff5c36",
+  "operating_system": "Microsoft Windows NT 10.0.26300.0",
+  "per_process_timeout_seconds": 5,
+  "case_count": 44,
+  "failure_count": 0,
+  "scope": "Bounded Windows release CLI black-box regressions; synthetic offline files; no model requests, login, cluster writes or network fixture connections",
+  "cases": [
+    {
+      "case": "valid-theme-control",
+      "passed": true,
+      "expected_rejection": false,
+      "exit_code": 0,
+      "elapsed_ms": 28,
+      "timed_out": false,
+      "unsafe_output_controls": false,
+      "response_excerpt": "VALID: schema, colors and contrast checked."
+    },
+    {
+      "case": "theme-malformed-json",
+      "passed": true,
+      "expected_rejection": true,
+      "exit_code": 1,
+      "elapsed_ms": 22,
+      "timed_out": false,
+      "unsafe_output_controls": false,
+      "response_excerpt": "K8Borg: invalid theme JSON at line 1, column 18"
+    },
+    {
+      "case": "theme-deep-json",
+      "passed": true,
+      "expected_rejection": true,
+      "exit_code": 1,
+      "elapsed_ms": 22,
+      "timed_out": false,
+      "unsafe_output_controls": false,
+      "response_excerpt": "K8Borg: invalid theme JSON at line 1, column 89"
+    },
+    {
+      "case": "theme-duplicate-top-field",
+      "passed": true,
+      "expected_rejection": true,
+      "exit_code": 1,
+      "elapsed_ms": 21,
+      "timed_out": false,
+      "unsafe_output_controls": false,
+      "response_excerpt": "K8Borg: invalid theme JSON at line 1, column 36"
+    },
+    {
+      "case": "theme-duplicate-color",
+      "passed": true,
+      "expected_rejection": true,
+      "exit_code": 1,
+      "elapsed_ms": 21,
+      "timed_out": false,
+      "unsafe_output_controls": false,
+      "response_excerpt": "K8Borg: invalid theme JSON at line 1, column 116"
+    },
+    {
+      "case": "theme-oversized",
+      "passed": true,
+      "expected_rejection": true,
+      "exit_code": 1,
+      "elapsed_ms": 21,
+      "timed_out": false,
+      "unsafe_output_controls": false,
+      "response_excerpt": "K8Borg: file exceeds 65536 byte limit"
+    },
+    {
+      "case": "theme-unknown-hook",
+      "passed": true,
+      "expected_rejection": true,
+      "exit_code": 1,
+      "elapsed_ms": 21,
+      "timed_out": false,
+      "unsafe_output_controls": false,
+      "response_excerpt": "K8Borg: invalid theme JSON at line 1, column 119"
+    },
+    {
+      "case": "theme-path-id",
+      "passed": true,
+      "expected_rejection": true,
+      "exit_code": 1,
+      "elapsed_ms": 22,
+      "timed_out": false,
+      "unsafe_output_controls": false,
+      "response_excerpt": "K8Borg: invalid or reserved custom theme id"
+    },
+    {
+      "case": "theme-reserved-id",
+      "passed": true,
+      "expected_rejection": true,
+      "exit_code": 1,
+      "elapsed_ms": 21,
+      "timed_out": false,
+      "unsafe_output_controls": false,
+      "response_excerpt": "K8Borg: invalid or reserved custom theme id"
+    },
+    {
+      "case": "theme-custom-base",
+      "passed": true,
+      "expected_rejection": true,
+      "exit_code": 1,
+      "elapsed_ms": 21,
+      "timed_out": false,
+      "unsafe_output_controls": false,
+      "response_excerpt": "K8Borg: base must be a fixed built-in theme"
+    },
+    {
+      "case": "theme-invalid-color",
+      "passed": true,
+      "expected_rejection": true,
+      "exit_code": 1,
+      "elapsed_ms": 21,
+      "timed_out": false,
+      "unsafe_output_controls": false,
+      "response_excerpt": "K8Borg: color must be #RRGGBB"
+    },
+    {
+      "case": "theme-unicode-color",
+      "passed": true,
+      "expected_rejection": true,
+      "exit_code": 1,
+      "elapsed_ms": 21,
+      "timed_out": false,
+      "unsafe_output_controls": false,
+      "response_excerpt": "K8Borg: color must be #RRGGBB"
+    },
+    {
+      "case": "theme-low-contrast",
+      "passed": true,
+      "expected_rejection": true,
+      "exit_code": 1,
+      "elapsed_ms": 21,
+      "timed_out": false,
+      "unsafe_output_controls": false,
+      "response_excerpt": "K8Borg: text/background contrast is below 4.5:1; choose a lighter or darker foreground"
+    },
+    {
+      "case": "theme-escape-name",
+      "passed": true,
+      "expected_rejection": true,
+      "exit_code": 1,
+      "elapsed_ms": 21,
+      "timed_out": false,
+      "unsafe_output_controls": false,
+      "response_excerpt": "K8Borg: theme name must be short plain text"
+    },
+    {
+      "case": "theme-bidi-name",
+      "passed": true,
+      "expected_rejection": true,
+      "exit_code": 1,
+      "elapsed_ms": 21,
+      "timed_out": false,
+      "unsafe_output_controls": false,
+      "response_excerpt": "K8Borg: theme name must be short plain text"
+    },
+    {
+      "case": "theme-long-name",
+      "passed": true,
+      "expected_rejection": true,
+      "exit_code": 1,
+      "elapsed_ms": 20,
+      "timed_out": false,
+      "unsafe_output_controls": false,
+      "response_excerpt": "K8Borg: theme name must be short plain text"
+    },
+    {
+      "case": "theme-unknown-control-role",
+      "passed": true,
+      "expected_rejection": true,
+      "exit_code": 1,
+      "elapsed_ms": 21,
+      "timed_out": false,
+      "unsafe_output_controls": false,
+      "response_excerpt": "K8Borg: unknown color role: role"
+    },
+    {
+      "case": "theme-invalid-schema",
+      "passed": true,
+      "expected_rejection": true,
+      "exit_code": 1,
+      "elapsed_ms": 21,
+      "timed_out": false,
+      "unsafe_output_controls": false,
+      "response_excerpt": "K8Borg: unsupported theme schema_version"
+    },
+    {
+      "case": "theme-null",
+      "passed": true,
+      "expected_rejection": true,
+      "exit_code": 1,
+      "elapsed_ms": 22,
+      "timed_out": false,
+      "unsafe_output_controls": false,
+      "response_excerpt": "K8Borg: invalid theme JSON at line 1, column 4"
+    },
+    {
+      "case": "theme-invalid-utf8",
+      "passed": true,
+      "expected_rejection": true,
+      "exit_code": 1,
+      "elapsed_ms": 21,
+      "timed_out": false,
+      "unsafe_output_controls": false,
+      "response_excerpt": "K8Borg: invalid theme JSON at line 1, column 1"
+    },
+    {
+      "case": "theme-control-id-output-sanitized",
+      "passed": true,
+      "expected_rejection": true,
+      "exit_code": 1,
+      "elapsed_ms": 20,
+      "timed_out": false,
+      "unsafe_output_controls": false,
+      "response_excerpt": "K8Borg: theme not found: missing]52;c;CANARY"
+    },
+    {
+      "case": "theme-new-traversal-id",
+      "passed": true,
+      "expected_rejection": true,
+      "exit_code": 1,
+      "elapsed_ms": 21,
+      "timed_out": false,
+      "unsafe_output_controls": false,
+      "response_excerpt": "K8Borg: invalid or reserved custom theme id"
+    },
+    {
+      "case": "kube-empty-valid-control",
+      "passed": true,
+      "expected_rejection": false,
+      "exit_code": 0,
+      "elapsed_ms": 22,
+      "timed_out": false,
+      "unsafe_output_controls": false,
+      "response_excerpt": "[]"
+    },
+    {
+      "case": "kube-malformed",
+      "passed": true,
+      "expected_rejection": true,
+      "exit_code": 1,
+      "elapsed_ms": 21,
+      "timed_out": false,
+      "unsafe_output_controls": false,
+      "response_excerpt": "K8Borg: invalid kubeconfig YAML (details suppressed to protect credentials)"
+    },
+    {
+      "case": "kube-oversized",
+      "passed": true,
+      "expected_rejection": true,
+      "exit_code": 1,
+      "elapsed_ms": 23,
+      "timed_out": false,
+      "unsafe_output_controls": false,
+      "response_excerpt": "K8Borg: file exceeds 1048576 byte limit"
+    },
+    {
+      "case": "kube-deep",
+      "passed": true,
+      "expected_rejection": true,
+      "exit_code": 1,
+      "elapsed_ms": 21,
+      "timed_out": false,
+      "unsafe_output_controls": false,
+      "response_excerpt": "K8Borg: invalid kubeconfig YAML (details suppressed to protect credentials)"
+    },
+    {
+      "case": "kube-duplicate-context-names",
+      "passed": true,
+      "expected_rejection": true,
+      "exit_code": 1,
+      "elapsed_ms": 23,
+      "timed_out": false,
+      "unsafe_output_controls": false,
+      "response_excerpt": "K8Borg: duplicate kubeconfig names are ambiguous and forbidden"
+    },
+    {
+      "case": "kube-duplicate-cluster-names",
+      "passed": true,
+      "expected_rejection": true,
+      "exit_code": 1,
+      "elapsed_ms": 22,
+      "timed_out": false,
+      "unsafe_output_controls": false,
+      "response_excerpt": "K8Borg: duplicate kubeconfig names are ambiguous and forbidden"
+    },
+    {
+      "case": "kube-duplicate-user-names",
+      "passed": true,
+      "expected_rejection": true,
+      "exit_code": 1,
+      "elapsed_ms": 21,
+      "timed_out": false,
+      "unsafe_output_controls": false,
+      "response_excerpt": "K8Borg: duplicate kubeconfig names are ambiguous and forbidden"
+    },
+    {
+      "case": "kube-control-context-name",
+      "passed": true,
+      "expected_rejection": true,
+      "exit_code": 1,
+      "elapsed_ms": 21,
+      "timed_out": false,
+      "unsafe_output_controls": false,
+      "response_excerpt": "K8Borg: kubeconfig names must be bounded text without terminal controls"
+    },
+    {
+      "case": "kube-bidi-context-name",
+      "passed": true,
+      "expected_rejection": true,
+      "exit_code": 1,
+      "elapsed_ms": 21,
+      "timed_out": false,
+      "unsafe_output_controls": false,
+      "response_excerpt": "K8Borg: kubeconfig names must be bounded text without terminal controls"
+    },
+    {
+      "case": "kube-long-context-name",
+      "passed": true,
+      "expected_rejection": true,
+      "exit_code": 1,
+      "elapsed_ms": 22,
+      "timed_out": false,
+      "unsafe_output_controls": false,
+      "response_excerpt": "K8Borg: kubeconfig names must be bounded text without terminal controls"
+    },
+    {
+      "case": "kube-offline-helper-not-executed",
+      "passed": true,
+      "expected_rejection": false,
+      "exit_code": 0,
+      "elapsed_ms": 24,
+      "timed_out": false,
+      "unsafe_output_controls": false,
+      "response_excerpt": "[\n  \"synthetic\"\n]"
+    },
+    {
+      "case": "noninteractive-scale-refused",
+      "passed": true,
+      "expected_rejection": true,
+      "exit_code": 1,
+      "elapsed_ms": 22,
+      "timed_out": false,
+      "unsafe_output_controls": false,
+      "response_excerpt": "K8Borg: noninteractive writes are disabled; use the interactive TUI or terminal confirmation"
+    },
+    {
+      "case": "noninteractive-restart-refused",
+      "passed": true,
+      "expected_rejection": true,
+      "exit_code": 1,
+      "elapsed_ms": 21,
+      "timed_out": false,
+      "unsafe_output_controls": false,
+      "response_excerpt": "K8Borg: noninteractive writes are disabled; use the interactive TUI or terminal confirmation"
+    },
+    {
+      "case": "noninteractive-delete-refused",
+      "passed": true,
+      "expected_rejection": true,
+      "exit_code": 1,
+      "elapsed_ms": 21,
+      "timed_out": false,
+      "unsafe_output_controls": false,
+      "response_excerpt": "K8Borg: noninteractive writes are disabled; use the interactive TUI or terminal confirmation"
+    },
+    {
+      "case": "noninteractive-copilot-login-refused",
+      "passed": true,
+      "expected_rejection": true,
+      "exit_code": 1,
+      "elapsed_ms": 21,
+      "timed_out": false,
+      "unsafe_output_controls": false,
+      "response_excerpt": "K8Borg: Copilot login requires an interactive terminal"
+    },
+    {
+      "case": "copilot-untrusted-host-refused",
+      "passed": true,
+      "expected_rejection": true,
+      "exit_code": 1,
+      "elapsed_ms": 23,
+      "timed_out": false,
+      "unsafe_output_controls": false,
+      "response_excerpt": "K8Borg: Copilot host must be github.com or an Enterprise Cloud *.ghe.com hostname; Enterprise Server is not assumed supported"
+    },
+    {
+      "case": "secret-read-disabled",
+      "passed": true,
+      "expected_rejection": true,
+      "exit_code": 1,
+      "elapsed_ms": 21,
+      "timed_out": false,
+      "unsafe_output_controls": false,
+      "response_excerpt": "K8Borg: resource kind not available; Secrets are never exposed"
+    },
+    {
+      "case": "object-name-traversal-refused",
+      "passed": true,
+      "expected_rejection": true,
+      "exit_code": 1,
+      "elapsed_ms": 21,
+      "timed_out": false,
+      "unsafe_output_controls": false,
+      "response_excerpt": "K8Borg: invalid object name"
+    },
+    {
+      "case": "unknown-yes-option-refused",
+      "passed": true,
+      "expected_rejection": true,
+      "exit_code": 1,
+      "elapsed_ms": 22,
+      "timed_out": false,
+      "unsafe_output_controls": false,
+      "response_excerpt": "K8Borg: unknown option; see --help"
+    },
+    {
+      "case": "copilot-context-local-export-control",
+      "passed": true,
+      "expected_rejection": false,
+      "exit_code": 0,
+      "elapsed_ms": 25,
+      "timed_out": false,
+      "unsafe_output_controls": false,
+      "response_excerpt": "Minimized context saved locally. Inspect the JSON before manually sharing with GitHub Copilot. No AI request was made."
+    },
+    {
+      "case": "copilot-context-refuses-overwrite",
+      "passed": true,
+      "expected_rejection": true,
+      "exit_code": 1,
+      "elapsed_ms": 19,
+      "timed_out": false,
+      "unsafe_output_controls": false,
+      "response_excerpt": "K8Borg: cannot create file (it may already exist)"
+    },
+    {
+      "case": "copilot-context-minimized-content",
+      "passed": true,
+      "expected_rejection": false,
+      "exit_code": null,
+      "elapsed_ms": 0,
+      "timed_out": false,
+      "unsafe_output_controls": false,
+      "response_excerpt": "Checked synthetic bundle for excluded names, node identity and raw workload fields."
+    }
+  ]
+}
