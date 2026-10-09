@@ -32,6 +32,7 @@ try {
     foreach ($file in @('README.md','LICENSE','THIRD_PARTY_NOTICES.md','SECURITY.md','docs/RELEASE_NOTES.md')) {
         Copy-Item -LiteralPath (Join-Path $projectRoot $file) -Destination $stage
     }
+    Copy-Item -LiteralPath (Join-Path $projectRoot 'docs') -Destination $stage -Recurse
     $notices = Join-Path $stage 'theme-notices'
     New-Item -ItemType Directory -Path $notices | Out-Null
     Copy-Item -Path (Join-Path $projectRoot 'assets/upstream/*') -Destination $notices -Recurse
@@ -54,3 +55,4 @@ try {
     Copy-Item -LiteralPath (Join-Path $stage 'BUILD.json') -Destination (Join-Path $packages "$label.build.json")
     Write-Output "Packaged $archive (unsigned)"
 } finally { Pop-Location }
+
