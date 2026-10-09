@@ -48,3 +48,9 @@ Validation: both Copilot host/context minimization and environment-filter tests 
 ## Dependency advisory follow-up
 
 `cargo-audit 0.22.2` completed against the locked 183-package graph and official RustSec advisory database revision `7eebec69c352c7191b1f13eb95dd510eeca5d1de`. It reported zero known vulnerabilities and no informational warnings with no ignored advisories or platform/severity filters. Exact lockfile hash, command and machine-readable evidence are recorded in [DEPENDENCY_AUDIT.md](DEPENDENCY_AUDIT.md). This closes the current known-advisory check, not the broader supply-chain/license or production security gates.
+
+## Final input-concurrency and fresh-review corrections
+
+Mouse navigation is blocked while a mutation is in flight, matching keyboard navigation. Mutation failure/unknown-outcome replies are preserved even if a stale view epoch reaches the receiver; a regression exercises that state transition. A fresh reviewer found CLI custom-resource resolution and offline namespace inconsistencies: unknown valid resource keys now trigger bounded discovery, Secrets remain pre-rejected, and demo connection/details/logs honor the requested scope. Unsupported/read-only UI mutation requests fail locally without opening misleading forms or marking cached data stale.
+
+The final local suite has 23 unit/security tests. Actual Kubernetes 1.34.11 and 1.35.8 acceptance is recorded separately, including custom-resource diagnostics on 1.34. Final cross-platform results must identify their exact source commit rather than reusing earlier candidate results.

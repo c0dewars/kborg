@@ -245,9 +245,10 @@ impl App {
         let mut changed = false;
         while let Ok((epoch, reply)) = self.worker.rx.try_recv() {
             changed = true;
+            let write_result = self.write_inflight;
             self.busy = false;
             self.write_inflight = false;
-            if epoch != self.epoch && !matches!(&reply, Reply::Connected(..)) {
+            if epoch != self.epoch && !matches!(&reply, Reply::Connected(..)) && !write_result {
                 continue;
             }
             match reply {
@@ -302,6 +303,21 @@ impl App {
         Ok(())
     }
     fn prepare(&mut self, action: Action) {
+        if !self.options.connection.writable {
+            self.status = "READ ONLY: enable --write before requesting a mutation.".into();
+            return;
+        }
+        let allowed = match &action {
+            Action::Scale(_) | Action::Restart => self.kind() == "deployments.apps",
+            Action::Delete => matches!(
+                self.kind().as_str(),
+                "pods" | "deployments.apps" | "services" | "jobs.batch"
+            ),
+        };
+        if !allowed {
+            self.status = "This operation is disabled for the selected resource.".into();
+            return;
+        }
         if let Some((k, n, name)) = self.selected_target() {
             self.send(Task::Prepare(k, n, name, action));
         }
@@ -522,7 +538,12 @@ impl App {
                     }
                 }
                 KeyCode::Char('s') => {
-                    if let Some((k, n, _)) = self.selected_target() {
+                    if !self.options.connection.writable {
+                        self.status =
+                            "READ ONLY: enable --write before requesting a mutation.".into();
+                    } else if self.kind() != "deployments.apps" {
+                        self.status = "Scale applies to deployments; select a deployment.".into();
+                    } else if let Some((k, n, _)) = self.selected_target() {
                         self.modal = Modal::Scale(k, n, String::new());
                     }
                 }
@@ -917,42 +938,37 @@ pub fn run(options: Options) -> Result<()> {
                     dirty = true;
                 }
                 Event::Resize(_, _) => dirty = true,
-                Event::Mouse(mouse) => {
-                    if matches!(app.modal, Modal::None) {
-                        match mouse.kind {
-                            MouseEventKind::ScrollDown => {
-                                app.selected =
-                                    (app.selected + 1).min(app.visible().len().saturating_sub(1));
-                            }
-                            MouseEventKind::ScrollUp => {
-                                app.selected = app.selected.saturating_sub(1)
-                            }
-                            MouseEventKind::Down(_) => {
-                                let (w, h) =
-                                    terminal::size().map_err(|_| "terminal size failed")?;
-                                if mouse.row >= 4 && mouse.row < h.saturating_sub(3) {
-                                    let row = (mouse.row - 4) as usize;
-                                    let height = h.saturating_sub(7) as usize;
-                                    if mouse.column < w.min(28) {
-                                        let start =
-                                            app.kind_index.saturating_sub(height.saturating_sub(1));
-                                        app.kind_index =
-                                            (start + row).min(app.kinds.len().saturating_sub(1));
-                                        app.left_focus = false;
-                                        app.changed();
-                                    } else {
-                                        let start =
-                                            app.selected.saturating_sub(height.saturating_sub(1));
-                                        app.selected = (start + row)
-                                            .min(app.visible().len().saturating_sub(1));
-                                        app.left_focus = false;
-                                    }
+                Event::Mouse(mouse) if matches!(app.modal, Modal::None) && !app.write_inflight => {
+                    match mouse.kind {
+                        MouseEventKind::ScrollDown => {
+                            app.selected =
+                                (app.selected + 1).min(app.visible().len().saturating_sub(1));
+                        }
+                        MouseEventKind::ScrollUp => app.selected = app.selected.saturating_sub(1),
+                        MouseEventKind::Down(_) => {
+                            let (w, h) = terminal::size().map_err(|_| "terminal size failed")?;
+                            if mouse.row >= 4 && mouse.row < h.saturating_sub(3) {
+                                let row = (mouse.row - 4) as usize;
+                                let height = h.saturating_sub(7) as usize;
+                                if mouse.column < w.min(28) {
+                                    let start =
+                                        app.kind_index.saturating_sub(height.saturating_sub(1));
+                                    app.kind_index =
+                                        (start + row).min(app.kinds.len().saturating_sub(1));
+                                    app.left_focus = false;
+                                    app.changed();
+                                } else {
+                                    let start =
+                                        app.selected.saturating_sub(height.saturating_sub(1));
+                                    app.selected =
+                                        (start + row).min(app.visible().len().saturating_sub(1));
+                                    app.left_focus = false;
                                 }
                             }
-                            _ => {}
                         }
-                        dirty = true;
+                        _ => {}
                     }
+                    dirty = true;
                 }
                 _ => {}
             }
@@ -1091,5 +1107,57 @@ mod layout_tests {
         let displayed: String = lines.iter().map(|line| &line[1..]).collect();
         assert!(displayed.contains(&summary.replace('\n', "")));
         assert!(displayed.contains("CONFIRM > typed-target_"));
+    }
+
+    #[test]
+    fn write_outcome_is_preserved_even_if_view_epoch_changed() {
+        use super::*;
+        let (tx, _commands) = mpsc::sync_channel(4);
+        let (replies, rx) = mpsc::sync_channel(4);
+        let options = Options {
+            connection: Connection::default(),
+            theme: None,
+            color: false,
+            json: false,
+            splash: false,
+            command: vec![],
+        };
+        let mut app = App {
+            options,
+            theme: themes::builtins().remove(0),
+            context: "test".into(),
+            server: "test".into(),
+            namespace: "test".into(),
+            kinds: crate::gateway::kinds(),
+            kind_index: 0,
+            items: vec![],
+            selected: 0,
+            filter: String::new(),
+            left_focus: false,
+            status: "waiting".into(),
+            stale: false,
+            truncated: false,
+            modal: Modal::None,
+            epoch: 12,
+            busy: true,
+            write_inflight: true,
+            connected: true,
+            refresh: false,
+            last_refresh: Instant::now(),
+            worker: Worker { tx, rx },
+        };
+        assert!(
+            replies
+                .send((
+                    11,
+                    Reply::Failure("Mutation outcome UNKNOWN; reconcile before retrying".into())
+                ))
+                .is_ok()
+        );
+        assert!(app.receive());
+        assert!(app.status.contains("outcome UNKNOWN"));
+        assert!(app.stale);
+        assert!(!app.busy && !app.write_inflight);
+        assert_eq!(app.epoch, 12);
     }
 }

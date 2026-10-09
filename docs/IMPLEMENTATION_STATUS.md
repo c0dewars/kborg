@@ -21,7 +21,7 @@ This first iteration is a working local-testing release. The development guide r
 
 ## Evidence
 
-- `scripts/Check.ps1`: formatting, all-target Clippy with warnings denied, 21 unit/security tests, documentation tests and optimized release build.
+- `scripts/Check.ps1`: formatting, all-target Clippy with warnings denied, 23 unit/security tests, documentation tests and optimized release build.
 - `scripts/Test-DockerDesktop.ps1`: live acceptance passed on the installed Docker Desktop cluster. Latest successful Windows run: `cf72c4dd96b3`, namespace `k8borg-tests-cf72c4dd96b3`; sanitized evidence in `test-results/cf72c4dd96b3.json`. WSL native Linux acceptance also passed against this isolated fixture.
 - Live checks exercise reader access and logs, real authorization denial, ConfigMap redaction, blocked Secret access, server-side dry-run authorization, scale/restart/delete, and stale resourceVersion rejection.
 - Unit checks exercise read-only policy, write scope/scale limits, replay/expiry/target mismatch, malicious authentication configuration, invalid TLS, oversized response rejection before JSON decoding, terminal controls, redaction, and theme validation.
@@ -62,3 +62,4 @@ See `README.md` for exact commands and `docs/DEVELOPMENT_GUIDE.md` for the full 
 Two-second skippable ASCII startup and persisted disabling are implemented. First-run selection defaults to Catppuccin Mocha; disabling animation before first launch preserves onboarding. CLI output never animates. The private source repository is https://github.com/c0dewars/k8borg.
 
 Native WSL/Linux, Windows unit/lint checks, Docker Desktop acceptance, advisory audit and measured performance are recorded in their dedicated reports. One hundred aliases to a single API server are explicitly distinct from 100 independent Kubernetes clusters. Visual refinement follows feature completion and must retain these measured resource budgets.
+

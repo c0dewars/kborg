@@ -540,3 +540,9 @@ Implemented: two-second skippable ASCII logo; per-session, environment and persi
 Independent agents performed developer/user acceptance, security review, locked dependency advisory audit, WSL2 testing and performance measurements. Cross-platform native builds/package automation targets Windows, macOS and Linux x64/ARM64. The source is in the private c0dewars/k8borg repository. See the evidence reports rather than assuming a configured workflow has completed successfully.
 
 Feature completion and security acceptance precede the requested modern visual redesign. Styling must keep the app lightweight, preserve explicit safety labels and confirmation visibility, and be measured against CPU/memory baselines. A 100-context test against one API server must never be described as 100 independent clusters. The full roadmap and production release gates remain in force.
+
+## 21. Supported targets and neutral review (2026-10-09)
+
+User support target: Kubernetes 1.34 and newer; GitHub.com and GitHub Enterprise Cloud *.ghe.com. Generate typed bindings from the minimum 1.34 schema and continue real-server minor-version tests. Initial compatibility evidence covers 1.34.11, 1.35.8 and Docker Desktop 1.36.1; read KUBERNETES_COMPATIBILITY.md for exact run scope.
+
+A fresh independent reviewer, without prior findings, exercised CLI and Windows terminal flows and identified additional gaps. Corrections include CLI CRD lookup, read-only/unsupported mutation prompts, demo namespace fidelity and write-result preservation under stale terminal events. Keep first-look and corrective findings separate in the evidence. Visual design follows remaining feature completion, with measured lightweight budgets retained.

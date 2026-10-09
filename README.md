@@ -100,3 +100,7 @@ Automatic AI diagnosis remains a production gate requiring isolation, tested too
 ## Platform, security and performance evidence
 
 See `docs/SECURITY_REVIEW.md`, `docs/USER_ACCEPTANCE.md`, `docs/RELEASE_PROCESS.md`, and the WSL/performance reports. Build automation targets Windows, Linux and macOS on x64/ARM64. Platform artifacts count as built only when the corresponding native job succeeds; packaging is unsigned. Multiple kubeconfig aliases to one cluster test context handling, not independent cluster capacity.
+
+## Kubernetes and GitHub support targets
+
+The minimum Kubernetes target is 1.34. API bindings use the 1.34 schema to avoid accidentally depending on newer typed fields; discovery and dynamic objects adapt to available server resources. Supported-version claims are limited to the live compatibility evidence in docs/KUBERNETES_COMPATIBILITY.md. Newer Kubernetes releases require continuing compatibility tests. GitHub integration targets GitHub.com and Enterprise Cloud *.ghe.com; Enterprise Server is outside the configured Copilot login scope.
