@@ -1,0 +1,22 @@
+# Secure real Metrics API and minimum-version watch interoperability
+
+The positive interoperability harness is `scripts/Test-SecureKindMetrics.ps1`. It creates one temporary, owned kind Kubernetes v1.34.11 cluster, restricts its node to 4 GiB/4 CPUs during bootstrap, and leaves Docker Desktop's existing cluster untouched. It uses kind v0.33.0 with the previously verified official binary checksum and a digest-pinned kind node image. Metrics Server v0.8.1 is pinned to `registry.k8s.io/metrics-server/metrics-server:v0.8.1@sha256:b2d2efaf5ac3b366ed0f839d2412a2c4279d4fc2a2a733f12c52133faed36c41`.
+
+Final complete run **passed** on 2026-10-09 at 22:56:44 UTC: run `bd25ced1c56b`, Kubernetes v1.34.11, two pod container rows, one node row, and a real ConfigMap watch update. Both TLS hops verified and ownership cleanup passed. Evidence: [secure-metrics-kubernetes-1.34.json](evidence/secure-metrics-kubernetes-1.34.json). The tested Windows binary SHA-256 was `2da55a1542cc6250ca4bd85ea348d3612582c5e3bb4df5cceb80bfdce7bed2c1`.
+
+## Verified TLS at both metrics hops
+
+Kubernetes documents that kubeadm's default kubelet serving certificate is self-signed, and that `serverTLSBootstrap: true` requests a serving certificate through the certificates API. Serving requests require deliberate approval. The harness accepts only the owned node identity with `kubernetes.io/kubelet-serving`, expected usages, and exactly the owned node's DNS/IP SANs. It approves that request in the temporary cluster. [Kubernetes certificate management](https://kubernetes.io/docs/tasks/administer-cluster/kubeadm/kubeadm-certs/), [Kubelet TLS bootstrapping](https://kubernetes.io/docs/reference/access-authn-authz/kubelet-tls-bootstrapping/).
+
+Metrics Server mounts the temporary cluster CA and supplies `--kubelet-certificate-authority` to verify the kubelet's serving certificate. A separate one-day metrics serving certificate has the Service DNS SANs and is signed inside the owned node using its temporary cluster CA. The aggregation APIService uses an explicit CA bundle and disables insecureSkipTLSVerify. Kubernetes may omit that false field on subsequent reads; absence is accepted, true is rejected. No `--kubelet-insecure-tls` or insecure API TLS setting is used. These two TLS checks are separate requirements. [Metrics Server FAQ](https://github.com/kubernetes-sigs/metrics-server/blob/master/FAQ.md), [Metrics Server command-line flags](https://github.com/kubernetes-sigs/metrics-server/blob/master/docs/command-line-flags.txt).
+
+The CA private key stays inside the temporary node. The metrics serving private key and short-lived admin/reader kubeconfigs are held in a protected Windows directory, then removed. The entire node is deleted only after Docker daemon and kind ownership checks. This is test PKI provisioning for an isolated cluster, not a recommendation to distribute a production cluster CA key.
+
+## Real acceptance scope
+
+The fixture uses a restricted two-container BusyBox pod with fixed image digest and limits. A separate ServiceAccount has only namespaced ConfigMap read/list/watch, namespaced pod-metrics read/list, and node-metrics read/list. K8Borg's actual CLI reads its scoped kubeconfig, returns both container rows and the owned node measurement, and validates nonnegative normalized CPU, positive memory, timestamp and window. The same CLI starts a ConfigMap watch and observes a subsequent label update while redacting a body canary.
+
+The harness retains credential-free pod/node measurement JSON and redacted watch JSONL in its local evidence directory, plus a summary in test-results after cleanup. Measurements exercise real CPU nanocore and memory Ki quantities; controlled unit/in-memory transport tests separately cover malformed values, overflowing quantities, metrics pagination, forbidden access, 410, reconnect, stale epochs and backpressure. Positive Metrics Server interoperability does not establish arbitrary production adapter compatibility or metric accuracy under every runtime.
+
+Fixture development encountered duplicate node serving CSRs, OpenSSL subject formatting, Docker/kind multiarch image import, and StrictMode access to optional fields/automatic root-CA ConfigMaps. Corrections retain strict TLS and explicit identities. These were harness issues after or before app checks; they are not application API errors. The final report identifies the actual binary hash and run, avoiding reuse of a previous candidate's evidence.
+

@@ -1,4 +1,4 @@
-K8Borg 0.1 — Kubernetes operations, under your control
+K8Borg 0.2 — Kubernetes operations, under your control
 
   k8borg                         Interactive resource browser (READ ONLY)
   k8borg demo                    Offline sample cluster; no credentials
@@ -8,6 +8,8 @@ K8Borg 0.1 — Kubernetes operations, under your control
   k8borg contexts                List contexts without connecting
   k8borg doctor                  Verify selected context and pod access
   k8borg resources               Discover API resources (Secrets excluded)
+  k8borg watch <resource>       Bounded live snapshots; --json emits JSONL
+  k8borg metrics pods|nodes    CPU/memory with measurement timestamp/window
   k8borg list <resource>          Bounded resource table; --json for pipelines
   k8borg get <resource> <name>    Redacted JSON object
   k8borg logs <pod> [container]  Bounded logs; --allow-logs required
@@ -18,7 +20,7 @@ K8Borg 0.1 — Kubernetes operations, under your control
 Options (may appear before or after commands):
   --context NAME     --namespace NAME / -n NAME ("*" for all on reads)
   --kubeconfig FILE  --write (explicit mutation opt-in; default READ ONLY)
-  --allow-logs       --theme ID       --color=never       --json
+  --poll (UI polling fallback)    --allow-logs       --theme ID       --color=never       --json
   --no-splash (or K8BORG_NO_SPLASH)    --demo            --readonly       --version          --help
 
 Themes:
@@ -29,13 +31,13 @@ Themes:
 TUI keys:
   Up/Down, j/k: select   Tab: resource list/table   Enter: details
   /: filter cached rows   r: refresh   c: contexts   n: namespaces
+  m: pod/node metrics    w: live watch / polling toggle
   R: API discovery       l: pod logs  L: previous pod logs
   t: theme picker        ?: help      Esc: close dialog    q: quit
   s: scale deployment    x: restart   Delete: guarded delete (needs --write)
   PgUp/PgDown: scroll details/logs     Mouse: click rows / scroll
 
 Security: TLS required; Secret reads, auth helpers, impersonation, AI,
-plugins, generic edits, exec/attach and port-forward are disabled in 0.1.
+plugins, generic edits, exec/attach and port-forward are disabled in 0.2.
 All real clusters are labeled PRODUCTION; context names do not establish trust.
-Auto refresh uses bounded polling (not server watches in this iteration).
-
+Live clusters use bounded LIST/WATCH with reconnect; --poll selects 5s polling.

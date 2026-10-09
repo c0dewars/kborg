@@ -90,6 +90,12 @@
     "source": "registry+https://github.com/rust-lang/crates.io-index"
   },
   {
+    "name": "core_detect",
+    "version": "1.0.0",
+    "license": "MIT/Apache-2.0",
+    "source": "registry+https://github.com/rust-lang/crates.io-index"
+  },
+  {
     "name": "core-foundation",
     "version": "0.10.1",
     "license": "MIT OR Apache-2.0",
@@ -99,12 +105,6 @@
     "name": "core-foundation-sys",
     "version": "0.8.7",
     "license": "MIT OR Apache-2.0",
-    "source": "registry+https://github.com/rust-lang/crates.io-index"
-  },
-  {
-    "name": "core_detect",
-    "version": "1.0.0",
-    "license": "MIT/Apache-2.0",
     "source": "registry+https://github.com/rust-lang/crates.io-index"
   },
   {
@@ -361,7 +361,7 @@
   },
   {
     "name": "k8borg",
-    "version": "0.1.0",
+    "version": "0.2.0",
     "license": "Apache-2.0",
     "source": null
   },
@@ -696,18 +696,6 @@
     "source": "registry+https://github.com/rust-lang/crates.io-index"
   },
   {
-    "name": "serde-saphyr",
-    "version": "0.0.29",
-    "license": "MIT OR Apache-2.0",
-    "source": "registry+https://github.com/rust-lang/crates.io-index"
-  },
-  {
-    "name": "serde-value",
-    "version": "0.7.0",
-    "license": "MIT",
-    "source": "registry+https://github.com/rust-lang/crates.io-index"
-  },
-  {
     "name": "serde_core",
     "version": "1.0.229",
     "license": "MIT OR Apache-2.0",
@@ -723,6 +711,18 @@
     "name": "serde_json",
     "version": "1.0.151",
     "license": "MIT OR Apache-2.0",
+    "source": "registry+https://github.com/rust-lang/crates.io-index"
+  },
+  {
+    "name": "serde-saphyr",
+    "version": "0.0.29",
+    "license": "MIT OR Apache-2.0",
+    "source": "registry+https://github.com/rust-lang/crates.io-index"
+  },
+  {
+    "name": "serde-value",
+    "version": "0.7.0",
+    "license": "MIT",
     "source": "registry+https://github.com/rust-lang/crates.io-index"
   },
   {
@@ -996,30 +996,6 @@
     "source": "registry+https://github.com/rust-lang/crates.io-index"
   },
   {
-    "name": "windows-link",
-    "version": "0.2.1",
-    "license": "MIT OR Apache-2.0",
-    "source": "registry+https://github.com/rust-lang/crates.io-index"
-  },
-  {
-    "name": "windows-sys",
-    "version": "0.52.0",
-    "license": "MIT OR Apache-2.0",
-    "source": "registry+https://github.com/rust-lang/crates.io-index"
-  },
-  {
-    "name": "windows-sys",
-    "version": "0.61.2",
-    "license": "MIT OR Apache-2.0",
-    "source": "registry+https://github.com/rust-lang/crates.io-index"
-  },
-  {
-    "name": "windows-targets",
-    "version": "0.52.6",
-    "license": "MIT OR Apache-2.0",
-    "source": "registry+https://github.com/rust-lang/crates.io-index"
-  },
-  {
     "name": "windows_aarch64_gnullvm",
     "version": "0.52.6",
     "license": "MIT OR Apache-2.0",
@@ -1063,6 +1039,30 @@
   },
   {
     "name": "windows_x86_64_msvc",
+    "version": "0.52.6",
+    "license": "MIT OR Apache-2.0",
+    "source": "registry+https://github.com/rust-lang/crates.io-index"
+  },
+  {
+    "name": "windows-link",
+    "version": "0.2.1",
+    "license": "MIT OR Apache-2.0",
+    "source": "registry+https://github.com/rust-lang/crates.io-index"
+  },
+  {
+    "name": "windows-sys",
+    "version": "0.52.0",
+    "license": "MIT OR Apache-2.0",
+    "source": "registry+https://github.com/rust-lang/crates.io-index"
+  },
+  {
+    "name": "windows-sys",
+    "version": "0.61.2",
+    "license": "MIT OR Apache-2.0",
+    "source": "registry+https://github.com/rust-lang/crates.io-index"
+  },
+  {
+    "name": "windows-targets",
     "version": "0.52.6",
     "license": "MIT OR Apache-2.0",
     "source": "registry+https://github.com/rust-lang/crates.io-index"

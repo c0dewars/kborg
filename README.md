@@ -2,7 +2,7 @@
 
 Kubernetes operations, under your control.
 
-Rust terminal UI and CLI, read-only by default. Local-testing release **0.1.0**. This is a working first iteration, not a production-certified implementation of every requirement in the development guide.
+Rust terminal UI and CLI, read-only by default. Local-testing release **0.2.0**. This is a working first iteration, not a production-certified implementation of every requirement in the development guide.
 
 ## Run
 
@@ -49,9 +49,9 @@ Omit `-KeepFixtures` for automatic cleanup. Failed runs clean up even when reten
 
 ## Interface
 
-Tab changes focus between resources and objects. Up/down or j/k navigate, Enter opens redacted JSON, `/` filters cached names, `r` refreshes, `c` selects context, `n` changes namespace (`*` means all namespaces), `R` discovers resources/CRDs, `l` shows bounded pod logs and `L` previous logs, `t` opens themes, `?` shows help, Esc closes and `q` exits. Click resource/object rows or scroll using the mouse. ASCII rendering is conservative: non-ASCII display characters become `?`; raw JSON retains safely escaped Unicode.
+Tab changes focus between resources and objects. Up/down or j/k navigate, Enter opens redacted JSON, `/` filters cached names, `r` refreshes, `c` selects context, `n` changes namespace (`*` means all namespaces), `R` discovers resources/CRDs, `m` opens pod/node metrics, `w` switches live watch/polling, `l` shows bounded pod logs and `L` previous logs, `t` opens themes, `?` shows help, Esc closes and `q` exits. Click resource/object rows or scroll using the mouse. ASCII rendering is conservative: non-ASCII display characters become `?`; raw JSON retains safely escaped Unicode.
 
-Updates use bounded polling every five seconds, not watches. Failed requests mark data STALE. Reads are limited to 1,000 objects/8 MiB retained data, with 200-object pages and 8 MiB response bodies. Narrow namespace scope when TRUNCATED appears. Logs require `--allow-logs`, are capped at 200 lines/256 KiB, and can still contain sensitive data.
+Live clusters use bounded LIST/WATCH with bookmarks, reconnect/backoff and expired-version relisting. Use `--poll` or `w` for explicit five-second polling; offline demo uses polling. Failed requests mark data STALE. Reads are limited to 1,000 objects/8 MiB retained data, with 200-object pages and 8 MiB response bodies. Narrow namespace scope when TRUNCATED appears. Logs require `--allow-logs`, are capped at 200 lines/256 KiB, and can still contain sensitive data.
 
 Mutations require `--write`, a server dry-run and exact `namespace/name` confirmation within 60 seconds. `s` scales deployments (0..20), `x` restarts, Delete deletes an allowed individual object. UID/resourceVersion preconditions reject stale targets; no automatic mutation retries. System namespaces and cluster-scoped mutations are blocked. Generic edits, force deletion and finalizer manipulation are absent. Confirm the complete displayed target before typing; on small terminals enlarge the window to inspect long targets. Noninteractive writes are rejected.
 
@@ -77,7 +77,7 @@ TLS validation is required. Secrets are excluded from built-in and discovered ki
 
 Writes use a local durable intent/outcome audit spool; this is supplementary and mutable by the operator, not centralized protected audit. Windows config directories outside the test harness inherit their existing user ACLs; verify them before using writes on sensitive clusters. Same-user path replacement races are not eliminated by symlink checks. Authentication revocation, malicious local software and cluster admission remain outside the client trust boundary.
 
-AI, arbitrary plugins, shell handoff, exec/attach, forwarding, general YAML editing, metrics dashboard, simultaneous multi-context view, true server watches, signed packaging, centralized audit and non-Windows platform verification are not implemented. They remain gated in the development plan. This iteration is suitable for isolated local testing; production use needs the remaining evidence and review in `docs/IMPLEMENTATION_STATUS.md`.
+AI, arbitrary plugins, shell handoff, exec/attach, forwarding, general YAML editing, advanced metrics dashboard, simultaneous multi-context view, signed packaging, centralized audit and non-Windows platform verification are not implemented. They remain gated in the development plan. This iteration is suitable for isolated local testing; production use needs the remaining evidence and review in `docs/IMPLEMENTATION_STATUS.md`.
 
 ## Startup and first use
 
@@ -104,3 +104,22 @@ See `docs/SECURITY_REVIEW.md`, `docs/USER_ACCEPTANCE.md`, `docs/RELEASE_PROCESS.
 ## Kubernetes and GitHub support targets
 
 The minimum Kubernetes target is 1.34. API bindings use the 1.34 schema to avoid accidentally depending on newer typed fields; discovery and dynamic objects adapt to available server resources. Supported-version claims are limited to the live compatibility evidence in docs/KUBERNETES_COMPATIBILITY.md. Newer Kubernetes releases require continuing compatibility tests. GitHub integration targets GitHub.com and Enterprise Cloud *.ghe.com; Enterprise Server is outside the configured Copilot login scope.
+
+
+## Live watches and metrics (0.2)
+
+```powershell
+k8borg --kubeconfig <file> -n <namespace> watch pods --json
+k8borg --kubeconfig <file> -n <namespace> metrics pods --json
+k8borg --kubeconfig <file> metrics nodes
+k8borg --kubeconfig <file> --poll
+k8borg --demo metrics pods
+```
+
+`watch --json` emits bounded snapshot JSONL, not raw events. Each view owns one cancellable watch and one coalesced update slot. Old scope events are discarded; row selection follows namespace/name/UID, and scale input captures its original name/UID. Bookmarks retain resume versions; HTTP 410 relists. Authorization denial clears the cache and stops requests until explicit reconnect. Authorization changes apply on new requests: an existing watch can continue until its bounded eight-second server lifetime ends. Unsupported or missing watch endpoints stop with polling/catalog guidance. No automatic permission fallback occurs.
+
+A watch cannot represent a complete view above its 1,000-object/8 MiB cache budget: it clears data, displays STALE/TRUNCATED and stops. Narrow the namespace or explicitly select polling for bounded partial results. Individual response streams are also capped at 8 MiB. Input remains responsive during background reads; obsolete watches are aborted at scope changes.
+
+Pod/container and node usage come from `metrics.k8s.io/v1beta1`; this requires an installed and correctly secured Metrics Server or compatible provider. The app never installs one. CPU is normalized using checked integer nanocores and exact decimal millicores; memory uses checked bytes. Raw quantities, measurement timestamp/window and any upward rounding remain explicit. Missing, forbidden or malformed metrics produce errors and do not invalidate resource browsing or fabricate zero usage. Success and error dialogs wrap for narrow terminals. No percentages are inferred without capacity/request denominators.
+
+See `docs/WATCH_METRICS_REVIEW.md` and `docs/WATCH_METRICS_UX.md` for actual and controlled-test distinctions. Remaining production gates and broader roadmap features still apply.

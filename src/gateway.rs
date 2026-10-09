@@ -365,6 +365,34 @@ impl Gateway {
     pub fn is_demo(&self) -> bool {
         self.client.is_none()
     }
+    pub fn watch(&self, key: &str, ns: &str) -> Result<crate::watch::WatchFeed> {
+        let kind = self.find(key)?.clone();
+        Ok(crate::watch::WatchFeed::new(self.api(&kind, ns)?, kind))
+    }
+    pub(crate) fn metrics_api(
+        &self,
+        scope: crate::metrics::MetricsScope,
+        ns: &str,
+    ) -> Result<Api<DynamicObject>> {
+        let kind = Kind {
+            plural: if matches!(scope, crate::metrics::MetricsScope::Pods) {
+                "pods"
+            } else {
+                "nodes"
+            }
+            .into(),
+            kind: if matches!(scope, crate::metrics::MetricsScope::Pods) {
+                "PodMetrics"
+            } else {
+                "NodeMetrics"
+            }
+            .into(),
+            group: "metrics.k8s.io".into(),
+            version: "v1beta1".into(),
+            namespaced: matches!(scope, crate::metrics::MetricsScope::Pods),
+        };
+        self.api(&kind, ns)
+    }
     fn find(&self, key: &str) -> Result<&Kind> {
         self.kinds
             .iter()

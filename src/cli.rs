@@ -17,6 +17,7 @@ pub struct Options {
     pub color: bool,
     pub json: bool,
     pub splash: bool,
+    pub poll: bool,
     pub command: Vec<String>,
 }
 
@@ -27,6 +28,7 @@ fn parse(args: Vec<String>) -> Result<Options> {
         color: std::env::var_os("NO_COLOR").is_none(),
         json: false,
         splash: std::env::var_os("K8BORG_NO_SPLASH").is_none(),
+        poll: false,
         command: vec![],
     };
     let mut args = args.into_iter();
@@ -50,6 +52,7 @@ fn parse(args: Vec<String>) -> Result<Options> {
             "--demo" => opts.connection.demo = true,
             "--json" => opts.json = true,
             "--no-splash" => opts.splash = false,
+            "--poll" => opts.poll = true,
             "--color=never" => opts.color = false,
             "--color=always" => opts.color = true,
             "--help" | "-h" => {
@@ -121,7 +124,8 @@ pub fn run_args(args: Vec<String>) -> Result<()> {
             return Ok(());
         }
         "ui" => return tui::run(opts),
-        "list" | "get" | "logs" | "resources" | "doctor" | "scale" | "restart" | "delete" => {}
+        "list" | "watch" | "metrics" | "get" | "logs" | "resources" | "doctor" | "scale"
+        | "restart" | "delete" => {}
         _ => return Err("unknown command; see --help".into()),
     }
     let rt = runtime()?;
@@ -129,10 +133,30 @@ pub fn run_args(args: Vec<String>) -> Result<()> {
         let mut gateway=tokio::time::timeout(Duration::from_secs(15),Gateway::connect(opts.connection.clone())).await.map_err(|_|"connection timed out")??;
         let ns=gateway.namespace.clone();
         let args=&opts.command[1..];
-        if matches!(cmd, "list" | "get") && let Some(resource) = args.first() {
+        if matches!(cmd, "list" | "get" | "watch") && let Some(resource) = args.first() {
             discover_if_needed(&mut gateway, resource).await?;
         }
         match cmd {
+            "watch" => {
+                if args.len() != 1 { return Err("usage: watch <resource> [--json]".into()); }
+                let mut feed = gateway.watch(&args[0], &ns)?;
+                loop {
+                    let snapshot = feed.next().await;
+                    let record = serde_json::json!({"items":snapshot.objects,"resourceVersion":snapshot.resource_version,"stale":snapshot.stale,"truncated":snapshot.truncated,"terminal":snapshot.terminal,"status":snapshot.message});
+                    let line = if opts.json { serde_json::to_string(&record).map_err(|_| "watch output failed")? }
+                        else { format!("{} | {} objects", record["status"].as_str().unwrap_or("WATCH"), record["items"].as_array().map_or(0, Vec::len)) };
+                    if let Err(error) = writeln!(io::stdout().lock(), "{line}") {
+                        if error.kind() == io::ErrorKind::BrokenPipe { return Ok(()); }
+                        return Err("watch output failed".into());
+                    }
+                    if snapshot.terminal { return Err("watch stopped; select a valid narrower scope or reauthenticate".into()); }
+                }
+            },
+            "metrics" => {
+                if args.len()!=1 {return Err("usage: metrics pods|nodes [--json]".into());}
+                let value=crate::metrics::collect(&gateway,crate::metrics::MetricsScope::parse(&args[0])?,&ns).await?;
+                if opts.json {print_json(&serde_json::to_value(value).map_err(|_| "metrics output failed")?)?;} else {print!("{}",value.text());}
+            },
             "doctor"=>{println!("K8Borg {}\ncontext: {}\nserver: {}\nnamespace: {}\nmode: {}\nauth: certificate/token; helpers blocked\nAI/plugins/exec/forwarding: disabled",env!("CARGO_PKG_VERSION"),safety::safe_text(&gateway.context,100),safety::safe_text(&gateway.server,200),safety::safe_text(&ns,63),if opts.connection.writable{"WRITE ENABLED"}else{"READ ONLY"});
                 let result=tokio::time::timeout(Duration::from_secs(15),gateway.list("pods",&ns)).await.map_err(|_|"API timed out")??;
                 println!("API pods read: OK ({} objects)",result["items"].as_array().map_or(0,Vec::len));},

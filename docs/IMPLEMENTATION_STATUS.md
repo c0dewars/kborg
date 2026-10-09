@@ -66,3 +66,7 @@ Native WSL/Linux, Windows unit/lint checks, Docker Desktop acceptance, advisory 
 
 
 Final runtime source99e32c5 passed all six native build/test/package jobs; downloaded archives were checksum-verified. Independent large-resource testing passed the 1,001-object positive truncation/redaction case with about22MiB loaded Linux UI RSS. The final release is a private draft prerelease, not production certification. See RELEASE_REPORT.md and PLATFORM_BUILDS.md for exact artifact identity and remaining scope.
+
+## 0.2 follow-up
+
+The earlier delivered/gap tables above describe0.1. Watches and basic pod/container/node metrics are now implemented, with48unit tests and independent real lifecycle/RBAC/UX coverage. See WATCH_METRICS_IMPLEMENTATION.md for the current authoritative feature behavior; real metrics-server and native platform results are tracked separately. Advanced metrics charts, broader operational/security gates and other roadmap features remain incomplete.

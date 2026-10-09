@@ -1,0 +1,64 @@
+{
+  "schema": 1,
+  "utc": "2026-10-09T22:55:02Z",
+  "platform": "Linux",
+  "kernel": "6.18.33.2-microsoft-standard-WSL2",
+  "binary_bytes": 9514912,
+  "binary_sha256": "73fbee359c680d631206353cf350aa5e5909d73e3ebc9c98cd23fa3e1acaebec",
+  "cpu_tick_seconds": 0.01,
+  "method": "One sequential 30 s run per mode; procfs sampled at 100 ms and PTY 120x35; warm filesystem cache",
+  "scope": "One existing Docker Desktop cluster, one small isolated read-only namespace; no cluster writes",
+  "request_count_limitation": "TLS network traffic does not prove HTTP request counts; no API audit or request instrumentation used",
+  "linux_tests": {
+    "unit_passed": 48,
+    "integration_contract_passed": 1,
+    "opt_in_cluster_tests_ignored": 3,
+    "release_build": "passed",
+    "clippy_all_targets_deny_warnings": "passed"
+  },
+  "live_cli_watch": {
+    "first_snapshot_ms": 12.113,
+    "items": 1,
+    "valid_resource_version": true,
+    "initial_status": "watch cache initialized",
+    "broken_pipe_exit_code": 0,
+    "broken_pipe_exit_seconds": 6.276,
+    "limitation": "Snapshot and clean consumer-close tested; resource mutations intentionally delegated to separate acceptance suite"
+  },
+  "demo_metrics": {
+    "source": "demo (deterministic sample)",
+    "items": 1,
+    "quantity_and_time_fields_present": true
+  },
+  "desktop_metrics": {
+    "exit_code": 1,
+    "stdout_bytes": 0,
+    "rbac_forbidden_message_seen": true
+  },
+  "live_tui": {
+    "duration_seconds": 30,
+    "peak_rss_kib": 10340,
+    "cpu_ticks": 0,
+    "cpu_seconds": 0.0,
+    "average_one_core_cpu_percent": 0.0,
+    "terminal_bytes": 68231,
+    "expected_mode_label_seen": true,
+    "clean_exit": true,
+    "includes_startup_and_connection": true,
+    "http_request_count": null
+  },
+  "poll_tui": {
+    "duration_seconds": 30,
+    "peak_rss_kib": 10548,
+    "cpu_ticks": 1,
+    "cpu_seconds": 0.01,
+    "average_one_core_cpu_percent": 0.0333,
+    "terminal_bytes": 73912,
+    "expected_mode_label_seen": true,
+    "clean_exit": true,
+    "includes_startup_and_connection": true,
+    "http_request_count": null
+  },
+  "cpu_interpretation": "Zero ticks means below kernel accounting resolution, not zero computation",
+  "background_environment": "Shared WSL/Docker host; separate resource-limited Kind acceptance fixture; Clippy overlapped part of this run"
+}
