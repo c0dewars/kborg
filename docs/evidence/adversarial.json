@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "tested_at_utc": "2026-10-09T22:09:36.1450087Z",
-  "executable_sha256": "23c6695f76be3d269ebc2d292736aa84f85d7722b34f34046997467956b815be",
-  "run_id": "111b2b32fea5",
-  "source_revision": "99e32c5a2ab62691fdeeb7c4928978d294623e50",
+  "tested_at_utc": "2026-10-09T23:06:56.2713332Z",
+  "executable_sha256": "bffd114cb0a027a4306753c6363f912408b37df8480c1dcf6a0e03732f8deca7",
+  "run_id": "f0262f8efc26",
+  "source_revision": "8c3ef0d0deb679f15cc0abe73843d0714e86eee5",
   "operating_system": "Microsoft Windows NT 10.0.26300.0",
   "per_process_timeout_seconds": 5,
   "case_count": 44,
@@ -45,7 +45,7 @@
       "passed": true,
       "expected_rejection": true,
       "exit_code": 1,
-      "elapsed_ms": 20,
+      "elapsed_ms": 21,
       "timed_out": false,
       "unsafe_output_controls": false,
       "response_excerpt": "K8Borg: invalid theme JSON at line 1, column 36"
@@ -75,7 +75,7 @@
       "passed": true,
       "expected_rejection": true,
       "exit_code": 1,
-      "elapsed_ms": 21,
+      "elapsed_ms": 20,
       "timed_out": false,
       "unsafe_output_controls": false,
       "response_excerpt": "K8Borg: invalid theme JSON at line 1, column 119"
@@ -95,7 +95,7 @@
       "passed": true,
       "expected_rejection": true,
       "exit_code": 1,
-      "elapsed_ms": 22,
+      "elapsed_ms": 20,
       "timed_out": false,
       "unsafe_output_controls": false,
       "response_excerpt": "K8Borg: invalid or reserved custom theme id"
@@ -105,7 +105,7 @@
       "passed": true,
       "expected_rejection": true,
       "exit_code": 1,
-      "elapsed_ms": 21,
+      "elapsed_ms": 20,
       "timed_out": false,
       "unsafe_output_controls": false,
       "response_excerpt": "K8Borg: base must be a fixed built-in theme"
@@ -125,7 +125,7 @@
       "passed": true,
       "expected_rejection": true,
       "exit_code": 1,
-      "elapsed_ms": 20,
+      "elapsed_ms": 21,
       "timed_out": false,
       "unsafe_output_controls": false,
       "response_excerpt": "K8Borg: color must be #RRGGBB"
@@ -135,7 +135,7 @@
       "passed": true,
       "expected_rejection": true,
       "exit_code": 1,
-      "elapsed_ms": 21,
+      "elapsed_ms": 20,
       "timed_out": false,
       "unsafe_output_controls": false,
       "response_excerpt": "K8Borg: text/background contrast is below 4.5:1; choose a lighter or darker foreground"
@@ -145,7 +145,7 @@
       "passed": true,
       "expected_rejection": true,
       "exit_code": 1,
-      "elapsed_ms": 21,
+      "elapsed_ms": 20,
       "timed_out": false,
       "unsafe_output_controls": false,
       "response_excerpt": "K8Borg: theme name must be short plain text"
@@ -155,7 +155,7 @@
       "passed": true,
       "expected_rejection": true,
       "exit_code": 1,
-      "elapsed_ms": 21,
+      "elapsed_ms": 20,
       "timed_out": false,
       "unsafe_output_controls": false,
       "response_excerpt": "K8Borg: theme name must be short plain text"
@@ -165,7 +165,7 @@
       "passed": true,
       "expected_rejection": true,
       "exit_code": 1,
-      "elapsed_ms": 21,
+      "elapsed_ms": 20,
       "timed_out": false,
       "unsafe_output_controls": false,
       "response_excerpt": "K8Borg: theme name must be short plain text"
@@ -175,7 +175,7 @@
       "passed": true,
       "expected_rejection": true,
       "exit_code": 1,
-      "elapsed_ms": 21,
+      "elapsed_ms": 22,
       "timed_out": false,
       "unsafe_output_controls": false,
       "response_excerpt": "K8Borg: unknown color role: role"
@@ -195,7 +195,7 @@
       "passed": true,
       "expected_rejection": true,
       "exit_code": 1,
-      "elapsed_ms": 21,
+      "elapsed_ms": 22,
       "timed_out": false,
       "unsafe_output_controls": false,
       "response_excerpt": "K8Borg: invalid theme JSON at line 1, column 4"
@@ -205,7 +205,7 @@
       "passed": true,
       "expected_rejection": true,
       "exit_code": 1,
-      "elapsed_ms": 22,
+      "elapsed_ms": 20,
       "timed_out": false,
       "unsafe_output_controls": false,
       "response_excerpt": "K8Borg: invalid theme JSON at line 1, column 1"
@@ -225,7 +225,7 @@
       "passed": true,
       "expected_rejection": true,
       "exit_code": 1,
-      "elapsed_ms": 20,
+      "elapsed_ms": 21,
       "timed_out": false,
       "unsafe_output_controls": false,
       "response_excerpt": "K8Borg: invalid or reserved custom theme id"
@@ -245,7 +245,7 @@
       "passed": true,
       "expected_rejection": true,
       "exit_code": 1,
-      "elapsed_ms": 21,
+      "elapsed_ms": 22,
       "timed_out": false,
       "unsafe_output_controls": false,
       "response_excerpt": "K8Borg: invalid kubeconfig YAML (details suppressed to protect credentials)"
@@ -255,7 +255,7 @@
       "passed": true,
       "expected_rejection": true,
       "exit_code": 1,
-      "elapsed_ms": 24,
+      "elapsed_ms": 22,
       "timed_out": false,
       "unsafe_output_controls": false,
       "response_excerpt": "K8Borg: file exceeds 1048576 byte limit"
@@ -265,7 +265,7 @@
       "passed": true,
       "expected_rejection": true,
       "exit_code": 1,
-      "elapsed_ms": 21,
+      "elapsed_ms": 22,
       "timed_out": false,
       "unsafe_output_controls": false,
       "response_excerpt": "K8Borg: invalid kubeconfig YAML (details suppressed to protect credentials)"
@@ -285,7 +285,7 @@
       "passed": true,
       "expected_rejection": true,
       "exit_code": 1,
-      "elapsed_ms": 22,
+      "elapsed_ms": 20,
       "timed_out": false,
       "unsafe_output_controls": false,
       "response_excerpt": "K8Borg: duplicate kubeconfig names are ambiguous and forbidden"
@@ -315,7 +315,7 @@
       "passed": true,
       "expected_rejection": true,
       "exit_code": 1,
-      "elapsed_ms": 22,
+      "elapsed_ms": 21,
       "timed_out": false,
       "unsafe_output_controls": false,
       "response_excerpt": "K8Borg: kubeconfig names must be bounded text without terminal controls"
@@ -335,7 +335,7 @@
       "passed": true,
       "expected_rejection": false,
       "exit_code": 0,
-      "elapsed_ms": 21,
+      "elapsed_ms": 22,
       "timed_out": false,
       "unsafe_output_controls": false,
       "response_excerpt": "[\n  \"synthetic\"\n]"
@@ -355,7 +355,7 @@
       "passed": true,
       "expected_rejection": true,
       "exit_code": 1,
-      "elapsed_ms": 20,
+      "elapsed_ms": 21,
       "timed_out": false,
       "unsafe_output_controls": false,
       "response_excerpt": "K8Borg: noninteractive writes are disabled; use the interactive TUI or terminal confirmation"
@@ -365,7 +365,7 @@
       "passed": true,
       "expected_rejection": true,
       "exit_code": 1,
-      "elapsed_ms": 20,
+      "elapsed_ms": 21,
       "timed_out": false,
       "unsafe_output_controls": false,
       "response_excerpt": "K8Borg: noninteractive writes are disabled; use the interactive TUI or terminal confirmation"
@@ -385,7 +385,7 @@
       "passed": true,
       "expected_rejection": true,
       "exit_code": 1,
-      "elapsed_ms": 20,
+      "elapsed_ms": 21,
       "timed_out": false,
       "unsafe_output_controls": false,
       "response_excerpt": "K8Borg: Copilot host must be github.com or an Enterprise Cloud *.ghe.com hostname; Enterprise Server is not assumed supported"
@@ -405,7 +405,7 @@
       "passed": true,
       "expected_rejection": true,
       "exit_code": 1,
-      "elapsed_ms": 21,
+      "elapsed_ms": 20,
       "timed_out": false,
       "unsafe_output_controls": false,
       "response_excerpt": "K8Borg: invalid object name"
@@ -415,7 +415,7 @@
       "passed": true,
       "expected_rejection": true,
       "exit_code": 1,
-      "elapsed_ms": 22,
+      "elapsed_ms": 21,
       "timed_out": false,
       "unsafe_output_controls": false,
       "response_excerpt": "K8Borg: unknown option; see --help"
@@ -435,7 +435,7 @@
       "passed": true,
       "expected_rejection": true,
       "exit_code": 1,
-      "elapsed_ms": 20,
+      "elapsed_ms": 19,
       "timed_out": false,
       "unsafe_output_controls": false,
       "response_excerpt": "K8Borg: cannot create file (it may already exist)"
