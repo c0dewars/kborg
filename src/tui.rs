@@ -381,6 +381,7 @@ impl App {
             }
             match reply {
                 Reply::Connected(c, s, n, k) => {
+                    let selected_kind = self.kind();
                     self.connecting_epoch = None;
                     self.context = c;
                     self.server = s;
@@ -388,9 +389,20 @@ impl App {
                         self.namespace = n;
                     }
                     self.kinds = k;
+                    let retained_kind = self
+                        .kinds
+                        .iter()
+                        .position(|kind| kind.key() == selected_kind);
+                    self.kind_index = retained_kind.unwrap_or(0);
                     self.connected = true;
-                    self.refresh = true;
-                    self.status = "Connected. READ ONLY unless explicitly enabled.".into();
+                    self.refresh = retained_kind.is_some();
+                    self.watch_blocked = retained_kind.is_none();
+                    self.status = if retained_kind.is_some() {
+                        "Connected. READ ONLY unless explicitly enabled."
+                    } else {
+                        "Selected resource needs catalog refresh; press R before resuming."
+                    }
+                    .into();
                 }
                 Reply::Items(value) => {
                     self.replace_items(value["items"].as_array().cloned().unwrap_or_default());
@@ -708,7 +720,9 @@ impl App {
                 KeyCode::Char('?') => self.modal = Modal::Help(0),
                 KeyCode::Char('r') => {
                     if self.watch_blocked {
+                        self.options.connection.context = Some(self.context.clone());
                         self.connect();
+                        self.namespace_override = true;
                     } else if self.connected {
                         self.refresh = true;
                     } else if !self.busy {
@@ -1567,5 +1581,39 @@ mod layout_tests {
         let wrapped = wrap_text(&text, 48);
         assert!(wrapped.lines().all(|line| line.chars().count() <= 48));
         assert_eq!(wrapped.replace('\n', ""), text);
+    }
+    #[test]
+    fn reauthentication_keeps_context_namespace_and_resource_identity() {
+        let (mut app, replies, mut commands) = harness();
+        app.kinds.swap(0, 10);
+        app.kind_index = 0;
+        app.watch_blocked = true;
+        assert_eq!(app.kind(), "configmaps");
+        assert!(app.key(KeyCode::Char('r')).is_ok());
+        let epoch = app.epoch;
+        match commands.try_recv() {
+            Ok((e, Task::Connect(options))) => {
+                assert_eq!(e, epoch);
+                assert_eq!(options.context.as_deref(), Some("test"));
+            }
+            _ => panic!("reauthentication did not pin the current context"),
+        }
+        assert!(
+            replies
+                .send((
+                    epoch,
+                    Reply::Connected(
+                        "test".into(),
+                        "server".into(),
+                        "default".into(),
+                        crate::gateway::kinds()
+                    )
+                ))
+                .is_ok()
+        );
+        app.receive();
+        assert_eq!(app.namespace, "test");
+        assert_eq!(app.kind(), "configmaps");
+        assert!(app.refresh && !app.watch_blocked);
     }
 }

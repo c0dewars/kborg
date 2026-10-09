@@ -4,3 +4,6 @@
 *.kubeconfig
 test-results/
 /dist/
+
+__pycache__/
+*.pyc

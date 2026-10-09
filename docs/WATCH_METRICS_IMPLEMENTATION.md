@@ -16,7 +16,7 @@ A background Tokio task consumes the feed while the API command worker remains a
 
 ## Validation
 
-- 48 unit tests passed, plus the separate independent metrics quantity contract; formatting and all-target Clippy with warnings denied passed.
+- 49 unit tests passed, plus the separate independent metrics quantity contract; formatting and all-target Clippy with warnings denied passed.
 - Controlled watch transport cases cover UID replacement/deletion, bookmark resume, 410 rebuild, 401/403 terminal revocation, malformed/oversized bodies, incomplete/inconsistent pagination, cache limits, event coalescing and unsupported 404/405/501 endpoints.
 - Controlled metrics HTTP cases cover pod/node/scoped paths, exact quantities, measurement time, pagination/duplicates/inconsistent versions, sanitized errors and object/container/page/body budgets. These are mocks rather than claims of an installed metrics server.
 - UI reducer cases cover obsolete sessions, a namespace changed during connection, stale scope snapshots, revoked-view clearing, a producer burst with no UI consumption, retained unknown write outcomes, preserved selection/captured scale identity and metrics errors that leave resource data intact.
@@ -42,4 +42,8 @@ Remaining work includes broader fault/soak/discovery-memory testing, authoritati
 
 Secure metrics-server0.8.1 interoperability passed on a dedicated Kubernetes1.34.11 cluster: two container samples, one node sample and a real ConfigMap watch update. Kubelet scraping used the verified cluster CA and serving certificates; API aggregation used a custom SAN certificate and matching caBundle without insecureSkipTLSVerify. The node was capped at4GiB/4CPUs and deleted with credentials/private keys. See SECURE_METRICS_INTEROP.md and evidence/secure-metrics-kubernetes-1.34.json.
 
-WSL native Linux compiled and passed48unit tests plus the independent metrics contract and Clippy. Two30second runs measured10.10MiB LIVE /10.30MiB POLL RSS; CPU was below tick resolution /10ms, so no meaningful efficiency advantage is claimed. NDJSON first snapshot and consumer-close exit passed. See WATCH_METRICS_PERFORMANCE.md for environment, contention, measurement and request-count limitations.
+WSL native Linux compiled and passed48unit tests before the final reconnect regression plus the independent metrics contract and Clippy. Two30second runs measured10.10MiB LIVE /10.30MiB POLL RSS; CPU was below tick resolution /10ms, so no meaningful efficiency advantage is claimed. NDJSON first snapshot and consumer-close exit passed. See WATCH_METRICS_PERFORMANCE.md for environment, contention, measurement and request-count limitations.
+
+
+Final reconnect regression: explicit reauthentication pins the current context and retains namespace/resource identity across a refreshed catalog. A missing custom resource stops for explicit catalog refresh instead of silently reading another resource. The corresponding49thunit test passed.
+
