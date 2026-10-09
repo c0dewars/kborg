@@ -1,0 +1,41 @@
+K8Borg 0.1 — Kubernetes operations, under your control
+
+  k8borg                         Interactive resource browser (READ ONLY)
+  k8borg demo                    Offline sample cluster; no credentials
+  k8borg startup on|off          Persist startup animation preference
+  k8borg copilot context RESOURCE NAME --output NEW.json
+  k8borg copilot login --cli ABSOLUTE_PATH --host github.com
+  k8borg contexts                List contexts without connecting
+  k8borg doctor                  Verify selected context and pod access
+  k8borg resources               Discover API resources (Secrets excluded)
+  k8borg list <resource>          Bounded resource table; --json for pipelines
+  k8borg get <resource> <name>    Redacted JSON object
+  k8borg logs <pod> [container]  Bounded logs; --allow-logs required
+  k8borg scale <name> <replicas>  Deployment scale with terminal approval
+  k8borg restart <name>          Guarded deployment rollout
+  k8borg delete <resource> <name> Guarded deletion; no force
+
+Options (may appear before or after commands):
+  --context NAME     --namespace NAME / -n NAME ("*" for all on reads)
+  --kubeconfig FILE  --write (explicit mutation opt-in; default READ ONLY)
+  --allow-logs       --theme ID       --color=never       --json
+  --no-splash (or K8BORG_NO_SPLASH)    --demo            --readonly       --version          --help
+
+Themes:
+  theme list | use ID | reset | new ID --base BUILTIN
+  theme validate FILE | preview FILE | install FILE
+  theme export ID --output FILE | remove ID
+
+TUI keys:
+  Up/Down, j/k: select   Tab: resource list/table   Enter: details
+  /: filter cached rows   r: refresh   c: contexts   n: namespaces
+  R: API discovery       l: pod logs  L: previous pod logs
+  t: theme picker        ?: help      Esc: close dialog    q: quit
+  s: scale deployment    x: restart   Delete: guarded delete (needs --write)
+  PgUp/PgDown: scroll details/logs     Mouse: click rows / scroll
+
+Security: TLS required; Secret reads, auth helpers, impersonation, AI,
+plugins, generic edits, exec/attach and port-forward are disabled in 0.1.
+All real clusters are labeled PRODUCTION; context names do not establish trust.
+Auto refresh uses bounded polling (not server watches in this iteration).
+

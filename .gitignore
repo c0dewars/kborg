@@ -1,0 +1,6 @@
+/target/
+/.local/
+*.tmp
+*.kubeconfig
+test-results/
+/dist/

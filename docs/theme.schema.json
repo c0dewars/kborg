@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "K8Borg custom theme v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "id", "name", "base", "colors"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "id": {"type": "string", "minLength": 1, "maxLength": 63, "pattern": "^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$"},
+    "name": {"type": "string", "minLength": 1, "maxLength": 80},
+    "base": {"enum": ["k8borg-dark", "k8borg-light", "k8borg-high-contrast", "catppuccin-latte", "catppuccin-frappe", "catppuccin-macchiato", "catppuccin-mocha", "dracula", "nord", "gruvbox-dark", "gruvbox-light", "tokyo-night-night", "tokyo-night-storm", "tokyo-night-moon", "tokyo-night-day", "solarized-dark", "solarized-light"]},
+    "colors": {
+      "type": "object",
+      "propertyNames": {"enum": ["background", "text", "muted", "accent", "success", "warning", "danger", "focus", "selection_background", "selection_text", "status_background", "status_text"]},
+      "additionalProperties": {"type": "string", "pattern": "^#[0-9a-fA-F]{6}$"}
+    }
+  },
+  "$comment": "The application additionally enforces reserved IDs, plain-text names, duplicate-key rejection, byte limits, base resolution, filesystem checks and contrast. This editor schema cannot replace theme validate."
+}
