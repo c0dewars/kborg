@@ -1,6 +1,6 @@
 [package]
 name = "k8borg"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.89"
 description = "Kubernetes operations, under your control"
@@ -17,6 +17,7 @@ tokio = { version = "1", features = ["rt", "time", "net", "sync"] }
 http = "1"
 http-body-util = "0.1"
 tower = { version = "0.5", default-features = false, features = ["util"] }
+futures-util = { version = "0.3", default-features = false, features = ["std", "async-await"] }
 
 [profile.release]
 lto = "thin"
@@ -31,4 +32,3 @@ unsafe_code = "forbid"
 [lints.clippy]
 unwrap_used = "deny"
 expect_used = "deny"
-

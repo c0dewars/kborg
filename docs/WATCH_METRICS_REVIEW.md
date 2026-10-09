@@ -1,0 +1,42 @@
+# Independent watch and metrics security review
+
+Review date: 2026-10-09. This is source review plus targeted regression and isolated Docker Desktop acceptance, not production certification. Reviewed the development guide, existing gateway/policy boundaries, worker/reducer, and new watch/metrics modules. The reviewer owns `tests/watch_metrics_acceptance.rs` and `scripts/Test-WatchMetrics.ps1`; runtime implementation belongs to other agents.
+
+## Boundary requirements and findings
+
+* Keep LIST/WATCH read-only and scoped through Gateway. Secret kinds must fail before network access. A public raw-Api WatchFeed constructor initially bypassed that guard; its visibility was narrowed to crate-only and a constructor Secret guard added.
+* Bind feeds to caller scope/session epoch. Drop old feeds on context, namespace or kind change; reject late old snapshots in the reducer. Preserve mutation outcomes, whose audit and reconciliation responsibilities continue independently. The initial sequential worker must not await a long stream or allow replaceable snapshots to block mutation results.
+* Authorization failure (401/403) clears cache and resourceVersion and becomes terminal. Repeated `next` must not issue new requests. Expired versions (410) clear/relist with bounded backoff; ordinary reconnects retain stale objects until valid events arrive. Backoff now includes bounded per-feed jitter.
+* Enforce object, aggregate byte, page, stream and concurrency limits. Bound metadata/continuation tokens and validate namespace/kind before cache insertion. Pull-driven feeds do not create an unbounded producer queue; event coalescing limits each snapshot to 100 consumed events.
+* A failed/incomplete cache must remain stale even when also truncated. Review identified limit failures clearing cache while setting stale=false; the owner corrected both initial and repeated terminal snapshots to stale=true and added regression coverage. Never infer deletion from absent objects in a failed cache.
+* Metrics are optional read-only measurements. CPU uses checked integer nanocores and exact decimal millicores; memory uses bytes, with explicit upward rounding. Reject negative, malformed, overflowing or control-bearing quantities and binary CPU units. Validate timestamp/window and selected namespace. Preserve only the reviewed measurement projection; errors must suppress API-controlled Status messages and bodies.
+
+## Independent acceptance evidence
+
+`cargo test --test watch_metrics_acceptance` passed the independent quantity contract (1 passed, 2 cluster tests ignored by default). It covers n/u/decimal CPU precision, SI versus binary memory, sub-byte upward rounding, malformed quantities, controls, numeric overflow, oversized strings, rejected binary CPU units and static error messages without echoed input.
+
+`scripts/Test-WatchMetrics.ps1 -ExpectedServer https://127.0.0.1:64170` passed both real cluster tests on Docker Desktop Kubernetes v1.36.1, kubectl v1.36.1 and Docker Engine 29.8.2. The run provisioned its own namespace `k8borg-watch-86558adee735`, a ConfigMap-only get/list/watch Role, reader and denied ServiceAccounts, and ten-minute token kubeconfigs with protected Windows directory ACLs. It exercised initial LIST/resourceVersion, ADDED, MODIFIED label, DELETED, stream drop and fresh replacement feed, terminal RBAC denial, repeated denied call, and deletion of the cached reader identity's scoped RoleBinding followed by 403/cache+resourceVersion clearing on its next watch request, local Secret rejection and ConfigMap payload canary exclusion. The namespace was ownership-checked and deleted; token files were removed. Evidence: `test-results/watch-86558adee735.json`.
+
+Read-only APIService lookup confirmed `v1beta1.metrics.k8s.io` is absent. The metrics acceptance verifies clean unavailable-or-forbidden errors for pod and node requests without credentials, API identity or payload canaries. No metrics server or cluster component was installed; no insecure TLS option was used. This Desktop run proves optional-API behavior; separate later owned kind evidence proves real metrics-server interoperability with both TLS hops verified.
+
+Implementation-owned mock tests cover 410 relist, authorization revocation, bookmark/resourceVersion reconnect, delete/recreate UID handling, malformed/oversized stream responses, cache growth bounds and 100-event coalescing. These controlled transport tests are separate from live Desktop evidence: the live test does not force server compaction, network loss or instantaneous authorization revocation on an already-open stream. Kubernetes authorization changes are evaluated on new requests; an existing HTTP watch may continue until it ends. Short watch lifetimes reduce the reauthorization interval, not instantaneous revocation.
+
+## Remaining production evidence
+
+Verified-TLS real metrics-server interoperability is now exercised on an owned temporary Kubernetes 1.34.11 cluster, including two container rows and one node row; see SECURE_METRICS_INTEROP.md and evidence/secure-metrics-kubernetes-1.34.json. Real Desktop RBAC denial and controlled metrics API denial tests remain distinct evidence. Exercise UI context-switch races and bounded result backpressure with mutation outcomes; record the source revision and results. Expand sustained hot-watch memory/CPU measurements and real disconnect/revocation/compaction tests. Existing platform, credential-helper, filesystem and organization-specific RBAC/audit production gates remain in force.
+
+
+
+## Follow-up review of asynchronous UI worker
+
+The worker now uses a bounded asynchronous command channel, a separate watch task, and a single replaceable snapshot slot. Publication checks the active epoch while holding the snapshot mutex; invalidation stores the new epoch, aborts the registered task, and clears the slot. Abort registration rechecks the epoch under its mutex, covering invalidation concurrent with task startup. Watch frames do not occupy the bounded command-result channel. Dropping the command sender terminates the worker and aborts the remaining watch task. Source inspection found no unbounded snapshot queue in this design; reducer concurrency tests are owned by the UI implementer.
+
+Two follow-up cases were reported to the UI owner for regression and resolution:
+
+1. A connection started at epoch A can finish after namespace input changes the view to epoch B. `connecting_epoch` can still equal A, permitting the special Connected reply path to overwrite the newer selected namespace with the kubeconfig namespace. A newer connection itself correctly replaces the pending connection epoch and rejects the previous reply. Scope inputs during connection need an explicit rule: block them, or preserve the newer selected scope when accepting connection identity.
+2. Live snapshots retain selection by row index rather than object identity. Insertions/deletions ahead of the selected row can change the object under the cursor, including while a scale form is being typed. The subsequent explicit immutable confirmation remains the mutation authorization boundary, so this is not an approval bypass. Preserve selection by namespace/name/UID and capture the intended scale object when opening its form to avoid surprising target changes.
+
+
+Both follow-up UI cases are corrected. The connection reply preserves an explicit namespace override while rejecting obsolete connection identities. Snapshot replacement preserves selected namespace/name/UID, and the scale form stores the selected name/UID before live rows change. Independent named regression runs passed for namespace change during connection, watch insertion/scale target preservation, a 1,000-frame producer burst coalescing to one slot, and mutation outcome preservation across epoch/watch updates. These are reducer/queue tests, separate from native terminal acceptance.
+
+The additional real Metrics Server acceptance passed on owned kind Kubernetes v1.34.11 with both TLS hops verified, two container metrics rows, one node metrics row and a live ConfigMap update. Final tracked evidence is `docs/evidence/secure-metrics-kubernetes-1.34.json`; provisioning details and primary references are in `docs/SECURE_METRICS_INTEROP.md`. The temporary cluster, admin/reader kubeconfigs and metrics serving private key were removed and verified absent. Existing Docker Desktop remains without an installed Metrics API.

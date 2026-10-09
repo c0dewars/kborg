@@ -22,7 +22,7 @@ use crossterm::{
 use serde_json::Value;
 use std::{
     io::{self, IsTerminal, Write},
-    sync::mpsc::{self, Receiver, SyncSender},
+    sync::mpsc::{self, Receiver},
     time::{Duration, Instant},
 };
 
@@ -77,10 +77,12 @@ impl Drop for Terminal {
 enum Task {
     Connect(Connection),
     List(String, String),
+    Watch(String, String),
+    Metrics(crate::metrics::MetricsScope, String),
     Get(String, String, String),
     Logs(String, String, bool),
     Discover,
-    Prepare(String, String, String, Action),
+    Prepare(String, String, String, Option<String>, Action),
     Execute(Box<Prepared>, Approval),
 }
 enum Reply {
@@ -91,14 +93,53 @@ enum Reply {
     Prepared(Box<Prepared>),
     Notice(String),
     Failure(String),
+    Watching,
+    Metrics(Result<String>),
 }
+#[derive(Default)]
+struct WatchSlot {
+    epoch: std::sync::atomic::AtomicU64,
+    snapshot: std::sync::Mutex<Option<(u64, crate::watch::WatchSnapshot)>>,
+    abort: std::sync::Mutex<Option<tokio::task::AbortHandle>>,
+}
+impl WatchSlot {
+    fn invalidate(&self, epoch: u64) {
+        self.epoch.store(epoch, std::sync::atomic::Ordering::SeqCst);
+        if let Ok(mut abort) = self.abort.lock()
+            && let Some(handle) = abort.take()
+        {
+            handle.abort();
+        }
+        self.clear();
+    }
+    fn clear(&self) {
+        if let Ok(mut slot) = self.snapshot.lock() {
+            *slot = None;
+        }
+    }
+    fn publish(&self, epoch: u64, snapshot: crate::watch::WatchSnapshot) {
+        if let Ok(mut slot) = self.snapshot.lock()
+            && self.epoch.load(std::sync::atomic::Ordering::SeqCst) == epoch
+        {
+            *slot = Some((epoch, snapshot));
+        }
+    }
+    fn take(&self) -> Option<(u64, crate::watch::WatchSnapshot)> {
+        self.snapshot.lock().ok().and_then(|mut slot| slot.take())
+    }
+}
+type WatchMailbox = std::sync::Arc<WatchSlot>;
+
 struct Worker {
-    tx: SyncSender<(u64, Task)>,
+    tx: tokio::sync::mpsc::Sender<(u64, Task)>,
     rx: Receiver<(u64, Reply)>,
+    watch: WatchMailbox,
 }
 fn worker() -> Worker {
-    let (tx, commands) = mpsc::sync_channel::<(u64, Task)>(4);
+    let (tx, mut commands) = tokio::sync::mpsc::channel::<(u64, Task)>(4);
     let (results, rx) = mpsc::sync_channel(4);
+    let watch: WatchMailbox = std::sync::Arc::new(WatchSlot::default());
+    let watch_results = watch.clone();
     std::thread::spawn(move || {
         let rt = match runtime() {
             Ok(rt) => rt,
@@ -107,40 +148,80 @@ fn worker() -> Worker {
                 return;
             }
         };
-        let mut gateway: Option<Gateway> = None;
-        while let Ok((epoch, task)) = commands.recv() {
-            let reply=rt.block_on(async {
-                match task {
-                    Task::Connect(options)=>{gateway=None;match tokio::time::timeout(Duration::from_secs(15),Gateway::connect(options)).await {
-                        Ok(Ok(g))=>{let reply=Reply::Connected(g.context.clone(),g.server.clone(),g.namespace.clone(),g.kinds.clone());gateway=Some(g);reply},
-                        Ok(Err(e))=>Reply::Failure(e),Err(_)=>Reply::Failure("connection timeout; select a context or retry".into()),
-                    }},
-                    task=>{
-                        let Some(g)=gateway.as_mut() else{return Reply::Failure("not connected; select a context or retry".into());};
-                        let future=async {
-                            Ok(match task {
-                                Task::List(k,n)=>Reply::Items(g.list(&k,&n).await?),
-                                Task::Get(k,n,name)=>Reply::Detail(serde_json::to_string_pretty(&g.get(&k,&n,&name).await?).map_err(|_|"serialization failed")?),
-                                Task::Logs(n,name,previous)=>Reply::Detail(g.logs(&n,&name,None,previous).await?),
-                                Task::Discover=>Reply::Catalog(g.discover().await?),
-                                Task::Prepare(k,n,name,a)=>Reply::Prepared(Box::new(g.prepare(&k,&n,&name,a).await?)),
-                                Task::Execute(p,a)=>Reply::Notice(g.execute(*p,a).await?),
-                                Task::Connect(_)=>return Err("invalid worker task".into()),
-                            })
-                        };
-                        // Execution has its own timeout and must always finish its audit recording.
-                        match tokio::time::timeout(Duration::from_secs(25),future).await {
-                            Ok(Ok(reply))=>reply,Ok(Err(e))=>Reply::Failure(e),Err(_)=>Reply::Failure("request timed out; data STALE, mutation outcome potentially UNKNOWN".into()),
+        rt.block_on(async move {
+            let mut gateway: Option<Gateway> = None;
+            let mut watch_job: Option<tokio::task::JoinHandle<()>> = None;
+            while let Some((epoch, task)) = commands.recv().await {
+                if matches!(&task, Task::Connect(_) | Task::Watch(..) | Task::List(..)) {
+                    if let Some(job) = watch_job.take() { job.abort(); }
+                    watch_results.clear();
+                }
+                let reply = match task {
+                    Task::Connect(options) => {
+                        gateway = None;
+                        match tokio::time::timeout(Duration::from_secs(15), Gateway::connect(options)).await {
+                            Ok(Ok(g)) => {
+                                let reply = Reply::Connected(g.context.clone(), g.server.clone(), g.namespace.clone(), g.kinds.clone());
+                                gateway = Some(g);
+                                reply
+                            }
+                            Ok(Err(e)) => Reply::Failure(e),
+                            Err(_) => Reply::Failure("connection timeout; select a context or retry".into()),
                         }
                     }
-                }
-            });
-            if results.send((epoch, reply)).is_err() {
-                break;
+                    Task::Watch(k, n) => {
+                        match gateway.as_ref().ok_or("not connected; select a context or retry".to_string()).and_then(|g| g.watch(&k, &n)) {
+                            Err(e) => Reply::Failure(e),
+                            Ok(mut feed) => {
+                                let mailbox = watch_results.clone();
+                                watch_job = Some(tokio::spawn(async move {
+                                    loop {
+                                        let snapshot = feed.next().await;
+                                        let terminal = snapshot.terminal;
+                                        mailbox.publish(epoch, snapshot);
+                                        if terminal { break; }
+                                    }
+                                }));
+                                if let Some(job) = &watch_job && let Ok(mut handle) = watch_results.abort.lock() {
+                                    if watch_results.epoch.load(std::sync::atomic::Ordering::SeqCst) == epoch { *handle = Some(job.abort_handle()); }
+                                    else { job.abort(); }
+                                }
+                                Reply::Watching
+                            }
+                        }
+                    }
+                    task => {
+                        if let Some(g) = gateway.as_mut() {
+                            let future = async {
+                                Ok(match task {
+                                    Task::List(k,n) => Reply::Items(g.list(&k,&n).await?),
+                                    Task::Get(k,n,name) => Reply::Detail(serde_json::to_string_pretty(&g.get(&k,&n,&name).await?).map_err(|_| "serialization failed")?),
+                                    Task::Logs(n,name,previous) => Reply::Detail(g.logs(&n,&name,None,previous).await?),
+                                    Task::Metrics(scope,n) => Reply::Metrics(crate::metrics::collect(g,scope,&n).await.map(|v| v.text())),
+                                    Task::Discover => Reply::Catalog(g.discover().await?),
+                                    Task::Prepare(k,n,name,uid,a) => {
+                                        let prepared = g.prepare(&k,&n,&name,a).await?;
+                                        if uid.as_deref().is_some_and(|u| u != prepared.target.uid) { return Err("selected object was replaced; reselect it before approval".into()); }
+                                        Reply::Prepared(Box::new(prepared))
+                                    },
+                                    Task::Execute(p,a) => Reply::Notice(g.execute(*p,a).await?),
+                                    Task::Connect(_) | Task::Watch(..) => return Err("invalid worker task".into()),
+                                })
+                            };
+                            match tokio::time::timeout(Duration::from_secs(25), future).await {
+                                Ok(Ok(reply)) => reply,
+                                Ok(Err(e)) => Reply::Failure(e),
+                                Err(_) => Reply::Failure("request timed out; data STALE, mutation outcome potentially UNKNOWN".into()),
+                            }
+                        } else { Reply::Failure("not connected; select a context or retry".into()) }
+                    }
+                };
+                if results.send((epoch, reply)).is_err() { break; }
             }
-        }
+            if let Some(job) = watch_job { job.abort(); }
+        });
     });
-    Worker { tx, rx }
+    Worker { tx, rx, watch }
 }
 
 enum Modal {
@@ -150,7 +231,7 @@ enum Modal {
     Picker(&'static str, Vec<String>, usize),
     Themes(Vec<Theme>, usize, Theme),
     Confirm(Box<Prepared>, String),
-    Scale(String, String, String),
+    Scale(String, String, String, Option<String>, String),
     Help(usize),
 }
 struct App {
@@ -171,6 +252,12 @@ struct App {
     modal: Modal,
     epoch: u64,
     busy: bool,
+    command_epoch: Option<u64>,
+    connecting_epoch: Option<u64>,
+    watching: bool,
+    watch_blocked: bool,
+    sticky_status: bool,
+    namespace_override: bool,
     write_inflight: bool,
     connected: bool,
     refresh: bool,
@@ -214,8 +301,33 @@ impl App {
             )
         })
     }
+    fn selected_uid(&self) -> Option<String> {
+        self.visible()
+            .get(self.selected)
+            .and_then(|v| v["metadata"]["uid"].as_str())
+            .map(str::to_owned)
+    }
+    fn replace_items(&mut self, items: Vec<Value>) {
+        let identity = self.visible().get(self.selected).map(|v| {
+            (
+                v["metadata"]["namespace"].clone(),
+                v["metadata"]["name"].clone(),
+                v["metadata"]["uid"].clone(),
+            )
+        });
+        self.items = items;
+        self.selected = identity
+            .and_then(|(ns, name, uid)| {
+                self.visible().iter().position(|v| {
+                    v["metadata"]["namespace"] == ns
+                        && v["metadata"]["name"] == name
+                        && v["metadata"]["uid"] == uid
+                })
+            })
+            .unwrap_or_else(|| self.selected.min(self.visible().len().saturating_sub(1)));
+    }
     fn send(&mut self, task: Task) {
-        if self.busy {
+        if self.busy && !matches!(&task, Task::Connect(_)) {
             self.status = "Busy; wait for the current request.".into();
             return;
         }
@@ -223,6 +335,7 @@ impl App {
         match self.worker.tx.try_send((self.epoch, task)) {
             Ok(()) => {
                 self.busy = true;
+                self.command_epoch = Some(self.epoch);
                 self.write_inflight = writes;
             }
             Err(_) => self.status = "Request queue is full/closed.".into(),
@@ -234,35 +347,53 @@ impl App {
         self.selected = 0;
         self.stale = true;
         self.refresh = true;
+        self.watching = false;
+        self.watch_blocked = false;
+        self.sticky_status = false;
+        self.worker.watch.invalidate(self.epoch);
     }
     fn connect(&mut self) {
+        self.namespace_override = false;
         self.changed();
         self.connected = false;
         self.server = "connecting...".into();
+        self.connecting_epoch = Some(self.epoch);
         self.send(Task::Connect(self.options.connection.clone()));
     }
     fn receive(&mut self) -> bool {
         let mut changed = false;
         while let Ok((epoch, reply)) = self.worker.rx.try_recv() {
             changed = true;
-            let write_result = self.write_inflight;
-            self.busy = false;
-            self.write_inflight = false;
-            if epoch != self.epoch && !matches!(&reply, Reply::Connected(..)) && !write_result {
+            let command_result = self.command_epoch == Some(epoch);
+            let write_result = command_result && self.write_inflight;
+            if command_result {
+                self.busy = false;
+                self.write_inflight = false;
+                self.command_epoch = None;
+            }
+            let connection_result =
+                matches!(&reply, Reply::Connected(..)) && self.connecting_epoch == Some(epoch);
+            if matches!(&reply, Reply::Connected(..)) && !connection_result {
+                continue;
+            }
+            if epoch != self.epoch && !connection_result && !write_result {
                 continue;
             }
             match reply {
                 Reply::Connected(c, s, n, k) => {
+                    self.connecting_epoch = None;
                     self.context = c;
                     self.server = s;
-                    self.namespace = n;
+                    if !self.namespace_override {
+                        self.namespace = n;
+                    }
                     self.kinds = k;
                     self.connected = true;
                     self.refresh = true;
                     self.status = "Connected. READ ONLY unless explicitly enabled.".into();
                 }
                 Reply::Items(value) => {
-                    self.items = value["items"].as_array().cloned().unwrap_or_default();
+                    self.replace_items(value["items"].as_array().cloned().unwrap_or_default());
                     self.truncated = value["truncated"] == true;
                     self.selected = self.selected.min(self.visible().len().saturating_sub(1));
                     self.stale = false;
@@ -280,11 +411,18 @@ impl App {
                 }
                 Reply::Prepared(p) => self.modal = Modal::Confirm(p, String::new()),
                 Reply::Notice(text) => {
+                    self.sticky_status = true;
                     self.modal = Modal::None;
                     self.status = text;
                     self.refresh = true;
                 }
                 Reply::Failure(error) => {
+                    if self.connecting_epoch == Some(epoch) {
+                        self.connecting_epoch = None;
+                    }
+                    if write_result {
+                        self.sticky_status = true;
+                    }
                     self.stale = true;
                     if error.contains("API 401") || error.contains("API 403") {
                         self.items.clear();
@@ -292,6 +430,53 @@ impl App {
                     }
                     self.status = error;
                 }
+                Reply::Watching => {
+                    self.watching = true;
+                    self.status = "WATCH: synchronizing bounded snapshot...".into();
+                }
+                Reply::Metrics(result) => match result {
+                    Ok(text) => {
+                        let width = terminal::size()
+                            .map(|(w, _)| usize::from(w).saturating_sub(2))
+                            .unwrap_or(78)
+                            .max(1);
+                        self.modal = Modal::Detail(wrap_text(&text, width), 0);
+                    }
+                    Err(error) => {
+                        let width = terminal::size()
+                            .map(|(w, _)| usize::from(w).saturating_sub(2))
+                            .unwrap_or(78)
+                            .max(1);
+                        self.modal = Modal::Detail(
+                            wrap_text(
+                                &format!(
+                                    "METRICS unavailable\n{error}\nResource browsing remains available."
+                                ),
+                                width,
+                            ),
+                            0,
+                        );
+                    }
+                },
+            }
+        }
+        let snapshot = self.worker.watch.take();
+        if let Some((epoch, snapshot)) = snapshot
+            && epoch == self.epoch
+            && self.connected
+        {
+            changed = true;
+            self.replace_items(snapshot.objects);
+            self.selected = self.selected.min(self.visible().len().saturating_sub(1));
+            self.stale = snapshot.stale;
+            self.truncated = snapshot.truncated;
+            self.watching = !snapshot.terminal;
+            self.watch_blocked = snapshot.terminal;
+            if self.watch_blocked {
+                self.refresh = false;
+            }
+            if !self.write_inflight && !self.sticky_status {
+                self.status = snapshot.message;
             }
         }
         changed
@@ -319,7 +504,7 @@ impl App {
             return;
         }
         if let Some((k, n, name)) = self.selected_target() {
-            self.send(Task::Prepare(k, n, name, action));
+            self.send(Task::Prepare(k, n, name, self.selected_uid(), action));
         }
     }
     fn key(&mut self, code: KeyCode) -> Result<bool> {
@@ -328,6 +513,7 @@ impl App {
                 "Mutation in progress; wait for the result before navigating or quitting.".into();
             return Ok(false);
         }
+        self.sticky_status = false;
         let modal = std::mem::replace(&mut self.modal, Modal::None);
         match modal {
             Modal::Input(label, mut text) => match code {
@@ -339,6 +525,7 @@ impl App {
                     } else if label == "Namespace" {
                         if text == "*" || safety::valid_id(&text) {
                             self.namespace = text;
+                            self.namespace_override = true;
                             self.changed();
                         } else {
                             self.status = "Invalid namespace.".into();
@@ -391,6 +578,7 @@ impl App {
                             }
                         } else {
                             self.namespace = value.clone();
+                            self.namespace_override = true;
                             self.changed();
                         }
                     }
@@ -450,26 +638,24 @@ impl App {
                 }
                 _ => self.modal = Modal::Confirm(p, text),
             },
-            Modal::Scale(k, n, mut text) => match code {
+            Modal::Scale(k, n, name, uid, mut text) => match code {
                 KeyCode::Esc => {}
                 KeyCode::Enter => {
                     if let Ok(replicas) = text.parse() {
-                        if let Some((_, _, name)) = self.selected_target() {
-                            self.send(Task::Prepare(k, n, name, Action::Scale(replicas)));
-                        }
+                        self.send(Task::Prepare(k, n, name, uid, Action::Scale(replicas)));
                     } else {
                         self.status = "Enter replicas 0..20".into();
                     }
                 }
                 KeyCode::Char(c) if c.is_ascii_digit() && text.len() < 2 => {
                     text.push(c);
-                    self.modal = Modal::Scale(k, n, text);
+                    self.modal = Modal::Scale(k, n, name, uid, text);
                 }
                 KeyCode::Backspace => {
                     text.pop();
-                    self.modal = Modal::Scale(k, n, text);
+                    self.modal = Modal::Scale(k, n, name, uid, text);
                 }
-                _ => self.modal = Modal::Scale(k, n, text),
+                _ => self.modal = Modal::Scale(k, n, name, uid, text),
             },
             Modal::Help(offset) => match code {
                 KeyCode::Esc | KeyCode::Char('?') | KeyCode::Char('q') => {}
@@ -521,13 +707,32 @@ impl App {
                 KeyCode::Char('t') => self.theme_picker()?,
                 KeyCode::Char('?') => self.modal = Modal::Help(0),
                 KeyCode::Char('r') => {
-                    if self.connected {
+                    if self.watch_blocked {
+                        self.connect();
+                    } else if self.connected {
                         self.refresh = true;
                     } else if !self.busy {
                         self.connect();
                     }
                 }
                 KeyCode::Char('R') => self.send(Task::Discover),
+                KeyCode::Char('m') => self.send(Task::Metrics(
+                    if self.kind() == "nodes" {
+                        crate::metrics::MetricsScope::Nodes
+                    } else {
+                        crate::metrics::MetricsScope::Pods
+                    },
+                    self.namespace.clone(),
+                )),
+                KeyCode::Char('w') => {
+                    if self.options.connection.demo {
+                        self.status =
+                            "DEMO uses synthetic polling; live watches require a cluster.".into();
+                    } else {
+                        self.options.poll = !self.options.poll;
+                        self.changed();
+                    }
+                }
                 KeyCode::Char('l') | KeyCode::Char('L') => {
                     if let Some((k, n, name)) = self.selected_target() {
                         if k == "pods" {
@@ -543,8 +748,8 @@ impl App {
                             "READ ONLY: enable --write before requesting a mutation.".into();
                     } else if self.kind() != "deployments.apps" {
                         self.status = "Scale applies to deployments; select a deployment.".into();
-                    } else if let Some((k, n, _)) = self.selected_target() {
-                        self.modal = Modal::Scale(k, n, String::new());
+                    } else if let Some((k, n, name)) = self.selected_target() {
+                        self.modal = Modal::Scale(k, n, name, self.selected_uid(), String::new());
                     }
                 }
                 KeyCode::Char('x') => self.prepare(Action::Restart),
@@ -649,7 +854,14 @@ fn draw(app: &App) -> Result<()> {
         2,
         w,
         &format!(
-            " [c] contexts [n] namespace [t] themes [?] help | {}{}",
+            " [c] context [n] namespace [t] theme [m] metrics [w] {} | {}{}",
+            if app.options.poll || app.options.connection.demo {
+                "POLL"
+            } else if app.watching && !app.stale && !app.truncated {
+                "LIVE"
+            } else {
+                "WATCH"
+            },
             if app.busy { "LOADING " } else { "" },
             if app.stale { "STALE" } else { "" }
         ),
@@ -763,11 +975,11 @@ fn draw(app: &App) -> Result<()> {
                     format!(" {label}: {text}_"),
                     " Enter apply | Esc cancel".into(),
                 ],
-                Modal::Detail(text, offset) => {
-                    std::iter::once(" DETAILS / LOGS — PgUp/PgDown scroll; Esc close".into())
-                        .chain(text.lines().skip(*offset).map(|s| format!(" {s}")))
-                        .collect()
-                }
+                Modal::Detail(text, offset) => std::iter::once(
+                    " DETAILS / LOGS / METRICS — PgUp/PgDown scroll; Esc close".into(),
+                )
+                .chain(text.lines().skip(*offset).map(|s| format!(" {s}")))
+                .collect(),
                 Modal::Picker(label, list, index) => {
                     std::iter::once(format!(" {label} — arrows / Enter select / Esc cancel"))
                         .chain(
@@ -801,8 +1013,8 @@ fn draw(app: &App) -> Result<()> {
                     lines
                 }
                 Modal::Confirm(p, text) => confirmation_lines(&p.summary, text, w),
-                Modal::Scale(_, _, text) => vec![
-                    format!(" SCALE DEPLOYMENT — enter replicas 0..20: {text}_"),
+                Modal::Scale(_, _, name, _, text) => vec![
+                    format!(" SCALE {name} — enter replicas 0..20: {text}_"),
                     " Enter server dry-run/review | Esc cancel".into(),
                 ],
                 Modal::Help(offset) => {
@@ -854,6 +1066,21 @@ fn confirmation_lines(summary: &str, text: &str, width: u16) -> Vec<String> {
         })
         .collect()
 }
+fn wrap_text(text: &str, width: usize) -> String {
+    text.lines()
+        .flat_map(|line| {
+            let chars: Vec<char> = line.chars().collect();
+            if chars.is_empty() {
+                return vec![String::new()];
+            }
+            chars
+                .chunks(width.max(1))
+                .map(|chunk| chunk.iter().collect::<String>())
+                .collect()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
 
 pub fn run(options: Options) -> Result<()> {
     let first_run = options.theme.is_none() && themes::first_run()?;
@@ -884,6 +1111,12 @@ pub fn run(options: Options) -> Result<()> {
         modal: Modal::None,
         epoch: 0,
         busy: false,
+        command_epoch: None,
+        connecting_epoch: None,
+        watching: false,
+        watch_blocked: false,
+        sticky_status: false,
+        namespace_override: false,
         write_inflight: false,
         connected: false,
         refresh: true,
@@ -904,17 +1137,24 @@ pub fn run(options: Options) -> Result<()> {
         }
         if app.connected
             && !app.busy
+            && !app.watch_blocked
             && matches!(app.modal, Modal::None)
             && (app.refresh
-                || app.last_refresh.elapsed() > Duration::from_secs(if app.stale { 10 } else { 5 }))
+                || (!app.watching
+                    && app.last_refresh.elapsed()
+                        > Duration::from_secs(if app.stale { 10 } else { 5 })))
         {
             app.refresh = false;
             app.last_refresh = Instant::now();
-            app.send(Task::List(app.kind(), app.namespace.clone()));
+            app.send(if app.options.poll || app.options.connection.demo {
+                Task::List(app.kind(), app.namespace.clone())
+            } else {
+                Task::Watch(app.kind(), app.namespace.clone())
+            });
             dirty = true;
         }
         // At most one redraw per event-loop tick; polling never blocks terminal input.
-        if dirty || app.busy {
+        if dirty {
             draw(&app)?;
             dirty = false;
         }
@@ -1094,7 +1334,74 @@ pub fn preview(theme: Theme, color: bool) -> Result<()> {
 
 #[cfg(test)]
 mod layout_tests {
-    use super::confirmation_lines;
+    use super::*;
+
+    type Harness = (
+        App,
+        mpsc::SyncSender<(u64, Reply)>,
+        tokio::sync::mpsc::Receiver<(u64, Task)>,
+    );
+    fn harness() -> Harness {
+        let (tx, commands) = tokio::sync::mpsc::channel(4);
+        let (replies, rx) = mpsc::sync_channel(4);
+        let watch = std::sync::Arc::new(WatchSlot::default());
+        watch.invalidate(12);
+        (
+            App {
+                options: Options {
+                    connection: Connection::default(),
+                    theme: None,
+                    color: false,
+                    json: false,
+                    splash: false,
+                    poll: false,
+                    command: vec![],
+                },
+                theme: themes::builtins().remove(0),
+                context: "test".into(),
+                server: "test".into(),
+                namespace: "test".into(),
+                kinds: crate::gateway::kinds(),
+                kind_index: 0,
+                items: vec![],
+                selected: 0,
+                filter: String::new(),
+                left_focus: false,
+                status: "waiting".into(),
+                stale: false,
+                truncated: false,
+                modal: Modal::None,
+                epoch: 12,
+                busy: false,
+                command_epoch: None,
+                connecting_epoch: None,
+                watching: false,
+                watch_blocked: false,
+                sticky_status: false,
+                namespace_override: false,
+                write_inflight: false,
+                connected: true,
+                refresh: false,
+                last_refresh: Instant::now(),
+                worker: Worker { tx, rx, watch },
+            },
+            replies,
+            commands,
+        )
+    }
+    fn object(name: &str) -> Value {
+        serde_json::json!({"kind":"Deployment","metadata":{"name":name,"namespace":"test","uid":format!("uid-{name}")}})
+    }
+    fn snapshot(name: &str) -> crate::watch::WatchSnapshot {
+        crate::watch::WatchSnapshot {
+            objects: vec![object(name)],
+            resource_version: "rv".into(),
+            stale: false,
+            message: "LIVE".into(),
+            terminal: false,
+            truncated: false,
+        }
+    }
     #[test]
     fn confirmation_wrap_preserves_complete_target_and_effect() {
         let summary = format!(
@@ -1108,44 +1415,12 @@ mod layout_tests {
         assert!(displayed.contains(&summary.replace('\n', "")));
         assert!(displayed.contains("CONFIRM > typed-target_"));
     }
-
     #[test]
-    fn write_outcome_is_preserved_even_if_view_epoch_changed() {
-        use super::*;
-        let (tx, _commands) = mpsc::sync_channel(4);
-        let (replies, rx) = mpsc::sync_channel(4);
-        let options = Options {
-            connection: Connection::default(),
-            theme: None,
-            color: false,
-            json: false,
-            splash: false,
-            command: vec![],
-        };
-        let mut app = App {
-            options,
-            theme: themes::builtins().remove(0),
-            context: "test".into(),
-            server: "test".into(),
-            namespace: "test".into(),
-            kinds: crate::gateway::kinds(),
-            kind_index: 0,
-            items: vec![],
-            selected: 0,
-            filter: String::new(),
-            left_focus: false,
-            status: "waiting".into(),
-            stale: false,
-            truncated: false,
-            modal: Modal::None,
-            epoch: 12,
-            busy: true,
-            write_inflight: true,
-            connected: true,
-            refresh: false,
-            last_refresh: Instant::now(),
-            worker: Worker { tx, rx },
-        };
+    fn write_outcome_survives_epoch_and_watch_updates_until_acknowledged() {
+        let (mut app, replies, _commands) = harness();
+        app.busy = true;
+        app.command_epoch = Some(11);
+        app.write_inflight = true;
         assert!(
             replies
                 .send((
@@ -1156,8 +1431,141 @@ mod layout_tests {
         );
         assert!(app.receive());
         assert!(app.status.contains("outcome UNKNOWN"));
-        assert!(app.stale);
+        assert!(app.stale && app.sticky_status);
         assert!(!app.busy && !app.write_inflight);
-        assert_eq!(app.epoch, 12);
+        app.worker.watch.publish(12, snapshot("fresh"));
+        app.receive();
+        assert!(app.status.contains("outcome UNKNOWN"));
+        assert!(app.key(KeyCode::Char('?')).is_ok());
+        assert!(!app.sticky_status);
+    }
+    #[test]
+    fn namespace_changed_during_connect_is_not_overwritten_and_old_session_is_rejected() {
+        let (mut app, replies, _commands) = harness();
+        app.connected = false;
+        app.busy = true;
+        app.command_epoch = Some(12);
+        app.connecting_epoch = Some(12);
+        app.modal = Modal::Input("Namespace", "different".into());
+        assert!(app.key(KeyCode::Enter).is_ok());
+        assert_eq!(app.epoch, 13);
+        assert!(
+            replies
+                .send((
+                    11,
+                    Reply::Connected(
+                        "obsolete".into(),
+                        "wrong".into(),
+                        "wrong".into(),
+                        crate::gateway::kinds()
+                    )
+                ))
+                .is_ok()
+        );
+        app.receive();
+        assert_eq!(app.context, "test");
+        assert!(app.busy);
+        assert!(
+            replies
+                .send((
+                    12,
+                    Reply::Connected(
+                        "current".into(),
+                        "server".into(),
+                        "kubeconfig-default".into(),
+                        crate::gateway::kinds()
+                    )
+                ))
+                .is_ok()
+        );
+        app.receive();
+        assert_eq!(app.context, "current");
+        assert_eq!(app.namespace, "different");
+        assert!(app.connected && !app.busy);
+    }
+    #[test]
+    fn obsolete_watch_is_dropped_and_revocation_clears_the_view() {
+        let (mut app, _replies, _commands) = harness();
+        app.items = vec![object("old")];
+        app.changed();
+        app.worker.watch.publish(12, snapshot("obsolete"));
+        assert!(!app.receive());
+        assert!(app.items.is_empty());
+        app.worker.watch.publish(13, snapshot("current"));
+        assert!(app.receive());
+        assert_eq!(app.items[0]["metadata"]["name"], "current");
+        let mut denied = snapshot("discard");
+        denied.objects.clear();
+        denied.stale = true;
+        denied.terminal = true;
+        app.worker.watch.publish(13, denied);
+        app.receive();
+        assert!(app.items.is_empty() && app.stale && app.watch_blocked && !app.watching);
+    }
+    #[test]
+    fn producer_burst_coalesces_without_waiting_for_ui_consumption() {
+        let mailbox = std::sync::Arc::new(WatchSlot::default());
+        mailbox.invalidate(7);
+        let producer = mailbox.clone();
+        let task = std::thread::spawn(move || {
+            for n in 0..1000 {
+                producer.publish(7, snapshot(&n.to_string()));
+            }
+        });
+        assert!(task.join().is_ok());
+        let last = mailbox
+            .take()
+            .unwrap_or_else(|| panic!("missing latest snapshot"));
+        assert_eq!(last.0, 7);
+        assert_eq!(last.1.objects[0]["metadata"]["name"], "999");
+        assert!(mailbox.take().is_none());
+    }
+    #[test]
+    fn watch_insertion_preserves_identity_and_scale_form_captures_name_and_uid() {
+        let (mut app, _replies, mut commands) = harness();
+        app.options.connection.writable = true;
+        app.kind_index = 1;
+        app.items = vec![object("b")];
+        assert!(app.key(KeyCode::Char('s')).is_ok());
+        app.replace_items(vec![object("a"), object("b")]);
+        assert_eq!(app.selected, 1);
+        // Even if the original row disappears, the form must not prepare a different row.
+        app.replace_items(vec![object("a")]);
+        assert!(app.key(KeyCode::Char('2')).is_ok());
+        assert!(app.key(KeyCode::Enter).is_ok());
+        match commands.try_recv() {
+            Ok((_, Task::Prepare(_, ns, name, uid, Action::Scale(2)))) => {
+                assert_eq!(ns, "test");
+                assert_eq!(name, "b");
+                assert_eq!(uid.as_deref(), Some("uid-b"));
+            }
+            _ => panic!("scale form changed its selected target"),
+        }
+    }
+    #[test]
+    fn missing_metrics_does_not_invalidate_resource_data() {
+        let (mut app, replies, _commands) = harness();
+        app.items = vec![object("a")];
+        app.command_epoch = Some(12);
+        app.busy = true;
+        assert!(
+            replies
+                .send((12, Reply::Metrics(Err("Metrics API unavailable".into()))))
+                .is_ok()
+        );
+        app.receive();
+        assert_eq!(app.items.len(), 1);
+        assert!(!app.stale);
+        assert!(matches!(app.modal, Modal::Detail(..)));
+    }
+    #[test]
+    fn metrics_wrapping_preserves_long_identity_usage_and_measurement_time() {
+        let text = format!(
+            "test/{} container 125.5 12345678 2026-10-09T22:00:00Z 15s",
+            "a".repeat(63)
+        );
+        let wrapped = wrap_text(&text, 48);
+        assert!(wrapped.lines().all(|line| line.chars().count() <= 48));
+        assert_eq!(wrapped.replace('\n', ""), text);
     }
 }

@@ -1,0 +1,17 @@
+{
+  "kindNodeImage": "kindest/node:v1.34.11@sha256:44e222ee2132dab25ff87301682f89eb82c7880ea3a1bf543bfe9708fd08d67d",
+  "podContainerRows": 2,
+  "aggregationTLSVerified": true,
+  "kubeletTLSVerified": true,
+  "metricsServerImage": "registry.k8s.io/metrics-server/metrics-server:v0.8.1@sha256:b2d2efaf5ac3b366ed0f839d2412a2c4279d4fc2a2a733f12c52133faed36c41",
+  "timestamp": "2026-10-09T22:56:44.5493009Z",
+  "sourceBinarySha256": "2da55a1542cc6250ca4bd85ea348d3612582c5e3bb4df5cceb80bfdce7bed2c1",
+  "realWatchUpdate": true,
+  "status": "passed",
+  "runId": "bd25ced1c56b",
+  "nodeMemoryLimitBytes": 4294967296,
+  "cleanupVerified": true,
+  "nodeCpuLimit": 4,
+  "nodeRows": 1,
+  "kubernetesVersion": "v1.34.11"
+}

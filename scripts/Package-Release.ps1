@@ -28,6 +28,10 @@ try {
     if (@($demo.items).Count -lt 1) { throw 'Demo returned no objects' }
     $themes = & $binary theme list
     if ($LASTEXITCODE -ne 0 -or !($themes -match 'catppuccin-mocha')) { throw 'Theme inventory smoke test failed' }
+    $metricsText = & $binary --demo metrics pods --json
+    if ($LASTEXITCODE -ne 0) { throw 'Offline metrics smoke failed' }
+    $metrics = ($metricsText -join "`n") | ConvertFrom-Json
+    if (@($metrics.items).Count -lt 1 -or $metrics.source -ne 'demo' -or $metrics.items[0].cpu_nanocores -ne 125000000) { throw 'Metrics normalization smoke failed' }
     Copy-Item -LiteralPath $binary -Destination (Join-Path $stage $binaryName)
     foreach ($file in @('README.md','LICENSE','THIRD_PARTY_NOTICES.md','SECURITY.md','docs/RELEASE_NOTES.md')) {
         Copy-Item -LiteralPath (Join-Path $projectRoot $file) -Destination $stage
@@ -55,4 +59,3 @@ try {
     Copy-Item -LiteralPath (Join-Path $stage 'BUILD.json') -Destination (Join-Path $packages "$label.build.json")
     Write-Output "Packaged $archive (unsigned)"
 } finally { Pop-Location }
-

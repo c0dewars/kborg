@@ -546,3 +546,7 @@ Feature completion and security acceptance precede the requested modern visual r
 User support target: Kubernetes 1.34 and newer; GitHub.com and GitHub Enterprise Cloud *.ghe.com. Generate typed bindings from the minimum 1.34 schema and continue real-server minor-version tests. Initial compatibility evidence covers 1.34.11, 1.35.8 and Docker Desktop 1.36.1; read KUBERNETES_COMPATIBILITY.md for exact run scope.
 
 A fresh independent reviewer, without prior findings, exercised CLI and Windows terminal flows and identified additional gaps. Corrections include CLI CRD lookup, read-only/unsupported mutation prompts, demo namespace fidelity and write-result preservation under stale terminal events. Keep first-look and corrective findings separate in the evidence. Visual design follows remaining feature completion, with measured lightweight budgets retained.
+
+## 22. Watches and metrics iteration
+
+K8Borg0.2 implements bounded real watches, explicit polling fallback and pod/container/node Metrics API views. See WATCH_METRICS_IMPLEMENTATION.md and independent review/UX/performance reports for semantics and evidence. Cancellable per-view feeds, one coalesced snapshot slot, strict epochs and identity-preserving selection replace the polling-only first iteration. Core mutation authorization remains separate and unchanged. Metrics errors do not fabricate zero usage or invalidate ordinary resource data. Remaining product/security gates continue; visual redesign follows feature completion.
