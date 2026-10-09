@@ -44,3 +44,7 @@ The optional login command validates github.com or an Enterprise Cloud *.ghe.com
 Corrections from this follow-up: remove common Kubernetes, cloud, alternative-model credentials and dynamic-loader/shell injection variables from the child environment; launch in a dedicated configuration directory rather than the application checkout; describe the credential boundary precisely. The external CLI still runs with the user's filesystem and OS permissions, so this is not process isolation. Future automated AI diagnosis remains gated on stronger isolation and reviewed data-transfer controls.
 
 Validation: both Copilot host/context minimization and environment-filter tests passed; all-target Clippy with warnings denied passed after this change. An actual OAuth login was not exercised because it requires the user's interactive identity and trusted installed Copilot CLI.
+
+## Dependency advisory follow-up
+
+`cargo-audit 0.22.2` completed against the locked 183-package graph and official RustSec advisory database revision `7eebec69c352c7191b1f13eb95dd510eeca5d1de`. It reported zero known vulnerabilities and no informational warnings with no ignored advisories or platform/severity filters. Exact lockfile hash, command and machine-readable evidence are recorded in [DEPENDENCY_AUDIT.md](DEPENDENCY_AUDIT.md). This closes the current known-advisory check, not the broader supply-chain/license or production security gates.

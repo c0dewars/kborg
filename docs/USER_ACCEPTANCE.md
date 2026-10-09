@@ -46,3 +46,7 @@ Required before a production-readiness claim:
 6. External security review, threat-model validation, fuzz/adversarial testing and production RBAC/admission/audit controls from `SECURITY.md` and the development guide.
 
 The checks here support a local-testable build. They do not justify removing the production gates or claiming full K9s parity.
+
+## Onboarding regression follow-up
+
+The final Windows release was rechecked with a fresh isolated configuration. Running `startup off` before the first UI launch persisted `onboarding_complete: false`; launching `--demo --no-splash` still opened the theme chooser with Mocha selected. Esc retained Mocha and persisted `onboarding_complete: true` while preserving the disabled animation. An explicit `theme use dracula` in a second fresh configuration persisted Dracula and completed onboarding, as intended. This closes the preference-versus-onboarding regression.

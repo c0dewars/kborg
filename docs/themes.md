@@ -13,3 +13,6 @@ Files are limited to 64 KiB. Unknown/duplicate fields, reserved IDs, invalid col
 Config roots: Windows `%APPDATA%\K8Borg`, macOS `~/Library/Application Support/K8Borg`, Linux `$XDG_CONFIG_HOME/k8borg` or `~/.config/k8borg`. Themes are under `themes/`, preference under `appearance.json`. An absolute `K8BORG_CONFIG_DIR` override supports test isolation.
 
 RGB palettes enforce 4.5:1 for foreground text pairs and 3:1 for focus. Built-ins may replace low-contrast semantic colors with black/white; source base colors remain documented in code. Terminal mode uses host colors, whose contrast cannot be guaranteed. Current renderer uses RGB for color mode: terminals without truecolor should use `--color=never` or Terminal mode; 256-color quantization is pending. Theme preference replacement is fallback-safe but not an atomic replace on Windows.
+
+First interactive use opens the picker with Catppuccin Mocha selected. Enter chooses and Esc keeps that default. Missing/invalid selection falls back to Mocha. Appearance settings also store animation and onboarding state; startup off/on preserves theme selection.
+

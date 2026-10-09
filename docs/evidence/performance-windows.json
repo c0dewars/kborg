@@ -1,0 +1,30 @@
+{
+  "schema": 1,
+  "utc": "2026-10-09T21:46:22.5018476Z",
+  "platform": "Windows",
+  "binary_bytes": 9377280,
+  "binary_sha256": "30127dcc5d262c589530ffad8c6f90588e721bac1d682ce17791b07354d23766",
+  "method": "Stopwatch wall time and process CPU;1ms peak-working-set sampling is a lower bound, not exact peak; warmed cache",
+  "scope": "100 context aliases, not100 clusters",
+  "demo_cli": {
+    "samples": 30,
+    "median_wall_ms": 20.4541,
+    "p95_wall_ms": 22.9855,
+    "max_sampled_working_set_bytes": 8572928.0,
+    "total_cpu_ms": 328.125
+  },
+  "hundred_context_listing": {
+    "samples": 30,
+    "median_wall_ms": 22.2428,
+    "p95_wall_ms": 24.7944,
+    "max_sampled_working_set_bytes": 9400320.0,
+    "total_cpu_ms": 281.25
+  },
+  "live_sequential_context_reads": {
+    "samples": 100,
+    "median_wall_ms": 30.8093,
+    "p95_wall_ms": 32.5163,
+    "max_sampled_working_set_bytes": 12177408.0,
+    "total_cpu_ms": 1312.5
+  }
+}

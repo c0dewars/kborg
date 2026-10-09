@@ -532,3 +532,11 @@ Theme-design review: a data-only format avoids executable theme plugins; embedde
 
 K8Borg 0.1 is implemented as a Windows local-testing release. Read docs/IMPLEMENTATION_STATUS.md for delivered scope, test evidence and outstanding production gates. The unchecked requirements above remain the roadmap and must not be interpreted as implemented. Docker Desktop acceptance passed; production certification and complete K9s feature parity are not claimed.
 
+
+## 20. Follow-up priorities (2026-10-09)
+
+Implemented: two-second skippable ASCII logo; per-session, environment and persisted disabling; first-run theme selection with Catppuccin Mocha default; GitHub Copilot-only minimized local diagnostic export and explicit trusted CLI login handoff. Automatic AI requests remain gated, with no other provider planned. Copilot GitHub.com and Enterprise Cloud data-residency hosts are distinct from arbitrary GitHub Enterprise Server installations.
+
+Independent agents performed developer/user acceptance, security review, locked dependency advisory audit, WSL2 testing and performance measurements. Cross-platform native builds/package automation targets Windows, macOS and Linux x64/ARM64. The source is in the private c0dewars/k8borg repository. See the evidence reports rather than assuming a configured workflow has completed successfully.
+
+Feature completion and security acceptance precede the requested modern visual redesign. Styling must keep the app lightweight, preserve explicit safety labels and confirmation visibility, and be measured against CPU/memory baselines. A 100-context test against one API server must never be described as 100 independent clusters. The full roadmap and production release gates remain in force.
