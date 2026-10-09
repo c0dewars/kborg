@@ -12,3 +12,4 @@ if ($FixtureDirectory) {
 }
 & wsl -d $Distribution -- sh "$linuxRoot/scripts/test-wsl.sh" @arguments
 if ($LASTEXITCODE -ne 0) { throw 'WSL validation failed.' }
+
