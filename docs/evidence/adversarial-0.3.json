@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "tested_at_utc": "2026-10-09T23:47:26.1242504Z",
-  "executable_sha256": "b4fb78a56519b6edda9737684ddc26a50649cebfcd1e324d4de3e7e6d4dc1e29",
-  "run_id": "a4685864e303",
-  "source_revision": "76320faf432fcca2c28c082b9d751057a5003927",
+  "tested_at_utc": "2026-10-09T23:53:05.7999663Z",
+  "executable_sha256": "d4f68b561c38e82dc35723b92fa59fe17122ed15c9d3bbc857c884601ef82761",
+  "run_id": "1e2372001240",
+  "source_revision": "8bbf96b5384a39b1ed5d7faa93c765cf55712c49",
   "operating_system": "Microsoft Windows NT 10.0.26300.0",
   "per_process_timeout_seconds": 5,
   "case_count": 44,
@@ -15,7 +15,7 @@
       "passed": true,
       "expected_rejection": false,
       "exit_code": 0,
-      "elapsed_ms": 174,
+      "elapsed_ms": 177,
       "timed_out": false,
       "unsafe_output_controls": false,
       "response_excerpt": "VALID: schema, colors and contrast checked."
@@ -45,7 +45,7 @@
       "passed": true,
       "expected_rejection": true,
       "exit_code": 1,
-      "elapsed_ms": 20,
+      "elapsed_ms": 21,
       "timed_out": false,
       "unsafe_output_controls": false,
       "response_excerpt": "KBorg: invalid theme JSON at line 1, column 36"
@@ -65,7 +65,7 @@
       "passed": true,
       "expected_rejection": true,
       "exit_code": 1,
-      "elapsed_ms": 21,
+      "elapsed_ms": 20,
       "timed_out": false,
       "unsafe_output_controls": false,
       "response_excerpt": "KBorg: file exceeds 65536 byte limit"
@@ -75,7 +75,7 @@
       "passed": true,
       "expected_rejection": true,
       "exit_code": 1,
-      "elapsed_ms": 20,
+      "elapsed_ms": 21,
       "timed_out": false,
       "unsafe_output_controls": false,
       "response_excerpt": "KBorg: invalid theme JSON at line 1, column 119"
@@ -95,7 +95,7 @@
       "passed": true,
       "expected_rejection": true,
       "exit_code": 1,
-      "elapsed_ms": 19,
+      "elapsed_ms": 20,
       "timed_out": false,
       "unsafe_output_controls": false,
       "response_excerpt": "KBorg: invalid or reserved custom theme id"
@@ -115,7 +115,7 @@
       "passed": true,
       "expected_rejection": true,
       "exit_code": 1,
-      "elapsed_ms": 21,
+      "elapsed_ms": 20,
       "timed_out": false,
       "unsafe_output_controls": false,
       "response_excerpt": "KBorg: color must be #RRGGBB"
@@ -125,7 +125,7 @@
       "passed": true,
       "expected_rejection": true,
       "exit_code": 1,
-      "elapsed_ms": 21,
+      "elapsed_ms": 20,
       "timed_out": false,
       "unsafe_output_controls": false,
       "response_excerpt": "KBorg: color must be #RRGGBB"
@@ -135,7 +135,7 @@
       "passed": true,
       "expected_rejection": true,
       "exit_code": 1,
-      "elapsed_ms": 19,
+      "elapsed_ms": 20,
       "timed_out": false,
       "unsafe_output_controls": false,
       "response_excerpt": "KBorg: text/background contrast is below 4.5:1; choose a lighter or darker foreground"
@@ -155,7 +155,7 @@
       "passed": true,
       "expected_rejection": true,
       "exit_code": 1,
-      "elapsed_ms": 22,
+      "elapsed_ms": 20,
       "timed_out": false,
       "unsafe_output_controls": false,
       "response_excerpt": "KBorg: theme name must be short plain text"
@@ -175,7 +175,7 @@
       "passed": true,
       "expected_rejection": true,
       "exit_code": 1,
-      "elapsed_ms": 21,
+      "elapsed_ms": 20,
       "timed_out": false,
       "unsafe_output_controls": false,
       "response_excerpt": "KBorg: unknown color role: role"
@@ -185,7 +185,7 @@
       "passed": true,
       "expected_rejection": true,
       "exit_code": 1,
-      "elapsed_ms": 20,
+      "elapsed_ms": 21,
       "timed_out": false,
       "unsafe_output_controls": false,
       "response_excerpt": "KBorg: unsupported theme schema_version"
@@ -205,7 +205,7 @@
       "passed": true,
       "expected_rejection": true,
       "exit_code": 1,
-      "elapsed_ms": 20,
+      "elapsed_ms": 19,
       "timed_out": false,
       "unsafe_output_controls": false,
       "response_excerpt": "KBorg: invalid theme JSON at line 1, column 1"
@@ -235,7 +235,7 @@
       "passed": true,
       "expected_rejection": false,
       "exit_code": 0,
-      "elapsed_ms": 20,
+      "elapsed_ms": 22,
       "timed_out": false,
       "unsafe_output_controls": false,
       "response_excerpt": "[]"
@@ -245,7 +245,7 @@
       "passed": true,
       "expected_rejection": true,
       "exit_code": 1,
-      "elapsed_ms": 20,
+      "elapsed_ms": 21,
       "timed_out": false,
       "unsafe_output_controls": false,
       "response_excerpt": "KBorg: invalid kubeconfig YAML (details suppressed to protect credentials)"
@@ -265,7 +265,7 @@
       "passed": true,
       "expected_rejection": true,
       "exit_code": 1,
-      "elapsed_ms": 20,
+      "elapsed_ms": 21,
       "timed_out": false,
       "unsafe_output_controls": false,
       "response_excerpt": "KBorg: invalid kubeconfig YAML (details suppressed to protect credentials)"
@@ -285,7 +285,7 @@
       "passed": true,
       "expected_rejection": true,
       "exit_code": 1,
-      "elapsed_ms": 21,
+      "elapsed_ms": 20,
       "timed_out": false,
       "unsafe_output_controls": false,
       "response_excerpt": "KBorg: duplicate kubeconfig names are ambiguous and forbidden"
@@ -295,7 +295,7 @@
       "passed": true,
       "expected_rejection": true,
       "exit_code": 1,
-      "elapsed_ms": 22,
+      "elapsed_ms": 19,
       "timed_out": false,
       "unsafe_output_controls": false,
       "response_excerpt": "KBorg: duplicate kubeconfig names are ambiguous and forbidden"
@@ -335,7 +335,7 @@
       "passed": true,
       "expected_rejection": false,
       "exit_code": 0,
-      "elapsed_ms": 21,
+      "elapsed_ms": 20,
       "timed_out": false,
       "unsafe_output_controls": false,
       "response_excerpt": "[\n  \"synthetic\"\n]"
@@ -345,7 +345,7 @@
       "passed": true,
       "expected_rejection": true,
       "exit_code": 1,
-      "elapsed_ms": 20,
+      "elapsed_ms": 19,
       "timed_out": false,
       "unsafe_output_controls": false,
       "response_excerpt": "KBorg: noninteractive writes are disabled; use the interactive TUI or terminal confirmation"
@@ -365,7 +365,7 @@
       "passed": true,
       "expected_rejection": true,
       "exit_code": 1,
-      "elapsed_ms": 19,
+      "elapsed_ms": 20,
       "timed_out": false,
       "unsafe_output_controls": false,
       "response_excerpt": "KBorg: noninteractive writes are disabled; use the interactive TUI or terminal confirmation"
@@ -415,7 +415,7 @@
       "passed": true,
       "expected_rejection": true,
       "exit_code": 1,
-      "elapsed_ms": 19,
+      "elapsed_ms": 20,
       "timed_out": false,
       "unsafe_output_controls": false,
       "response_excerpt": "KBorg: unknown option; see --help"
@@ -425,7 +425,7 @@
       "passed": true,
       "expected_rejection": false,
       "exit_code": 0,
-      "elapsed_ms": 22,
+      "elapsed_ms": 23,
       "timed_out": false,
       "unsafe_output_controls": false,
       "response_excerpt": "Minimized context saved locally. Inspect the JSON before manually sharing with GitHub Copilot. No AI request was made."
