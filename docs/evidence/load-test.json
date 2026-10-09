@@ -1,0 +1,94 @@
+{
+  "schema": 1,
+  "utc": "2026-10-09T22:10:54Z",
+  "binary_sha256": "f0c4c78a0a0aa4670da62f70895ecbe67974cfbb6d99899b85dade5994ea5fdd",
+  "scope": "One Docker Desktop Kubernetes 1.36.1 cluster, 1001 owned synthetic ConfigMaps with 4096-byte data each; no application workloads",
+  "method": "GNU time CLI peak RSS; procfs TUI RSS/CPU; PTY output acknowledgement latency; first process cool, subsequent warm, no cache eviction",
+  "cli": {
+    "cool": {
+      "wall_ms": 1068.39,
+      "cpu_ms": 20.0,
+      "peak_rss_kib": 15732,
+      "output_bytes": 493973,
+      "count": 1000,
+      "truncated": true
+    },
+    "warm": [
+      {
+        "wall_ms": 1064.4,
+        "cpu_ms": 20.0,
+        "peak_rss_kib": 15820,
+        "output_bytes": 493973,
+        "count": 1000,
+        "truncated": true
+      },
+      {
+        "wall_ms": 1066.54,
+        "cpu_ms": 20.0,
+        "peak_rss_kib": 15540,
+        "output_bytes": 493973,
+        "count": 1000,
+        "truncated": true
+      },
+      {
+        "wall_ms": 1067.82,
+        "cpu_ms": 30.0,
+        "peak_rss_kib": 16224,
+        "output_bytes": 493973,
+        "count": 1000,
+        "truncated": true
+      },
+      {
+        "wall_ms": 1071.08,
+        "cpu_ms": 30.0,
+        "peak_rss_kib": 16152,
+        "output_bytes": 493973,
+        "count": 1000,
+        "truncated": true
+      },
+      {
+        "wall_ms": 1061.3,
+        "cpu_ms": 20.0,
+        "peak_rss_kib": 15652,
+        "output_bytes": 493973,
+        "count": 1000,
+        "truncated": true
+      }
+    ],
+    "redaction_canary_absent": true,
+    "positive_truncation_bound": true,
+    "text_truncation_warning": true
+  },
+  "tui_idle": {
+    "loaded_objects": 1000,
+    "ready_ms_after_navigation": 1108.81,
+    "duration_seconds": 15.04,
+    "peak_sampled_rss_kib": 22260,
+    "start_rss_kib": 18684,
+    "end_rss_kib": 21956,
+    "cpu_seconds": 0.1,
+    "includes_periodic_5_second_api_refresh": true,
+    "terminal_bytes": 247835
+  },
+  "cached_filter": {
+    "input": "load-0999",
+    "samples_ms": [
+      6.85,
+      5.25,
+      5.5,
+      5.01,
+      5.9
+    ],
+    "median_ms": 5.5,
+    "max_ms": 6.85,
+    "method": "PTY bytes written through output of filter indicator, no screen presentation latency or server audit verification"
+  },
+  "source_revision": "99e32c5a2ab62691fdeeb7c4928978d294623e50",
+  "cleanup": {
+    "namespaces_deleted": true,
+    "default_context": "docker-desktop",
+    "manifest_deleted": true,
+    "credentials_deleted": true,
+    "endpoint_ca_ownership_reverified": true
+  }
+}

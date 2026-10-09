@@ -1,8 +1,8 @@
 # Bounded adversarial CLI acceptance
 
-Executed on Windows on 2026-10-09 at 21:51 UTC against the optimized native Windows release corresponding to source revision `4e20eb2b1a6c56826665b1f8131f899ab6ff5c36`. Executable SHA-256: `5449f83eb19757c9a048b126594719cf2d6c82565a8ca7388b4b9d8382330b53`.
+Executed on Windows on 2026-10-09 at 21:51 UTC against the optimized native Windows release corresponding to source revision `99e32c5a2ab62691fdeeb7c4928978d294623e50`. Executable SHA-256: `23c6695f76be3d269ebc2d292736aa84f85d7722b34f34046997467956b815be`.
 
-**Result: all 44 black-box cases passed.** No tested process timed out or emitted the terminal/control characters checked by the harness. The longest observed individual process duration was 28 ms; this timing is diagnostic, not a performance benchmark.
+**Result: all 44 black-box cases passed.** No tested process timed out or emitted the terminal/control characters checked by the harness. Exact final per-case durations are recorded in the JSON evidence; they are diagnostic rather than a performance benchmark.
 
 Reproduce with PowerShell 7:
 
@@ -25,3 +25,7 @@ Coverage:
 Machine-readable results, exact cases, exit codes, response excerpts and durations: [adversarial.json](evidence/adversarial.json).
 
 This is a finite regression corpus, not coverage-guided fuzzing, a hostile-server exercise or a security certification. It does not test live admission behavior, authenticated enterprise login, network denial-of-service, terminal recovery under crashes, filesystem replacement races, provider process isolation or platform-wide runtime compatibility. These remain separate production release gates recorded in [SECURITY_REVIEW.md](SECURITY_REVIEW.md).
+
+
+The final rerun passed all 44 cases. Its Secret-policy diagnostic changed during bounded CLI discovery; the test expectation was updated to the new explicit disabled-resource error while retaining rejection and safe-output checks. Runtime code was not changed to satisfy this assertion.
+

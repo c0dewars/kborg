@@ -22,7 +22,7 @@ This first iteration is a working local-testing release. The development guide r
 ## Evidence
 
 - `scripts/Check.ps1`: formatting, all-target Clippy with warnings denied, 23 unit/security tests, documentation tests and optimized release build.
-- `scripts/Test-DockerDesktop.ps1`: live acceptance passed on the installed Docker Desktop cluster. Latest successful Windows run: `cf72c4dd96b3`, namespace `k8borg-tests-cf72c4dd96b3`; sanitized evidence in `test-results/cf72c4dd96b3.json`. WSL native Linux acceptance also passed against this isolated fixture.
+- `scripts/Test-DockerDesktop.ps1`: live acceptance passed on the installed Docker Desktop cluster. Latest successful Windows run: `8e7ed664f6c6`, namespace `k8borg-tests-8e7ed664f6c6`; sanitized evidence in `docs/evidence/compat-kubernetes-1.36.json`. WSL native Linux acceptance also passed against this isolated fixture.
 - Live checks exercise reader access and logs, real authorization denial, ConfigMap redaction, blocked Secret access, server-side dry-run authorization, scale/restart/delete, and stale resourceVersion rejection.
 - Unit checks exercise read-only policy, write scope/scale limits, replay/expiry/target mismatch, malicious authentication configuration, invalid TLS, oversized response rejection before JSON decoding, terminal controls, redaction, and theme validation.
 - Theme CLI lifecycle checks cover creation, validation, preference, export, installation, removal and reset. Terminal smoke checks exercise startup, theme dialog, complete wrapped write-review display at 80 columns (canceled), and normal shutdown with terminal restoration. This is not a terminal compatibility matrix.
@@ -63,3 +63,6 @@ Two-second skippable ASCII startup and persisted disabling are implemented. Firs
 
 Native WSL/Linux, Windows unit/lint checks, Docker Desktop acceptance, advisory audit and measured performance are recorded in their dedicated reports. One hundred aliases to a single API server are explicitly distinct from 100 independent Kubernetes clusters. Visual refinement follows feature completion and must retain these measured resource budgets.
 
+
+
+Final runtime source99e32c5 passed all six native build/test/package jobs; downloaded archives were checksum-verified. Independent large-resource testing passed the 1,001-object positive truncation/redaction case with about22MiB loaded Linux UI RSS. The final release is a private draft prerelease, not production certification. See RELEASE_REPORT.md and PLATFORM_BUILDS.md for exact artifact identity and remaining scope.

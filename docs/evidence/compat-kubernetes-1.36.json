@@ -1,0 +1,14 @@
+{
+  "caSha256": "f10a82835aae7bdbbff9597bfdab077c0ff0a18f68c928aeceae807da5908913",
+  "kubernetesVersion": "v1.36.1",
+  "server": "https://127.0.0.1:64170",
+  "namespace": "k8borg-tests-8e7ed664f6c6",
+  "keptFixtures": true,
+  "image": "busybox@sha256:bdf57e528e45e4433820e045b29b4597825a1c9e38353532d90a01445013f82e",
+  "status": "passed",
+  "runId": "8e7ed664f6c6",
+  "timestamp": "2026-10-09T22:05:49.9857402Z",
+  "sourceCommit": "99e32c5a2ab62691fdeeb7c4928978d294623e50",
+  "apiSchemaBaseline": "1.34",
+  "suite": "restricted reader/denied/operator; logs/redaction; scale/restart/delete; stale resourceVersion; doctor/JSON CLI"
+}
