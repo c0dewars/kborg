@@ -40,10 +40,9 @@ Remaining work includes broader fault/soak/discovery-memory testing, authoritati
 
 ## Final independent evidence
 
-Secure metrics-server0.8.1 interoperability passed on a dedicated Kubernetes1.34.11 cluster: two container samples, one node sample and a real ConfigMap watch update. Kubelet scraping used the verified cluster CA and serving certificates; API aggregation used a custom SAN certificate and matching caBundle without insecureSkipTLSVerify. The node was capped at4GiB/4CPUs and deleted with credentials/private keys. See SECURE_METRICS_INTEROP.md and evidence/secure-metrics-kubernetes-1.34.json.
+Secure Metrics Server 0.8.1 interoperability passed on a dedicated Kubernetes 1.34.11 cluster: two container samples, one node sample and a real ConfigMap watch update. Kubelet scraping used the verified cluster CA and serving certificates; API aggregation used a custom SAN certificate and matching caBundle without insecureSkipTLSVerify. The node was capped at 4 GiB / 4 CPUs and deleted with credentials/private keys. See SECURE_METRICS_INTEROP.md and evidence/secure-metrics-kubernetes-1.34.json.
 
-WSL native Linux compiled and passed48unit tests before the final reconnect regression plus the independent metrics contract and Clippy. Two30second runs measured10.10MiB LIVE /10.30MiB POLL RSS; CPU was below tick resolution /10ms, so no meaningful efficiency advantage is claimed. NDJSON first snapshot and consumer-close exit passed. See WATCH_METRICS_PERFORMANCE.md for environment, contention, measurement and request-count limitations.
+WSL native Linux compiled and passed 48 unit tests before the final reconnect regression plus the independent metrics contract and Clippy. Two sessions of 30 seconds measured 10.10 MiB LIVE / 10.30 MiB POLL RSS; CPU was below tick resolution / 10 ms, so no meaningful efficiency advantage is claimed. NDJSON first snapshot and consumer-close exit passed. See WATCH_METRICS_PERFORMANCE.md for environment, contention, measurement and request-count limitations.
 
 
-Final reconnect regression: explicit reauthentication pins the current context and retains namespace/resource identity across a refreshed catalog. A missing custom resource stops for explicit catalog refresh instead of silently reading another resource. The corresponding49thunit test passed.
-
+Final reconnect regression: explicit reauthentication pins the current context and retains namespace/resource identity across a refreshed catalog. A missing custom resource stops for explicit catalog refresh instead of silently reading another resource. The corresponding 49th unit test passed.
