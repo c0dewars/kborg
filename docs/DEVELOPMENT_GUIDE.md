@@ -1,10 +1,10 @@
-# K8Borg — Architecture and Development Guide
+# KBorg — Architecture and Development Guide
 
-Status: proposed baseline, architecture-reviewed and security-reviewed; production validation pending. Updated: 2026-10-09.
+Status: implemented testing prerelease 0.3.0; production validation remains incomplete. Updated: 2026-10-10. Current capabilities: [IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md). Authoritative gaps: [REMAINING_WORK.md](REMAINING_WORK.md). Dated appendices describe their original versions.
 
 ## 1. Objective and assumptions
 
-Build **K8Borg**, a responsive Kubernetes terminal application inspired by [p10node/k10s](https://github.com/p10node/k10s), with production security as the primary constraint. The product name is confirmed; the proposed executable and repository name is `k8borg`. This is the assumed reference because it includes context-aware AI. Another project also uses the k10s name; confirm the reference before finalizing feature parity.
+Build **KBorg**, a responsive Kubernetes terminal application inspired by [p10node/k10s](https://github.com/p10node/k10s), with production security as the primary constraint. The product name is confirmed; the proposed executable and repository name is `kborg`. This is the assumed reference because it includes context-aware AI. Another project also uses the k10s name; confirm the reference before finalizing feature parity.
 
 Deliver the useful operational workflows first, without AI. Add an optional advisory AI feature only after the core passes production acceptance. Rust is the proposed implementation language; memory safety and predictable resource control help, but language choice does not prevent authorization errors, credential theft, insecure dependencies, or operator mistakes.
 
@@ -177,7 +177,7 @@ Data flow: user selects an object -> application creates an allowlisted snapshot
 
 The advisor has no kubeconfig, cluster client, shell/exec tools, or write capability. No automatic fetching of related resources and no automatic export of manifests or logs. Start with selected status, event reasons, and approved non-sensitive metadata. Logs and free-form annotations are excluded unless specifically selected and previewed. Never send Secrets, tokens, service-account material, credentials, or arbitrary environment values. Field filtering and redaction reduce risk; they cannot guarantee safe treatment of arbitrary business data. Strict deployments should allow only schema-approved fields and prohibit free-form text.
 
-Use a versioned size-bounded stdin/stdout protocol with request IDs and timeout. Do not assume a separate process provides containment: remove inherited credentials, restrict filesystem access and network destinations through a validated OS sandbox, and test on each platform. If equivalent isolation is unavailable, disable AI in the strict production profile. Provider endpoint changes need review; retention, training use, residency, contract, and authentication storage are explicit prerequisites. No provider is selected in this plan.
+Use a versioned size-bounded stdin/stdout protocol with request IDs and timeout. Do not assume a separate process provides containment: remove inherited credentials, restrict filesystem access and network destinations through a validated OS sandbox, and test on each platform. If equivalent isolation is unavailable, disable AI in the strict production profile. Provider endpoint changes need review; retention, training use, residency, contract, and authentication storage are explicit prerequisites. GitHub Copilot is the only approved provider direction: github.com and Enterprise Cloud *.ghe.com; no other provider or Enterprise Server support is assumed.
 
 Treat model output and cited evidence as untrusted. Do not execute generated commands or promote suggestions directly into mutation requests. A user may manually start an existing typed operational workflow; the usual policy, fresh reads, diff, and approval apply independently. Evaluate injected instructions in logs and object text, canary data leakage, oversized output, unreliable advice, cancellation, and accidental cross-context reuse. AI acceptance is a separate release gate and cannot delay the secure core.
 
@@ -417,27 +417,27 @@ Local success does not establish production readiness. Repeat the relevant suite
 - [ ] Redacted results retained; scoped teardown succeeds without touching unrelated workloads.
 - [ ] Remaining staging/CI coverage gaps recorded in the security evidence register.
 
-## 17. K8Borg identity and logo direction
+## 17. KBorg identity and logo direction
 
-Product name confirmed by the project owner: **K8Borg**. Use that capitalization in documentation and the interface; use `k8borg` for the executable, repository and proposed package names, subject to registry availability. The name combines K8s with Borg as a historical reference, without implying Google, Kubernetes or CNCF affiliation. Initial web searches found no obvious indexed software collision; package/domain availability and trademark clearance remain unverified.
+Product name confirmed by the project owner: **KBorg**. Use that capitalization in documentation and the interface; use `kborg` for the executable, repository and proposed package names, subject to registry availability. The name combines K8s with Borg as a historical reference, without implying Google, Kubernetes or CNCF affiliation. Initial web searches found no obvious indexed software collision; package/domain availability and trademark clearance remain unverified.
 
 Proposed tagline: **Kubernetes operations, under your control.** The tagline communicates deliberate operations rather than promising absolute security.
 
-Suggested logo: an angular **B** formed from a small set of connected cluster nodes, paired with a terminal `>` cursor and the K8Borg wordmark. Keep the mark compact, flat and legible at small sizes. Avoid Kubernetes' wheel, Google branding, Star Trek characters, and lock/shield imagery that could imply a security certification.
+Suggested logo: an angular **B** formed from a small set of connected cluster nodes, paired with a terminal `>` cursor and the KBorg wordmark. Keep the mark compact, flat and legible at small sizes. Avoid Kubernetes' wheel, Google branding, Star Trek characters, and lock/shield imagery that could imply a security certification.
 
 Suggested palette: teal `#2DD4BF`, graphite `#0B1220`, off-white `#F8FAFC`. These are proposed brand colors; generated artwork may approximate them. Interface status colors remain distinct: the brand accent must not make an operation look safe or obscure production warnings.
 
-The first generated logo is a concept for review, not a final vector asset. Once the direction is accepted, create and verify SVG masters, a monochrome variant, light/dark variants and small raster exports. Test silhouette and legibility at 16, 24 and 32 pixels, and provide plain-text K8Borg branding in terminals without image support. Raster generation does not establish originality or rights clearance; review the final mark before public release.
+The first generated logo is a concept for review, not a final vector asset. Once the direction is accepted, create and verify SVG masters, a monochrome variant, light/dark variants and small raster exports. Test silhouette and legibility at 16, 24 and 32 pixels, and provide plain-text KBorg branding in terminals without image support. Raster generation does not establish originality or rights clearance; review the final mark before public release.
 
 ## 18. Bundled themes and easy custom theme setup
 
 ### 18.1 Default theme collection
 
-Ship an offline theme collection inside the binary. Users can choose a familiar developer palette without downloading anything or installing a plugin. These are established theme families selected for familiarity and variety, not a claimed definitive popularity ranking. Adapt palettes to K8Borg's semantic roles rather than importing executable editor/terminal configurations.
+Ship an offline theme collection inside the binary. Users can choose a familiar developer palette without downloading anything or installing a plugin. These are established theme families selected for familiarity and variety, not a claimed definitive popularity ranking. Adapt palettes to KBorg's semantic roles rather than importing executable editor/terminal configurations.
 
 | Family | Bundled variants | Source |
 |---|---|---|
-| K8Borg | Dark, Light, High Contrast | Original product palettes; Dark is the initial default |
+| KBorg | Dark, Light, High Contrast | Original product palettes; Dark is the initial default |
 | Catppuccin | Latte, Frappe, Macchiato, Mocha | [Catppuccin](https://github.com/catppuccin/catppuccin) |
 | Dracula | Standard open-source dark palette | [Dracula](https://github.com/dracula/dracula-theme); exclude paid PRO variants |
 | Nord | Dark | [Nord](https://github.com/nordtheme/nord) |
@@ -448,7 +448,7 @@ Ship an offline theme collection inside the binary. Users can choose a familiar 
 
 Provide a family/variant picker in Settings -> Appearance and through the command palette. Display a synthetic preview containing resource rows, selection, logs, diffs, PRODUCTION/READ ONLY labels and confirmation/error states. Arrow keys preview; Enter applies and persists; Escape restores the previous theme. The same actions are mouse-accessible. Preview uses synthetic data and changes appearance only: it never reconnects clusters, changes identity, or cancels/reissues operations.
 
-No mandatory first-run wizard. Start with K8Borg Dark and make the picker easy to discover. Store the preference per user, not in kubeconfig. Support a one-session `--theme` override; explicit saved settings take precedence over optional automatic light/dark matching. Automatic matching is opt-in and falls back to the selected theme when terminal detection is unavailable or unreliable. Do not switch appearance during a pending mutation confirmation; defer until the dialog ends.
+No mandatory first-run wizard. Start with KBorg Dark and make the picker easy to discover. Store the preference per user, not in kubeconfig. Support a one-session `--theme` override; explicit saved settings take precedence over optional automatic light/dark matching. Automatic matching is opt-in and falls back to the selected theme when terminal detection is unavailable or unreliable. Do not switch appearance during a pending mutation confirmation; defer until the dialog ends.
 
 ### 18.2 Semantic architecture and dependencies
 
@@ -463,21 +463,21 @@ Use std for registry/storage paths and immutable data structures; reuse the exis
 Proposed commands below are interface contracts to implement, not currently available commands:
 
 ```text
-k8borg theme list
-k8borg theme use catppuccin-mocha
-k8borg --theme tokyo-night-storm
-k8borg theme new my-theme --base catppuccin-mocha
-k8borg theme validate ./my-theme.json
-k8borg theme preview ./my-theme.json
-k8borg theme install ./my-theme.json
-k8borg theme export my-theme --output ./my-theme.json
-k8borg theme remove my-theme
-k8borg theme reset
+kborg theme list
+kborg theme use catppuccin-mocha
+kborg --theme tokyo-night-storm
+kborg theme new my-theme --base catppuccin-mocha
+kborg theme validate ./my-theme.json
+kborg theme preview ./my-theme.json
+kborg theme install ./my-theme.json
+kborg theme export my-theme --output ./my-theme.json
+kborg theme remove my-theme
+kborg theme reset
 ```
 
-`new` writes a documented editable template to the user theme directory and prints its path. A matching UI action, “Create from current theme,” offers the same workflow. The user edits ordinary JSON, validates it, previews it, and installs it. Errors identify the field and correction; an invalid theme leaves the active theme untouched. `install` validates and copies a local file into the managed user directory; activation is a separate choice. Updates to an existing custom theme require an explicit replace action and preserve a recoverable previous copy. Removing the active custom theme switches to K8Borg Dark. Reset changes appearance only.
+`new` writes a documented editable template to the user theme directory and prints its path. A matching UI action, “Create from current theme,” offers the same workflow. The user edits ordinary JSON, validates it, previews it, and installs it. Errors identify the field and correction; an invalid theme leaves the active theme untouched. `install` validates and copies a local file into the managed user directory; activation is a separate choice. Updates to an existing custom theme require an explicit replace action and preserve a recoverable previous copy. Removing the active custom theme switches to KBorg Dark. Reset changes appearance only.
 
-Use platform-appropriate config locations: Linux `$XDG_CONFIG_HOME/k8borg/themes` (fallback `~/.config/k8borg/themes`), macOS `~/Library/Application Support/K8Borg/themes`, Windows `%APPDATA%\K8Borg\themes`. Resolve and validate these paths using the existing config rules; do not scan working directories for themes. Built-ins are immutable and cannot be shadowed by custom IDs.
+Use platform-appropriate config locations: Linux `$XDG_CONFIG_HOME/kborg/themes` (fallback `~/.config/kborg/themes`), macOS `~/Library/Application Support/KBorg/themes`, Windows `%APPDATA%\KBorg\themes`. Resolve and validate these paths using the existing config rules; do not scan working directories for themes. Built-ins are immutable and cannot be shadowed by custom IDs.
 
 Example schema-v1 custom file, based only on a known embedded theme:
 
@@ -500,13 +500,13 @@ Example schema-v1 custom file, based only on a known embedded theme:
 
 Limit each JSON file to 64 KiB, nesting depth and field count; reject duplicate/unknown keys, unsupported schema versions, invalid colors and unsafe identifiers. Theme files contain no scripts, shell commands, expressions, URLs, executable hooks, external includes, fonts, binary assets, ANSI sequences or filesystem paths. Installation uses protected atomic writes and rejects unexpected symlink/reparse-point destinations. Export refuses overwrites by default. Theme errors and metadata follow the existing terminal sanitization rules.
 
-Initial theme installation is local-file only. Users may download a JSON file themselves and validate/install it; K8Borg neither executes it nor follows links inside it. Defer remote catalogs, archives, dependency resolution and automatic theme updates. A future online catalog requires a separate distribution/trust design. Do not import Lua/Vim/tmux scripts even if they come from a popular theme repository.
+Initial theme installation is local-file only. Users may download a JSON file themselves and validate/install it; KBorg neither executes it nor follows links inside it. Defer remote catalogs, archives, dependency resolution and automatic theme updates. A future online catalog requires a separate distribution/trust design. Do not import Lua/Vim/tmux scripts even if they come from a popular theme repository.
 
 Set a project contrast target of at least 4.5:1 for essential text against its rendered background and 3:1 for essential non-text boundaries/focus cues. Check selections, dialogs and status banners, not just main foreground/background. These are engineering targets, not a claim of terminal accessibility certification. Muted text may not carry critical operational information. Disable blinking, dimming or transparency for confirmations and safety banners. Use labels and symbols as well as color; `PRODUCTION`, `READ ONLY`, `STALE`, `DISCONNECTED`, and dangerous-operation wording remain explicit.
 
 Preserve upstream base palettes where feasible, but adjust semantic foreground/background pairs to meet the safety targets and disclose adaptations. Unsafe custom pairs are rejected for critical roles; provide suggested repairs and a built-in high-contrast fallback. The picker shows any noncritical readability warning. Managed deployments may restrict selection to validated themes. In 256-color mode validate the mapped palette as well; in 16-color/host-palette mode the actual colors may be unknown, so never claim guaranteed contrast. Keep text and focus cues, offer monochrome/high-contrast modes, and make unsupported capabilities visible. Never alter the host terminal's global palette with OSC commands.
 
-Respect explicit `--color=never`, noninteractive output and the conventional `NO_COLOR` setting. Interactive monochrome still shows focus and safety labels with supported non-color attributes. Theme selection never modifies JSON output. Terminal handoff restores terminal state and does not apply K8Borg's palette to external programs.
+Respect explicit `--color=never`, noninteractive output and the conventional `NO_COLOR` setting. Interactive monochrome still shows focus and safety labels with supported non-color attributes. Theme selection never modifies JSON output. Terminal handoff restores terminal state and does not apply KBorg's palette to external programs.
 
 ### 18.5 Attribution, delivery and acceptance
 
@@ -530,14 +530,14 @@ Theme-design review: a data-only format avoids executable theme plugins; embedde
 
 ## 19. First implementation status (2026-10-09)
 
-K8Borg 0.1 is implemented as a Windows local-testing release. Read docs/IMPLEMENTATION_STATUS.md for delivered scope, test evidence and outstanding production gates. The unchecked requirements above remain the roadmap and must not be interpreted as implemented. Docker Desktop acceptance passed; production certification and complete K9s feature parity are not claimed.
+KBorg 0.1 is implemented as a Windows local-testing release. Read docs/IMPLEMENTATION_STATUS.md for delivered scope, test evidence and outstanding production gates. The unchecked requirements above remain the roadmap and must not be interpreted as implemented. Docker Desktop acceptance passed; production certification and complete K9s feature parity are not claimed.
 
 
 ## 20. Follow-up priorities (2026-10-09)
 
 Implemented: two-second skippable ASCII logo; per-session, environment and persisted disabling; first-run theme selection with Catppuccin Mocha default; GitHub Copilot-only minimized local diagnostic export and explicit trusted CLI login handoff. Automatic AI requests remain gated, with no other provider planned. Copilot GitHub.com and Enterprise Cloud data-residency hosts are distinct from arbitrary GitHub Enterprise Server installations.
 
-Independent agents performed developer/user acceptance, security review, locked dependency advisory audit, WSL2 testing and performance measurements. Cross-platform native builds/package automation targets Windows, macOS and Linux x64/ARM64. The source is in the private c0dewars/k8borg repository. See the evidence reports rather than assuming a configured workflow has completed successfully.
+Independent agents performed developer/user acceptance, security review, locked dependency advisory audit, WSL2 testing and performance measurements. Cross-platform native builds/package automation targets Windows, macOS and Linux x64/ARM64. The source is in the private c0dewars/kborg repository. See the evidence reports rather than assuming a configured workflow has completed successfully.
 
 Feature completion and security acceptance precede the requested modern visual redesign. Styling must keep the app lightweight, preserve explicit safety labels and confirmation visibility, and be measured against CPU/memory baselines. A 100-context test against one API server must never be described as 100 independent clusters. The full roadmap and production release gates remain in force.
 
@@ -549,4 +549,4 @@ A fresh independent reviewer, without prior findings, exercised CLI and Windows 
 
 ## 22. Watches and metrics iteration
 
-K8Borg0.2 implements bounded real watches, explicit polling fallback and pod/container/node Metrics API views. See WATCH_METRICS_IMPLEMENTATION.md and independent review/UX/performance reports for semantics and evidence. Cancellable per-view feeds, one coalesced snapshot slot, strict epochs and identity-preserving selection replace the polling-only first iteration. Core mutation authorization remains separate and unchanged. Metrics errors do not fabricate zero usage or invalidate ordinary resource data. Remaining product/security gates continue; visual redesign follows feature completion.
+KBorg0.2 implements bounded real watches, explicit polling fallback and pod/container/node Metrics API views. See WATCH_METRICS_IMPLEMENTATION.md and independent review/UX/performance reports for semantics and evidence. Cancellable per-view feeds, one coalesced snapshot slot, strict epochs and identity-preserving selection replace the polling-only first iteration. Core mutation authorization remains separate and unchanged. Metrics errors do not fabricate zero usage or invalidate ordinary resource data. Remaining product/security gates continue; visual redesign follows feature completion.

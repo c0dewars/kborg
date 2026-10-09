@@ -1,0 +1,78 @@
+# KBorg remaining work and acceptance register
+
+Reviewed: 2026-10-10. Current iteration: KBorg 0.3.0. This register supersedes historical remaining-work statements. Implemented does not mean independently certified for production; the external gates below remain open.
+
+Status definitions: **Done** means an implemented workflow with retained evidence; **Partial** means useful behavior exists but the stated requirement is not fully met; **Missing** means no supported workflow; **External gate** means code alone cannot supply the necessary environment, identity, signing authority, or operational acceptance. A passing mock or configured CI job is not live acceptance. Automated independent agent reviews are not an external security audit.
+
+## Current product inventory
+
+| ID | Requirement | 0.3 status and exact gap | Completion evidence required |
+|---|---|---|---|
+| B01 | KBorg name, executable, logo, private repository | Done: KBorg name/executable/logo and private c0dewars/kborg repository; legacy settings supported | New binary/help/logo; old settings remain recoverable; private repository URL and origin verified |
+| R01 | Direct Kubernetes TLS client, contexts/namespaces, 17 common kinds | Done for certificate/token authentication, one selected context at a time | Existing Docker Desktop and Kubernetes compatibility reports |
+| R02 | Discovery/custom resources | Done: discovery limits requests, per-document and aggregate bytes before catalog commit; forbidden/incomplete refresh retains prior catalog | Bound discovery requests and accumulated bytes before catalog construction; partial/forbidden groups reported |
+| R03 | Tables, search, details, events, offline demo | Done: bounded cache search, redacted JSON, events as a resource; demo is isolated | Existing user acceptance; retain permanent identity and stale/demo labels |
+| R04 | Watch/reconnect/cancellation | Done: bounded LIST/WATCH, 410 relist, authorization stop, polling fallback, stale labels, epochs | 0.2 watch lifecycle/security/UX reports; long soak remains T05 |
+| R05 | YAML inspection | Done: redacted JSON and readable quoted YAML; bounded depth/output, no generic YAML apply | Serialize the same redacted object into safe, bounded YAML; escaping/round-trip tests; no new raw-object export path |
+| R06 | Logs and container selection | Done for bounded sessions: CLI/TUI container selection, previous logs and 60-second/256KiB follow; long-session/flood testing remains | Continuous bounded follow, cancel/scope-change behavior, explicit TUI container picker including init/ephemeral containers, flood/partial UTF-8/control-sequence tests |
+| R07 | Metrics | Partial: basic pod/container/node usage done, timestamps/windows and exact quantity handling | Bounded history/chart if retained in scope; no invented percentages; requests/limits denominators need explicit additional reads and semantics |
+| R08 | Simultaneous multi-context overview | Partial: explicit 1..100-context CLI snapshots (4 concurrent/30-second global budget), TUI up to4; continuous multi-context watches not implemented | Explicit selected context set, independent credentials/caches/errors, global concurrency/memory cap, generation races, slow/denied context cannot block others |
+| W01 | Scale/restart/delete | Done for limited typed families with dry-run, UID/RV, expiring one-use approval, durable local intent | Existing real RBAC, conflict and operation reports; broader admission/unknown-outcome gates remain |
+| W02 | Controlled edit/patch and readable diff | Partial: reviewed deployment container-image changes implemented; arbitrary patches remain excluded pending individually reviewed operation families | Individually allowlisted fields/resources; validated bounds; diff before approval; sealed payload, UID/RV and admission-effect checks; no silent generic YAML apply |
+| W03 | GitOps guidance | Implemented for image edits: recognized Argo/Flux metadata blocks live edit with source-repository guidance; detection is advisory, not universal | Detect known management metadata conservatively; show advisory source hints; default refusal of live edit when managed policy requires GitOps; never execute metadata URLs |
+| I01 | Structured CLI output | Done for bounded core reads/watch/metrics | Stabilize/version machine-output contract and documented exit codes; broaden broken-pipe handling |
+| I02 | Profiles/configuration/completions | Partial: strict schema1 JSON read-only/operator constraints and four shell completions implemented; organization-managed enforcement/automatic migrations not supplied | Strict versioned JSON; explicit precedence; duplicate/unknown-key rejection; managed capabilities cannot be enabled by later flags; bash/zsh/fish/PowerShell static completions |
+| I03 | Approved editor/pager/tool handoff | Missing | Absolute trusted executable plus argv; no shell; explicit capability; sanitized input; terminal restoration; bounded duration/output; process-tree cleanup; independently constrained credentials for privileged tools |
+| I04 | Exec/attach | Partial: native reviewed exec without stdin/TTY and output-only attach,30-second bounded output; interactive sessions remain missing | Separate privileged capability, explicit pod/container/session identity, reviewed argv, stream/TTY lifetime and cancellation, RBAC connect-subresource coverage |
+| I05 | Port forwarding | Implemented: explicit capability plus write opt-in, target review,127.0.0.1 only,1..300seconds,4active clients; name-recreation and adversarial protocol gates remain | Separate capability; loopback-only listener, explicit ports and finite lifetime, target/session binding, cleanup on exit/context change, bounded connection count |
+| I06 | Generic command extensions | Missing optional phase | Data-only registration and approved immutable executable identity; same subprocess boundaries as I03; production remains disabled without independently validated containment |
+| A01 | GitHub Copilot login and minimized local context | Partial: trusted CLI login handoff and reviewed local export exist | Real github.com and Enterprise Cloud *.ghe.com identity/subscription acceptance; no GHES support claim |
+| A02 | In-app Copilot advisory diagnosis | Missing optional phase | Exact minimized transfer preview/approval, explicit host, no tools or cluster credentials, timeout/output bounds, cancellation, sanitized advice; validated OS isolation or strict profile keeps requests disabled |
+| U01 | Themes and first-use startup | Done: 18 bundled themes, Catppuccin Mocha default, first-run picker, 2-second skippable/disableable animation | Existing theme/startup reports |
+| U02 | Custom theme workflow | Implemented CLI current-color cloning and explicit backup-preserving replacement; atomic preferences and legacy settings fallback; GUI creation/Windows ACL acceptance remain | UI create-from-current; explicit replace with recoverable backup; settings migration/atomic persistence; retain source/license notices |
+| U03 | Visible action menu and capability feedback | Implemented visible action picker and capability guards, captured-target edit form and wrapped review; broader accessibility acceptance remains | Searchable or visible action list with disabled reason; keyboard equivalents for all mouse paths; readable full review at small size |
+| U04 | Terminal compatibility/accessibility | Partial: conservative ASCII, truecolor and monochrome; Windows PTY and WSL exercised; keyboard-only --no-mouse and TERM=dumb fallback added | Unicode display widths/graphemes, 256/16-color degradation, TERM=dumb behavior, mouse off, screen reader/navigation checks, real platform matrix |
+| U05 | Modern visual refinement | Pending after functional work, as requested | Consistent spacing/focus/status/diffs, no safety-state color dependence, measured render/idle/RSS regression budget |
+
+## Security and operational acceptance
+
+| ID | Gate | Status and work |
+|---|---|---|
+| S01 | Local file trust | Improved: same-directory synced atomic replacement; Unix0700/0600 tested. Windows ACL provisioning and handle-based race resistance remain gates |
+| S02 | Audit integrity and crash reconciliation | Partial: bounded pending-intent/crash reporting implemented; no automatic retry. Protected external audit sink and operational reconciliation drills remain |
+| S03 | Credential lifecycle and cloud helpers | Partial: certificate/token only; helpers/providers intentionally rejected. Any helper support needs absolute executable trust, explicit reviewed args, timeout, trust invalidation on CA/endpoint/helper changes, and rotation/revocation/cache clearing tests. |
+| S04 | Server authorization/admission | External gate plus test fixtures: use least-privilege RBAC and admission policies independently of client controls; retain forbidden/dry-run/admission mutation cases for each new write family. |
+| S05 | Transport edge cases | Partial: mandatory TLS, bounded bodies, no credential-bearing redirects/proxies. Expand rotation, custom CA, redirect, slow response, 429, expiry and malicious response fixtures. Supporting a proxy requires explicit design rather than removing the block. |
+| S06 | Secret and terminal safety | Partial: known-field redaction and terminal sanitation exist. Add canary checks for every new output/export/integration/AI sink and bounded parser fuzzing. Logs and arbitrary CRDs may contain confidential data outside known fields. |
+| S07 | Copilot containment | External/platform gate: environment scrubbing and a separate process alone are insufficient. Validate filesystem/network/tool isolation per platform; disable automated advisor in strict profile where unavailable. Real login requires appropriate identity/subscription, never committed credentials. |
+| S08 | Dependency minimization | Partial: reviewed narrow graph and advisory scan exist. Record reason/transitive impact for every new dependency; use std where suitable; do not hand-roll TLS/crypto/protocol parsers. Retain exact lockfile/source in new audit evidence. |
+| T01 | Supported Kubernetes versions | Partial evidence: real 1.34.11, 1.35.8, Desktop 1.36.1. User target is 1.34+. Future minors require continuing compatibility runs; this is not a guarantee for untested releases. |
+| T02 | OS packages | Done for six native 0.2 Windows/Linux/macOS x64/ARM64 build/test/package jobs. Repeat for renamed/new source; build success does not prove interactive terminal behavior. |
+| T03 | WSL2/Docker Desktop | Done for native WSL app accessing existing Desktop Kubernetes. No second Docker engine is required. Keep explicit server/CA ownership checks and token cleanup in harnesses. |
+| T04 | Scale | Partial: 1,001 objects and 100 aliases to one cluster. 100 independent clusters were not tested and exceed measured local resources. Add concurrent multi-context fixture/load evidence; state topology honestly. |
+| T05 | Performance/fault/soak | Partial: short 30-second watch/poll RSS/CPU and prior loaded UI tests. Add >=60-second idle, sustained watch/log floods, request counts, reconnect storms, slow network, cancellation, discovery stress, p95/p99 input latency and multi-session fairness. |
+| T06 | Real terminal matrix | External gate: Windows Terminal/PowerShell/cmd, Linux VT/bash, macOS Terminal/zsh, SSH, tmux/screen, narrow/resize/signal/handoff/process cleanup. Native CI and PTYs cover only parts. |
+| D01 | Distribution trust | Partial: CycloneDX SBOM, dependency notices/coverage,checksums and unsigned source records implemented. Publisher signing/notarization and authenticated provenance remain external gates |
+| D02 | Operations and maintenance | Implemented operational installation/update/rollback/uninstall/config/recovery guide; organizational pilot and disaster drills remain external gates |
+| D03 | Documentation consistency | Current guide/status/register consolidated for0.3; historical reports preserved |
+
+## Safe implementation order
+
+1. Complete rename/migration and reconcile current docs. Establish profile/capability configuration so later features share one enforcement boundary.
+2. Add read-only workflows: redacted YAML, bounded log follow/container selection, multi-context snapshot overview with explicit limits, CLI completions and visible actions.
+3. Implement individually scoped edits with immutable prepared requests and readable dry-run diffs; add GitOps restrictions and approval race tests. Editing rendered/redacted objects directly is unsafe because it may overwrite omitted data; prepare the operation from a fresh trusted object and only the explicitly approved fields.
+4. Implement lifecycle-bound forwarding and exec/attach behind distinct capabilities, followed by trusted process handoff. Keep their authorization separate from read-only resource browsing. Reuse the Kubernetes client's reviewed protocol support rather than invoking kubectl as an unbounded substitute.
+5. Harden storage, discovery, audit recovery and authentication; expand fault/load and platform evidence. Add automated Copilot only after its isolation and transfer-review contract can actually be enforced.
+6. Refine visual layout/accessibility and rerun performance, then create renamed native packages. Publish a release only at its demonstrated readiness level; incomplete external gates remain visible.
+
+## Explicit exclusions
+
+Privileged node shells, autonomous AI remediation, arbitrary in-process plugins, automatic cluster-admin setup, an embedded terminal multiplexer and a self-updating binary remain outside this production design. “All terminal programs” means documented standards-based CLI and approved process interoperability, not universal compatibility. Optional AI and generic extensions must not block a safe core release.
+
+## Current iteration: bounded discovery implementation
+
+R02 implementation updated after the baseline review. `Gateway::discover` now delegates to a bounded preferred-version collector instead of accumulating `kube::Discovery`. Requests are sequential: `/api/v1`, `/apis`, then one preferred version for each validated group. Limits are 100 groups, 200 browsable kinds, 102 requests, 1 MiB per document, 16 MiB aggregate response bytes and a 15-second overall deadline. Limits apply before JSON decoding and before requesting further groups. Resource subresources and Secrets are excluded; group/version path segments are validated before URL construction.
+
+The catalog commits atomically. Forbidden discovery, malformed responses, transport failures and exceeded limits produce explicit errors and retain the previous catalog; a partial result is never reported as a complete refresh. This permits known built-in operations to remain available while unsupported discovery is visible. Discovery does not try alternate versions after preferred-version failure. Decoder storage is bounded by each capped document; this is a finite memory bound rather than an exact RSS claim.
+
+Validation: all five focused discovery tests passed on Windows (2026-10-10), covering fixed-path success, Secret/subresource exclusion, group/path injection and duplicates, resource/group caps, forbidden/malformed/oversized documents, aggregate/request limits and expired deadlines. A real read-only `kborg --context docker-desktop resources --json` completed successfully against the installed Docker Desktop cluster. Clippy reached an unrelated concurrent edit.rs warning; final combined lint and live custom-CRD compatibility remain integration checks. The historical discovery accumulation gap is addressed in code; these bounded checks do not replace long-duration resource measurements.

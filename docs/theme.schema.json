@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "K8Borg custom theme v1",
+  "title": "KBorg custom theme v1",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema_version", "id", "name", "base", "colors"],

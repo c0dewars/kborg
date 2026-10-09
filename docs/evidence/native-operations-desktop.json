@@ -1,0 +1,9 @@
+{
+  "server": "https://127.0.0.1:64170",
+  "timestamp": "2026-10-09T23:44:21.3911288Z",
+  "cleanup": true,
+  "namespace": "kborg-ops-a3e8a3f4b925",
+  "caSha256": "f10a82835aae7bdbbff9597bfdab077c0ff0a18f68c928aeceae807da5908913",
+  "runId": "a3e8a3f4b925",
+  "passed": true
+}

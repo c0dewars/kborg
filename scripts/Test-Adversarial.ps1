@@ -2,7 +2,7 @@
 param([string]$Executable, [int]$TimeoutSeconds = 5)
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
-if (!$Executable) { $Executable = Join-Path $root 'target/x86_64-pc-windows-msvc/release/k8borg.exe' }
+if (!$Executable) { $Executable = Join-Path $root 'target/x86_64-pc-windows-msvc/release/kborg.exe' }
 $Executable = (Resolve-Path -LiteralPath $Executable).Path
 if ($TimeoutSeconds -lt 1 -or $TimeoutSeconds -gt 15) { throw 'Timeout must be between 1 and 15 seconds.' }
 $run = [Guid]::NewGuid().ToString('N').Substring(0,12)
@@ -23,8 +23,8 @@ function Invoke-Case([string]$Name, [string[]]$Arguments, [bool]$Reject = $true,
     $start.RedirectStandardOutput = $true
     $start.RedirectStandardError = $true
     $start.WorkingDirectory = $fixtures
-    $start.Environment['K8BORG_CONFIG_DIR'] = Join-Path $fixtures 'config'
-    $start.Environment['K8BORG_NO_SPLASH'] = '1'
+    $start.Environment['KBORG_CONFIG_DIR'] = Join-Path $fixtures 'config'
+    $start.Environment['KBORG_NO_SPLASH'] = '1'
     $start.Environment['NO_COLOR'] = '1'
     $start.Environment.Remove('KUBECONFIG') | Out-Null
     foreach ($argument in $Arguments) { $start.ArgumentList.Add($argument) }

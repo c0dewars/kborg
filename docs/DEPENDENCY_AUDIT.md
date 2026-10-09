@@ -25,3 +25,11 @@ This records the database's published advisories against the exact lockfile at o
 ## 0.2 lockfile recheck
 
 The updated lockfile was audited with cargo-audit0.22.2 against official RustSec revision7eebec69c352c7191b1f13eb95dd510eeca5d1de. Lock SHA-256:c0b8c72fbad6fc0ef913661a73aa631c0e1e9c64cf163fd7692634b4e26ae6e6. All183lockedpackages were examined; zero known vulnerabilities and zero warnings; no ignored IDs or platform/severity filters. Evidence: evidence/dependency-audit-0.2.json. futures-util is newly direct but already transitive; only std/async-await features are selected, without adding macro dependencies.
+
+## 0.3 native WebSocket dependency review
+
+Native pod exec, attach and forwarding enable the existing kube `ws` and Tokio `io-util` features. The upstream protocol implementation is preferred to custom WebSocket handshake/framing code. A pinned dependency remains necessary for native Kubernetes remote streams. No shell/subprocess adapter is introduced.
+
+Lockfile SHA-256: `f01d03dde1b12d231c895f753a14436eab54453f14eeba9cf835cbf74ba290c2`. Locked packages: 198. Newly present package names (including rename): `block-buffer`, `cpufeatures`, `crypto-common`, `data-encoding`, `digest`, `generic-array`, `kborg`, `ppv-lite86`, `rand`, `rand_chacha`, `rand_core`, `sha1`, `tokio-macros`, `tokio-tungstenite`, `tungstenite`, `typenum`.
+
+RustSec cargo-audit completed successfully with zero known vulnerabilities and no advisory ignores; machine-readable report: [dependency-audit-0.3.json](evidence/dependency-audit-0.3.json). This point-in-time check does not prove absence of undisclosed issues. WebSocket message allocation and long-duration/fault testing remain release acceptance gates.

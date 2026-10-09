@@ -96,15 +96,15 @@ def main():
               'binary_sha256': hashlib.sha256(binary.read_bytes()).hexdigest(),
               'method': 'GNU time per CLI process; procfs samples and PTY for TUI; warmed filesystem cache',
               'scope': '100 context aliases; one cluster if fixture supplied, zero otherwise; not100 clusters'}
-    with tempfile.TemporaryDirectory(prefix='k8borg-perf-') as temporary:
+    with tempfile.TemporaryDirectory(prefix='kborg-perf-') as temporary:
         directory = pathlib.Path(temporary)
         environment = os.environ.copy()
-        environment['K8BORG_CONFIG_DIR'] = str(directory / 'appearance')
-        environment['K8BORG_NO_SPLASH'] = '1'
+        environment['KBORG_CONFIG_DIR'] = str(directory / 'appearance')
+        environment['KBORG_NO_SPLASH'] = '1'
         subprocess.run([str(binary), 'theme', 'use', 'catppuccin-mocha'],
                        env=environment, check=True, stdout=subprocess.DEVNULL)
-        os.environ['K8BORG_CONFIG_DIR'] = environment['K8BORG_CONFIG_DIR']
-        os.environ['K8BORG_NO_SPLASH'] = '1'
+        os.environ['KBORG_CONFIG_DIR'] = environment['KBORG_CONFIG_DIR']
+        os.environ['KBORG_NO_SPLASH'] = '1'
         report['demo_cli'] = aggregate([measured(binary, ['--demo', '--json', 'list', 'pods'], directory)
                                         for _ in range(options.samples)])
         config = {'apiVersion': 'v1', 'kind': 'Config', 'current-context': 'context-000',

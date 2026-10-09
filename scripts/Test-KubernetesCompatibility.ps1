@@ -29,7 +29,7 @@ foreach ($minor in $Versions) {
     $kubectlSha=(Get-Content -LiteralPath $kubectlChecksum -Raw).Trim().ToLowerInvariant()
     if ($kubectlSha -notmatch '^[a-f0-9]{64}$' -or (Get-FileHash -LiteralPath $kubectl -Algorithm SHA256).Hash.ToLowerInvariant() -ne $kubectlSha) { throw 'Official version-matched kubectl checksum mismatch.' }
     $runId=[Guid]::NewGuid().ToString('N').Substring(0,12)
-    $name="k8borg-compat-$runId"
+    $name="kborg-compat-$runId"
     $directory=Join-Path $projectRoot ".local/$name"
     [void](New-Item -ItemType Directory -Path $directory)
     $acl=Get-Acl -LiteralPath $directory
@@ -55,7 +55,7 @@ foreach ($minor in $Versions) {
         if ($LASTEXITCODE -ne 0 -or $actual.serverVersion.gitVersion -notlike "v$minor.*") { throw 'Server minor version mismatch.' }
         & "$PSScriptRoot/Test-KindFixture.ps1" -AdminConfig $admin -ExpectedContext "kind-$name" -ExpectedServer $server -KubectlPath $kubectl
         if (-not $?) { throw 'Compatibility acceptance failed.' }
-        $evidence=[ordered]@{schema=1;status='passed';kubernetesVersion=$actual.serverVersion.gitVersion;nodeImage=$images[$minor];kindVersion='v0.33.0';kindBinarySha256=$kindSha;utc=[DateTime]::UtcNow.ToString('o');suite='cargo test --locked;tests/docker_desktop.rs isolated_cluster_acceptance;CLI doctor;CLI JSON pods;DiagnosticProbe CRD resources/list/get/local minimized Copilot export';diagnosticCrdChecksPassed=$true;clientBinarySha256=(Get-FileHash -LiteralPath (Join-Path $projectRoot 'target/debug/k8borg.exe') -Algorithm SHA256).Hash.ToLowerInvariant();kubectlVersion=$actual.clientVersion.gitVersion;clientPlatform='Windows native Rust';isolatedCluster=$true;maxConcurrentCompatibilityClusters=1;nodeMemoryLimitBytes=4GB;nodeCpuLimit=4;cleanupVerified=$false}
+        $evidence=[ordered]@{schema=1;status='passed';kubernetesVersion=$actual.serverVersion.gitVersion;nodeImage=$images[$minor];kindVersion='v0.33.0';kindBinarySha256=$kindSha;utc=[DateTime]::UtcNow.ToString('o');suite='cargo test --locked;tests/docker_desktop.rs isolated_cluster_acceptance;CLI doctor;CLI JSON pods;DiagnosticProbe CRD resources/list/get/local minimized Copilot export';diagnosticCrdChecksPassed=$true;clientBinarySha256=(Get-FileHash -LiteralPath (Join-Path $projectRoot 'target/debug/kborg.exe') -Algorithm SHA256).Hash.ToLowerInvariant();kubectlVersion=$actual.clientVersion.gitVersion;clientPlatform='Windows native Rust';isolatedCluster=$true;maxConcurrentCompatibilityClusters=1;nodeMemoryLimitBytes=4GB;nodeCpuLimit=4;cleanupVerified=$false}
     } finally {
         $current=(& $docker info --format '{{json .}}') | ConvertFrom-Json
         if ($LASTEXITCODE -ne 0 -or $current.ID -ne $daemon.ID) { throw 'Cleanup blocked: Docker daemon identity changed.' }

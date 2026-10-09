@@ -1,0 +1,17 @@
+{
+  "retrievedAtUtc": "2026-10-09T23:47:45.0274478Z",
+  "version": "4.2.0",
+  "sourceCommit": "526f1f2cfa996ed0e92510feabb2d2327df5e49f",
+  "files": [
+    {
+      "url": "https://raw.githubusercontent.com/kube-rs/kube/526f1f2cfa996ed0e92510feabb2d2327df5e49f/LICENSE",
+      "file": "LICENSE",
+      "sha256": "ed80bd7cef632e261d2d4e5d4dc96ea900429825fd6076008e7ebffd962466b9"
+    }
+  ],
+  "repository": "https://github.com/kube-rs/kube",
+  "originalManifestMatched": null,
+  "name": "kube",
+  "sourceBasis": "published crate .cargo_vcs_info.json",
+  "schema": 1
+}

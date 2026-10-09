@@ -1,0 +1,57 @@
+{
+  "schema": 1,
+  "utc": "2026-10-09T23:44:39Z",
+  "platform": "Linux",
+  "kernel": "6.18.33.2-microsoft-standard-WSL2",
+  "binary_bytes": 11049904,
+  "binary_sha256": "be49aa0ad312f0d8dadfb03860669249987746bbf01d2db2d3918601391695c2",
+  "cpu_tick_seconds": 0.01,
+  "cpu_interpretation": "Zero ticks means below kernel accounting resolution, not zero computation",
+  "background_environment": "Concurrent development and Docker Desktop tests; no host isolation, no sustained load proof",
+  "method": "One sequential 60 s run per mode; procfs sampled at 100 ms and PTY 120x35; warm filesystem cache",
+  "scope": "One existing Docker Desktop cluster, one small isolated read-only namespace; no cluster writes",
+  "request_count_limitation": "TLS network traffic does not prove HTTP request counts; no API audit or request instrumentation used",
+  "live_cli_watch": {
+    "first_snapshot_ms": 100.411,
+    "items": 1,
+    "valid_resource_version": true,
+    "initial_status": "watch cache initialized",
+    "broken_pipe_exit_code": 0,
+    "broken_pipe_exit_seconds": 5.224,
+    "limitation": "Snapshot and clean consumer-close tested; resource mutations intentionally delegated to separate acceptance suite"
+  },
+  "demo_metrics": {
+    "source": "demo (deterministic sample)",
+    "items": 1,
+    "quantity_and_time_fields_present": true
+  },
+  "desktop_metrics": {
+    "exit_code": 1,
+    "stdout_bytes": 0,
+    "rbac_forbidden_message_seen": true
+  },
+  "live_tui": {
+    "duration_seconds": 60,
+    "peak_rss_kib": 11328,
+    "cpu_ticks": 1,
+    "cpu_seconds": 0.01,
+    "average_one_core_cpu_percent": 0.0167,
+    "terminal_bytes": 102317,
+    "expected_mode_label_seen": true,
+    "clean_exit": true,
+    "includes_startup_and_connection": true,
+    "http_request_count": null
+  },
+  "poll_tui": {
+    "duration_seconds": 60,
+    "peak_rss_kib": 11396,
+    "cpu_ticks": 1,
+    "cpu_seconds": 0.01,
+    "average_one_core_cpu_percent": 0.0167,
+    "terminal_bytes": 142084,
+    "expected_mode_label_seen": true,
+    "clean_exit": true,
+    "includes_startup_and_connection": true,
+    "http_request_count": null
+  }
+}

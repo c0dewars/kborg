@@ -1,9 +1,9 @@
 import sys,os,json,time,subprocess,pathlib,tempfile,pty,fcntl,termios,struct,select,statistics,hashlib,re
-binary=pathlib.Path.home()/'.cache/k8borg-target/release/k8borg'
+binary=pathlib.Path.home()/'.cache/kborg-target/release/kborg'
 fixture=pathlib.Path(sys.argv[1])
 report={'schema':1,'utc':time.strftime('%Y-%m-%dT%H:%M:%SZ',time.gmtime()),'binary_sha256':hashlib.sha256(binary.read_bytes()).hexdigest(),'scope':'One Docker Desktop Kubernetes 1.36.1 cluster, 1001 owned synthetic ConfigMaps with 4096-byte data each; no application workloads','method':'GNU time CLI peak RSS; procfs TUI RSS/CPU; PTY output acknowledgement latency; first process cool, subsequent warm, no cache eviction'}
-with tempfile.TemporaryDirectory(prefix='k8borg-load-') as d:
- env=os.environ.copy();env['K8BORG_CONFIG_DIR']=d;env['K8BORG_NO_SPLASH']='1'
+with tempfile.TemporaryDirectory(prefix='kborg-load-') as d:
+ env=os.environ.copy();env['KBORG_CONFIG_DIR']=d;env['KBORG_NO_SPLASH']='1'
  args=[str(binary),'--kubeconfig',str(fixture),'--theme','catppuccin-mocha','--no-splash']
  samples=[]
  for i in range(6):
@@ -12,7 +12,7 @@ with tempfile.TemporaryDirectory(prefix='k8borg-load-') as d:
   if r.returncode: raise RuntimeError(r.stderr.decode()[:500])
   fields=t.read_text().split();v=json.loads(r.stdout)
   assert len(v['items'])==1000 and v['truncated'] is True
-  assert b'K8BORG_LOAD_DATA_CANARY' not in r.stdout and all(x.get('data') == '[REDACTED]' for x in v['items'])
+  assert b'KBORG_LOAD_DATA_CANARY' not in r.stdout and all(x.get('data') == '[REDACTED]' for x in v['items'])
   samples.append({'wall_ms':round((time.monotonic()-start)*1000,2),'cpu_ms':round((float(fields[1])+float(fields[2]))*1000,2),'peak_rss_kib':int(fields[3]),'output_bytes':len(r.stdout),'count':len(v['items']),'truncated':v['truncated']})
  report['cli']={'cool':samples[0],'warm':samples[1:],'redaction_canary_absent':True,'positive_truncation_bound':True}
  r=subprocess.run([*args,'list','configmaps'],env=env,capture_output=True,timeout=25)

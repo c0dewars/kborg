@@ -1,8 +1,12 @@
-# K8Borg
+# KBorg
 
 Kubernetes operations, under your control.
 
-Rust terminal UI and CLI, read-only by default. Local-testing release **0.2.0**. This is a working first iteration, not a production-certified implementation of every requirement in the development guide.
+![KBorg logo](assets/kborg-logo.png)
+
+Current capabilities and open acceptance gates: [remaining work](docs/REMAINING_WORK.md), [0.3 release notes](docs/RELEASE_NOTES.md), [configuration and operations](docs/OPERATIONS.md).
+
+Rust terminal UI and CLI, read-only by default. Local-testing release **0.3.0**. This is a working first iteration, not a production-certified implementation of every requirement in the development guide.
 
 ## Run
 
@@ -11,15 +15,15 @@ Requirements: Rust 1.99 (pinned), the platform linker (Visual Studio C++ tools o
 ```powershell
 cd C:\Users\Garcia\Desktop\projects\k8borg
 cargo build --release
-.\target\release\k8borg.exe demo
+.\target\release\kborg.exe demo
 ```
 
 For a real cluster, use an explicitly selected trusted kubeconfig and a least-privilege identity:
 
 ```powershell
-.\target\release\k8borg.exe --kubeconfig <file> --context <context> -n <namespace>
-.\target\release\k8borg.exe --kubeconfig <file> list pods --json
-.\target\release\k8borg.exe --help
+.\target\release\kborg.exe --kubeconfig <file> --context <context> -n <namespace>
+.\target\release\kborg.exe --kubeconfig <file> list pods --json
+.\target\release\kborg.exe --help
 ```
 
 Existing Docker Desktop admin kubeconfig works, but the fixture reader is preferable for local testing. No kubeconfig changes are made. Certificate/token authentication is supported; exec-based cloud helpers and legacy auth providers are rejected until their trust model is implemented. All real clusters are labeled PRODUCTION.
@@ -49,7 +53,7 @@ Omit `-KeepFixtures` for automatic cleanup. Failed runs clean up even when reten
 
 ## Interface
 
-Tab changes focus between resources and objects. Up/down or j/k navigate, Enter opens redacted JSON, `/` filters cached names, `r` refreshes, `c` selects context, `n` changes namespace (`*` means all namespaces), `R` discovers resources/CRDs, `m` opens pod/node metrics, `w` switches live watch/polling, `l` shows bounded pod logs and `L` previous logs, `t` opens themes, `?` shows help, Esc closes and `q` exits. Click resource/object rows or scroll using the mouse. ASCII rendering is conservative: non-ASCII display characters become `?`; raw JSON retains safely escaped Unicode.
+Tab changes focus between resources and objects. Up/down or j/k navigate, Enter opens redacted JSON, `/` filters cached names, `r` refreshes, `c` selects context, `n` changes namespace (`*` means all namespaces), `R` discovers resources/CRDs, `m` opens pod/node metrics, `w` switches live watch/polling, `y` opens YAML, `l` selects bounded pod logs, `L` previous logs, `f` follows a selected container, `o` opens context summaries, `e` reviews an image edit, `a` opens actions, `t` opens themes, `?` shows help, Esc closes and `q` exits. Click resource/object rows or scroll using the mouse. ASCII rendering is conservative: non-ASCII display characters become `?`; raw JSON retains safely escaped Unicode.
 
 Live clusters use bounded LIST/WATCH with bookmarks, reconnect/backoff and expired-version relisting. Use `--poll` or `w` for explicit five-second polling; offline demo uses polling. Failed requests mark data STALE. Reads are limited to 1,000 objects/8 MiB retained data, with 200-object pages and 8 MiB response bodies. Narrow namespace scope when TRUNCATED appears. Logs require `--allow-logs`, are capped at 200 lines/256 KiB, and can still contain sensitive data.
 
@@ -57,19 +61,19 @@ Mutations require `--write`, a server dry-run and exact `namespace/name` confirm
 
 ## Themes
 
-18 bundled choices: K8Borg Dark/Light/High Contrast; all four Catppuccin flavors; Dracula; Nord; Gruvbox Dark/Light; Tokyo Night Night/Storm/Moon/Day; Solarized Dark/Light; host Terminal mode. Safety-critical low-contrast upstream colors are adapted to meet the project's fixed-palette targets. Theme families are credited in `THIRD_PARTY_NOTICES.md`; this is an unofficial adaptation.
+18 bundled choices: KBorg Dark/Light/High Contrast; all four Catppuccin flavors; Dracula; Nord; Gruvbox Dark/Light; Tokyo Night Night/Storm/Moon/Day; Solarized Dark/Light; host Terminal mode. Safety-critical low-contrast upstream colors are adapted to meet the project's fixed-palette targets. Theme families are credited in `THIRD_PARTY_NOTICES.md`; this is an unofficial adaptation.
 
 ```powershell
-.\target\release\k8borg.exe theme list
-.\target\release\k8borg.exe theme use catppuccin-mocha
-.\target\release\k8borg.exe theme new my-theme --base catppuccin-mocha
-.\target\release\k8borg.exe theme validate <file.json>
-.\target\release\k8borg.exe theme preview <file.json>
-.\target\release\k8borg.exe theme install <file.json>
-.\target\release\k8borg.exe theme export catppuccin-mocha --output .\custom.json
+.\target\release\kborg.exe theme list
+.\target\release\kborg.exe theme use catppuccin-mocha
+.\target\release\kborg.exe theme new my-theme --base catppuccin-mocha
+.\target\release\kborg.exe theme validate <file.json>
+.\target\release\kborg.exe theme preview <file.json>
+.\target\release\kborg.exe theme install <file.json>
+.\target\release\kborg.exe theme export catppuccin-mocha --output .\custom.json
 ```
 
-See `docs/themes.md`. Themes never execute code or access the network. Install refuses overwrites; edit your existing custom JSON and validate it to update locally. Built-in IDs cannot be replaced. The TUI previews with arrows, saves on Enter and restores on Esc. Selection under `--theme` is session-only. `NO_COLOR` and `--color=never` disable colors. JSON output contains no theme styling.
+See `docs/themes.md`. Themes never execute code or access the network. Install refuses overwrites. Use `theme replace FILE` for a validated replacement with an original `.json.bak` retained; it refuses to overwrite an existing backup. `theme clone-current ID` creates a new theme from the current resolved colors. Built-in IDs cannot be replaced. The TUI previews with arrows, saves on Enter and restores on Esc. Selection under `--theme` is session-only. `NO_COLOR` and `--color=never` disable colors. JSON output contains no theme styling.
 
 ## Security and scope
 
@@ -77,20 +81,20 @@ TLS validation is required. Secrets are excluded from built-in and discovered ki
 
 Writes use a local durable intent/outcome audit spool; this is supplementary and mutable by the operator, not centralized protected audit. Windows config directories outside the test harness inherit their existing user ACLs; verify them before using writes on sensitive clusters. Same-user path replacement races are not eliminated by symlink checks. Authentication revocation, malicious local software and cluster admission remain outside the client trust boundary.
 
-AI, arbitrary plugins, shell handoff, exec/attach, forwarding, general YAML editing, advanced metrics dashboard, simultaneous multi-context view, signed packaging, centralized audit and non-Windows platform verification are not implemented. They remain gated in the development plan. This iteration is suitable for isolated local testing; production use needs the remaining evidence and review in `docs/IMPLEMENTATION_STATUS.md`.
+KBorg 0.3 adds bounded native exec/output attach, finite loopback forwarding, explicit multi-context snapshots and controlled deployment image changes. Each privileged operation requires separate opt-in and target review. Automatic AI diagnosis, arbitrary plugins/tool handoff, generic YAML apply, interactive stdin/TTY, advanced metrics history, signed distribution and protected centralized audit remain incomplete or gated. This prerelease is suitable for isolated local testing; see `docs/REMAINING_WORK.md` for the current acceptance register.
 
 ## Startup and first use
 
-Interactive startup shows a two-second ASCII K8Borg animation. Any key skips it. Use `--no-splash`, set `K8BORG_NO_SPLASH`, or run `k8borg startup off` to disable it persistently (`startup on` restores it). Animation never runs in CLI/JSON commands. The first interactive launch opens the theme picker with Catppuccin Mocha selected; Enter chooses a theme and Esc keeps Mocha. Explicit `--theme` overrides onboarding for that session.
+Interactive startup shows a two-second ASCII KBorg animation. Any key skips it. Use `--no-splash`, set `KBORG_NO_SPLASH`, or run `kborg startup off` to disable it persistently (`startup on` restores it). Animation never runs in CLI/JSON commands. The first interactive launch opens the theme picker with Catppuccin Mocha selected; Enter chooses a theme and Esc keeps Mocha. Explicit `--theme` overrides onboarding for that session.
 
 ## Optional GitHub Copilot preparation
 
-K8Borg supports only GitHub Copilot as the planned AI provider. Current commands prepare a small local diagnostic JSON file and hand login to an explicitly selected trusted official Copilot CLI. K8Borg sends no model request and never gives AI write authority. Copilot CLI is optional and is not installed or downloaded by K8Borg.
+KBorg supports only GitHub Copilot as the planned AI provider. Current commands prepare a small local diagnostic JSON file and hand login to an explicitly selected trusted official Copilot CLI. KBorg sends no model request and never gives AI write authority. Copilot CLI is optional and is not installed or downloaded by KBorg.
 
 ```powershell
-k8borg --kubeconfig <file> -n <namespace> copilot context pods <name> --output <new-file.json>
-k8borg copilot login --cli <absolute-trusted-copilot-executable> --host github.com
-k8borg copilot login --cli <absolute-trusted-copilot-executable> --host acme.ghe.com
+kborg --kubeconfig <file> -n <namespace> copilot context pods <name> --output <new-file.json>
+kborg copilot login --cli <absolute-trusted-copilot-executable> --host github.com
+kborg copilot login --cli <absolute-trusted-copilot-executable> --host acme.ghe.com
 ```
 
 Context export omits object names, cluster identity, workload specs, logs, labels and arbitrary status messages. Bounded type/reason strings can still contain confidential text or prompt injection: inspect before manually sharing. Copilot manages login credentials and may have its own telemetry/storage. Do not assume GitHub Enterprise Server login provides a Copilot service; supported login hosts are GitHub.com and GitHub Enterprise Cloud data-residency `*.ghe.com`. See [official Copilot authentication](https://docs.github.com/en/enterprise-cloud%40latest/copilot/how-tos/copilot-cli/set-up-copilot-cli/authenticate-copilot-cli).
@@ -109,11 +113,11 @@ The minimum Kubernetes target is 1.34. API bindings use the 1.34 schema to avoid
 ## Live watches and metrics (0.2)
 
 ```powershell
-k8borg --kubeconfig <file> -n <namespace> watch pods --json
-k8borg --kubeconfig <file> -n <namespace> metrics pods --json
-k8borg --kubeconfig <file> metrics nodes
-k8borg --kubeconfig <file> --poll
-k8borg --demo metrics pods
+kborg --kubeconfig <file> -n <namespace> watch pods --json
+kborg --kubeconfig <file> -n <namespace> metrics pods --json
+kborg --kubeconfig <file> metrics nodes
+kborg --kubeconfig <file> --poll
+kborg --demo metrics pods
 ```
 
 `watch --json` emits bounded snapshot JSONL, not raw events. Each view owns one cancellable watch and one coalesced update slot. Old scope events are discarded; row selection follows namespace/name/UID, and scale input captures its original name/UID. Bookmarks retain resume versions; HTTP 410 relists. Authorization denial clears the cache and stops requests until explicit reconnect. Authorization changes apply on new requests: an existing watch can continue until its bounded eight-second server lifetime ends. Unsupported or missing watch endpoints stop with polling/catalog guidance. No automatic permission fallback occurs.
@@ -123,3 +127,9 @@ A watch cannot represent a complete view above its 1,000-object/8 MiB cache budg
 Pod/container and node usage come from `metrics.k8s.io/v1beta1`; this requires an installed and correctly secured Metrics Server or compatible provider. The app never installs one. CPU is normalized using checked integer nanocores and exact decimal millicores; memory uses checked bytes. Raw quantities, measurement timestamp/window and any upward rounding remain explicit. Missing, forbidden or malformed metrics produce errors and do not invalidate resource browsing or fabricate zero usage. Success and error dialogs wrap for narrow terminals. No percentages are inferred without capacity/request denominators.
 
 See `docs/WATCH_METRICS_REVIEW.md` and `docs/WATCH_METRICS_UX.md` for actual and controlled-test distinctions. Remaining production gates and broader roadmap features still apply.
+
+### Rename compatibility
+
+The product and executable are now **KBorg** and `kborg`. Use `KBORG_CONFIG_DIR` and `KBORG_NO_SPLASH`; the previous `K8BORG_CONFIG_DIR` and `K8BORG_NO_SPLASH` remain accepted. The new configuration override takes precedence. Default settings live under `KBorg` on Windows/macOS and `kborg` on Linux; an existing legacy directory is reused when the new directory does not exist. No credentials or settings are moved automatically.
+
+The three built-in theme identifiers `k8borg-dark`, `k8borg-light`, and `k8borg-high-contrast` remain stable for existing preferences and custom theme inheritance; their displayed names use KBorg. Existing local fixture launch and cleanup scripts also accept the recorded legacy fixture identity. Historical release reports, test evidence, and the original logo concept retain the original name to preserve their provenance.

@@ -1,0 +1,10 @@
+{
+  "wsl": true,
+  "caSha256": "f10a82835aae7bdbbff9597bfdab077c0ff0a18f68c928aeceae807da5908913",
+  "passed": true,
+  "cleanup": true,
+  "namespace": "kborg-ops-bd052d47d134",
+  "server": "https://127.0.0.1:64170",
+  "timestamp": "2026-10-09T23:49:35.2980661Z",
+  "runId": "bd052d47d134"
+}

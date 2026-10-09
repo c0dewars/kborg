@@ -88,10 +88,12 @@ pub fn read_small(path: &Path, limit: u64) -> Result<Vec<u8>> {
 }
 
 pub fn config_dir() -> Result<PathBuf> {
-    if let Some(path) = std::env::var_os("K8BORG_CONFIG_DIR") {
+    if let Some(path) =
+        std::env::var_os("KBORG_CONFIG_DIR").or_else(|| std::env::var_os("K8BORG_CONFIG_DIR"))
+    {
         let path = PathBuf::from(path);
         if !path.is_absolute() {
-            return Err("K8BORG_CONFIG_DIR must be absolute".into());
+            return Err("KBORG_CONFIG_DIR must be absolute".into());
         }
         checked_path(&path)?;
         return Ok(path);
@@ -99,42 +101,45 @@ pub fn config_dir() -> Result<PathBuf> {
     #[cfg(windows)]
     let base = std::env::var_os("APPDATA")
         .map(PathBuf::from)
-        .map(|p| p.join("K8Borg"));
+        .map(|p| p.join("KBorg"));
     #[cfg(target_os = "macos")]
     let base = std::env::var_os("HOME")
         .map(PathBuf::from)
-        .map(|p| p.join("Library/Application Support/K8Borg"));
+        .map(|p| p.join("Library/Application Support/KBorg"));
     #[cfg(all(unix, not(target_os = "macos")))]
     let base = std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
-        .map(|p| p.join("k8borg"))
+        .map(|p| p.join("kborg"))
         .or_else(|| {
             std::env::var_os("HOME")
                 .map(PathBuf::from)
-                .map(|p| p.join(".config/k8borg"))
+                .map(|p| p.join(".config/kborg"))
         });
-    let path = base.ok_or("user config directory unavailable; set K8BORG_CONFIG_DIR")?;
+    let path = base.ok_or("user config directory unavailable; set KBORG_CONFIG_DIR")?;
     if !path.is_absolute() {
         return Err("user config directory must be absolute".into());
     }
     checked_path(&path)?;
+    // Reuse existing pre-rename settings without moving sensitive files.
+    let legacy = path.with_file_name(if cfg!(windows) || cfg!(target_os = "macos") {
+        "K8Borg"
+    } else {
+        "k8borg"
+    });
+    if !path.exists() {
+        checked_path(&legacy)?;
+        if legacy.exists() {
+            return Ok(legacy);
+        }
+    }
     Ok(path)
 }
 
 /// Create without overwriting. Settings use a replaceable non-sensitive file separately.
 pub fn write_new(path: &Path, bytes: &[u8]) -> Result<()> {
     checked_path(path)?;
-    if let Some(parent) = path.parent() {
-        let mut builder = fs::DirBuilder::new();
-        builder.recursive(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::DirBuilderExt;
-            builder.mode(0o700);
-        }
-        builder
-            .create(parent)
-            .map_err(|_| "cannot create directory")?;
+    if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+        ensure_private_dir(parent)?;
     }
     checked_path(path)?;
     let mut options = OpenOptions::new();
@@ -186,8 +191,154 @@ pub fn redact(value: &mut Value) {
     }
 }
 
+/// Create new directory components with restrictive Unix modes. Existing parent
+/// directories are not chmod'ed: they may be shared user configuration roots.
+pub fn ensure_private_dir(path: &Path) -> Result<()> {
+    checked_path(path)?;
+    let mut builder = fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o700);
+    }
+    builder
+        .create(path)
+        .map_err(|_| "cannot create directory")?;
+    checked_path(path)?;
+    if !fs::metadata(path)
+        .map_err(|_| "cannot inspect directory")?
+        .is_dir()
+    {
+        return Err("not a directory".into());
+    }
+    Ok(())
+}
+
+/// Sync a new sibling and replace the destination in one rename operation.
+/// No unlink-before-rename gap; does not claim crash durability on every filesystem.
+pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static SEQUENCE: AtomicU64 = AtomicU64::new(0);
+    checked_path(path)?;
+    let parent = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    ensure_private_dir(parent)?;
+    let filename = path.file_name().ok_or("destination filename required")?;
+    match fs::symlink_metadata(path) {
+        Ok(meta) if !meta.is_file() => {
+            return Err("replacement target must be a regular file".into());
+        }
+        Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
+            return Err("cannot inspect replacement target".into());
+        }
+        _ => {}
+    }
+    let mut stage_name = std::ffi::OsString::from(".");
+    stage_name.push(filename);
+    stage_name.push(format!(
+        ".{}-{}.tmp",
+        std::process::id(),
+        SEQUENCE.fetch_add(1, Ordering::Relaxed)
+    ));
+    let stage = parent.join(stage_name);
+    // create_new prevents overwriting a leftover or attacker-created staging file.
+    write_new(&stage, bytes)?;
+    let commit = checked_path(path)
+        .and_then(|()| checked_path(&stage))
+        .and_then(|()| {
+            fs::rename(&stage, path)
+                .map_err(|_| "cannot commit replacement; previous file retained".into())
+        });
+    if let Err(error) = commit {
+        let _ = fs::remove_file(&stage);
+        return Err(error);
+    }
+    #[cfg(unix)]
+    {
+        fs::File::open(parent)
+            .and_then(|dir| dir.sync_all())
+            .map_err(
+                |_| "replacement committed, but directory durability could not be confirmed",
+            )?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
+    fn storage_test_dir(label: &str) -> PathBuf {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_else(|e| panic!("{e}"))
+            .as_nanos();
+        std::env::temp_dir().join(format!("kborg-{label}-{}-{stamp}", std::process::id()))
+    }
+    #[test]
+    fn atomic_repeated_replacement_and_leftover_stage_preserve_settings() {
+        let dir = storage_test_dir("atomic");
+        let target = dir.join("appearance.json");
+        atomic_write(&target, b"original").unwrap_or_else(|e| panic!("{e}"));
+        write_new(&dir.join("appearance-interrupted.tmp"), b"partial")
+            .unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(
+            read_small(&target, 100).unwrap_or_else(|e| panic!("{e}")),
+            b"original"
+        );
+        for value in [b"second".as_slice(), b"third".as_slice()] {
+            atomic_write(&target, value).unwrap_or_else(|e| panic!("{e}"));
+            assert_eq!(
+                read_small(&target, 100).unwrap_or_else(|e| panic!("{e}")),
+                value
+            );
+        }
+        fs::remove_dir_all(&dir).unwrap_or_else(|e| panic!("{e}"));
+    }
+    #[test]
+    fn failed_stage_preserves_existing_destination() {
+        let dir = storage_test_dir("failed");
+        let target = dir.join("appearance.json");
+        atomic_write(&target, b"original").unwrap_or_else(|e| panic!("{e}"));
+        // A staging path too long for the filesystem fails before any destination mutation.
+        let invalid = dir.join("x".repeat(300));
+        assert!(atomic_write(&invalid, b"replacement").is_err());
+        assert_eq!(
+            read_small(&target, 100).unwrap_or_else(|e| panic!("{e}")),
+            b"original"
+        );
+        assert!(atomic_write(&dir, b"replacement").is_err());
+        fs::remove_dir_all(&dir).unwrap_or_else(|e| panic!("{e}"));
+    }
+    #[cfg(unix)]
+    #[test]
+    fn new_storage_has_private_unix_modes() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = storage_test_dir("modes");
+        let target = dir.join("nested/appearance.json");
+        atomic_write(&target, b"{}").unwrap_or_else(|e| panic!("{e}"));
+        for directory in [&dir, &dir.join("nested")] {
+            assert_eq!(
+                fs::metadata(directory)
+                    .unwrap_or_else(|e| panic!("{e}"))
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o700
+            );
+        }
+        assert_eq!(
+            fs::metadata(&target)
+                .unwrap_or_else(|e| panic!("{e}"))
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+        fs::remove_dir_all(&dir).unwrap_or_else(|e| panic!("{e}"));
+    }
+
     use super::*;
     #[test]
     fn sanitizes_terminal_and_bidi_controls() {

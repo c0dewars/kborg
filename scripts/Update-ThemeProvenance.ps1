@@ -13,7 +13,7 @@ $sources=@(
 )
 $manifest=@()
 foreach ($source in $sources) {
-    $commit=(Invoke-RestMethod -Uri "https://api.github.com/repos/$($source.repo)/commits?per_page=1" -Headers @{'User-Agent'='K8Borg-build'})[0].sha
+    $commit=(Invoke-RestMethod -Uri "https://api.github.com/repos/$($source.repo)/commits?per_page=1" -Headers @{'User-Agent'='KBorg-build'})[0].sha
     if ($commit -notmatch '^[a-f0-9]{40}$') {throw 'Invalid upstream revision.'}
     $directory=Join-Path $assetRoot $source.id
     New-Item -ItemType Directory -Path $directory -Force | Out-Null

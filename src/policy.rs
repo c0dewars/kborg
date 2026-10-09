@@ -1,11 +1,28 @@
 use crate::Result;
 use std::time::{Duration, Instant};
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub enum Action {
     Scale(i32),
+    SetImage { container: String, image: String },
     Restart,
     Delete,
+}
+
+impl Action {
+    pub fn operation_name(&self) -> &'static str {
+        match self {
+            Self::Scale(_) => "scale",
+            Self::Restart => "restart",
+            Self::Delete => "delete",
+            Self::SetImage { .. } => "set-image",
+        }
+    }
+}
+impl std::fmt::Debug for Action {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.operation_name())
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -47,6 +64,9 @@ impl Policy {
         }
         match action {
             Action::Scale(n) if target.resource == "deployments" && (0..=20).contains(n) => Ok(()),
+            Action::SetImage { container, image } if target.resource == "deployments" => {
+                crate::edit::validate(container, image)
+            }
             Action::Restart if target.resource == "deployments" => Ok(()),
             Action::Delete
                 if ["pods", "deployments", "services", "jobs"]
@@ -112,7 +132,15 @@ mod tests {
     }
     #[test]
     fn read_only_rejects_all_writes() {
-        for action in [Action::Restart, Action::Scale(2), Action::Delete] {
+        for action in [
+            Action::Restart,
+            Action::Scale(2),
+            Action::Delete,
+            Action::SetImage {
+                container: "api".into(),
+                image: "private/image:tag".into(),
+            },
+        ] {
             assert!(
                 Policy { writable: false }
                     .check(&target(), &action)
@@ -128,6 +156,27 @@ mod tests {
         other.session = "b".into();
         assert!(a.consume(&other, &Action::Restart).is_err());
         assert!(a.consume(&target(), &Action::Restart).is_err());
+    }
+    #[test]
+    fn image_approval_binds_values_and_debug_omits_values() {
+        let action = Action::SetImage {
+            container: "api".into(),
+            image: "private-canary/image:v1".into(),
+        };
+        assert_eq!(format!("{action:?}"), "set-image");
+        let mut approval =
+            Approval::confirm(target(), action, "test/app").unwrap_or_else(|e| panic!("{e}"));
+        assert!(
+            approval
+                .consume(
+                    &target(),
+                    &Action::SetImage {
+                        container: "api".into(),
+                        image: "private-canary/image:v2".into()
+                    }
+                )
+                .is_err()
+        );
     }
     #[test]
     fn restricts_scope_and_scale() {

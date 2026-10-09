@@ -1,4 +1,4 @@
-use k8borg::{
+use kborg::{
     cli::runtime,
     gateway::{Connection, Gateway},
     metrics::{self, MetricsScope},
@@ -8,28 +8,28 @@ use std::{path::PathBuf, process::Command, time::Duration};
 
 fn options(identity: &str) -> Connection {
     let path = std::env::var(format!(
-        "K8BORG_WATCH_{}_CONFIG",
+        "KBORG_WATCH_{}_CONFIG",
         identity.to_ascii_uppercase()
     ))
     .unwrap_or_else(|_| panic!("run scripts/Test-WatchMetrics.ps1"));
     Connection {
         kubeconfig: Some(PathBuf::from(path)),
-        context: Some("k8borg-watch-test".into()),
+        context: Some("kborg-watch-test".into()),
         ..Default::default()
     }
 }
 fn namespace() -> String {
-    let ns = std::env::var("K8BORG_WATCH_NAMESPACE")
+    let ns = std::env::var("KBORG_WATCH_NAMESPACE")
         .unwrap_or_else(|_| panic!("missing owned fixture namespace"));
     let run =
-        std::env::var("K8BORG_WATCH_RUN_ID").unwrap_or_else(|_| panic!("missing run identity"));
-    assert_eq!(ns, format!("k8borg-watch-{run}"));
+        std::env::var("KBORG_WATCH_RUN_ID").unwrap_or_else(|_| panic!("missing run identity"));
+    assert_eq!(ns, format!("kborg-watch-{run}"));
     assert_eq!(run.len(), 12);
     assert!(run.bytes().all(|b| b.is_ascii_hexdigit()));
     ns
 }
 fn kube(args: &[&str]) {
-    let executable = std::env::var("K8BORG_WATCH_KUBECTL")
+    let executable = std::env::var("KBORG_WATCH_KUBECTL")
         .unwrap_or_else(|_| panic!("missing trusted kubectl path"));
     assert!(PathBuf::from(&executable).is_absolute());
     let output = Command::new(executable)
@@ -53,7 +53,7 @@ async fn matching(
             assert!(
                 !serde_json::to_string(&snapshot.objects)
                     .unwrap_or_default()
-                    .contains("K8BORG_WATCH_PAYLOAD_CANARY")
+                    .contains("KBORG_WATCH_PAYLOAD_CANARY")
             );
             if !snapshot.stale && predicate(&snapshot) {
                 return snapshot;
@@ -90,7 +90,7 @@ fn desktop_watch_lifecycle_and_authorization() {
             "create",
             "configmap",
             "live",
-            "--from-literal=sample=K8BORG_WATCH_PAYLOAD_CANARY",
+            "--from-literal=sample=KBORG_WATCH_PAYLOAD_CANARY",
         ]);
         matching(&mut feed, |s| has(s, "live")).await;
         kube(&[
@@ -151,7 +151,7 @@ fn desktop_optional_metrics_api_unavailable_is_safe() {
                 .err()
                 .unwrap_or_else(|| panic!("expected absent or forbidden optional Metrics API"));
             assert!(error.contains("unavailable") || error.contains("forbidden"));
-            assert!(!error.contains("K8BORG_WATCH_PAYLOAD_CANARY"));
+            assert!(!error.contains("KBORG_WATCH_PAYLOAD_CANARY"));
             assert!(!error.contains("system:serviceaccount"));
             assert!(!error.contains("Bearer"));
         }
@@ -188,7 +188,7 @@ fn independent_metrics_quantity_contract() {
         "1MiB",
         "1e999",
         "1\u{1b}[2J",
-        "K8BORG_METRICS_PAYLOAD_CANARY",
+        "KBORG_METRICS_PAYLOAD_CANARY",
         "18446744073709551616",
     ] {
         for result in [

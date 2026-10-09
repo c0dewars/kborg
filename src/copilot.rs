@@ -37,7 +37,7 @@ pub fn login(executable: &Path, hostname: &str) -> Result<()> {
     }
     let mut command = Command::new(executable);
     let directory = safety::config_dir()?.join("copilot-login");
-    let marker = directory.join(".k8borg-login-directory");
+    let marker = directory.join(".kborg-login-directory");
     if !marker.exists() {
         safety::write_new(&marker, b"")?;
     }
@@ -63,7 +63,7 @@ pub fn login(executable: &Path, hostname: &str) -> Result<()> {
         .env("GH_HOST", &hostname)
         .env("COPILOT_AUTO_UPDATE", "false");
     println!(
-        "Trusted Copilot CLI login handoff: {hostname}. K8Borg passes no diagnostic bundle. The CLI manages credentials and runs with your OS user permissions."
+        "Trusted Copilot CLI login handoff: {hostname}. KBorg passes no diagnostic bundle. The CLI manages credentials and runs with your OS user permissions."
     );
     let status = command
         .stdin(Stdio::inherit())
