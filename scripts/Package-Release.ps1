@@ -31,7 +31,7 @@ try {
     $metricsText = & $binary --demo metrics pods --json
     if ($LASTEXITCODE -ne 0) { throw 'Offline metrics smoke failed' }
     $metrics = ($metricsText -join "`n") | ConvertFrom-Json
-    if (@($metrics.items).Count -lt 1 -or $metrics.source -ne 'demo' -or $metrics.items[0].cpu_nanocores -ne 125000000) { throw 'Metrics normalization smoke failed' }
+    if (@($metrics.items).Count -lt 1 -or $metrics.source -ne 'demo (deterministic sample)' -or $metrics.items[0].cpu_nanocores -ne 125000000) { throw 'Metrics normalization smoke failed' }
     Copy-Item -LiteralPath $binary -Destination (Join-Path $stage $binaryName)
     foreach ($file in @('README.md','LICENSE','THIRD_PARTY_NOTICES.md','SECURITY.md','docs/RELEASE_NOTES.md')) {
         Copy-Item -LiteralPath (Join-Path $projectRoot $file) -Destination $stage
