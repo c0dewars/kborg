@@ -129,6 +129,9 @@ pub fn run_args(args: Vec<String>) -> Result<()> {
         let mut gateway=tokio::time::timeout(Duration::from_secs(15),Gateway::connect(opts.connection.clone())).await.map_err(|_|"connection timed out")??;
         let ns=gateway.namespace.clone();
         let args=&opts.command[1..];
+        if matches!(cmd, "list" | "get") && let Some(resource) = args.first() {
+            discover_if_needed(&mut gateway, resource).await?;
+        }
         match cmd {
             "doctor"=>{println!("K8Borg {}\ncontext: {}\nserver: {}\nnamespace: {}\nmode: {}\nauth: certificate/token; helpers blocked\nAI/plugins/exec/forwarding: disabled",env!("CARGO_PKG_VERSION"),safety::safe_text(&gateway.context,100),safety::safe_text(&gateway.server,200),safety::safe_text(&ns,63),if opts.connection.writable{"WRITE ENABLED"}else{"READ ONLY"});
                 let result=tokio::time::timeout(Duration::from_secs(15),gateway.list("pods",&ns)).await.map_err(|_|"API timed out")??;
@@ -172,7 +175,8 @@ fn copilot_command(opts: &Options) -> Result<()> {
         }
         Some("context") if args.len() == 5 && args[3] == "--output" => {
             let value = runtime()?.block_on(async {
-                let gateway = tokio::time::timeout(Duration::from_secs(15), Gateway::connect(opts.connection.clone())).await.map_err(|_| "connection timed out")??;
+                let mut gateway = tokio::time::timeout(Duration::from_secs(15), Gateway::connect(opts.connection.clone())).await.map_err(|_| "connection timed out")??;
+                discover_if_needed(&mut gateway, &args[1]).await?;
                 crate::copilot::context(&gateway, &args[1], &gateway.namespace, &args[2]).await
             })?;
             safety::write_new(std::path::Path::new(&args[4]), &serde_json::to_vec_pretty(&value).map_err(|_| "cannot encode diagnostic context")?)?;
@@ -182,6 +186,30 @@ fn copilot_command(opts: &Options) -> Result<()> {
         _ => Err("usage: copilot login --cli <absolute executable> --host <github.com|org.ghe.com> | copilot context <resource> <name> --output <new JSON file>".into()),
     }
 }
+async fn discover_if_needed(gateway: &mut Gateway, resource: &str) -> Result<()> {
+    if resource.is_empty()
+        || resource.len() > 253
+        || !resource
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'.' | b'-'))
+        || resource.split('.').next() == Some("secrets")
+    {
+        return Err("invalid or disabled resource kind".into());
+    }
+    let known = |g: &Gateway| {
+        g.kinds
+            .iter()
+            .any(|k| k.key() == resource || k.plural == resource)
+    };
+    if !known(gateway) {
+        gateway.discover().await?;
+    }
+    if !known(gateway) {
+        return Err("resource kind unavailable after bounded discovery".into());
+    }
+    Ok(())
+}
+
 fn theme_command(opts: &Options) -> Result<()> {
     let args = &opts.command[1..];
     let get = |index: usize| {

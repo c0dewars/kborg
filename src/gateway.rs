@@ -230,11 +230,19 @@ pub struct Prepared {
 impl Gateway {
     pub async fn connect(options: Connection) -> Result<Self> {
         if options.demo {
+            let namespace = if options.namespace.is_empty() {
+                "demo".into()
+            } else {
+                options.namespace
+            };
+            if namespace != "*" && !safety::valid_id(&namespace) {
+                return Err("invalid namespace".into());
+            }
             return Ok(Self {
                 client: None,
                 context: "demo".into(),
                 server: "offline sample data".into(),
-                namespace: "demo".into(),
+                namespace,
                 session: "demo".into(),
                 policy: Policy {
                     writable: options.writable,
@@ -480,10 +488,17 @@ impl Gateway {
         }
         let kind = self.find(key)?;
         if self.is_demo() {
+            if kind.namespaced && ns == "*" {
+                return Err("select a concrete namespace".into());
+            }
             return self
                 .demo
                 .iter()
-                .find(|v| v["kind"] == kind.kind && v["metadata"]["name"] == name)
+                .find(|v| {
+                    v["kind"] == kind.kind
+                        && v["metadata"]["name"] == name
+                        && (!kind.namespaced || v["metadata"]["namespace"] == ns)
+                })
                 .cloned()
                 .ok_or_else(|| "demo object not found".into());
         }
@@ -522,6 +537,13 @@ impl Gateway {
             return Err("logs may contain sensitive data; opt in with --allow-logs".into());
         }
         if self.is_demo() {
+            if !self.demo.iter().any(|v| {
+                v["kind"] == "Pod"
+                    && v["metadata"]["namespace"] == ns
+                    && v["metadata"]["name"] == name
+            }) {
+                return Err("demo pod not found in selected namespace".into());
+            }
             return Ok("2026-10-09T20:00:00Z INFO K8Borg demo started\n2026-10-09T20:00:01Z WARN connection retry\n2026-10-09T20:00:02Z INFO request served".into());
         }
         let pods: Api<Pod> = Api::namespaced(self.client.clone().ok_or("no client")?, ns);
@@ -847,6 +869,51 @@ pub fn summary(object: &Value) -> String {
 mod tests {
     use super::*;
     use crate::cli::runtime;
+    #[test]
+    fn offline_details_and_logs_respect_exact_namespace_and_target() {
+        runtime().unwrap_or_else(|e| panic!("{e}")).block_on(async {
+            let gateway = Gateway::connect(Connection {
+                demo: true,
+                logs: true,
+                ..Default::default()
+            })
+            .await
+            .unwrap_or_else(|e| panic!("{e}"));
+            assert!(gateway.get("pods", "demo", "api-7d4f9").await.is_ok());
+            assert!(gateway.get("pods", "other", "api-7d4f9").await.is_err());
+            assert!(gateway.get("pods", "*", "api-7d4f9").await.is_err());
+            assert!(gateway.logs("demo", "api-7d4f9", None, false).await.is_ok());
+            assert!(
+                gateway
+                    .logs("other", "api-7d4f9", None, false)
+                    .await
+                    .is_err()
+            );
+            assert!(gateway.logs("demo", "missing", None, false).await.is_err());
+            let scoped = Gateway::connect(Connection {
+                demo: true,
+                namespace: "other".into(),
+                ..Default::default()
+            })
+            .await
+            .unwrap_or_else(|e| panic!("{e}"));
+            assert_eq!(scoped.namespace, "other");
+            assert!(
+                scoped
+                    .get("pods", &scoped.namespace, "api-7d4f9")
+                    .await
+                    .is_err()
+            );
+            assert!(
+                scoped
+                    .list("pods", &scoped.namespace)
+                    .await
+                    .unwrap_or_else(|e| panic!("{e}"))["items"]
+                    .as_array()
+                    .is_some_and(Vec::is_empty)
+            );
+        });
+    }
     #[test]
     fn malicious_auth_and_insecure_tls_are_rejected_before_network() {
         let dir = std::env::temp_dir().join(format!("k8borg-security-{}", std::process::id()));
