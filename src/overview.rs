@@ -53,19 +53,7 @@ pub async fn collect(options: &Connection, names: &[String]) -> Result<Vec<Conte
                 let gateway = Gateway::connect(connection).await?;
                 let list = gateway.list("pods", &gateway.namespace).await?;
                 let items = list["items"].as_array().ok_or("invalid pod list")?;
-                let unhealthy = items
-                    .iter()
-                    .filter(|pod| {
-                        let phase = pod["status"]["phase"].as_str().unwrap_or("Unknown");
-                        !matches!(phase, "Running" | "Succeeded")
-                            || pod["status"]["containerStatuses"]
-                                .as_array()
-                                .is_some_and(|cs| {
-                                    cs.iter()
-                                        .any(|c| c["ready"] == false && phase != "Succeeded")
-                                })
-                    })
-                    .count();
+                let unhealthy = items.iter().filter(|pod| pod_unhealthy(pod)).count();
                 Ok::<_, String>((
                     gateway.namespace,
                     items.len(),
@@ -126,6 +114,21 @@ pub async fn collect(options: &Connection, names: &[String]) -> Result<Vec<Conte
     Ok(rows)
 }
 
+fn pod_unhealthy(pod: &serde_json::Value) -> bool {
+    if pod["metadata"]["deletionTimestamp"].is_string() {
+        return true;
+    }
+    if pod["status"]["phase"] == "Succeeded" {
+        return false;
+    }
+    crate::gateway::summary(pod) != "Running"
+        || pod["status"]["containerStatuses"]
+            .as_array()
+            .is_none_or(|statuses| {
+                statuses.is_empty() || statuses.iter().any(|status| status["ready"] != true)
+            })
+}
+
 pub fn text(rows: &[ContextSummary]) -> String {
     let mut output = String::from(
         "READ ONLY — independent context snapshots (maximum 4 simultaneous requests)\nCONTEXT\tNAMESPACE\tPODS\tUNHEALTHY\tSTATE\n",
@@ -153,6 +156,25 @@ pub fn text(rows: &[ContextSummary]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn unhealthy_includes_readiness_gates_terminating_and_unknown_status() {
+        use serde_json::json;
+        assert!(pod_unhealthy(
+            &json!({"kind":"Pod","status":{"phase":"Running"}})
+        ));
+        assert!(pod_unhealthy(
+            &json!({"kind":"Pod","status":{"phase":"Running","containerStatuses":[{"ready":true}],"conditions":[{"type":"Ready","status":"False"}]}})
+        ));
+        assert!(pod_unhealthy(
+            &json!({"kind":"Pod","metadata":{"deletionTimestamp":"now"},"status":{"phase":"Succeeded"}})
+        ));
+        assert!(!pod_unhealthy(
+            &json!({"kind":"Pod","status":{"phase":"Succeeded"}})
+        ));
+        assert!(!pod_unhealthy(
+            &json!({"kind":"Pod","status":{"phase":"Running","containerStatuses":[{"ready":true}]}})
+        ));
+    }
     #[test]
     fn rejects_ambiguous_and_unbounded_scope() {
         assert!(validate(&[]).is_err());

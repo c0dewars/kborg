@@ -12,7 +12,7 @@ For rollback, stop KBorg and select the previous versioned binary. This does not
 
 `kborg config init settings.json` creates a new strict JSON file. Pass it explicitly with `--config`; no project-local executable configuration is auto-loaded. `config validate` validates without connecting. CLI context/namespace/theme values override file defaults. Files can constrain capabilities but never enable writes or log/subresource access without their CLI flags. Profile `read-only` refuses `--write`; profile `operator` still requires `--write`, separate capability opt-ins, and target confirmation. These are local client controls, not a substitute for RBAC/admission or a policy against a user running another binary.
 
-Supported fields: `schema_version` (1), `profile` (`read-only` or `operator`), optional `context`, `namespace`, `theme`, and booleans `no_splash`, `poll`, `allow_logs`, `allow_exec`, `allow_attach`, `allow_forward`. Unknown/duplicate fields fail. Default generated config prohibits sensitive capabilities. Config never stores credentials.
+Supported fields: `schema_version` (1), `profile` (`read-only` or `operator`), optional `context`, `namespace`, `theme`, and booleans `no_splash`, `poll`, `allow_logs`, `allow_exec`, `allow_attach`, `allow_forward`, `allow_tools`. Unknown/duplicate fields fail. Default generated config prohibits sensitive capabilities. Config never stores credentials.
 
 `kborg completions bash|zsh|fish|powershell` emits a static script; review and load it through your shell's normal configuration. It makes no cluster calls.
 
@@ -29,3 +29,38 @@ Start with a dedicated read-only identity and narrow namespace, then a small sta
 ## Local builds without paid CI
 
 GitHub Actions is manual-only at the owner's request; pushes and pull requests do not start hosted jobs. Run `./scripts/Check.ps1` and `cargo build --release --locked` locally, then `./scripts/Package-Release.ps1 -Target <installed-native-target> -SourceCommit <exact-clean-source-commit>` on the target operating system. The packaging script runs the binary, so use a native machine/VM with that architecture; a cross-compiled executable is not equivalent to native acceptance. Windows and WSL cover Windows x64 and Linux x64 here. Verified earlier Linux ARM64 and both macOS packages remain available with their original source records. New native macOS/ARM builds need access to those machines or a separately chosen free runner; no paid service is required for local development.
+
+## Reviewed external views
+
+`--allow-tools view RESOURCE NAME --tool ABSOLUTE_PATH [--tool-arg ARG]` previews
+the exact redacted JSON input and immutable argument vector before `RUN TOOL`
+approval. Use `--yaml` for quoted YAML. Every literal argument uses its own
+`--tool-arg`, including arguments that resemble KBorg capability flags. The
+executable must be a regular native binary with no symlink path and no group/world
+write permissions; its contents are rechecked after approval. A displayed change
+identifier detects replacement and does not authenticate a publisher.
+
+The Unix supervisor supplies a private working directory/HOME and clears the
+inherited environment, bounds runtime to 15 seconds and combined stdout/stderr to
+256 KiB, and cleans up the process group. Captured output is terminal-sanitized.
+The trusted program retains OS-user filesystem/network access, and hostile tools
+can escape a process group; this is supervision, not a sandbox. Executable path
+races, independently constrained privileged credentials, Windows containment and
+interactive pager/editor terminal handoff remain gates. Profile files constrain
+`allow_tools`; neither a file nor tool arguments can opt in to the capability.
+
+## Native local acceptance
+
+On macOS/Linux, run `python3 scripts/test-local.py --expected-server ENDPOINT`
+with the exact inspected Docker Desktop HTTPS endpoint. Rust, kubectl and Docker
+Desktop must already be installed. The stdlib-only harness verifies the selected
+context and embedded CA, digest-pins BusyBox, uses unique restricted namespaces
+and scoped ten-minute service-account tokens, and checks ownership before cleanup.
+It runs all four live integration tests including real RBAC denials, resource
+version conflicts, watch revocation and loopback forwarding. It does not reset
+Docker, alter the current context, or reuse preexisting workloads.
+
+`scripts/test-terminal.py --binary target/release/kborg` exercises demo keyboard
+navigation and terminal restoration in a native PTY. `--screenshots DIRECTORY`
+optionally captures PNGs using Pillow. PTY evidence does not certify every terminal
+emulator, screen reader or OS.

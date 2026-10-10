@@ -11,6 +11,7 @@ KBorg 0.3 — Kubernetes operations, under your control
   kborg metrics pods|nodes        CPU/memory with timestamp/window
   kborg list RESOURCE             Bounded resource table; --json for pipelines
   kborg get RESOURCE NAME         Redacted JSON; --yaml for YAML inspection
+  kborg view RESOURCE NAME --tool ABS [--tool-arg ARG]  Reviewed tool view
   kborg logs POD [CONTAINER]      --allow-logs; optional --follow or --previous
   kborg scale NAME REPLICAS       Deployment scale with terminal approval
   kborg restart NAME              Guarded deployment rollout
@@ -28,11 +29,15 @@ KBorg 0.3 — Kubernetes operations, under your control
 Options (put KBorg flags before exec's -- separator):
   --context NAME     --namespace NAME / -n NAME ("*" for all on reads)
   --kubeconfig FILE  --config FILE  --write (default READ ONLY)  --readonly
+  --allow-tools      --tool ABS     --tool-arg ARG
   --allow-logs       --allow-exec   --allow-attach   --allow-forward
   --poll            --theme ID     --color=never    --json       --yaml
   --no-mouse        --follow          --previous     --no-splash      --demo       --help
 
 Exec/attach/forward require --write AND their separate --allow-* flag.
+Tool views require --allow-tools and RUN TOOL transfer approval (Unix only).
+Trusted tools retain your OS-user filesystem/network access; no OS sandbox.
+Output is sanitized/captured with a 15s/256KiB budget. No interactive editor.
 All writes and subresource operations require exact terminal confirmation.
 Exec has no stdin/TTY, a 30s deadline and bounded output; disconnect cannot
 guarantee remote process termination. Log follow stops after 60s/256KiB.
@@ -46,11 +51,14 @@ Replacement preserves an original .json.bak and refuses to overwrite it.
 
 TUI keys:
   Up/Down, j/k: select   Tab: resources/table   Enter: JSON   y: YAML
+  :: resource commands (:pods, :deploy, :svc, :nodes, :ns NAME, :all, :ctx)
+  S: cycle sort (:sort name|namespace|status|restarts|age)
   /: cache filter   r: refresh   c: contexts   n: namespace   o: overview
-  m: metrics   w: watch/poll   R: discovery   l/L: logs/previous   f: follow
+  m: metrics/history (refreshes every 5s; r refreshes)   w: watch/poll   R: discovery   l/L: logs/previous   f: follow
   a: actions   e: image edit   s: scale   x: restart   Delete: guarded delete
   t: themes    ?: help        Esc: close/cancel       q: quit
-  PgUp/PgDown: scroll details/logs     Mouse: click rows / scroll
+  Themes: arrows preview, Enter saves, N creates from preview, Esc cancels
+  PgUp/PgDown/Home/End: navigate tables and details/logs     Mouse: click rows / scroll
 
 TLS verification is mandatory. Secret reads, auth helpers, impersonation,
 generic patches, automatic AI requests and generic extensions remain disabled.

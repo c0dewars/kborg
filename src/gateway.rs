@@ -438,7 +438,7 @@ impl Gateway {
     pub async fn list(&self, key: &str, ns: &str) -> Result<Value> {
         let kind = self.find(key)?;
         if self.is_demo() {
-            let items: Vec<Value> = self
+            let mut items: Vec<Value> = self
                 .demo
                 .iter()
                 .filter(|v| {
@@ -447,6 +447,7 @@ impl Gateway {
                 })
                 .cloned()
                 .collect();
+            items.iter_mut().for_each(safety::redact);
             return Ok(json!({"items":items,"truncated":false,"source":"demo"}));
         }
         let api = self.api(kind, ns)?;
@@ -474,7 +475,7 @@ impl Gateway {
                 safety::redact(&mut value);
                 total_bytes += value.to_string().len();
                 if items.len() >= MAX_OBJECTS || total_bytes > MAX_BODY {
-                    return Ok(json!({"items":items,"truncated":true}));
+                    return Ok(json!({"items":items,"truncated":true,"source":"cluster"}));
                 }
                 items.push(value);
             }
@@ -483,7 +484,7 @@ impl Gateway {
                 break;
             }
             if pages >= MAX_LIST_PAGES {
-                return Ok(json!({"items":items,"truncated":true}));
+                return Ok(json!({"items":items,"truncated":true,"source":"cluster"}));
             }
             if let Some(token) = &continuation
                 && !seen_tokens.insert(token.clone())
@@ -494,7 +495,7 @@ impl Gateway {
                 .await
                 .map_err(|_| "list budget exceeded; narrow namespace scope")?;
         }
-        Ok(json!({"items":items,"truncated":false}))
+        Ok(json!({"items":items,"truncated":false,"source":"cluster"}))
     }
     async fn raw_get(&self, key: &str, ns: &str, name: &str) -> Result<Value> {
         if name.is_empty()
@@ -966,18 +967,29 @@ fn api_error(error: kube::Error) -> String {
     }
 }
 fn demo_objects() -> Vec<Value> {
-    let object = |kind: &str, name: &str, status: Value, spec: Value| json!({"apiVersion":if kind=="Deployment"{"apps/v1"}else{"v1"},"kind":kind,"metadata":{"name":name,"namespace":"demo","uid":format!("demo-{kind}-{name}"),"resourceVersion":"1"},"spec":spec,"status":status});
-    vec![
+    let object = |kind: &str, name: &str, status: Value, spec: Value| {
+        let resource = kinds().into_iter().find(|resource| resource.kind == kind);
+        let version = resource
+            .as_ref()
+            .map(|resource| resource.ar().api_version)
+            .unwrap_or_else(|| "v1".into());
+        let mut value = json!({"apiVersion":version,"kind":kind,"metadata":{"name":name,"uid":format!("demo-{kind}-{name}"),"resourceVersion":"1","creationTimestamp":"2026-10-10T07:00:00Z"},"spec":spec,"status":status});
+        if resource.is_some_and(|resource| resource.namespaced) {
+            value["metadata"]["namespace"] = json!("demo");
+        }
+        value
+    };
+    let mut objects = vec![
         object(
             "Pod",
             "api-7d4f9",
-            json!({"phase":"Running","containerStatuses":[{"ready":true,"restartCount":0}]}),
+            json!({"phase":"Running","containerStatuses":[{"name":"app","ready":true,"restartCount":0,"state":{"running":{}}}]}),
             json!({"nodeName":"demo-node","containers":[{"name":"app","image":"example/demo:v1"}]}),
         ),
         object(
             "Pod",
             "worker-6a1bc",
-            json!({"phase":"Running","containerStatuses":[{"ready":false,"restartCount":7,"state":{"waiting":{"reason":"CrashLoopBackOff"}}}]}),
+            json!({"phase":"Running","containerStatuses":[{"name":"app","ready":false,"restartCount":7,"state":{"waiting":{"reason":"CrashLoopBackOff"}}}]}),
             json!({"nodeName":"demo-node","containers":[{"name":"app","image":"example/demo:v1"}]}),
         ),
         object(
@@ -992,32 +1004,228 @@ fn demo_objects() -> Vec<Value> {
             json!({}),
             json!({"type":"ClusterIP","clusterIP":"10.96.10.4","ports":[{"port":8080}]}),
         ),
-        object("Event", "worker-backoff", json!({}), json!({})),
         object("Namespace", "demo", json!({"phase":"Active"}), json!({})),
-    ]
+        object(
+            "StatefulSet",
+            "redis",
+            json!({"readyReplicas":1}),
+            json!({"replicas":1,"serviceName":"redis"}),
+        ),
+        object(
+            "DaemonSet",
+            "collector",
+            json!({"numberReady":1,"desiredNumberScheduled":1}),
+            json!({}),
+        ),
+        object(
+            "ReplicaSet",
+            "api-7d4f9",
+            json!({"readyReplicas":2}),
+            json!({"replicas":2}),
+        ),
+        object(
+            "Job",
+            "schema-migrate",
+            json!({"succeeded":1,"conditions":[{"type":"Complete","status":"True"}]}),
+            json!({"completions":1}),
+        ),
+        object(
+            "CronJob",
+            "nightly-backup",
+            json!({"active":[]}),
+            json!({"schedule":"0 2 * * *","suspend":false}),
+        ),
+        object(
+            "Ingress",
+            "api",
+            json!({}),
+            json!({"rules":[{"host":"api.demo.local"}]}),
+        ),
+        object("ConfigMap", "api-config", json!({}), json!({})),
+        object(
+            "PersistentVolumeClaim",
+            "redis-data",
+            json!({"phase":"Bound"}),
+            json!({"storageClassName":"standard","resources":{"requests":{"storage":"1Gi"}}}),
+        ),
+        object(
+            "Node",
+            "demo-node",
+            json!({"conditions":[{"type":"Ready","status":"True"}],"capacity":{"cpu":"4","memory":"8Gi"}}),
+            json!({"unschedulable":false}),
+        ),
+        object("Role", "viewer", json!({}), json!({})),
+        object("RoleBinding", "viewer", json!({}), json!({})),
+        object("StorageClass", "standard", json!({}), json!({})),
+    ];
+    let mut event = object("Event", "worker-backoff", json!({}), json!({}));
+    event["type"] = json!("Warning");
+    event["reason"] = json!("BackOff");
+    event["message"] = json!("Back-off restarting failed container app in worker-6a1bc");
+    event["count"] = json!(7);
+    event["involvedObject"] = json!({"kind":"Pod","namespace":"demo","name":"worker-6a1bc"});
+    objects.push(event);
+    for object in &mut objects {
+        if object["kind"] == "StorageClass" {
+            object["provisioner"] = json!("demo.local/storage");
+        }
+        if object["kind"] == "ConfigMap" {
+            object["data"] = json!({"endpoint":"synthetic-example"});
+        }
+    }
+    objects
 }
 
 pub fn summary(object: &Value) -> String {
+    if object["metadata"]["deletionTimestamp"].is_string() {
+        return "Terminating".into();
+    }
     match object["kind"].as_str().unwrap_or("") {
         "Pod" => {
+            if let Some(statuses) = object["status"]["initContainerStatuses"].as_array() {
+                for (index, status) in statuses.iter().enumerate() {
+                    // Restartable init containers are sidecars: running is sufficient
+                    // to proceed, even though they never terminate successfully.
+                    let sidecar =
+                        object["spec"]["initContainers"]
+                            .as_array()
+                            .is_some_and(|containers| {
+                                containers.iter().any(|c| {
+                                    c["name"] == status["name"] && c["restartPolicy"] == "Always"
+                                })
+                            });
+                    if status["state"]["terminated"]["exitCode"] == 0
+                        || (sidecar && status["started"] == true)
+                    {
+                        continue;
+                    }
+                    if let Some(reason) = status["state"]["waiting"]["reason"]
+                        .as_str()
+                        .or_else(|| status["state"]["terminated"]["reason"].as_str())
+                    {
+                        return safety::safe_text(&format!("Init:{reason}"), 100);
+                    }
+                    return format!("Init:{index}/{}", statuses.len());
+                }
+            }
             let state = object["status"]["containerStatuses"]
                 .as_array()
                 .and_then(|a| {
                     a.iter()
                         .find_map(|v| v["state"]["waiting"]["reason"].as_str())
+                        .or_else(|| {
+                            a.iter().find_map(|v| {
+                                (v["state"]["terminated"]["exitCode"]
+                                    .as_i64()
+                                    .is_some_and(|n| n != 0))
+                                .then(|| {
+                                    v["state"]["terminated"]["reason"]
+                                        .as_str()
+                                        .unwrap_or("Error")
+                                })
+                            })
+                        })
                 });
-            state
-                .unwrap_or(object["status"]["phase"].as_str().unwrap_or("Unknown"))
-                .into()
+            let phase = object["status"]["phase"].as_str().unwrap_or("Unknown");
+            let status = state.unwrap_or_else(|| {
+                if phase == "Running"
+                    && (object["status"]["containerStatuses"]
+                        .as_array()
+                        .is_some_and(|statuses| statuses.iter().any(|v| v["ready"] == false))
+                        || object["status"]["conditions"]
+                            .as_array()
+                            .is_some_and(|conditions| {
+                                conditions.iter().any(|condition| {
+                                    condition["type"] == "Ready" && condition["status"] != "True"
+                                })
+                            }))
+                {
+                    "NotReady"
+                } else if phase == "Succeeded" {
+                    "Completed"
+                } else {
+                    phase
+                }
+            });
+            safety::safe_text(status, 100)
         }
-        "Deployment" | "StatefulSet" => format!(
+        "Deployment" | "StatefulSet" | "ReplicaSet" => format!(
             "{}/{} ready",
             object["status"]["readyReplicas"].as_i64().unwrap_or(0),
-            object["spec"]["replicas"].as_i64().unwrap_or(0)
+            object["spec"]["replicas"].as_i64().unwrap_or(1)
         ),
-        "Service" => object["spec"]["type"].as_str().unwrap_or("").into(),
-        "Event" => object["reason"].as_str().unwrap_or("BackOff").into(),
-        _ => object["status"]["phase"].as_str().unwrap_or("-").into(),
+        "DaemonSet" => format!(
+            "{}/{} ready",
+            object["status"]["numberReady"].as_u64().unwrap_or(0),
+            object["status"]["desiredNumberScheduled"]
+                .as_u64()
+                .unwrap_or(0)
+        ),
+        "Node" => {
+            let ready = object["status"]["conditions"]
+                .as_array()
+                .and_then(|conditions| conditions.iter().find(|c| c["type"] == "Ready"));
+            let status = match ready.and_then(|c| c["status"].as_str()) {
+                Some("True") => "Ready",
+                Some("False") => "NotReady",
+                _ => "Unknown",
+            };
+            format!(
+                "{status}{}",
+                if object["spec"]["unschedulable"] == true {
+                    ",SchedulingDisabled"
+                } else {
+                    ""
+                }
+            )
+        }
+        "Job" => {
+            let condition = object["status"]["conditions"]
+                .as_array()
+                .and_then(|conditions| {
+                    conditions.iter().find(|c| {
+                        c["status"] == "True" && (c["type"] == "Failed" || c["type"] == "Complete")
+                    })
+                });
+            match condition.and_then(|c| c["type"].as_str()) {
+                Some("Failed") => "Failed".into(),
+                Some("Complete") => "Complete".into(),
+                _ => format!(
+                    "{}/{} complete",
+                    object["status"]["succeeded"].as_u64().unwrap_or(0),
+                    object["spec"]["completions"].as_u64().unwrap_or(1)
+                ),
+            }
+        }
+        "CronJob" => {
+            if object["spec"]["suspend"] == true {
+                "Suspended".into()
+            } else {
+                format!(
+                    "{} | {} active",
+                    safety::safe_text(object["spec"]["schedule"].as_str().unwrap_or("-"), 50),
+                    object["status"]["active"].as_array().map_or(0, Vec::len)
+                )
+            }
+        }
+        "Service" => safety::safe_text(object["spec"]["type"].as_str().unwrap_or("ClusterIP"), 100),
+        "Ingress" => object["spec"]["rules"]
+            .as_array()
+            .map(|rules| {
+                rules
+                    .iter()
+                    .filter_map(|r| r["host"].as_str())
+                    .take(3)
+                    .map(|host| safety::safe_text(host, 50))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            })
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "-".into()),
+        "Event" => safety::safe_text(object["reason"].as_str().unwrap_or("Unknown"), 100),
+        "ConfigMap" => "Data redacted".into(),
+        "StorageClass" => safety::safe_text(object["provisioner"].as_str().unwrap_or("-"), 100),
+        _ => safety::safe_text(object["status"]["phase"].as_str().unwrap_or("-"), 100),
     }
 }
 
@@ -1025,6 +1233,51 @@ pub fn summary(object: &Value) -> String {
 mod tests {
     use super::*;
     use crate::cli::runtime;
+    #[test]
+    fn summaries_report_init_readiness_deletion_and_node_health() {
+        let pod = json!({"kind":"Pod","status":{"phase":"Running","containerStatuses":[{"ready":false}]}});
+        assert_eq!(summary(&pod), "NotReady");
+        assert_eq!(
+            summary(
+                &json!({"kind":"Pod","status":{"phase":"Running","containerStatuses":[{"ready":true}],"conditions":[{"type":"Ready","status":"False"}]}})
+            ),
+            "NotReady"
+        );
+        assert_eq!(
+            summary(&json!({"kind":"Pod","status":{"phase":"Succeeded"}})),
+            "Completed"
+        );
+        let mut init = pod.clone();
+        init["status"]["initContainerStatuses"] =
+            json!([{"name":"init","state":{"waiting":{"reason":"ImagePullBackOff"}}}]);
+        assert_eq!(summary(&init), "Init:ImagePullBackOff");
+        init["metadata"]["deletionTimestamp"] = json!("2026-10-10T08:00:00Z");
+        assert_eq!(summary(&init), "Terminating");
+        let node = json!({"kind":"Node","spec":{"unschedulable":true},"status":{"conditions":[{"type":"Ready","status":"False"}]}});
+        assert_eq!(summary(&node), "NotReady,SchedulingDisabled");
+        let hostile = json!({"kind":"Event","reason":"bad\u{001b}[2J\u{202e}"});
+        assert_eq!(summary(&hostile), "bad[2J");
+    }
+    #[test]
+    fn demo_covers_every_browsable_kind_with_correct_scope_and_version() -> Result<()> {
+        runtime()?.block_on(async {
+            let gateway = Gateway::connect(Connection {
+                demo: true,
+                ..Default::default()
+            })
+            .await?;
+            for kind in kinds() {
+                let list = gateway.list(&kind.key(), "demo").await?;
+                let items = list["items"].as_array().ok_or("demo list missing")?;
+                assert!(!items.is_empty(), "demo missing {}", kind.kind);
+                for item in items {
+                    assert_eq!(item["apiVersion"], kind.ar().api_version);
+                    assert_eq!(item["metadata"]["namespace"].is_string(), kind.namespaced);
+                }
+            }
+            Ok(())
+        })
+    }
     #[test]
     fn offline_image_edit_is_reviewed_and_updates_the_sample() {
         runtime().unwrap_or_else(|e| panic!("{e}")).block_on(async {

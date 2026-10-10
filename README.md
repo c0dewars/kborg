@@ -10,6 +10,19 @@ Rust terminal UI and CLI, read-only by default. Local-testing release **0.3.0**.
 
 ## Run
 
+Native macOS/Linux:
+
+```sh
+cargo build --release --locked
+./scripts/start-local.sh --demo
+./scripts/start-local.sh --context docker-desktop --no-splash
+```
+
+The native launcher uses the release binary under `target/release`; the live
+session defaults to read-only. `--demo` explores all 17 built-in resource types
+without cluster credentials.
+
+
 Requirements: Rust 1.99 (pinned), the platform linker (Visual Studio C++ tools on Windows), and a terminal. Docker Desktop with Kubernetes and kubectl are needed only for local integration tests. Cargo downloads the pinned dependencies on first build. Git is useful for development. No Node/Python runtime, AI account, Helm, or kubectl runtime backend is required.
 
 ```powershell
@@ -53,7 +66,7 @@ Omit `-KeepFixtures` for automatic cleanup. Failed runs clean up even when reten
 
 ## Interface
 
-Tab changes focus between resources and objects. Up/down or j/k navigate, Enter opens redacted JSON, `/` filters cached names, `r` refreshes, `c` selects context, `n` changes namespace (`*` means all namespaces), `R` discovers resources/CRDs, `m` opens pod/node metrics, `w` switches live watch/polling, `y` opens YAML, `l` selects bounded pod logs, `L` previous logs, `f` follows a selected container, `o` opens context summaries, `e` reviews an image edit, `a` opens actions, `t` opens themes, `?` shows help, Esc closes and `q` exits. Click resource/object rows or scroll using the mouse. ASCII rendering is conservative: non-ASCII display characters become `?`; raw JSON retains safely escaped Unicode.
+Tab changes focus between resources and objects. Responsive bordered panels show readiness, restarts and age when space permits. Type `:pods`, `:deploy`, `:svc` or `:nodes` for quick navigation, `:ns NAME` for namespace, `:all` for all namespaces, and `:sort name|namespace|status|restarts|age` to sort. `S` cycles sorting; PageUp/PageDown/Home/End navigate tables. Up/down or j/k navigate, Enter opens redacted JSON, `/` filters cached names, `r` refreshes, `c` selects context, `n` changes namespace (`*` means all namespaces), `R` discovers resources/CRDs, `m` opens pod/node metrics with bounded CPU/memory history and five-second refresh, `w` switches live watch/polling, `y` opens YAML, `l` selects bounded pod logs, `L` previous logs, `f` follows a selected container, `o` opens context summaries, `e` reviews an image edit, `a` opens actions, `t` opens themes, `?` shows help, Esc closes and `q` exits. Click resource/object rows or scroll using the mouse. ASCII rendering is conservative: non-ASCII display characters become `?`; raw JSON retains safely escaped Unicode.
 
 Live clusters use bounded LIST/WATCH with bookmarks, reconnect/backoff and expired-version relisting. Use `--poll` or `w` for explicit five-second polling; offline demo uses polling. Failed requests mark data STALE. Reads are limited to 1,000 objects/8 MiB retained data, with 200-object pages and 8 MiB response bodies. Narrow namespace scope when TRUNCATED appears. Logs require `--allow-logs`, are capped at 200 lines/256 KiB, and can still contain sensitive data.
 
@@ -73,7 +86,7 @@ Mutations require `--write`, a server dry-run and exact `namespace/name` confirm
 .\target\release\kborg.exe theme export catppuccin-mocha --output .\custom.json
 ```
 
-See `docs/themes.md`. Themes never execute code or access the network. Install refuses overwrites. Use `theme replace FILE` for a validated replacement with an original `.json.bak` retained; it refuses to overwrite an existing backup. `theme clone-current ID` creates a new theme from the current resolved colors. Built-in IDs cannot be replaced. The TUI previews with arrows, saves on Enter and restores on Esc. Selection under `--theme` is session-only. `NO_COLOR` and `--color=never` disable colors. JSON output contains no theme styling.
+See `docs/themes.md`. Themes never execute code or access the network. Install refuses overwrites. Use `theme replace FILE` for a validated replacement with an original `.json.bak` retained; it refuses to overwrite an existing backup. `theme clone-current ID` creates a new theme from the current resolved colors. Built-in IDs cannot be replaced. The TUI previews with arrows, saves on Enter and restores on Esc. Press `N` in the theme picker to create and activate a named custom theme from the actual preview palette; existing files are never overwritten. Selection under `--theme` is session-only. `NO_COLOR` and `--color=never` disable colors. JSON output contains no theme styling.
 
 ## Security and scope
 
@@ -81,7 +94,7 @@ TLS validation is required. Secrets are excluded from built-in and discovered ki
 
 Writes use a local durable intent/outcome audit spool; this is supplementary and mutable by the operator, not centralized protected audit. Windows config directories outside the test harness inherit their existing user ACLs; verify them before using writes on sensitive clusters. Same-user path replacement races are not eliminated by symlink checks. Authentication revocation, malicious local software and cluster admission remain outside the client trust boundary.
 
-KBorg 0.3 adds bounded native exec/output attach, finite loopback forwarding, explicit multi-context snapshots and controlled deployment image changes. Each privileged operation requires separate opt-in and target review. Automatic AI diagnosis, arbitrary plugins/tool handoff, generic YAML apply, interactive stdin/TTY, advanced metrics history, signed distribution and protected centralized audit remain incomplete or gated. This prerelease is suitable for isolated local testing; see `docs/REMAINING_WORK.md` for the current acceptance register.
+KBorg 0.3 adds bounded native exec/output attach, finite loopback forwarding, explicit multi-context snapshots and controlled deployment image changes. Each privileged operation requires separate opt-in and target review. Automatic AI diagnosis, arbitrary plugins/tool handoff, generic YAML apply, interactive stdin/TTY, interactive external pagers/editors, signed distribution and protected centralized audit remain incomplete or gated. This prerelease is suitable for isolated local testing; see `docs/REMAINING_WORK.md` for the current acceptance register.
 
 ## Startup and first use
 
@@ -124,7 +137,7 @@ kborg --demo metrics pods
 
 A watch cannot represent a complete view above its 1,000-object/8 MiB cache budget: it clears data, displays STALE/TRUNCATED and stops. Narrow the namespace or explicitly select polling for bounded partial results. Individual response streams are also capped at 8 MiB. Input remains responsive during background reads; obsolete watches are aborted at scope changes.
 
-Pod/container and node usage come from `metrics.k8s.io/v1beta1`; this requires an installed and correctly secured Metrics Server or compatible provider. The app never installs one. CPU is normalized using checked integer nanocores and exact decimal millicores; memory uses checked bytes. Raw quantities, measurement timestamp/window and any upward rounding remain explicit. Missing, forbidden or malformed metrics produce errors and do not invalidate resource browsing or fabricate zero usage. Success and error dialogs wrap for narrow terminals. No percentages are inferred without capacity/request denominators.
+Pod/container and node usage come from `metrics.k8s.io/v1beta1`; this requires an installed and correctly secured Metrics Server or compatible provider. The app never installs one. CPU is normalized using checked integer nanocores and exact decimal millicores; memory uses checked bytes. Raw quantities, measurement timestamp/window and any upward rounding remain explicit. Missing, forbidden or malformed metrics produce errors and do not invalidate resource browsing or fabricate zero usage. Success and error dialogs wrap for narrow terminals. No percentages are inferred without capacity/request denominators. The metrics modal retains up to 64 identities with 60 samples each for ten minutes, shows exact latest/min/max values and ASCII charts, marks missing/error measurements as gaps, and resets history on context/scope/namespace or known UID changes. Repeated API timestamps do not create new samples.
 
 See `docs/WATCH_METRICS_REVIEW.md` and `docs/WATCH_METRICS_UX.md` for actual and controlled-test distinctions. Remaining production gates and broader roadmap features still apply.
 
@@ -133,3 +146,22 @@ See `docs/WATCH_METRICS_REVIEW.md` and `docs/WATCH_METRICS_UX.md` for actual and
 The product and executable are now **KBorg** and `kborg`. Use `KBORG_CONFIG_DIR` and `KBORG_NO_SPLASH`; the previous `K8BORG_CONFIG_DIR` and `K8BORG_NO_SPLASH` remain accepted. The new configuration override takes precedence. Default settings live under `KBorg` on Windows/macOS and `kborg` on Linux; an existing legacy directory is reused when the new directory does not exist. No credentials or settings are moved automatically.
 
 The three built-in theme identifiers `k8borg-dark`, `k8borg-light`, and `k8borg-high-contrast` remain stable for existing preferences and custom theme inheritance; their displayed names use KBorg. Existing local fixture launch and cleanup scripts also accept the recorded legacy fixture identity. Historical release reports, test evidence, and the original logo concept retain the original name to preserve their provenance.
+## Reviewed external views (Unix)
+
+```sh
+kborg --context docker-desktop --allow-tools view pods POD --tool /bin/cat
+kborg --demo --allow-tools view pods api-7d4f9 --yaml --tool /usr/bin/head --tool-arg -n --tool-arg 20
+```
+
+An interactive review displays the exact argv and complete redacted input; type
+`RUN TOOL` to execute the absolute trusted native binary. KBorg uses no shell,
+clears the supplied environment, and captures/sanitizes at most 256 KiB of output
+within 15 seconds. The trusted tool keeps your OS-user filesystem/network
+permissions. This feature is a bounded read-only filter, and never applies tool
+output to Kubernetes. Interactive editors/pagers and Windows tool supervision
+remain unsupported. See [tool view limits](docs/OPERATIONS.md#reviewed-external-views).
+
+For native local acceptance, inspect the Docker Desktop endpoint and run
+`scripts/test-local.py --expected-server https://127.0.0.1:PORT`. It provisions
+uniquely owned restricted fixtures, runs operation/watch/subresource tests, and
+removes its namespaces and temporary ten-minute credentials.

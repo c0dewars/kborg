@@ -109,7 +109,11 @@ enum Reply {
     Notice(String),
     Failure(String),
     Watching,
-    Metrics(Result<String>),
+    Metrics(
+        crate::metrics::MetricsScope,
+        String,
+        Result<crate::metrics::MetricsSnapshot>,
+    ),
 }
 #[derive(Default)]
 struct WatchSlot {
@@ -273,6 +277,15 @@ fn worker() -> Worker {
                             }
                         }
                     }
+                    Task::Metrics(scope, n) => {
+                        let result = if let Some(g) = gateway.as_ref() {
+                            match tokio::time::timeout(Duration::from_secs(20), crate::metrics::collect(g, scope, &n)).await {
+                                Ok(result) => result,
+                                Err(_) => Err("Metrics request timed out; resource browsing remains available.".into()),
+                            }
+                        } else { Err("Not connected; select a context or retry.".into()) };
+                        Reply::Metrics(scope, n, result)
+                    }
                     task => {
                         if let Some(g) = gateway.as_mut() {
                             let future = async {
@@ -306,7 +319,6 @@ fn worker() -> Worker {
                                         } else {job.abort();}
                                         Reply::Following
                                     },
-                                    Task::Metrics(scope,n) => Reply::Metrics(crate::metrics::collect(g,scope,&n).await.map(|v| v.text())),
                                     Task::Discover => Reply::Catalog(g.discover().await?),
                                     Task::Prepare(k,n,name,uid,a) => {
                                         let prepared = g.prepare(&k,&n,&name,a).await?;
@@ -314,7 +326,7 @@ fn worker() -> Worker {
                                         Reply::Prepared(Box::new(prepared))
                                     },
                                     Task::Execute(p,a) => Reply::Notice(g.execute(*p,a).await?),
-                                    Task::Connect(_) | Task::Watch(..) => return Err("invalid worker task".into()),
+                                    Task::Connect(_) | Task::Watch(..) | Task::Metrics(..) => return Err("invalid worker task".into()),
                                 })
                             };
                             match tokio::time::timeout(Duration::from_secs(25), future).await {
@@ -341,7 +353,9 @@ fn worker() -> Worker {
 enum Modal {
     None,
     Input(&'static str, String),
+    Filter(String, String, Option<String>, usize),
     Detail(String, usize),
+    Metrics(String, usize),
     Follow(String, usize),
     Containers(String, String, Vec<String>, usize, bool, bool),
     Image(
@@ -354,9 +368,39 @@ enum Modal {
     ),
     Picker(&'static str, Vec<String>, usize),
     Themes(Vec<Theme>, usize, Theme),
+    NewTheme(String, Theme, Theme),
     Confirm(Box<Prepared>, String),
     Scale(String, String, String, Option<String>, String),
     Help(usize),
+}
+#[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
+enum Sort {
+    #[default]
+    Name,
+    Namespace,
+    Status,
+    Restarts,
+    Age,
+}
+impl Sort {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Name => "name",
+            Self::Namespace => "namespace",
+            Self::Status => "status",
+            Self::Restarts => "restarts",
+            Self::Age => "age",
+        }
+    }
+    fn next(self) -> Self {
+        match self {
+            Self::Name => Self::Namespace,
+            Self::Namespace => Self::Status,
+            Self::Status => Self::Restarts,
+            Self::Restarts => Self::Age,
+            Self::Age => Self::Name,
+        }
+    }
 }
 struct App {
     options: Options,
@@ -369,6 +413,7 @@ struct App {
     items: Vec<Value>,
     selected: usize,
     filter: String,
+    sort: Sort,
     left_focus: bool,
     status: String,
     stale: bool,
@@ -386,6 +431,8 @@ struct App {
     connected: bool,
     refresh: bool,
     last_refresh: Instant,
+    metrics_history: crate::metrics::MetricsHistory,
+    last_metrics: Instant,
     worker: Worker,
 }
 impl App {
@@ -397,7 +444,8 @@ impl App {
     }
     fn visible(&self) -> Vec<&Value> {
         let filter = self.filter.to_ascii_lowercase();
-        self.items
+        let mut items: Vec<_> = self
+            .items
             .iter()
             .filter(|v| {
                 v["metadata"]["name"]
@@ -411,7 +459,116 @@ impl App {
                         .to_ascii_lowercase()
                         .contains(&filter)
             })
-            .collect()
+            .collect();
+        items.sort_by(|a, b| {
+            let ordering = match self.sort {
+                Sort::Name => name(a).cmp(name(b)),
+                Sort::Namespace => namespace(a).cmp(namespace(b)),
+                Sort::Status => summary(a).cmp(&summary(b)),
+                Sort::Restarts => restarts(b).cmp(&restarts(a)),
+                Sort::Age => timestamp(a)
+                    .unwrap_or(i64::MAX)
+                    .cmp(&timestamp(b).unwrap_or(i64::MAX)),
+            };
+            ordering
+                .then_with(|| namespace(a).cmp(namespace(b)))
+                .then_with(|| name(a).cmp(name(b)))
+        });
+        items
+    }
+    fn set_sort(&mut self, sort: Sort) {
+        let uid = self.selected_uid();
+        self.sort = sort;
+        self.selected = uid
+            .and_then(|uid| {
+                self.visible()
+                    .iter()
+                    .position(|v| v["metadata"]["uid"].as_str() == Some(uid.as_str()))
+            })
+            .unwrap_or(0);
+        self.status = format!(
+            "Sorted by {}{}.",
+            sort.label(),
+            if sort == Sort::Restarts {
+                " (highest first)"
+            } else {
+                ""
+            }
+        );
+    }
+    fn command(&mut self, text: &str) -> Result<bool> {
+        let words: Vec<_> = text
+            .trim()
+            .trim_start_matches(':')
+            .split_whitespace()
+            .collect();
+        match words.as_slice() {
+            [] => {}
+            ["q" | "quit"] => return Ok(true),
+            ["help"] => self.modal = Modal::Help(0),
+            ["ctx" | "contexts"] => return self.key(KeyCode::Char('c')),
+            ["ns" | "namespaces", namespace] => {
+                if *namespace == "*" || safety::valid_id(namespace) {
+                    self.namespace = (*namespace).into();
+                    self.namespace_override = true;
+                    self.changed();
+                    self.status = format!("Namespace: {namespace}");
+                } else {
+                    self.status = "Invalid namespace.".into();
+                }
+            }
+            ["all"] => {
+                self.namespace = "*".into();
+                self.namespace_override = true;
+                self.changed();
+                self.status = "Browsing all namespaces.".into();
+            }
+            ["sort", key] => {
+                let sort = match *key {
+                    "name" => Some(Sort::Name),
+                    "namespace" | "ns" => Some(Sort::Namespace),
+                    "status" => Some(Sort::Status),
+                    "restarts" => Some(Sort::Restarts),
+                    "age" => Some(Sort::Age),
+                    _ => None,
+                };
+                if let Some(sort) = sort {
+                    self.set_sort(sort);
+                } else {
+                    self.status = "Sort: name | namespace | status | restarts | age".into();
+                }
+            }
+            [resource] => {
+                let resource = resource_alias(resource);
+                let matches: Vec<_> = self
+                    .kinds
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, kind)| {
+                        kind.key() == resource
+                            || kind.plural == resource
+                            || kind.kind.eq_ignore_ascii_case(resource)
+                    })
+                    .map(|(index, _)| index)
+                    .collect();
+                if matches.len() == 1 {
+                    self.kind_index = matches[0];
+                    self.left_focus = false;
+                    self.changed();
+                    self.status = format!("Browsing {}.", self.kind());
+                } else if matches.len() > 1 {
+                    self.status = "Ambiguous resource; use its full plural.group name.".into();
+                } else {
+                    self.status =
+                        "Unknown resource; use :pods, :deploy, :svc, :nodes or R discovery.".into();
+                }
+            }
+            _ => {
+                self.status =
+                    "Commands: :RESOURCE | :ns NAME | :all | :ctx | :sort FIELD | :help".into()
+            }
+        }
+        Ok(false)
     }
     fn selected_target(&self) -> Option<(String, String, String)> {
         self.visible().get(self.selected).map(|v| {
@@ -476,6 +633,7 @@ impl App {
         self.sticky_status = false;
         self.worker.watch.invalidate(self.epoch);
         self.worker.logs.cancel();
+        self.metrics_history.clear();
     }
     fn connect(&mut self) {
         self.namespace_override = false;
@@ -540,11 +698,7 @@ impl App {
                     );
                 }
                 Reply::Detail(text) => {
-                    let width = terminal::size()
-                        .map(|s| usize::from(s.0).saturating_sub(2))
-                        .unwrap_or(78)
-                        .max(1);
-                    self.modal = Modal::Detail(wrap_text(&text.replace('\t', " | "), width), 0);
+                    self.modal = Modal::Detail(text.replace('\t', " | "), 0);
                 }
                 Reply::Containers(n, name, names, previous, follow) => {
                     if names.is_empty() {
@@ -589,30 +743,30 @@ impl App {
                     self.watching = true;
                     self.status = "WATCH: synchronizing bounded snapshot...".into();
                 }
-                Reply::Metrics(result) => match result {
-                    Ok(text) => {
-                        let width = terminal::size()
-                            .map(|(w, _)| usize::from(w).saturating_sub(2))
-                            .unwrap_or(78)
-                            .max(1);
-                        self.modal = Modal::Detail(wrap_text(&text, width), 0);
+                Reply::Metrics(scope, namespace, result) => {
+                    let now = Instant::now();
+                    let text = match result {
+                        Ok(snapshot) => {
+                            self.metrics_history.record(&self.context, &snapshot, now);
+                            format!("{}\n{}", self.metrics_history.text(now), snapshot.text())
+                        }
+                        Err(error) => {
+                            self.metrics_history.record_error(
+                                &self.context,
+                                scope,
+                                &namespace,
+                                now,
+                            );
+                            format!(
+                                "METRICS unavailable\n{error}\nResource browsing remains available.\n{}",
+                                self.metrics_history.text(now)
+                            )
+                        }
+                    };
+                    if let Modal::Metrics(_, offset) = &self.modal {
+                        self.modal = Modal::Metrics(text, *offset);
                     }
-                    Err(error) => {
-                        let width = terminal::size()
-                            .map(|(w, _)| usize::from(w).saturating_sub(2))
-                            .unwrap_or(78)
-                            .max(1);
-                        self.modal = Modal::Detail(
-                            wrap_text(
-                                &format!(
-                                    "METRICS unavailable\n{error}\nResource browsing remains available."
-                                ),
-                                width,
-                            ),
-                            0,
-                        );
-                    }
-                },
+                }
             }
         }
         let snapshot = self.worker.watch.take();
@@ -648,6 +802,71 @@ impl App {
         self.modal = Modal::Themes(all, index, self.theme.clone());
         Ok(())
     }
+    fn request_metrics(&mut self) {
+        if self.busy {
+            self.status = "Busy; wait for the current request.".into();
+            return;
+        }
+        if !matches!(self.modal, Modal::Metrics(..)) {
+            self.modal = Modal::Metrics("Loading Metrics API...".into(), 0);
+        }
+        self.last_metrics = Instant::now();
+        self.send(Task::Metrics(
+            if self.kind() == "nodes" {
+                crate::metrics::MetricsScope::Nodes
+            } else {
+                crate::metrics::MetricsScope::Pods
+            },
+            self.namespace.clone(),
+        ));
+    }
+    fn action_menu(&self) -> Vec<String> {
+        let kind = self.kind();
+        let has_selection = !self.visible().is_empty();
+        [
+            "Inspect JSON",
+            "Inspect YAML",
+            "Logs snapshot",
+            "Previous logs",
+            "Follow logs (bounded)",
+            "Metrics",
+            "Context overview",
+            "Scale deployment",
+            "Change deployment image",
+            "Restart deployment",
+            "Delete selected resource",
+        ]
+        .iter()
+        .enumerate()
+        .map(|(index, title)| {
+            let reason = if index == 5 || index == 6 {
+                None
+            } else if !has_selection {
+                Some("select an object")
+            } else if (2..=4).contains(&index) && !self.options.connection.logs {
+                Some("requires --allow-logs")
+            } else if (2..=4).contains(&index) && kind != "pods" {
+                Some("Pods only")
+            } else if index >= 7 && !self.options.connection.writable {
+                Some("READ ONLY; requires --write")
+            } else if (7..=9).contains(&index) && kind != "deployments.apps" {
+                Some("Deployments only")
+            } else if index == 10
+                && !matches!(
+                    kind.as_str(),
+                    "pods" | "deployments.apps" | "services" | "jobs.batch"
+                )
+            {
+                Some("unsupported resource")
+            } else {
+                None
+            };
+            reason
+                .map(|reason| format!("[OFF] {title}: {reason}"))
+                .unwrap_or_else(|| format!("      {title}"))
+        })
+        .collect()
+    }
     fn prepare(&mut self, action: Action) {
         if !self.options.connection.writable {
             self.status = "READ ONLY: enable --write before requesting a mutation.".into();
@@ -679,26 +898,42 @@ impl App {
         self.sticky_status = false;
         let modal = std::mem::replace(&mut self.modal, Modal::None);
         match modal {
+            Modal::Filter(original, mut text, original_uid, original_index) => match code {
+                KeyCode::Esc => {
+                    self.filter = original;
+                    self.selected = original_uid
+                        .and_then(|uid| {
+                            self.visible().iter().position(|object| {
+                                object["metadata"]["uid"].as_str() == Some(uid.as_str())
+                            })
+                        })
+                        .unwrap_or_else(|| {
+                            original_index.min(self.visible().len().saturating_sub(1))
+                        });
+                }
+                KeyCode::Enter => {}
+                KeyCode::Backspace => {
+                    text.pop();
+                    self.filter = text.clone();
+                    self.selected = 0;
+                    self.modal = Modal::Filter(original, text, original_uid, original_index);
+                }
+                KeyCode::Char(c) if !c.is_control() && text.len() < 100 => {
+                    text.push(c);
+                    self.filter = text.clone();
+                    self.selected = 0;
+                    self.modal = Modal::Filter(original, text, original_uid, original_index);
+                }
+                _ => self.modal = Modal::Filter(original, text, original_uid, original_index),
+            },
             Modal::Follow(text, mut offset) => match code {
                 KeyCode::Esc | KeyCode::Char('q') => {
                     self.worker.logs.cancel();
                 }
-                KeyCode::Down | KeyCode::Char('j') => {
-                    offset = (offset + 1).min(text.lines().count().saturating_sub(1));
+                _ => {
+                    offset = scroll_offset(&text, offset, code);
                     self.modal = Modal::Follow(text, offset);
                 }
-                KeyCode::Up | KeyCode::Char('k') => {
-                    self.modal = Modal::Follow(text, offset.saturating_sub(1))
-                }
-                KeyCode::PageDown => {
-                    self.modal = Modal::Follow(text, (offset + 15).min(256 * 1024))
-                }
-                KeyCode::PageUp => self.modal = Modal::Follow(text, offset.saturating_sub(15)),
-                KeyCode::End => {
-                    offset = text.lines().count().saturating_sub(10);
-                    self.modal = Modal::Follow(text, offset);
-                }
-                _ => self.modal = Modal::Follow(text, offset),
             },
             Modal::Containers(n, name, names, mut index, previous, follow) => match code {
                 KeyCode::Esc => {}
@@ -757,7 +992,9 @@ impl App {
             Modal::Input(label, mut text) => match code {
                 KeyCode::Esc => {}
                 KeyCode::Enter => {
-                    if label == "Filter" {
+                    if label == "Command" {
+                        return self.command(&text);
+                    } else if label == "Filter" {
                         self.filter = text;
                         self.selected = 0;
                     } else if label == "Overview contexts (comma separated, max 4)" {
@@ -794,16 +1031,21 @@ impl App {
             },
             Modal::Detail(text, mut offset) => match code {
                 KeyCode::Esc | KeyCode::Char('q') => {}
-                KeyCode::Down | KeyCode::Char('j') => {
-                    offset = (offset + 1).min(text.lines().count().saturating_sub(1));
+                _ => {
+                    offset = scroll_offset(&text, offset, code);
                     self.modal = Modal::Detail(text, offset);
                 }
-                KeyCode::Up | KeyCode::Char('k') => {
-                    self.modal = Modal::Detail(text, offset.saturating_sub(1));
+            },
+            Modal::Metrics(text, mut offset) => match code {
+                KeyCode::Esc | KeyCode::Char('q') => {}
+                KeyCode::Char('m') | KeyCode::Char('r') => {
+                    self.modal = Modal::Metrics(text, offset);
+                    self.request_metrics();
                 }
-                KeyCode::PageDown => self.modal = Modal::Detail(text, (offset + 15).min(10000)),
-                KeyCode::PageUp => self.modal = Modal::Detail(text, offset.saturating_sub(15)),
-                _ => self.modal = Modal::Detail(text, offset),
+                _ => {
+                    offset = scroll_offset(&text, offset, code);
+                    self.modal = Modal::Metrics(text, offset);
+                }
             },
             Modal::Picker(label, list, mut index) => match code {
                 KeyCode::Esc => {}
@@ -870,15 +1112,46 @@ impl App {
                     themes::use_theme(&self.theme.id)?;
                     self.status = format!("Theme saved: {}", self.theme.name);
                 }
+                KeyCode::Char('N') => {
+                    self.modal = Modal::NewTheme(String::new(), self.theme.clone(), old);
+                }
                 _ => self.modal = Modal::Themes(list, index, old),
+            },
+            Modal::NewTheme(mut id, source, old) => match code {
+                KeyCode::Esc => self.theme = old,
+                KeyCode::Enter => {
+                    let result = themes::create_from_theme(&id, &source).and_then(|path| {
+                        themes::use_theme(&id)?;
+                        Ok(path)
+                    });
+                    match result {
+                        Ok(_) => {
+                            self.theme = themes::find(&id)?;
+                            self.status = format!("Custom theme created and selected: {id}");
+                        }
+                        Err(error) => {
+                            self.status = error;
+                            self.modal = Modal::NewTheme(id, source, old);
+                        }
+                    }
+                }
+                KeyCode::Backspace => {
+                    id.pop();
+                    self.modal = Modal::NewTheme(id, source, old);
+                }
+                KeyCode::Char(c) if c.is_ascii_alphanumeric() || c == '-' => {
+                    if id.len() < 48 {
+                        id.push(c);
+                    }
+                    self.modal = Modal::NewTheme(id, source, old);
+                }
+                _ => self.modal = Modal::NewTheme(id, source, old),
             },
             Modal::Confirm(p, mut text) => match code {
                 KeyCode::Esc => self.status = "Operation canceled.".into(),
                 KeyCode::Enter => {
                     let (width, height) = terminal::size().map_err(|_| "terminal size failed")?;
-                    if confirmation_lines(&p.summary, &text, width).len()
-                        > height.saturating_sub(5) as usize
-                    {
+                    if !confirmation_fits(&p.summary, &text, width, height) {
                         self.status="Enlarge terminal to inspect the complete confirmation before approving.".into();
                         self.modal = Modal::Confirm(p, text);
                         return Ok(false);
@@ -924,7 +1197,13 @@ impl App {
             },
             Modal::Help(offset) => match code {
                 KeyCode::Esc | KeyCode::Char('?') | KeyCode::Char('q') => {}
-                KeyCode::PageDown => self.modal = Modal::Help((offset + 15).min(40)),
+                KeyCode::Down | KeyCode::Char('j') => {
+                    self.modal = Modal::Help((offset + 1).min(100))
+                }
+                KeyCode::Up | KeyCode::Char('k') => {
+                    self.modal = Modal::Help(offset.saturating_sub(1))
+                }
+                KeyCode::PageDown => self.modal = Modal::Help((offset + 15).min(100)),
                 KeyCode::PageUp => self.modal = Modal::Help(offset.saturating_sub(15)),
                 _ => self.modal = Modal::Help(offset),
             },
@@ -935,11 +1214,35 @@ impl App {
                     self.selected = 0;
                 }
                 KeyCode::Tab => self.left_focus = !self.left_focus,
+                KeyCode::BackTab => self.left_focus = !self.left_focus,
+                KeyCode::PageDown | KeyCode::PageUp | KeyCode::Home | KeyCode::End => {
+                    let page = terminal::size()
+                        .map(|(w, h)| Layout::new(w, h).table_rows())
+                        .unwrap_or(15)
+                        .max(1);
+                    let (index, len) = if self.left_focus {
+                        (&mut self.kind_index, self.kinds.len())
+                    } else {
+                        let len = self.visible().len();
+                        (&mut self.selected, len)
+                    };
+                    *index = match code {
+                        KeyCode::PageDown => index.saturating_add(page).min(len.saturating_sub(1)),
+                        KeyCode::PageUp => index.saturating_sub(page),
+                        KeyCode::Home => 0,
+                        _ => len.saturating_sub(1),
+                    };
+                    if self.left_focus {
+                        self.changed();
+                    }
+                }
                 KeyCode::Down | KeyCode::Char('j') => {
                     if self.left_focus {
-                        self.kind_index =
-                            (self.kind_index + 1).min(self.kinds.len().saturating_sub(1));
-                        self.changed();
+                        let index = (self.kind_index + 1).min(self.kinds.len().saturating_sub(1));
+                        if index != self.kind_index {
+                            self.kind_index = index;
+                            self.changed();
+                        }
                     } else {
                         self.selected =
                             (self.selected + 1).min(self.visible().len().saturating_sub(1));
@@ -947,8 +1250,11 @@ impl App {
                 }
                 KeyCode::Up | KeyCode::Char('k') => {
                     if self.left_focus {
-                        self.kind_index = self.kind_index.saturating_sub(1);
-                        self.changed();
+                        let index = self.kind_index.saturating_sub(1);
+                        if index != self.kind_index {
+                            self.kind_index = index;
+                            self.changed();
+                        }
                     } else {
                         self.selected = self.selected.saturating_sub(1);
                     }
@@ -960,7 +1266,16 @@ impl App {
                         self.send(Task::Get(k, n, name));
                     }
                 }
-                KeyCode::Char('/') => self.modal = Modal::Input("Filter", self.filter.clone()),
+                KeyCode::Char('/') => {
+                    self.modal = Modal::Filter(
+                        self.filter.clone(),
+                        self.filter.clone(),
+                        self.selected_uid(),
+                        self.selected,
+                    )
+                }
+                KeyCode::Char(':') => self.modal = Modal::Input("Command", String::new()),
+                KeyCode::Char('S') => self.set_sort(self.sort.next()),
                 KeyCode::Char('n') => {
                     self.modal = Modal::Input("Namespace", self.namespace.clone())
                 }
@@ -983,14 +1298,7 @@ impl App {
                     }
                 }
                 KeyCode::Char('R') => self.send(Task::Discover),
-                KeyCode::Char('m') => self.send(Task::Metrics(
-                    if self.kind() == "nodes" {
-                        crate::metrics::MetricsScope::Nodes
-                    } else {
-                        crate::metrics::MetricsScope::Pods
-                    },
-                    self.namespace.clone(),
-                )),
+                KeyCode::Char('m') => self.request_metrics(),
                 KeyCode::Char('w') => {
                     if self.options.connection.demo {
                         self.status =
@@ -1001,26 +1309,7 @@ impl App {
                     }
                 }
                 KeyCode::Char('a') => {
-                    self.modal = Modal::Picker(
-                        "Actions",
-                        [
-                            "Inspect JSON",
-                            "Inspect YAML",
-                            "Logs snapshot",
-                            "Previous logs",
-                            "Follow logs (bounded)",
-                            "Metrics",
-                            "Context overview",
-                            "Scale deployment",
-                            "Change deployment image",
-                            "Restart deployment",
-                            "Delete selected resource",
-                        ]
-                        .into_iter()
-                        .map(str::to_owned)
-                        .collect(),
-                        0,
-                    );
+                    self.modal = Modal::Picker("Actions", self.action_menu(), 0);
                 }
                 KeyCode::Char('y') => {
                     if let Some((k, n, name)) = self.selected_target() {
@@ -1082,12 +1371,263 @@ impl App {
     }
 }
 
+fn resource_alias(resource: &str) -> &str {
+    match resource {
+        "po" | "pod" => "pods",
+        "deploy" | "deployment" => "deployments.apps",
+        "svc" | "service" => "services",
+        "ev" | "event" => "events",
+        "sts" => "statefulsets.apps",
+        "ds" => "daemonsets.apps",
+        "rs" => "replicasets.apps",
+        "job" => "jobs.batch",
+        "cj" => "cronjobs.batch",
+        "ing" => "ingresses.networking.k8s.io",
+        "cm" => "configmaps",
+        "pvc" => "persistentvolumeclaims",
+        "no" | "node" => "nodes",
+        "ns" => "namespaces",
+        "sc" => "storageclasses.storage.k8s.io",
+        _ => resource,
+    }
+}
+fn name(object: &Value) -> &str {
+    object["metadata"]["name"].as_str().unwrap_or("-")
+}
+fn namespace(object: &Value) -> &str {
+    object["metadata"]["namespace"].as_str().unwrap_or("-")
+}
+fn restarts(object: &Value) -> u64 {
+    [
+        "initContainerStatuses",
+        "containerStatuses",
+        "ephemeralContainerStatuses",
+    ]
+    .iter()
+    .filter_map(|field| object["status"][field].as_array())
+    .flatten()
+    .filter_map(|status| status["restartCount"].as_u64())
+    .fold(0, u64::saturating_add)
+}
+fn readiness(object: &Value) -> String {
+    match object["kind"].as_str().unwrap_or("") {
+        "Pod" => {
+            let ready = object["status"]["containerStatuses"]
+                .as_array()
+                .map(|items| items.iter().filter(|item| item["ready"] == true).count())
+                .unwrap_or(0);
+            let total = object["spec"]["containers"]
+                .as_array()
+                .map(Vec::len)
+                .unwrap_or(0);
+            format!("{ready}/{total}")
+        }
+        "Deployment" | "StatefulSet" | "ReplicaSet" => format!(
+            "{}/{}",
+            object["status"]["readyReplicas"].as_u64().unwrap_or(0),
+            object["spec"]["replicas"].as_u64().unwrap_or(1)
+        ),
+        "DaemonSet" => format!(
+            "{}/{}",
+            object["status"]["numberReady"].as_u64().unwrap_or(0),
+            object["status"]["desiredNumberScheduled"]
+                .as_u64()
+                .unwrap_or(0)
+        ),
+        "Job" => format!(
+            "{}/{}",
+            object["status"]["succeeded"].as_u64().unwrap_or(0),
+            object["spec"]["completions"].as_u64().unwrap_or(1)
+        ),
+        "Node" => object["status"]["conditions"]
+            .as_array()
+            .and_then(|conditions| {
+                conditions
+                    .iter()
+                    .find(|condition| condition["type"] == "Ready")
+                    .and_then(|condition| condition["status"].as_str())
+            })
+            .unwrap_or("Unknown")
+            .into(),
+        _ => "-".into(),
+    }
+}
+fn timestamp(object: &Value) -> Option<i64> {
+    object["metadata"]["creationTimestamp"]
+        .as_str()?
+        .parse::<k8s_openapi::jiff::Timestamp>()
+        .ok()
+        .map(|time| time.as_second())
+}
+fn age(object: &Value, now: i64) -> String {
+    let Some(created) = timestamp(object) else {
+        return "-".into();
+    };
+    if created > now {
+        return "future".into();
+    }
+    let seconds = now.saturating_sub(created);
+    if seconds < 60 {
+        format!("{seconds}s")
+    } else if seconds < 3600 {
+        format!("{}m", seconds / 60)
+    } else if seconds < 86400 {
+        format!("{}h", seconds / 3600)
+    } else {
+        format!("{}d", seconds / 86400)
+    }
+}
+#[derive(Clone, Copy, Debug)]
+struct Rect {
+    x: u16,
+    y: u16,
+    width: u16,
+    height: u16,
+}
+#[derive(Clone, Copy, Debug)]
+struct Layout {
+    sidebar: Option<Rect>,
+    table: Rect,
+}
+impl Layout {
+    fn new(width: u16, height: u16) -> Self {
+        let sidebar_width = if width >= 88 { 26 } else { 0 };
+        Self {
+            sidebar: (sidebar_width > 0).then_some(Rect {
+                x: 0,
+                y: 3,
+                width: sidebar_width,
+                height: height.saturating_sub(6),
+            }),
+            table: Rect {
+                x: sidebar_width,
+                y: 3,
+                width: width.saturating_sub(sidebar_width),
+                height: height.saturating_sub(6),
+            },
+        }
+    }
+    fn table_rows(self) -> usize {
+        usize::from(self.table.height.saturating_sub(3))
+    }
+    fn kind_rows(self) -> usize {
+        usize::from(self.table.height.saturating_sub(2))
+    }
+}
+#[derive(Clone, Copy)]
+enum Column {
+    Namespace,
+    Name,
+    Ready,
+    Status,
+    Restarts,
+    Age,
+}
+impl Column {
+    fn title(self) -> &'static str {
+        match self {
+            Self::Namespace => "NAMESPACE",
+            Self::Name => "NAME",
+            Self::Ready => "READY",
+            Self::Status => "STATUS",
+            Self::Restarts => "RSTS",
+            Self::Age => "AGE",
+        }
+    }
+    fn value(self, object: &Value, now: i64) -> String {
+        match self {
+            Self::Namespace => namespace(object).into(),
+            Self::Name => name(object).into(),
+            Self::Ready => readiness(object),
+            Self::Status => summary(object),
+            Self::Restarts => {
+                if object["kind"] == "Pod" {
+                    restarts(object).to_string()
+                } else {
+                    "-".into()
+                }
+            }
+            Self::Age => age(object, now),
+        }
+    }
+}
+fn columns(width: usize, namespaced: bool) -> Vec<(Column, usize)> {
+    // Name and health remain usable even when optional columns no longer fit.
+    let mut columns = Vec::new();
+    if namespaced && width >= 54 {
+        columns.push((Column::Namespace, if width >= 94 { 16 } else { 12 }));
+    }
+    columns.push((Column::Name, 1));
+    if width >= 46 {
+        columns.push((Column::Ready, 7));
+    }
+    columns.push((
+        Column::Status,
+        if width >= 64 {
+            20
+        } else if width >= 46 {
+            16
+        } else {
+            12
+        },
+    ));
+    if width >= 70 {
+        columns.push((Column::Restarts, 5));
+    }
+    if width >= 46 {
+        columns.push((Column::Age, 6));
+    }
+    let occupied: usize =
+        columns.iter().map(|(_, width)| width).sum::<usize>() + columns.len().saturating_sub(1);
+    if let Some((_, name_width)) = columns
+        .iter_mut()
+        .find(|(column, _)| matches!(column, Column::Name))
+    {
+        *name_width += width.saturating_sub(occupied);
+    }
+    columns
+}
+fn table_line(columns: &[(Column, usize)], object: Option<&Value>, now: i64) -> String {
+    columns
+        .iter()
+        .map(|(column, width)| {
+            let text = object
+                .map(|object| column.value(object, now))
+                .unwrap_or_else(|| column.title().into());
+            format!("{:<width$}", display(&text, *width), width = *width)
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 fn display(text: &str, width: usize) -> String {
-    safety::safe_text(text, width)
+    let mut text: String = safety::safe_text(text, width.saturating_add(1))
         .chars()
         .map(|c| if c.is_ascii() { c } else { '?' })
-        .take(width)
-        .collect()
+        .collect();
+    if text.len() > width {
+        text.truncate(width);
+        if width > 0 {
+            text.pop();
+            text.push('~');
+        }
+    }
+    text
+}
+fn identity_line(context: &str, namespace: &str, server: &str, width: usize) -> String {
+    let server_width = if width >= 110 { 32 } else { 0 };
+    let available = width.saturating_sub(10 + server_width);
+    let namespace_width = (available / 3).clamp(6, 24).min(available);
+    let context_width = available.saturating_sub(namespace_width);
+    let mut line = format!(
+        "CTX {} | NS {}",
+        display(context, context_width),
+        display(namespace, namespace_width)
+    );
+    if server_width > 0 {
+        line.push_str(&format!(" | API {}", display(server, server_width - 7)));
+    }
+    line
 }
 fn row(
     out: &mut impl Write,
@@ -1100,8 +1640,8 @@ fn row(
     queue!(
         out,
         cursor::MoveTo(0, y),
-        style::SetForegroundColor(fg),
-        style::SetBackgroundColor(bg),
+        themes::ForegroundColor(fg),
+        themes::BackgroundColor(bg),
         style::Print(format!(
             "{:<width$}",
             display(text, width as usize),
@@ -1109,9 +1649,71 @@ fn row(
         ))
     )
 }
+fn cell(
+    out: &mut impl Write,
+    x: u16,
+    y: u16,
+    width: u16,
+    text: &str,
+    fg: Color,
+    bg: Color,
+) -> io::Result<()> {
+    queue!(
+        out,
+        cursor::MoveTo(x, y),
+        themes::ForegroundColor(fg),
+        themes::BackgroundColor(bg),
+        style::Print(format!(
+            "{:<width$}",
+            display(text, usize::from(width)),
+            width = usize::from(width)
+        ))
+    )
+}
+fn panel(
+    out: &mut impl Write,
+    rect: Rect,
+    title: &str,
+    focused: bool,
+    fg: Color,
+    bg: Color,
+) -> io::Result<()> {
+    if rect.width < 2 || rect.height < 2 {
+        return Ok(());
+    }
+    let width = usize::from(rect.width - 2);
+    let title = display(
+        &format!(" {} {title} ", if focused { ">" } else { " " }),
+        width,
+    );
+    let top = format!("+{title}{}+", "-".repeat(width.saturating_sub(title.len())));
+    cell(out, rect.x, rect.y, rect.width, &top, fg, bg)?;
+    for y in rect.y + 1..rect.y + rect.height - 1 {
+        cell(
+            out,
+            rect.x,
+            y,
+            rect.width,
+            &format!("|{}|", " ".repeat(width)),
+            fg,
+            bg,
+        )?;
+    }
+    cell(
+        out,
+        rect.x,
+        rect.y + rect.height - 1,
+        rect.width,
+        &format!("+{}+", "-".repeat(width)),
+        fg,
+        bg,
+    )
+}
 fn draw(app: &App) -> Result<()> {
     let (w, h) = terminal::size().map_err(|_| "cannot read terminal size")?;
-    let mut out = io::stdout().lock();
+    render(app, w, h, &mut io::stdout().lock())
+}
+fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
     let t = &app.theme;
     let color = |role: &str| {
         if app.options.color && !t.terminal {
@@ -1124,33 +1726,35 @@ fn draw(app: &App) -> Result<()> {
     let fg = color("text");
     queue!(
         out,
-        style::SetBackgroundColor(bg),
+        themes::BackgroundColor(bg),
         terminal::Clear(ClearType::All)
     )
     .map_err(|_| "draw failed")?;
-    if w < 50 || h < 12 {
-        row(
-            &mut out,
-            0,
-            w,
-            "KBorg: enlarge terminal to at least 50x12 (q to quit)",
-            fg,
-            bg,
-        )
-        .map_err(|_| "draw failed")?;
+    if w < 28 || h < 10 {
+        row(out, 0, w, "KBorg: needs 28x10; q quits", fg, bg).map_err(|_| "draw failed")?;
+        if h > 1 {
+            row(out, 1, w, &app.status, color("warning"), bg).map_err(|_| "draw failed")?;
+        }
         out.flush().map_err(|_| "draw failed")?;
         return Ok(());
     }
     let mode = if app.options.connection.demo {
-        "DEMO / SAMPLE DATA"
+        "DEMO SAMPLE DATA"
     } else if app.options.connection.writable {
-        "PRODUCTION / WRITE ENABLED"
+        "PRODUCTION WRITE"
     } else {
-        "PRODUCTION / READ ONLY"
+        "PRODUCTION READ ONLY"
     };
-    let header = format!(" KBorg >_  | {mode} | {}", app.theme.name);
+    let header = format!(
+        "KBorg | {mode}{}",
+        if w >= 80 {
+            format!(" | {}", app.theme.name)
+        } else {
+            String::new()
+        }
+    );
     row(
-        &mut out,
+        out,
         0,
         w,
         &header,
@@ -1159,107 +1763,220 @@ fn draw(app: &App) -> Result<()> {
     )
     .map_err(|_| "draw failed")?;
     row(
-        &mut out,
+        out,
         1,
         w,
-        &format!(
-            " context: {} | ns: {} | {}",
-            app.context, app.namespace, app.server
-        ),
+        &identity_line(&app.context, &app.namespace, &app.server, usize::from(w)),
         color("accent"),
         bg,
     )
     .map_err(|_| "draw failed")?;
+    let freshness = if app.busy {
+        "LOADING"
+    } else if app.stale {
+        "STALE"
+    } else if app.options.connection.demo {
+        "SAMPLE"
+    } else if app.options.poll {
+        "POLL"
+    } else if app.watching {
+        "LIVE"
+    } else {
+        "CACHED"
+    };
+    let visible = app.visible();
     row(
-        &mut out,
+        out,
         2,
         w,
         &format!(
-            " [c] context [n] namespace [t] theme [m] metrics [w] {} | {}{}",
-            if app.options.poll || app.options.connection.demo {
-                "POLL"
-            } else if app.watching && !app.stale && !app.truncated {
-                "LIVE"
+            "{freshness}{} | {} | {}/{} objects | sort:{}{}",
+            if app.truncated { " TRUNCATED" } else { "" },
+            app.kind(),
+            visible.len(),
+            app.items.len(),
+            app.sort.label(),
+            if app.filter.is_empty() {
+                String::new()
             } else {
-                "WATCH"
-            },
-            if app.busy { "LOADING " } else { "" },
-            if app.stale { "STALE" } else { "" }
+                format!(" | /{}", app.filter)
+            }
         ),
-        color("muted"),
-        bg,
-    )
-    .map_err(|_| "draw failed")?;
-    let height = h.saturating_sub(7) as usize;
-    let left = w.min(28) as usize;
-    row(
-        &mut out,
-        3,
-        w,
-        &format!(
-            " {:<left$}| NAMESPACE       NAME / STATUS",
-            "RESOURCES (Tab)",
-            left = left - 1
-        ),
-        color("muted"),
-        bg,
-    )
-    .map_err(|_| "draw failed")?;
-    let visible = app.visible();
-    let start = app.selected.saturating_sub(height.saturating_sub(1));
-    let kstart = app.kind_index.saturating_sub(height.saturating_sub(1));
-    for r in 0..height {
-        let kind = app.kinds.get(kstart + r).map(Kind::key).unwrap_or_default();
-        let marker = if app.kind_index == kstart + r {
-            if app.left_focus { ">" } else { "*" }
+        if app.stale || app.truncated {
+            color("warning")
         } else {
-            " "
-        };
-        let mut line = format!(
-            "{marker}{:<width$}|",
-            display(&kind, left - 2),
-            width = left - 2
-        );
-        if let Some(object) = visible.get(start + r) {
-            let namespace = object["metadata"]["namespace"].as_str().unwrap_or("-");
-            let name = object["metadata"]["name"].as_str().unwrap_or("-");
-            line += &format!(
-                " {:<15} {}  [{}]",
-                display(namespace, 15),
-                name,
-                summary(object)
-            );
-        }
-        let selected = !app.left_focus && start + r == app.selected && r + start < visible.len();
-        row(
-            &mut out,
-            4 + r as u16,
-            w,
-            &line,
-            if selected {
-                color("selection_text")
+            color("muted")
+        },
+        bg,
+    )
+    .map_err(|_| "draw failed")?;
+    let layout = Layout::new(w, h);
+    let height = layout.table_rows();
+    let sidebar = layout
+        .sidebar
+        .or_else(|| app.left_focus.then_some(layout.table));
+    if let Some(rect) = sidebar {
+        panel(
+            out,
+            rect,
+            "RESOURCES [Tab]",
+            app.left_focus,
+            if app.left_focus {
+                color("accent")
             } else {
-                fg
+                color("muted")
             },
-            if selected {
-                color("selection_background")
-            } else {
-                bg
-            },
+            bg,
         )
         .map_err(|_| "draw failed")?;
+        let rows = layout.kind_rows();
+        let start = app.kind_index.saturating_sub(rows.saturating_sub(1));
+        for (r, kind) in app.kinds.iter().skip(start).take(rows).enumerate() {
+            let selected = start + r == app.kind_index;
+            cell(
+                out,
+                rect.x + 1,
+                rect.y + 1 + r as u16,
+                rect.width - 2,
+                &format!("{} {}", if selected { ">" } else { " " }, kind.key()),
+                if selected {
+                    color("selection_text")
+                } else {
+                    fg
+                },
+                if selected {
+                    color("selection_background")
+                } else {
+                    bg
+                },
+            )
+            .map_err(|_| "draw failed")?;
+        }
+    }
+    if layout.sidebar.is_some() || !app.left_focus {
+        let rect = layout.table;
+        let title = format!(
+            "{} [{}/{}]{}",
+            app.kind(),
+            if visible.is_empty() {
+                0
+            } else {
+                app.selected + 1
+            },
+            visible.len(),
+            if app.filter.is_empty() {
+                ""
+            } else {
+                " FILTERED"
+            }
+        );
+        panel(
+            out,
+            rect,
+            &title,
+            !app.left_focus,
+            if app.left_focus {
+                color("muted")
+            } else {
+                color("accent")
+            },
+            bg,
+        )
+        .map_err(|_| "draw failed")?;
+        let namespaced = app
+            .kinds
+            .get(app.kind_index)
+            .is_some_and(|kind| kind.namespaced);
+        let cols = columns(usize::from(rect.width - 4), namespaced);
+        let now = k8s_openapi::jiff::Timestamp::now().as_second();
+        cell(
+            out,
+            rect.x + 1,
+            rect.y + 1,
+            rect.width - 2,
+            &format!("  {}", table_line(&cols, None, now)),
+            color("muted"),
+            bg,
+        )
+        .map_err(|_| "draw failed")?;
+        let start = app.selected.saturating_sub(height.saturating_sub(1));
+        for (r, object) in visible.iter().skip(start).take(height).enumerate() {
+            let selected = !app.left_focus && start + r == app.selected;
+            let status = summary(object);
+            let unhealthy = [
+                "Failed",
+                "Error",
+                "Crash",
+                "BackOff",
+                "NotReady",
+                "Terminating",
+                "Pending",
+            ]
+            .iter()
+            .any(|needle| status.contains(needle));
+            cell(
+                out,
+                rect.x + 1,
+                rect.y + 2 + r as u16,
+                rect.width - 2,
+                &format!(
+                    "{} {}",
+                    if start + r == app.selected {
+                        if app.left_focus { "*" } else { ">" }
+                    } else {
+                        " "
+                    },
+                    table_line(&cols, Some(object), now)
+                ),
+                if selected {
+                    color("selection_text")
+                } else if unhealthy {
+                    color("warning")
+                } else {
+                    fg
+                },
+                if selected {
+                    color("selection_background")
+                } else {
+                    bg
+                },
+            )
+            .map_err(|_| "draw failed")?;
+        }
+        if visible.is_empty() && height > 0 {
+            let empty = if !app.filter.is_empty() {
+                "No matches. Esc clears the filter."
+            } else if app.busy {
+                "Loading resources..."
+            } else if !app.connected {
+                "Not connected. r retries; c selects context."
+            } else if app.watch_blocked {
+                "Access unavailable. r retries; c selects context."
+            } else {
+                "No objects in this scope. n namespace; :all"
+            };
+            cell(
+                out,
+                rect.x + 1,
+                rect.y + 2,
+                rect.width - 2,
+                empty,
+                color("muted"),
+                bg,
+            )
+            .map_err(|_| "draw failed")?;
+        }
     }
     row(
-        &mut out,
+        out,
         h - 3,
         w,
         &format!(
-            " {}{} | filter: {}",
-            app.status,
-            if app.truncated { " [TRUNCATED]" } else { "" },
-            app.filter
+            "{}{}",
+            if app.sticky_status { "! " } else { "" },
+            app.status
         ),
-        if app.stale {
+        if app.stale || app.sticky_status {
             color("warning")
         } else {
             color("muted")
@@ -1268,39 +1985,90 @@ fn draw(app: &App) -> Result<()> {
     )
     .map_err(|_| "draw failed")?;
     row(
-        &mut out,
+        out,
         h - 2,
         w,
-        " Enter details | y YAML | l logs | f follow | a actions | / filter | r refresh",
+        if w >= 80 {
+            "Enter details | y YAML | l logs | f follow | m metrics | a actions | / filter"
+        } else {
+            "Enter inspect | / filter | : command | a actions"
+        },
         color("accent"),
         bg,
     )
     .map_err(|_| "draw failed")?;
-    row(
-        &mut out,
-        h - 1,
-        w,
-        " q quit | ? help | e image edit | o context overview | No telemetry",
-        color("muted"),
-        bg,
-    )
-    .map_err(|_| "draw failed")?;
+    row(out, h - 1, w, if w >= 80 { ": resource | S sort | Tab focus | c context | n namespace | r refresh | ? help | q quit" }
+        else { "q quit | ? help | Tab focus" }, color("muted"), bg).map_err(|_| "draw failed")?;
     match &app.modal {
         Modal::None => {}
+        Modal::Filter(_, text, ..) => {
+            row(
+                out,
+                h - 2,
+                w,
+                &format!("Filter > {text}_"),
+                color("accent"),
+                bg,
+            )
+            .map_err(|_| "draw failed")?;
+            row(
+                out,
+                h - 1,
+                w,
+                "Enter keep | Esc restore | live filter",
+                color("muted"),
+                bg,
+            )
+            .map_err(|_| "draw failed")?;
+        }
         modal => {
-            for y in 3..h - 2 {
-                row(&mut out, y, w, "", fg, bg).map_err(|_| "draw failed")?;
-            }
+            let title = match modal {
+                Modal::Input(label, _) | Modal::Picker(label, ..) => *label,
+                Modal::Follow(..) => "LIVE LOGS / 60s / 256KiB",
+                Modal::Containers(..) => "CHOOSE CONTAINER",
+                Modal::Image(..) => "CHANGE DEPLOYMENT IMAGE",
+                Modal::Detail(..) => "INSPECT / PgUp PgDown / Esc close",
+                Modal::Metrics(..) => "METRICS / refresh 5s / m refresh / Esc close",
+                Modal::Themes(..) => "THEMES / Enter save / Esc restore",
+                Modal::NewTheme(..) => "CREATE CUSTOM THEME / from preview colors",
+                Modal::Confirm(..) => "REVIEW MUTATION / explicit confirmation required",
+                Modal::Scale(..) => "SCALE DEPLOYMENT",
+                Modal::Help(..) => "HELP / PgUp PgDown / Esc close",
+                Modal::None => "",
+                Modal::Filter(..) => "",
+            };
+            let rect = Rect {
+                x: 0,
+                y: 3,
+                width: w,
+                height: h.saturating_sub(6),
+            };
+            panel(
+                out,
+                rect,
+                title,
+                true,
+                if matches!(modal, Modal::Confirm(..)) {
+                    color("warning")
+                } else {
+                    color("accent")
+                },
+                bg,
+            )
+            .map_err(|_| "draw failed")?;
+            let height = usize::from(rect.height.saturating_sub(2));
             let lines = match modal {
                 Modal::Input(label, text) => vec![
                     format!(" {label}: {text}_"),
                     " Enter apply | Esc cancel".into(),
                 ],
-                Modal::Follow(text, offset) => std::iter::once(
-                    " LIVE LOGS (60s / 256KiB) — PgUp/PgDown; End latest; Esc cancels".into(),
-                )
-                .chain(text.lines().skip(*offset).map(|s| format!(" {s}")))
-                .collect(),
+                Modal::Follow(text, offset)
+                | Modal::Detail(text, offset)
+                | Modal::Metrics(text, offset) => {
+                    let wrapped = wrap_text(text, usize::from(w.saturating_sub(2)));
+                    let offset = (*offset).min(wrapped.lines().count().saturating_sub(1));
+                    wrapped.lines().skip(offset).map(str::to_owned).collect()
+                }
                 Modal::Containers(_, name, names, index, previous, follow) => {
                     std::iter::once(format!(
                         " CONTAINER for {name} — {} — Enter select / Esc cancel",
@@ -1312,9 +2080,15 @@ fn draw(app: &App) -> Result<()> {
                             "snapshot"
                         }
                     ))
-                    .chain(names.iter().enumerate().map(|(i, name)| {
-                        format!(" {} {name}", if i == *index { ">" } else { " " })
-                    }))
+                    .chain(
+                        names
+                            .iter()
+                            .enumerate()
+                            .skip(index.saturating_sub(height.saturating_sub(2)))
+                            .map(|(i, name)| {
+                                format!(" {} {name}", if i == *index { ">" } else { " " })
+                            }),
+                    )
                     .collect()
                 }
                 Modal::Image(_, _, name, _, container, text) => vec![
@@ -1332,11 +2106,6 @@ fn draw(app: &App) -> Result<()> {
                     ),
                     " Enter continue to server dry-run/review | Esc cancel".into(),
                 ],
-                Modal::Detail(text, offset) => std::iter::once(
-                    " DETAILS / LOGS / METRICS — PgUp/PgDown scroll; Esc close".into(),
-                )
-                .chain(text.lines().skip(*offset).map(|s| format!(" {s}")))
-                .collect(),
                 Modal::Picker(label, list, index) => {
                     std::iter::once(format!(" {label} — arrows / Enter select / Esc cancel"))
                         .chain(
@@ -1351,7 +2120,7 @@ fn draw(app: &App) -> Result<()> {
                 }
                 Modal::Themes(list, index, _) => {
                     let mut lines = vec![
-                        " THEMES — arrows preview; Enter save; Esc restore".into(),
+                        " THEMES - arrows preview; Enter save; N create custom; Esc restore".into(),
                         " PREVIEW: PRODUCTION | READ ONLY | STALE | ERROR | +added -removed".into(),
                     ];
                     lines.extend(
@@ -1369,7 +2138,15 @@ fn draw(app: &App) -> Result<()> {
                     );
                     lines
                 }
-                Modal::Confirm(p, text) => confirmation_lines(&p.summary, text, w),
+                Modal::NewTheme(id, source, _) => vec![
+                    format!("Palette: {}", source.name),
+                    format!("New theme ID: {id}_"),
+                    "lowercase letters, digits and hyphens; existing themes are preserved".into(),
+                    "Enter create and select | Esc restore previous theme".into(),
+                ],
+                Modal::Confirm(p, text) => {
+                    confirmation_lines(&p.summary, text, w.saturating_sub(1))
+                }
                 Modal::Scale(_, _, name, _, text) => vec![
                     format!(" SCALE {name} — enter replicas 0..20: {text}_"),
                     " Enter server dry-run/review | Esc cancel".into(),
@@ -1385,22 +2162,61 @@ fn draw(app: &App) -> Result<()> {
                         .collect()
                 }
                 Modal::None => vec![],
+                Modal::Filter(..) => vec![],
             };
-            for (index, line) in lines.iter().take((h - 5) as usize).enumerate() {
-                row(
-                    &mut out,
-                    3 + index as u16,
-                    w,
+            for (index, line) in lines.iter().take(height).enumerate() {
+                let selected = line.starts_with(" > ");
+                cell(
+                    out,
+                    1,
+                    4 + index as u16,
+                    w.saturating_sub(2),
                     line,
                     if matches!(modal, Modal::Confirm(..)) {
                         color("warning")
+                    } else if selected {
+                        color("selection_text")
                     } else {
                         fg
                     },
-                    bg,
+                    if selected {
+                        color("selection_background")
+                    } else {
+                        bg
+                    },
                 )
                 .map_err(|_| "draw failed")?;
             }
+            let hints = if let Modal::Confirm(prepared, text) = modal {
+                if confirmation_fits(&prepared.summary, text, w, h) {
+                    "Enter execute | Esc cancel"
+                } else {
+                    "Esc cancel | Enlarge terminal to review complete mutation."
+                }
+            } else if matches!(modal, Modal::Input("Command", _)) {
+                "Esc cancel | Enter run | :pods :deploy :svc :nodes | :ns NAME | :sort FIELD"
+            } else if matches!(modal, Modal::Metrics(..)) {
+                "Esc close | m refresh | PgUp/PgDown scroll | Home/End"
+            } else {
+                "Esc close | Enter select | arrows / j k | PgUp PgDown scroll"
+            };
+            row(out, h - 2, w, hints, color("accent"), bg).map_err(|_| "draw failed")?;
+            row(
+                out,
+                h - 1,
+                w,
+                &format!(
+                    "{} | {freshness}",
+                    if app.busy {
+                        "Request in progress"
+                    } else {
+                        mode
+                    }
+                ),
+                color("muted"),
+                bg,
+            )
+            .map_err(|_| "draw failed")?;
         }
     }
     out.flush().map_err(|_| "draw failed".into())
@@ -1422,6 +2238,29 @@ fn confirmation_lines(summary: &str, text: &str, width: u16) -> Vec<String> {
                 .collect()
         })
         .collect()
+}
+fn confirmation_fits(summary: &str, text: &str, width: u16, height: u16) -> bool {
+    width >= 28
+        && height >= 10
+        && confirmation_lines(summary, text, width.saturating_sub(1)).len()
+            <= usize::from(height.saturating_sub(8))
+}
+fn scroll_offset(text: &str, offset: usize, code: KeyCode) -> usize {
+    let (width, height) = terminal::size().unwrap_or((80, 24));
+    let count = wrap_text(text, usize::from(width.saturating_sub(2)))
+        .lines()
+        .count();
+    let page = usize::from(height.saturating_sub(8)).max(1);
+    match code {
+        KeyCode::Down | KeyCode::Char('j') => offset.saturating_add(1),
+        KeyCode::Up | KeyCode::Char('k') => offset.saturating_sub(1),
+        KeyCode::PageDown => offset.saturating_add(page),
+        KeyCode::PageUp => offset.saturating_sub(page),
+        KeyCode::Home => 0,
+        KeyCode::End => count.saturating_sub(page),
+        _ => offset,
+    }
+    .min(count.saturating_sub(1))
 }
 fn wrap_text(text: &str, width: usize) -> String {
     text.lines()
@@ -1461,6 +2300,7 @@ pub fn run(options: Options) -> Result<()> {
         items: vec![],
         selected: 0,
         filter: String::new(),
+        sort: Sort::Name,
         left_focus: false,
         status: "Starting...".into(),
         stale: true,
@@ -1478,6 +2318,8 @@ pub fn run(options: Options) -> Result<()> {
         connected: false,
         refresh: true,
         last_refresh: Instant::now(),
+        metrics_history: crate::metrics::MetricsHistory::default(),
+        last_metrics: Instant::now(),
         worker: worker(),
     };
     if first_run {
@@ -1490,6 +2332,13 @@ pub fn run(options: Options) -> Result<()> {
     let mut dirty = false;
     loop {
         if app.receive() {
+            dirty = true;
+        }
+        if matches!(app.modal, Modal::Metrics(..))
+            && !app.busy
+            && app.last_metrics.elapsed() >= Duration::from_secs(5)
+        {
+            app.request_metrics();
             dirty = true;
         }
         if app.connected
@@ -1536,27 +2385,51 @@ pub fn run(options: Options) -> Result<()> {
                 }
                 Event::Resize(_, _) => dirty = true,
                 Event::Mouse(mouse) if matches!(app.modal, Modal::None) && !app.write_inflight => {
+                    let (w, h) = terminal::size().map_err(|_| "terminal size failed")?;
+                    let layout = Layout::new(w, h);
+                    let resources = layout.sidebar.is_some_and(|rect| mouse.column < rect.width)
+                        || (layout.sidebar.is_none() && app.left_focus);
                     match mouse.kind {
                         MouseEventKind::ScrollDown => {
-                            app.selected =
-                                (app.selected + 1).min(app.visible().len().saturating_sub(1));
+                            if resources {
+                                let index =
+                                    (app.kind_index + 1).min(app.kinds.len().saturating_sub(1));
+                                if index != app.kind_index {
+                                    app.kind_index = index;
+                                    app.changed();
+                                }
+                            } else {
+                                app.selected =
+                                    (app.selected + 1).min(app.visible().len().saturating_sub(1));
+                            }
                         }
-                        MouseEventKind::ScrollUp => app.selected = app.selected.saturating_sub(1),
+                        MouseEventKind::ScrollUp => {
+                            if resources {
+                                let index = app.kind_index.saturating_sub(1);
+                                if index != app.kind_index {
+                                    app.kind_index = index;
+                                    app.changed();
+                                }
+                            } else {
+                                app.selected = app.selected.saturating_sub(1);
+                            }
+                        }
                         MouseEventKind::Down(_) => {
-                            let (w, h) = terminal::size().map_err(|_| "terminal size failed")?;
-                            if mouse.row >= 4 && mouse.row < h.saturating_sub(3) {
-                                let row = (mouse.row - 4) as usize;
-                                let height = h.saturating_sub(7) as usize;
-                                if mouse.column < w.min(28) {
-                                    let start =
-                                        app.kind_index.saturating_sub(height.saturating_sub(1));
+                            let top = if resources { 4 } else { 5 };
+                            if mouse.row >= top && mouse.row < h.saturating_sub(4) {
+                                let row = usize::from(mouse.row - top);
+                                if resources {
+                                    let start = app
+                                        .kind_index
+                                        .saturating_sub(layout.kind_rows().saturating_sub(1));
                                     app.kind_index =
                                         (start + row).min(app.kinds.len().saturating_sub(1));
                                     app.left_focus = false;
                                     app.changed();
                                 } else {
-                                    let start =
-                                        app.selected.saturating_sub(height.saturating_sub(1));
+                                    let start = app
+                                        .selected
+                                        .saturating_sub(layout.table_rows().saturating_sub(1));
                                     app.selected =
                                         (start + row).min(app.visible().len().saturating_sub(1));
                                     app.left_focus = false;
@@ -1676,12 +2549,12 @@ pub fn preview(theme: Theme, color: bool) -> Result<()> {
     ] {
         queue!(
             out,
-            style::SetForegroundColor(if color {
+            themes::ForegroundColor(if color {
                 theme.get(role).color()
             } else {
                 Color::Reset
             }),
-            style::SetBackgroundColor(bg),
+            themes::BackgroundColor(bg),
             style::Print(format!("{text}\n"))
         )
         .map_err(|_| "preview failed")?;
@@ -1716,6 +2589,7 @@ mod layout_tests {
                     yaml: false,
                     follow: false,
                     previous: false,
+                    allow_tools: false,
                     command: vec![],
                 },
                 theme: themes::builtins().remove(0),
@@ -1727,6 +2601,7 @@ mod layout_tests {
                 items: vec![],
                 selected: 0,
                 filter: String::new(),
+                sort: Sort::Name,
                 left_focus: false,
                 status: "waiting".into(),
                 stale: false,
@@ -1744,6 +2619,8 @@ mod layout_tests {
                 connected: true,
                 refresh: false,
                 last_refresh: Instant::now(),
+                metrics_history: crate::metrics::MetricsHistory::default(),
+                last_metrics: Instant::now(),
                 worker: Worker {
                     tx,
                     rx,
@@ -1757,6 +2634,233 @@ mod layout_tests {
     }
     fn object(name: &str) -> Value {
         serde_json::json!({"kind":"Deployment","metadata":{"name":name,"namespace":"test","uid":format!("uid-{name}")}})
+    }
+    fn screen(app: &App, width: u16, height: u16) -> Vec<String> {
+        let mut output = Vec::new();
+        assert!(render(app, width, height, &mut output).is_ok());
+        let mut cells = vec![vec![' '; usize::from(width)]; usize::from(height)];
+        let (mut x, mut y, mut index) = (0usize, 0usize, 0usize);
+        while index < output.len() {
+            if output[index] == 27 {
+                assert_eq!(output[index + 1], b'[');
+                let start = index + 2;
+                index = start;
+                while index < output.len() && !output[index].is_ascii_alphabetic() {
+                    index += 1;
+                }
+                let parameters = std::str::from_utf8(&output[start..index]).unwrap_or_default();
+                match output[index] {
+                    b'H' => {
+                        let mut parameters = parameters
+                            .split(';')
+                            .map(|value| value.parse::<usize>().unwrap_or(1));
+                        y = parameters.next().unwrap_or(1).saturating_sub(1);
+                        x = parameters.next().unwrap_or(1).saturating_sub(1);
+                    }
+                    b'J' => cells.iter_mut().for_each(|row| row.fill(' ')),
+                    b'm' => {}
+                    other => panic!("unexpected terminal command: {other}"),
+                }
+            } else {
+                assert!(output[index].is_ascii_graphic() || output[index] == b' ');
+                assert!(
+                    x < usize::from(width) && y < usize::from(height),
+                    "paint outside {width}x{height}: {x},{y}"
+                );
+                cells[y][x] = char::from(output[index]);
+                x += 1;
+            }
+            index += 1;
+        }
+        cells
+            .into_iter()
+            .map(|row| row.into_iter().collect())
+            .collect()
+    }
+    #[test]
+    fn responsive_frames_preserve_identity_mode_and_bounds() {
+        let (mut app, _replies, _commands) = harness();
+        app.items = vec![
+            serde_json::json!({"kind":"Pod","metadata":{"name":"api","namespace":"test","uid":"pod1","creationTimestamp":"2026-10-10T07:00:00Z"},"spec":{"containers":[{"name":"app"}]},"status":{"phase":"Running","containerStatuses":[{"ready":true,"restartCount":4}]}}),
+        ];
+        for width in [28, 40, 60, 80, 88, 120] {
+            for height in [10, 12, 24] {
+                for focus in [false, true] {
+                    app.left_focus = focus;
+                    let frame = screen(&app, width, height);
+                    assert!(frame[0].contains("PRODUCTION READ ONLY"));
+                    assert!(frame[1].contains("CTX test | NS test"));
+                    assert!(frame[3].starts_with('+'));
+                }
+            }
+        }
+        app.left_focus = false;
+        let frame = screen(&app, 120, 24).join("\n");
+        for heading in ["NAMESPACE", "NAME", "READY", "STATUS", "RSTS", "AGE"] {
+            assert!(frame.contains(heading));
+        }
+        assert!(frame.contains("1/1") && frame.contains("Running"));
+        app.options.connection.writable = true;
+        assert!(screen(&app, 28, 10)[0].contains("PRODUCTION WRITE"));
+        app.options.connection.demo = true;
+        assert!(screen(&app, 28, 10)[0].contains("DEMO SAMPLE DATA"));
+    }
+    #[test]
+    fn resize_reflows_details_and_confirmation_cannot_approve_hidden_review() {
+        let (mut app, _replies, _commands) = harness();
+        let text = "ABCDEFGHIJ".repeat(7);
+        app.modal = Modal::Detail(text.clone(), 0);
+        let frame = screen(&app, 28, 12);
+        let displayed: String = frame
+            .iter()
+            .skip(4)
+            .take(4)
+            .map(|line| line[1..27].trim_end())
+            .collect();
+        assert!(displayed.starts_with(&text));
+        assert!(confirmation_fits("Short review", "test/api", 80, 24));
+        assert!(!confirmation_fits(
+            &"long review ".repeat(30),
+            "test/api",
+            28,
+            12
+        ));
+        assert!(!confirmation_fits("Review", "test/api", 20, 8));
+        app.modal = Modal::Metrics("CPU: |.-#|\nMEM: |--#|".into(), 0);
+        assert!(screen(&app, 60, 12).join("\n").contains("CPU: |.-#|"));
+        app.modal = Modal::Containers(
+            "test".into(),
+            "api".into(),
+            (0..20).map(|index| format!("container-{index}")).collect(),
+            19,
+            false,
+            false,
+        );
+        assert!(screen(&app, 40, 12).join("\n").contains("> container-19"));
+    }
+    #[test]
+    fn commands_navigate_aliases_scopes_and_sort_without_issuing_mutations() {
+        let (mut app, _replies, mut commands) = harness();
+        let epoch = app.epoch;
+        assert_eq!(app.command(":deploy"), Ok(false));
+        assert_eq!(app.kind(), "deployments.apps");
+        assert_eq!(app.epoch, epoch + 1);
+        assert_eq!(app.command("ns other"), Ok(false));
+        assert_eq!(app.namespace, "other");
+        assert_eq!(app.command("all"), Ok(false));
+        assert_eq!(app.namespace, "*");
+        assert_eq!(app.command("sort restarts"), Ok(false));
+        assert_eq!(app.sort, Sort::Restarts);
+        assert_eq!(app.command("pods; rm -rf /"), Ok(false));
+        assert_eq!(app.kind(), "deployments.apps");
+        assert!(commands.try_recv().is_err());
+        assert_eq!(app.command("q"), Ok(true));
+    }
+    #[test]
+    fn readiness_restarts_age_and_sort_use_real_fields_and_keep_uid() {
+        let (mut app, _replies, _commands) = harness();
+        let mut pod = object("z");
+        pod["kind"] = "Pod".into();
+        pod["spec"] = serde_json::json!({"containers":[{"name":"app"},{"name":"sidecar"}]});
+        pod["status"] = serde_json::json!({"containerStatuses":[{"ready":true,"restartCount":10},{"ready":false,"restartCount":2}],"initContainerStatuses":[{"restartCount":1}]});
+        pod["metadata"]["creationTimestamp"] = "2026-10-09T07:00:00Z".into();
+        let now = "2026-10-10T07:00:00Z"
+            .parse::<k8s_openapi::jiff::Timestamp>()
+            .map(|timestamp| timestamp.as_second())
+            .unwrap_or(0);
+        assert_eq!(readiness(&pod), "1/2");
+        assert_eq!(restarts(&pod), 13);
+        assert_eq!(age(&pod, now), "1d");
+        assert_eq!(age(&pod, 0), "future");
+        assert_eq!(age(&object("missing-time"), now), "-");
+        app.items = vec![pod, object("a")];
+        app.selected = 1;
+        assert_eq!(app.selected_uid().as_deref(), Some("uid-z"));
+        app.set_sort(Sort::Restarts);
+        assert_eq!(app.selected, 0);
+        assert_eq!(app.selected_uid().as_deref(), Some("uid-z"));
+        assert_eq!(display("long-name", 5), "long~");
+        assert_eq!(display("\u{1b}[31mname", 20), "[31mname");
+    }
+    #[test]
+    fn closed_metrics_view_does_not_reopen_on_late_reply() {
+        let (mut app, replies, _commands) = harness();
+        app.request_metrics();
+        assert!(matches!(app.modal, Modal::Metrics(..)));
+        assert!(app.key(KeyCode::Esc).is_ok());
+        assert!(
+            replies
+                .send((
+                    12,
+                    Reply::Metrics(
+                        crate::metrics::MetricsScope::Pods,
+                        "test".into(),
+                        Err("unavailable".into())
+                    )
+                ))
+                .is_ok()
+        );
+        app.receive();
+        assert!(matches!(app.modal, Modal::None));
+        assert!(!app.stale);
+    }
+    #[test]
+    fn theme_creation_captures_preview_palette_and_cancel_restores_previous_theme() {
+        let (mut app, _replies, _commands) = harness();
+        let previous = app.theme.clone();
+        let palette = themes::builtins();
+        app.theme = palette[1].clone();
+        let preview = app.theme.clone();
+        app.modal = Modal::Themes(palette, 1, previous.clone());
+        assert!(app.key(KeyCode::Char('N')).is_ok());
+        match &app.modal {
+            Modal::NewTheme(id, source, old) => {
+                assert!(id.is_empty());
+                assert_eq!(source.id, preview.id);
+                assert_eq!(old.id, previous.id);
+            }
+            _ => panic!("theme creation did not capture palette"),
+        }
+        assert!(app.key(KeyCode::Char('a')).is_ok());
+        assert!(app.key(KeyCode::Char('-')).is_ok());
+        assert!(app.key(KeyCode::Esc).is_ok());
+        assert_eq!(app.theme.id, previous.id);
+        assert!(matches!(app.modal, Modal::None));
+    }
+    #[test]
+    fn live_filter_keeps_table_visible_and_cancel_restores_selected_uid() {
+        let (mut app, _replies, _commands) = harness();
+        app.items = vec![object("alpha"), object("beta")];
+        app.selected = 1;
+        assert!(app.key(KeyCode::Char('/')).is_ok());
+        assert!(app.key(KeyCode::Char('a')).is_ok());
+        assert!(app.key(KeyCode::Char('l')).is_ok());
+        assert_eq!(app.visible().len(), 1);
+        let frame = screen(&app, 60, 12).join("\n");
+        assert!(frame.contains("alpha") && frame.contains("Filter > al_"));
+        app.replace_items(vec![object("aardvark"), object("alpha"), object("beta")]);
+        assert!(app.key(KeyCode::Esc).is_ok());
+        assert_eq!(app.filter, "");
+        assert_eq!(app.selected_uid().as_deref(), Some("uid-beta"));
+    }
+    #[test]
+    fn long_context_does_not_hide_namespace_identity_and_actions_explain_capabilities() {
+        let (mut app, _replies, _commands) = harness();
+        app.context = "very-long-production-context-identifier".repeat(4);
+        app.namespace = "payments-production-namespace".into();
+        for width in [28, 40, 80, 120] {
+            let frame = screen(&app, width, 12);
+            assert!(frame[1].contains("CTX ") && frame[1].contains(" | NS "));
+            assert!(frame[1].contains('~'));
+        }
+        app.items = vec![object("selected")];
+        let actions = app.action_menu();
+        assert!(actions[2].contains("[OFF]") && actions[2].contains("--allow-logs"));
+        assert!(actions[7].contains("READ ONLY"));
+        app.options.connection.writable = true;
+        assert!(app.action_menu()[7].contains("Deployments only"));
+        app.kind_index = 1;
+        assert!(!app.action_menu()[7].contains("[OFF]"));
     }
     #[test]
     fn log_mailbox_is_bounded_and_cancel_discards_obsolete_producer() {
@@ -1972,15 +3076,23 @@ mod layout_tests {
         app.items = vec![object("a")];
         app.command_epoch = Some(12);
         app.busy = true;
+        app.modal = Modal::Metrics("loading".into(), 0);
         assert!(
             replies
-                .send((12, Reply::Metrics(Err("Metrics API unavailable".into()))))
+                .send((
+                    12,
+                    Reply::Metrics(
+                        crate::metrics::MetricsScope::Pods,
+                        "test".into(),
+                        Err("Metrics API unavailable".into())
+                    )
+                ))
                 .is_ok()
         );
         app.receive();
         assert_eq!(app.items.len(), 1);
         assert!(!app.stale);
-        assert!(matches!(app.modal, Modal::Detail(..)));
+        assert!(matches!(app.modal, Modal::Metrics(..)));
     }
     #[test]
     fn metrics_wrapping_preserves_long_identity_usage_and_measurement_time() {
