@@ -1,0 +1,4 @@
+# Pinned upstream notices are hashed as exact downloaded bytes.
+# Preserve bytes across Windows checkout instead of converting LF to CRLF.
+assets/dependency-licenses/** -text
+assets/upstream/** -text
