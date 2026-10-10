@@ -19,3 +19,5 @@ pub mod inspect;
 pub mod logs;
 pub mod ops;
 pub mod overview;
+
+pub mod handoff;

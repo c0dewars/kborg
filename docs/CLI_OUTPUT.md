@@ -1,0 +1,46 @@
+# KBorg read-output contract v1
+
+This document stabilizes the existing 0.3 command-specific machine projections.
+The contract version is documented here, not inserted into raw Kubernetes objects.
+Consumers should accept additional object fields, avoid relying on key order, and
+treat missing usage or count values as unavailable rather than zero. Changing the
+meaning or required shape of these projections requires a new contract version.
+
+Use `--json` only with a supported read command. Unsupported commands reject it
+instead of silently emitting plain text. Diagnostics go to stderr; themes, splash
+animations and ANSI styling never enter machine output.
+
+| Command | stdout shape |
+|---|---|
+| `contexts --json` | Array of context-name strings; no connection required |
+| `resources --json` | Array of discovered kind records: `plural`, `kind`, `group`, `version`, `namespaced`; Secrets and subresources excluded |
+| `list RESOURCE --json` | Object containing `items` (redacted Kubernetes objects), `truncated` (boolean), and `source` (`cluster` or `demo`) |
+| `get RESOURCE NAME --json` | One redacted Kubernetes object; `kind` and `apiVersion` supplied by the selected catalog |
+| `watch RESOURCE --json` | JSONL snapshots: `items`, `resourceVersion`, `stale`, `truncated`, `terminal`, `status`; one complete JSON object per line |
+| `metrics pods\|nodes --json` | `api_version`, `scope`, `namespace`, `source`, `items`, `truncated`; exact quantity details described below |
+| `overview CONTEXT... --json` | Array of independent context summaries: `demo`, `context`, `namespace`, `pods`, `unhealthy`, `truncated`, `error` |
+| `logs POD [CONTAINER] --json` | Object with `logs` (sanitized string) and `bounded: true` |
+| `logs POD CONTAINER --follow --json` | JSONL objects containing `line` (sanitized string); follow remains opt-in and time/byte bounded |
+| `audit pending --json` | Array of local pending/uncertain operation records; this is not proof of server outcome |
+
+Metrics rows contain `name`, `namespace`, `container`, `timestamp`, `window`,
+`cpu_raw`, `memory_raw`, `cpu_nanocores`, `cpu_millicores` (exact decimal string),
+`memory_bytes`, and `rounded_up`. Node rows have null namespace/container.
+Timestamp/window come from the Metrics API. JSON integer consumers should use
+integer-capable decoders for the full u64 range. TUI history is local transient
+state and does not alter this projection or invent utilization percentages.
+
+`get --yaml` returns readable quoted YAML from the same redacted object; it cannot
+combine with `--json`. Text tables and human diagnostic strings may evolve and
+are not intended for parsing.
+
+Exit status **0** means the command completed, including a downstream reader
+closing stdout normally. Status **1** means invalid arguments, denied access,
+unsupported capability, transport/serialization failure or a bounded session
+stopping with an error. A terminal watch failure can emit its final stale snapshot
+before returning 1. Watch/follow stop reading immediately on a broken pipe.
+Other finite read commands tolerate broken pipes without a panic.
+
+Redaction covers known fields, not every kind of confidential application data.
+Logs remain sensitive and require `--allow-logs`. No machine projection bypasses
+Secret exclusion or read/write capability checks.

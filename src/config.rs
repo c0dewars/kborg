@@ -34,6 +34,8 @@ pub struct Config {
     pub allow_attach: bool,
     #[serde(default)]
     pub allow_forward: bool,
+    #[serde(default)]
+    pub allow_tools: bool,
 }
 impl Default for Config {
     fn default() -> Self {
@@ -49,6 +51,7 @@ impl Default for Config {
             allow_exec: false,
             allow_attach: false,
             allow_forward: false,
+            allow_tools: false,
         }
     }
 }
@@ -82,6 +85,20 @@ pub fn apply(config: Config, options: &mut Options) -> Result<()> {
             "read-only profile forbids --write; use a reviewed operator configuration".into(),
         );
     }
+    // Validate every constraint before changing the caller's options. Files may
+    // constrain capabilities, but they never enable them without explicit flags.
+    if options.connection.logs && !config.allow_logs {
+        return Err("configuration forbids log access".into());
+    }
+    if (options.connection.allow_exec && !config.allow_exec)
+        || (options.connection.allow_attach && !config.allow_attach)
+        || (options.connection.allow_port_forward && !config.allow_forward)
+    {
+        return Err("configuration forbids requested subresource capability".into());
+    }
+    if options.allow_tools && !config.allow_tools {
+        return Err("configuration forbids external tool views".into());
+    }
     if options.connection.context.is_none() {
         options.connection.context = config.context;
     }
@@ -93,16 +110,6 @@ pub fn apply(config: Config, options: &mut Options) -> Result<()> {
     }
     options.splash &= !config.no_splash;
     options.poll |= config.poll;
-    // A file may constrain log access, but never enable it by itself.
-    if options.connection.logs && !config.allow_logs {
-        return Err("configuration forbids log access".into());
-    }
-    if (options.connection.allow_exec && !config.allow_exec)
-        || (options.connection.allow_attach && !config.allow_attach)
-        || (options.connection.allow_port_forward && !config.allow_forward)
-    {
-        return Err("configuration forbids requested subresource capability".into());
-    }
     Ok(())
 }
 pub fn init(path: &Path) -> Result<()> {
@@ -125,5 +132,76 @@ mod tests {
         assert!(
             serde_json::from_str::<Config>(r#"{"schema_version":1,"profile":"admin"}"#).is_err()
         );
+        for text in [
+            r#"{"schema_version":1,"profile":"read-only","allow_tools":false,"allow_tools":true}"#,
+            r#"{"schema_version":1,"profile":"read-only","namespace":null,"namespace":"prod"}"#,
+            r#"{"schema_version":1,"schema_version":2,"profile":"read-only"}"#,
+        ] {
+            assert!(serde_json::from_str::<Config>(text).is_err());
+        }
+    }
+
+    fn options() -> Options {
+        Options {
+            connection: crate::gateway::Connection::default(),
+            theme: None,
+            color: true,
+            mouse: true,
+            json: false,
+            allow_tools: false,
+            splash: true,
+            poll: false,
+            yaml: false,
+            follow: false,
+            previous: false,
+            command: vec![],
+        }
+    }
+
+    #[test]
+    fn files_constrain_capabilities_and_cli_scope_wins() -> Result<()> {
+        let config = Config {
+            context: Some("file-context".into()),
+            namespace: Some("file-ns".into()),
+            allow_logs: true,
+            allow_exec: true,
+            allow_attach: true,
+            allow_forward: true,
+            allow_tools: true,
+            ..Config::default()
+        };
+        let mut opts = options();
+        opts.connection.context = Some("cli-context".into());
+        opts.connection.namespace = "cli-ns".into();
+        opts.theme = Some("k8borg-dark".into());
+        apply(config, &mut opts)?;
+        assert_eq!(opts.connection.context.as_deref(), Some("cli-context"));
+        assert_eq!(opts.connection.namespace, "cli-ns");
+        assert_eq!(opts.theme.as_deref(), Some("k8borg-dark"));
+        assert!(
+            !opts.connection.logs
+                && !opts.connection.allow_exec
+                && !opts.connection.allow_attach
+                && !opts.connection.allow_port_forward
+                && !opts.allow_tools
+        );
+
+        let mut denied = options();
+        denied.allow_tools = true;
+        assert!(
+            apply(
+                Config {
+                    context: Some("must-not-apply".into()),
+                    ..Config::default()
+                },
+                &mut denied
+            )
+            .is_err()
+        );
+        assert!(denied.connection.context.is_none());
+        let mut writable = options();
+        writable.connection.writable = true;
+        assert!(apply(Config::default(), &mut writable).is_err());
+        Ok(())
     }
 }

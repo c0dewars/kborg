@@ -1,5 +1,5 @@
 use crate::Result;
-const WORDS: &str = "ui demo exec attach forward audit contexts overview doctor resources list get watch logs metrics scale restart delete set-image startup theme config completions copilot --demo --allow-exec --allow-attach --allow-forward --no-mouse --context --namespace --kubeconfig --config --write --readonly --allow-logs --follow --previous --yaml --json --poll --theme --no-splash --color=never --help --version";
+const WORDS: &str = "ui demo view exec attach forward audit contexts overview doctor resources list get watch logs metrics scale restart delete set-image startup theme config completions copilot --demo --allow-tools --tool --tool-arg --allow-exec --allow-attach --allow-forward --no-mouse --context --namespace --kubeconfig --config --write --readonly --allow-logs --follow --previous --yaml --json --poll --theme --no-splash --color=never --help --version";
 /// Static completions never inspect a cluster or interpolate resource data.
 pub fn script(shell: &str) -> Result<String> {
     Ok(match shell {

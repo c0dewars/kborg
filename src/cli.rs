@@ -10,6 +10,23 @@ use std::{
     time::Duration,
 };
 
+macro_rules! output {
+    ($($arg:tt)*) => { write_text(&format!($($arg)*))? };
+}
+macro_rules! outputln {
+    ($($arg:tt)*) => { write_text(&format!("{}\n", format_args!($($arg)*)))? };
+}
+fn write_text(text: &str) -> Result<()> {
+    write_to(&mut io::stdout().lock(), text.as_bytes())
+}
+fn write_to(writer: &mut impl Write, bytes: &[u8]) -> Result<()> {
+    match writer.write_all(bytes) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::BrokenPipe => Ok(()),
+        Err(_) => Err("output failed".into()),
+    }
+}
+
 #[derive(Clone)]
 pub struct Options {
     pub connection: Connection,
@@ -17,6 +34,7 @@ pub struct Options {
     pub color: bool,
     pub mouse: bool,
     pub json: bool,
+    pub allow_tools: bool,
     pub splash: bool,
     pub poll: bool,
     pub yaml: bool,
@@ -32,6 +50,7 @@ fn parse(args: Vec<String>) -> Result<Options> {
         color: std::env::var_os("NO_COLOR").is_none(),
         mouse: true,
         json: false,
+        allow_tools: false,
         splash: std::env::var_os("KBORG_NO_SPLASH").is_none()
             && std::env::var_os("K8BORG_NO_SPLASH").is_none(),
         poll: false,
@@ -65,6 +84,11 @@ fn parse(args: Vec<String>) -> Result<Options> {
             "--write" => opts.connection.writable = true,
             "--readonly" => opts.connection.writable = false,
             "--allow-logs" => opts.connection.logs = true,
+            "--allow-tools" => opts.allow_tools = true,
+            "--tool" | "--tool-arg" => {
+                let value = args.next().ok_or("--tool/--tool-arg needs a value")?;
+                opts.command.extend([arg, value]);
+            }
             "--allow-exec" => opts.connection.allow_exec = true,
             "--allow-attach" => opts.connection.allow_attach = true,
             "--allow-forward" => opts.connection.allow_port_forward = true,
@@ -97,19 +121,43 @@ fn parse(args: Vec<String>) -> Result<Options> {
     if !opts
         .command
         .first()
-        .is_some_and(|c| matches!(c.as_str(), "theme" | "copilot" | "exec"))
+        .is_some_and(|c| matches!(c.as_str(), "theme" | "copilot" | "exec" | "view"))
         && opts.command.iter().any(|s| s.starts_with('-'))
     {
         return Err("unknown option; see --help".into());
     }
-    if opts.yaml && (opts.json || opts.command.first().is_none_or(|v| v != "get")) {
-        return Err("--yaml requires get and cannot be combined with --json".into());
+    if opts.yaml
+        && (opts.json
+            || opts
+                .command
+                .first()
+                .is_none_or(|v| !matches!(v.as_str(), "get" | "view")))
+    {
+        return Err("--yaml requires get/view and cannot be combined with --json".into());
     }
     if (opts.follow || opts.previous) && opts.command.first().is_none_or(|v| v != "logs") {
         return Err("--follow/--previous require logs".into());
     }
     if opts.follow && opts.previous {
         return Err("previous logs cannot be followed".into());
+    }
+    if opts.json
+        && opts.command.first().is_none_or(|command| {
+            !matches!(
+                command.as_str(),
+                "audit"
+                    | "contexts"
+                    | "overview"
+                    | "resources"
+                    | "list"
+                    | "get"
+                    | "watch"
+                    | "metrics"
+                    | "logs"
+            )
+        })
+    {
+        return Err("--json requires a supported read command; see docs/CLI_OUTPUT.md".into());
     }
     if let Some(path) = config_path {
         crate::config::apply(crate::config::load(&path)?, &mut opts)?;
@@ -127,6 +175,9 @@ pub fn run() -> Result<()> {
 }
 pub fn run_args(args: Vec<String>) -> Result<()> {
     let opts = parse(args)?;
+    // Crossterm independently memoizes NO_COLOR. Respect the fully resolved
+    // option so an explicit --color=always also overrides that internal gate.
+    crossterm::style::force_color_output(opts.color);
     let cmd = opts.command.first().map(String::as_str).unwrap_or("ui");
     match cmd {
         "audit" => {
@@ -149,14 +200,14 @@ pub fn run_args(args: Vec<String>) -> Result<()> {
                 }
                 _ => return Err("usage: config init|validate FILE".into()),
             }
-            println!("Configuration OK (schema 1).");
+            outputln!("Configuration OK (schema 1).");
             return Ok(());
         }
         "completions" => {
             if opts.command.len() != 2 {
                 return Err("usage: completions bash|zsh|fish|powershell".into());
             }
-            print!("{}", crate::completions::script(&opts.command[1])?);
+            output!("{}", crate::completions::script(&opts.command[1])?);
             return Ok(());
         }
         "overview" => {
@@ -167,16 +218,16 @@ pub fn run_args(args: Vec<String>) -> Result<()> {
             if opts.json {
                 print_json(&serde_json::to_value(rows).map_err(|_| "overview encoding failed")?)?;
             } else {
-                print!("{}", crate::overview::text(&rows));
+                output!("{}", crate::overview::text(&rows));
             }
             return Ok(());
         }
         "help" => {
-            println!("{}", include_str!("../docs/CLI_HELP.txt"));
+            outputln!("{}", include_str!("../docs/CLI_HELP.txt"));
             return Ok(());
         }
         "version" => {
-            println!("KBorg {}", env!("CARGO_PKG_VERSION"));
+            outputln!("KBorg {}", env!("CARGO_PKG_VERSION"));
             return Ok(());
         }
         "theme" => return theme_command(&opts),
@@ -187,7 +238,7 @@ pub fn run_args(args: Vec<String>) -> Result<()> {
                 Some("off") => themes::set_animation(false)?,
                 _ => return Err("usage: startup on|off".into()),
             }
-            println!("Startup preference saved.");
+            outputln!("Startup preference saved.");
             return Ok(());
         }
         "contexts" => {
@@ -196,22 +247,29 @@ pub fn run_args(args: Vec<String>) -> Result<()> {
                 print_json(&serde_json::json!(list))?;
             } else {
                 for c in list {
-                    println!("{}", safety::safe_text(&c, 100));
+                    outputln!("{}", safety::safe_text(&c, 100));
                 }
             }
             return Ok(());
         }
         "ui" => return tui::run(opts),
-        "list" | "watch" | "metrics" | "get" | "logs" | "resources" | "doctor" | "scale"
-        | "restart" | "delete" | "set-image" | "exec" | "attach" | "forward" => {}
+        "list" | "watch" | "metrics" | "get" | "view" | "logs" | "resources" | "doctor"
+        | "scale" | "restart" | "delete" | "set-image" | "exec" | "attach" | "forward" => {}
         _ => return Err("unknown command; see --help".into()),
+    }
+    if cmd == "view"
+        && (!opts.allow_tools || !io::stdin().is_terminal() || !io::stdout().is_terminal())
+    {
+        return Err(
+            "view requires --allow-tools and an interactive terminal for transfer approval".into(),
+        );
     }
     let rt = runtime()?;
     rt.block_on(async {
         let mut gateway=tokio::time::timeout(Duration::from_secs(15),Gateway::connect(opts.connection.clone())).await.map_err(|_|"connection timed out")??;
         let ns=gateway.namespace.clone();
         let args=&opts.command[1..];
-        if matches!(cmd, "list" | "get" | "watch") && let Some(resource) = args.first() {
+        if matches!(cmd, "list" | "get" | "view" | "watch") && let Some(resource) = args.first() {
             discover_if_needed(&mut gateway, resource).await?;
         }
         match cmd {
@@ -223,9 +281,9 @@ pub fn run_args(args: Vec<String>) -> Result<()> {
                     _=>{if args.len()!=4{return Err("usage: forward POD LOCAL_PORT REMOTE_PORT SECONDS --write --allow-forward".into());}crate::ops::Request::PortForward{local_port:args[1].parse().map_err(|_|"invalid local port")?,remote_port:args[2].parse().map_err(|_|"invalid remote port")?,seconds:args[3].parse().map_err(|_|"invalid duration")?}},
                 };
                 let reviewed=tokio::time::timeout(Duration::from_secs(15),crate::ops::prepare(&gateway,&ns,&args[0],request)).await.map_err(|_|"operation review timed out")??;
-                println!("{}",reviewed.summary()); print!("> ");io::stdout().flush().map_err(|_|"output failed")?;
+                outputln!("{}",reviewed.summary()); output!("> ");io::stdout().flush().map_err(|_|"output failed")?;
                 let mut input=String::new();use std::io::BufRead;io::stdin().lock().take(256).read_line(&mut input).map_err(|_|"input failed")?;
-                println!("{}",crate::ops::run(&gateway,reviewed,input.trim_end()).await?);
+                outputln!("{}",crate::ops::run(&gateway,reviewed,input.trim_end()).await?);
             },
             "watch" => {
                 if args.len() != 1 { return Err("usage: watch <resource> [--json]".into()); }
@@ -245,16 +303,41 @@ pub fn run_args(args: Vec<String>) -> Result<()> {
             "metrics" => {
                 if args.len()!=1 {return Err("usage: metrics pods|nodes [--json]".into());}
                 let value=crate::metrics::collect(&gateway,crate::metrics::MetricsScope::parse(&args[0])?,&ns).await?;
-                if opts.json {print_json(&serde_json::to_value(value).map_err(|_| "metrics output failed")?)?;} else {print!("{}",value.text());}
+                if opts.json {print_json(&serde_json::to_value(value).map_err(|_| "metrics output failed")?)?;} else {output!("{}",value.text());}
             },
-            "doctor"=>{println!("KBorg {}\ncontext: {}\nserver: {}\nnamespace: {}\nmode: {}\nauth: certificate/token; helpers blocked\nAI/extensions: disabled; exec/attach/forward require separate explicit capability and --write",env!("CARGO_PKG_VERSION"),safety::safe_text(&gateway.context,100),safety::safe_text(&gateway.server,200),safety::safe_text(&ns,63),if opts.connection.writable{"WRITE ENABLED"}else{"READ ONLY"});
+            "doctor"=>{outputln!("KBorg {}\ncontext: {}\nserver: {}\nnamespace: {}\nmode: {}\nauth: certificate/token; helpers blocked\nAI/extensions: disabled; exec/attach/forward require separate explicit capability and --write",env!("CARGO_PKG_VERSION"),safety::safe_text(&gateway.context,100),safety::safe_text(&gateway.server,200),safety::safe_text(&ns,63),if opts.connection.writable{"WRITE ENABLED"}else{"READ ONLY"});
                 let result=tokio::time::timeout(Duration::from_secs(15),gateway.list("pods",&ns)).await.map_err(|_|"API timed out")??;
-                println!("API pods read: OK ({} objects)",result["items"].as_array().map_or(0,Vec::len));},
-            "resources"=>{let resources=tokio::time::timeout(Duration::from_secs(15),gateway.discover()).await.map_err(|_|"discovery timed out")??; if opts.json{print_json(&serde_json::to_value(resources).map_err(|_|"serialization failed")?)?;}else{for kind in resources{println!("{}\t{}",kind.key(),if kind.namespaced{"namespaced"}else{"cluster"});}}},
+                outputln!("API pods read: OK ({} objects)",result["items"].as_array().map_or(0,Vec::len));},
+            "resources"=>{let resources=tokio::time::timeout(Duration::from_secs(15),gateway.discover()).await.map_err(|_|"discovery timed out")??; if opts.json{print_json(&serde_json::to_value(resources).map_err(|_|"serialization failed")?)?;}else{for kind in resources{outputln!("{}\t{}",kind.key(),if kind.namespaced{"namespaced"}else{"cluster"});}}},
             "list"=>{if args.len()!=1{return Err("usage: list <resource>".into());}let value=tokio::time::timeout(Duration::from_secs(15),gateway.list(&args[0],&ns)).await.map_err(|_|"API timed out")??;
-                if opts.json {print_json(&value)?;} else {println!("NAMESPACE\tNAME\tSTATUS");if let Some(items)=value["items"].as_array(){for v in items{println!("{}\t{}\t{}",safety::safe_text(v["metadata"]["namespace"].as_str().unwrap_or("-"),63),safety::safe_text(v["metadata"]["name"].as_str().unwrap_or("-"),253),safety::safe_text(&summary(v),100));}}
+                if opts.json {print_json(&value)?;} else {outputln!("NAMESPACE\tNAME\tSTATUS");if let Some(items)=value["items"].as_array(){for v in items{outputln!("{}\t{}\t{}",safety::safe_text(v["metadata"]["namespace"].as_str().unwrap_or("-"),63),safety::safe_text(v["metadata"]["name"].as_str().unwrap_or("-"),253),safety::safe_text(&summary(v),100));}}
 if value["truncated"]==true {eprintln!("TRUNCATED: limit reached; narrow namespace scope");}}},
-            "get"=>{if args.len()!=2{return Err("usage: get <resource> <name>".into());}let value=tokio::time::timeout(Duration::from_secs(15),gateway.get(&args[0],&ns,&args[1])).await.map_err(|_|"API timed out")??; if opts.yaml {print!("{}",crate::inspect::yaml(&value)?);}else{print_json(&value)?;}},
+            "get"=>{if args.len()!=2{return Err("usage: get <resource> <name>".into());}let value=tokio::time::timeout(Duration::from_secs(15),gateway.get(&args[0],&ns,&args[1])).await.map_err(|_|"API timed out")??; if opts.yaml {output!("{}",crate::inspect::yaml(&value)?);}else{print_json(&value)?;}},
+            "view" => {
+                if args.len() < 4 || args[2] != "--tool" {
+                    return Err("usage: view RESOURCE NAME --tool ABSOLUTE_PATH [--tool-arg ARG] --allow-tools [--yaml]".into());
+                }
+                let mut argv = Vec::new();
+                for pair in args[4..].chunks(2) {
+                    if pair.len() != 2 || pair[0] != "--tool-arg" {
+                        return Err("tool arguments require one --tool-arg ARG pair each".into());
+                    }
+                    argv.push(pair[1].clone());
+                }
+                let object = tokio::time::timeout(Duration::from_secs(15), gateway.get(&args[0], &ns, &args[1])).await.map_err(|_| "API timed out")??;
+                let format = if opts.yaml { crate::handoff::Format::Yaml } else { crate::handoff::Format::Json };
+                let prepared = crate::handoff::prepare(std::path::Path::new(&args[3]), &argv, &object, format)?;
+                outputln!("{}\n{}", prepared.summary(), prepared.input_preview());
+                output!("> ");
+                io::stdout().flush().map_err(|_| "output failed")?;
+                let mut confirmation = String::new();
+                use std::io::BufRead;
+                io::stdin().lock().take(256).read_line(&mut confirmation).map_err(|_| "input failed")?;
+                let outcome = crate::handoff::run(prepared, confirmation.trim_end(), opts.allow_tools)?;
+                output!("{}", outcome.stdout);
+                if !outcome.stderr.is_empty() { outputln!("Tool stderr:\n{}", outcome.stderr); }
+                if !outcome.success { return Err("external tool exited unsuccessfully".into()); }
+            },
             "logs"=>{
                 if args.is_empty() || args.len()>2{return Err("usage: logs <pod> [container] [--follow|--previous] (requires --allow-logs)".into());}
                 if opts.follow {
@@ -265,7 +348,7 @@ if value["truncated"]==true {eprintln!("TRUNCATED: limit reached; narrow namespa
                     }
                 }else{
                     let logs=tokio::time::timeout(Duration::from_secs(15),gateway.logs(&ns,&args[0],args.get(1).cloned(),opts.previous)).await.map_err(|_|"logs timed out")??;
-                    if opts.json{print_json(&serde_json::json!({"logs":logs,"bounded":true}))?;}else{println!("{logs}");}
+                    if opts.json{print_json(&serde_json::json!({"logs":logs,"bounded":true}))?;}else{outputln!("{logs}");}
                 }
             },
             "scale"|"restart"|"delete"|"set-image"=>{
@@ -277,10 +360,10 @@ if value["truncated"]==true {eprintln!("TRUNCATED: limit reached; narrow namespa
                     _=>{if args.len()!=2{return Err("usage: delete <resource> <name> --write".into());}(args[0].as_str(),args[1].as_str(),Action::Delete)},
                 };
                 let prepared=tokio::time::timeout(Duration::from_secs(15),gateway.prepare(resource,&ns,name,action)).await.map_err(|_|"dry-run timed out")??;
-                println!("{}",safety::safe_lines(&prepared.summary,4000));print!("> ");io::stdout().flush().map_err(|_|"output failed")?;
+                outputln!("{}",safety::safe_lines(&prepared.summary,4000));output!("> ");io::stdout().flush().map_err(|_|"output failed")?;
                 let mut input=String::new();use std::io::BufRead;io::stdin().lock().take(256).read_line(&mut input).map_err(|_|"input failed")?;
                 let approval=Approval::confirm(prepared.target.clone(),prepared.action.clone(),input.trim_end())?;
-                println!("{}",gateway.execute(prepared,approval).await?);
+                outputln!("{}",gateway.execute(prepared,approval).await?);
             },
             _=>{},
         } Ok(())
@@ -288,11 +371,7 @@ if value["truncated"]==true {eprintln!("TRUNCATED: limit reached; narrow namespa
 }
 fn print_json(value: &serde_json::Value) -> Result<()> {
     let encoded = serde_json::to_string_pretty(value).map_err(|_| "JSON serialization failed")?;
-    match writeln!(io::stdout().lock(), "{encoded}") {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == io::ErrorKind::BrokenPipe => Ok(()),
-        Err(_) => Err("JSON output failed".into()),
-    }
+    write_text(&format!("{encoded}\n"))
 }
 fn copilot_command(opts: &Options) -> Result<()> {
     let args = &opts.command[1..];
@@ -307,7 +386,7 @@ fn copilot_command(opts: &Options) -> Result<()> {
                 crate::copilot::context(&gateway, &args[1], &gateway.namespace, &args[2]).await
             })?;
             safety::write_new(std::path::Path::new(&args[4]), &serde_json::to_vec_pretty(&value).map_err(|_| "cannot encode diagnostic context")?)?;
-            println!("Minimized context saved locally. Inspect the JSON before manually sharing with GitHub Copilot. No AI request was made.");
+            outputln!("Minimized context saved locally. Inspect the JSON before manually sharing with GitHub Copilot. No AI request was made.");
             Ok(())
         }
         _ => Err("usage: copilot login --cli <absolute executable> --host <github.com|org.ghe.com> | copilot context <resource> <name> --output <new JSON file>".into()),
@@ -347,7 +426,7 @@ fn theme_command(opts: &Options) -> Result<()> {
     match args.first().map(String::as_str).unwrap_or("list") {
         "list" => {
             for t in themes::all()? {
-                println!(
+                outputln!(
                     "{}\t{}{}",
                     t.id,
                     t.name,
@@ -361,11 +440,11 @@ fn theme_command(opts: &Options) -> Result<()> {
         }
         "use" => {
             themes::use_theme(get(1)?)?;
-            println!("Theme saved.");
+            outputln!("Theme saved.");
         }
         "reset" => {
             themes::use_theme("catppuccin-mocha")?;
-            println!("Appearance reset.");
+            outputln!("Appearance reset.");
         }
         "new" => {
             let base = if args.get(2).is_some_and(|s| s == "--base") {
@@ -373,39 +452,39 @@ fn theme_command(opts: &Options) -> Result<()> {
             } else {
                 "k8borg-dark"
             };
-            println!("{}", themes::new_theme(get(1)?, base)?.display());
+            outputln!("{}", themes::new_theme(get(1)?, base)?.display());
         }
         "validate" => {
             themes::load_file(&PathBuf::from(get(1)?))?;
-            println!("VALID: schema, colors and contrast checked.");
+            outputln!("VALID: schema, colors and contrast checked.");
         }
         "preview" => {
             let theme = themes::load_file(&PathBuf::from(get(1)?))?.resolve()?;
             tui::preview(theme, opts.color)?;
         }
         "replace" => {
-            println!(
+            outputln!(
                 "Theme replaced; backup retained: {}",
                 themes::replace(&PathBuf::from(get(1)?))?
             );
         }
         "clone-current" => {
-            println!("{}", themes::create_from_current(get(1)?)?.display());
+            outputln!("{}", themes::create_from_current(get(1)?)?.display());
         }
         "install" => {
             let id = themes::install(&PathBuf::from(get(1)?))?;
-            println!("Installed {id}. Activate with: kborg theme use {id}");
+            outputln!("Installed {id}. Activate with: kborg theme use {id}");
         }
         "export" => {
             if get(2)? != "--output" {
                 return Err("usage: theme export <id> --output <path>".into());
             }
             themes::export(get(1)?, &PathBuf::from(get(3)?))?;
-            println!("Theme exported.");
+            outputln!("Theme exported.");
         }
         "remove" => {
             themes::remove(get(1)?)?;
-            println!("Custom theme removed.");
+            outputln!("Custom theme removed.");
         }
         _ => return Err("unknown theme command; see --help".into()),
     }
@@ -415,6 +494,53 @@ fn theme_command(opts: &Options) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn downstream_close_is_normal_but_other_write_failures_are_errors() {
+        struct Failing(io::ErrorKind);
+        impl Write for Failing {
+            fn write(&mut self, _: &[u8]) -> io::Result<usize> {
+                Err(io::Error::from(self.0))
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        assert!(write_to(&mut Failing(io::ErrorKind::BrokenPipe), b"safe").is_ok());
+        assert!(write_to(&mut Failing(io::ErrorKind::PermissionDenied), b"safe").is_err());
+    }
+    #[test]
+    fn tool_argv_preserves_literal_flags_and_capabilities_stay_explicit() -> Result<()> {
+        let options = parse(
+            [
+                "view",
+                "pods",
+                "api",
+                "--tool",
+                "/usr/bin/cat",
+                "--tool-arg",
+                "--write",
+                "--allow-tools",
+            ]
+            .map(String::from)
+            .to_vec(),
+        )?;
+        assert!(options.allow_tools);
+        assert!(!options.connection.writable);
+        assert_eq!(
+            &options.command[4..],
+            &["/usr/bin/cat", "--tool-arg", "--write"]
+        );
+        assert!(!parse(vec![])?.allow_tools);
+        assert!(
+            parse(
+                ["get", "pods", "api", "--tool", "/usr/bin/cat"]
+                    .map(String::from)
+                    .to_vec()
+            )
+            .is_err()
+        );
+        Ok(())
+    }
     #[test]
     fn flags_preserve_explicit_scope_and_default_read_only() {
         let p = parse(vec![
@@ -441,5 +567,7 @@ mod tests {
             ])
             .is_err()
         );
+        assert!(parse(vec!["--json".into(), "doctor".into()]).is_err());
+        assert!(parse(vec!["--json".into()]).is_err());
     }
 }
