@@ -71,3 +71,9 @@ not instrumented and are not inferred from encrypted traffic.
 Still required for broader qualification: many independent control planes, large
 resource sets on the current build, slow/unreliable networks, token expiry during
 reads, longer soak periods, and repeatable isolated measurements on each supported OS.
+
+## Final Windows binary sample
+
+At 2026-10-10 00:02 UTC, the final production-runtime Windows executable (11,665,920 bytes; SHA-256 `d4f68b561c38e82dc35723b92fa59fe17122ed15c9d3bbc857c884601ef82761`) passed `Test-Performance.ps1 -Samples 30` with the existing least-privilege Desktop fixture. Thirty warmed demo invocations had median 19.38 ms and p95 22.43 ms. Thirty 100-context configuration listings had median 20.48 ms and p95 21.97 ms. One hundred sequential live read invocations against aliases of one cluster had median 28.35 ms, p95 31.26 ms, 1.469 CPU seconds in aggregate and maximum sampled working set 12,177,408 bytes (11.61 MiB).
+
+These are short CLI invocations, not sustained interactive sessions or 100 independent clusters. One-millisecond working-set sampling is a lower bound on true peak memory; Windows working set and Linux RSS are not identical measurements. Warm caches and local API latency limit generalization. Exact evidence is in `evidence/performance-0.3-windows.json`; temporary alias credentials were removed by the benchmark's cleanup path.
