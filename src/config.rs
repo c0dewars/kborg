@@ -36,6 +36,10 @@ pub struct Config {
     pub allow_forward: bool,
     #[serde(default)]
     pub allow_tools: bool,
+    #[serde(default)]
+    pub allow_extensions: bool,
+    #[serde(default)]
+    pub allow_auth_helper: bool,
 }
 impl Default for Config {
     fn default() -> Self {
@@ -52,6 +56,8 @@ impl Default for Config {
             allow_attach: false,
             allow_forward: false,
             allow_tools: false,
+            allow_extensions: false,
+            allow_auth_helper: false,
         }
     }
 }
@@ -98,6 +104,12 @@ pub fn apply(config: Config, options: &mut Options) -> Result<()> {
     }
     if options.allow_tools && !config.allow_tools {
         return Err("configuration forbids external tool views".into());
+    }
+    if options.connection.allow_auth_helper && !config.allow_auth_helper {
+        return Err("configuration forbids authentication helpers".into());
+    }
+    if options.allow_extensions && !config.allow_extensions {
+        return Err("configuration forbids registered extensions".into());
     }
     if options.connection.context.is_none() {
         options.connection.context = config.context;
@@ -149,11 +161,16 @@ mod tests {
             mouse: true,
             json: false,
             allow_tools: false,
+            allow_extensions: false,
             splash: true,
             poll: false,
             yaml: false,
             follow: false,
             previous: false,
+            log_seconds: crate::logs::DEFAULT_FOLLOW_SECONDS,
+            interactive: false,
+            metrics_resources: false,
+            session_seconds: 900,
             command: vec![],
         }
     }

@@ -18,6 +18,8 @@ animations and ANSI styling never enter machine output.
 | `get RESOURCE NAME --json` | One redacted Kubernetes object; `kind` and `apiVersion` supplied by the selected catalog |
 | `watch RESOURCE --json` | JSONL snapshots: `items`, `resourceVersion`, `stale`, `truncated`, `terminal`, `status`; one complete JSON object per line |
 | `metrics pods\|nodes --json` | `api_version`, `scope`, `namespace`, `source`, `items`, `truncated`; exact quantity details described below |
+| `overview CONTEXT... --follow --json` | JSONL arrays of the complete selected1..4 context summary set; errors use null counts; independent watches stop on scope close |
+| `extensions list --json` | Array of data-only registrations: id,absolute executable,literal arguments,SHA-256 |
 | `overview CONTEXT... --json` | Array of independent context summaries: `demo`, `context`, `namespace`, `pods`, `unhealthy`, `truncated`, `error` |
 | `logs POD [CONTAINER] --json` | Object with `logs` (sanitized string) and `bounded: true` |
 | `logs POD CONTAINER --follow --json` | JSONL objects containing `line` (sanitized string); follow remains opt-in and time/byte bounded |
@@ -44,3 +46,13 @@ Other finite read commands tolerate broken pipes without a panic.
 Redaction covers known fields, not every kind of confidential application data.
 Logs remain sensitive and require `--allow-logs`. No machine projection bypasses
 Secret exclusion or read/write capability checks.
+
+Opt-in `--metrics-resources` adds `allocation_status` and per-row `allocations`;
+base output omits both. Comparisons contain current snapshot bases, exact amounts,
+qualified generation status and checked two-decimal percentage strings with a
+rounding indicator. Missing/zero/invalid/mismatched bases omit percentages. This
+is usage versus current configuration, not proof of historical quota utilization.
+
+`copilot preflight` always emits a local JSON report with `diagnosis_enabled:false`
+and explicit blockers; it makes no inference/login request and reads no token
+contents. Human local preview remains text-only.

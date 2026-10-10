@@ -1,0 +1,25 @@
+{
+  "approved_host": "github.com",
+  "blockers": [
+    "Independent hostname-bound inference/auth egress is not validated. The probe denies ALL networking; tool URL permission flags cannot replace whole-process containment.",
+    "Dedicated host-bound Copilot-only credential authority is not validated. Credential contents are never read; no environment or account-store token is selected automatically.",
+    "Canary fixtures demonstrate specific OS denials, not an independent security audit. Apple's sandbox-exec/SBPL interface is deprecated/private and may change.",
+    "Native SDK bytes lack a matching independently publisher-verified SHA-256 pin."
+  ],
+  "credential_metadata_checked": false,
+  "credentials_read": false,
+  "diagnosis_enabled": false,
+  "native_bytes": 158751280,
+  "native_codesign_valid": true,
+  "native_sha256": "87f04922933c139cf4af7cb6a80b96161428618a6275fea4b8dfe7e7a69c9518",
+  "publisher_digest_matches": false,
+  "sandbox_fixture": {
+    "allowed_read": true,
+    "denied_executable": true,
+    "denied_loopback": true,
+    "denied_read": true,
+    "denied_write": true,
+    "note": "Fresh fake-canary checks only. All network denied, not a validated inference-domain allowlist or external security audit."
+  },
+  "schema_version": 1
+}

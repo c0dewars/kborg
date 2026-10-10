@@ -8,7 +8,7 @@ use futures_util::{StreamExt, stream};
 use serde::Serialize;
 use std::time::Duration;
 
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 pub struct ContextSummary {
     pub demo: bool,
     pub context: String,
@@ -131,7 +131,7 @@ fn pod_unhealthy(pod: &serde_json::Value) -> bool {
 
 pub fn text(rows: &[ContextSummary]) -> String {
     let mut output = String::from(
-        "READ ONLY — independent context snapshots (maximum 4 simultaneous requests)\nCONTEXT\tNAMESPACE\tPODS\tUNHEALTHY\tSTATE\n",
+        "READ ONLY | independent context snapshots (maximum 4 simultaneous requests)\nCONTEXT\tNAMESPACE\tPODS\tUNHEALTHY\tSTATE\n",
     );
     if rows.iter().any(|row| row.demo) {
         output.insert_str(0, "DEMO: synthetic samples; no cluster contacted\n");
@@ -153,9 +153,269 @@ pub fn text(rows: &[ContextSummary]) -> String {
     output
 }
 
+pub fn live_text(rows: &[ContextSummary]) -> String {
+    text(rows)
+        .replace(
+            "independent context snapshots (maximum 4 simultaneous requests)",
+            "LIVE independent pod watches (maximum 4 contexts)",
+        )
+        .replace("\tsnapshot\n", "\tLIVE\n")
+}
+
+/// Four independent watches, one coalesced mailbox, no credentials/objects exported.
+/// Dropping the feed aborts every connection and releases each bounded watch cache.
+pub struct OverviewFeed {
+    rows: std::sync::Arc<std::sync::Mutex<Vec<ContextSummary>>>,
+    changed: std::sync::Arc<tokio::sync::Notify>,
+    jobs: Vec<tokio::task::JoinHandle<()>>,
+    initial: bool,
+    generation: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    consumed: std::cell::Cell<u64>,
+}
+impl OverviewFeed {
+    pub fn new(options: &Connection, names: &[String]) -> Result<Self> {
+        validate(names)?;
+        if names.len() > 4 {
+            return Err("live overview supports 1..4 explicitly selected contexts".into());
+        }
+        let rows = std::sync::Arc::new(std::sync::Mutex::new(
+            names
+                .iter()
+                .map(|context| ContextSummary {
+                    demo: options.demo,
+                    context: context.clone(),
+                    namespace: String::new(),
+                    pods: None,
+                    unhealthy: None,
+                    truncated: false,
+                    error: Some("CONNECTING".into()),
+                })
+                .collect::<Vec<_>>(),
+        ));
+        let changed = std::sync::Arc::new(tokio::sync::Notify::new());
+        let generation = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let mut jobs = Vec::new();
+        for (index, name) in names.iter().enumerate() {
+            let mut connection = options.clone();
+            connection.context = Some(name.clone());
+            connection.writable = false;
+            connection.logs = false;
+            connection.allow_exec = false;
+            connection.allow_attach = false;
+            connection.allow_port_forward = false;
+            let context = name.clone();
+            let slot = rows.clone();
+            let signal = changed.clone();
+            let revision = generation.clone();
+            jobs.push(tokio::spawn(async move {
+                let publish = |namespace: String,
+                               pods: Option<usize>,
+                               unhealthy: Option<usize>,
+                               truncated: bool,
+                               error: Option<String>| {
+                    if let Ok(mut rows) = slot.lock() {
+                        rows[index] = ContextSummary {
+                            demo: connection.demo,
+                            context: context.clone(),
+                            namespace,
+                            pods,
+                            unhealthy,
+                            truncated,
+                            error,
+                        };
+                    }
+                    revision.fetch_add(1, std::sync::atomic::Ordering::Release);
+                    signal.notify_one();
+                };
+                let gateway = match tokio::time::timeout(
+                    Duration::from_secs(20),
+                    Gateway::connect(connection.clone()),
+                )
+                .await
+                {
+                    Ok(Ok(gateway)) => gateway,
+                    Ok(Err(error)) => {
+                        publish(
+                            String::new(),
+                            None,
+                            None,
+                            false,
+                            Some(safety::safe_text(&error, 200)),
+                        );
+                        return;
+                    }
+                    Err(_) => {
+                        publish(
+                            String::new(),
+                            None,
+                            None,
+                            false,
+                            Some("connection timed out; other contexts remain independent".into()),
+                        );
+                        return;
+                    }
+                };
+                if gateway.is_demo() {
+                    loop {
+                        match gateway.list("pods", &gateway.namespace).await {
+                            Ok(list) => {
+                                let items = list["items"].as_array();
+                                publish(
+                                    gateway.namespace.clone(),
+                                    items.map(Vec::len),
+                                    items.map(|items| {
+                                        items.iter().filter(|pod| pod_unhealthy(pod)).count()
+                                    }),
+                                    list["truncated"] == true,
+                                    None,
+                                );
+                            }
+                            Err(error) => publish(
+                                gateway.namespace.clone(),
+                                None,
+                                None,
+                                false,
+                                Some(safety::safe_text(&error, 200)),
+                            ),
+                        }
+                        tokio::time::sleep(Duration::from_secs(5)).await;
+                    }
+                }
+                let mut feed = match gateway.watch("pods", &gateway.namespace) {
+                    Ok(feed) => feed,
+                    Err(error) => {
+                        publish(
+                            gateway.namespace.clone(),
+                            None,
+                            None,
+                            false,
+                            Some(safety::safe_text(&error, 200)),
+                        );
+                        return;
+                    }
+                };
+                loop {
+                    let snapshot = feed.next().await;
+                    let unhealthy = snapshot
+                        .objects
+                        .iter()
+                        .filter(|pod| pod_unhealthy(pod))
+                        .count();
+                    // Failed or revoked watches report unknown counts, never healthy zeroes.
+                    publish(
+                        gateway.namespace.clone(),
+                        (!snapshot.stale).then_some(snapshot.objects.len()),
+                        (!snapshot.stale).then_some(unhealthy),
+                        snapshot.truncated,
+                        snapshot
+                            .stale
+                            .then(|| safety::safe_text(&snapshot.message, 200)),
+                    );
+                    if snapshot.terminal {
+                        break;
+                    }
+                }
+            }));
+        }
+        Ok(Self {
+            rows,
+            changed,
+            jobs,
+            initial: true,
+            generation,
+            consumed: std::cell::Cell::new(u64::MAX),
+        })
+    }
+    pub async fn next(&mut self) -> Result<Vec<ContextSummary>> {
+        if self.initial {
+            self.initial = false;
+        } else {
+            self.changed.notified().await;
+        }
+        let mut rows = self
+            .rows
+            .lock()
+            .map_err(|_| "overview mailbox unavailable")?
+            .clone();
+        rows.sort_by(|a, b| a.context.cmp(&b.context));
+        Ok(rows)
+    }
+    pub fn take_update(&self) -> Result<Option<Vec<ContextSummary>>> {
+        let revision = self.generation.load(std::sync::atomic::Ordering::Acquire);
+        if self.consumed.get() == revision {
+            return Ok(None);
+        }
+        let rows = self.snapshot()?;
+        self.consumed.set(revision);
+        Ok(Some(rows))
+    }
+    pub fn snapshot(&self) -> Result<Vec<ContextSummary>> {
+        self.rows
+            .lock()
+            .map(|rows| rows.clone())
+            .map_err(|_| "overview mailbox unavailable".into())
+    }
+}
+impl Drop for OverviewFeed {
+    fn drop(&mut self) {
+        for job in &self.jobs {
+            job.abort();
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn live_overview_bounds_contexts_and_keeps_scope_isolated() -> Result<()> {
+        crate::cli::runtime()?.block_on(async {
+            let options = Connection {
+                demo: true,
+                writable: true,
+                logs: true,
+                allow_exec: true,
+                ..Default::default()
+            };
+            assert!(
+                OverviewFeed::new(
+                    &options,
+                    &["a".into(), "b".into(), "c".into(), "d".into(), "e".into()]
+                )
+                .is_err()
+            );
+            let mut feed = OverviewFeed::new(&options, &["b".into(), "a".into()])?;
+            let initial = feed.next().await?;
+            assert_eq!(initial.len(), 2);
+            assert!(initial.iter().all(|row| row.pods.is_none()));
+            let rows = tokio::time::timeout(Duration::from_secs(2), async {
+                loop {
+                    let rows = feed.next().await?;
+                    if rows.iter().all(|row| row.pods.is_some()) {
+                        return Ok::<_, String>(rows);
+                    }
+                }
+            })
+            .await
+            .map_err(|_| "overview fixtures timed out")??;
+            assert!(
+                rows.iter()
+                    .all(|row| row.demo && row.pods == Some(2) && row.unhealthy == Some(1))
+            );
+            assert_eq!(rows[0].context, "a");
+            assert_eq!(feed.jobs.len(), 2);
+            let handles: Vec<_> = feed.jobs.iter().map(|job| job.abort_handle()).collect();
+            drop(feed);
+            tokio::time::timeout(Duration::from_secs(2), async {
+                while !handles.iter().all(tokio::task::AbortHandle::is_finished) {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .map_err(|_| "overview cancellation timed out")?;
+            Ok(())
+        })
+    }
     #[test]
     fn unhealthy_includes_readiness_gates_terminating_and_unknown_status() {
         use serde_json::json;

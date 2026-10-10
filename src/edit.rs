@@ -1,6 +1,42 @@
 use crate::{Result, safety};
 use serde_json::{Value, json};
 
+#[derive(Clone, PartialEq, Eq)]
+pub struct ResourceEdit {
+    pub cpu_request: String,
+    pub memory_request: String,
+    pub cpu_limit: String,
+    pub memory_limit: String,
+}
+impl ResourceEdit {
+    pub fn validate(&self, container: &str) -> Result<()> {
+        validate(container, "placeholder:1")?;
+        let (cpu_request, cpu_round) = crate::metrics::normalize_cpu_quantity(&self.cpu_request)?;
+        let (cpu_limit, limit_round) = crate::metrics::normalize_cpu_quantity(&self.cpu_limit)?;
+        let (memory_request, mem_round) =
+            crate::metrics::normalize_memory_quantity(&self.memory_request)?;
+        let (memory_limit, mem_limit_round) =
+            crate::metrics::normalize_memory_quantity(&self.memory_limit)?;
+        if cpu_round
+            || limit_round
+            || mem_round
+            || mem_limit_round
+            || cpu_request == 0
+            || memory_request == 0
+            || cpu_request > cpu_limit
+            || memory_request > memory_limit
+            || cpu_limit > 64_000_000_000
+            || memory_limit > 128 * 1024 * 1024 * 1024
+        {
+            return Err("resource edit requires exact positive requests <= limits; maximum 64 CPU cores and 128 GiB memory per container".into());
+        }
+        Ok(())
+    }
+    pub(crate) fn value(&self) -> Value {
+        json!({"requests":{"cpu":self.cpu_request,"memory":self.memory_request},"limits":{"cpu":self.cpu_limit,"memory":self.memory_limit}})
+    }
+}
+
 /// Deliberately conservative container and image grammar. No URLs, credentials or whitespace.
 pub fn validate(container: &str, image: &str) -> Result<()> {
     if container.is_empty()
@@ -44,6 +80,23 @@ pub(crate) fn expected_spec(
     image: &str,
 ) -> Result<(Value, String)> {
     validate(container, image)?;
+    check_gitops(object)?;
+    let mut spec = object["spec"].clone();
+    let selected = selected_container(&mut spec, container)?;
+    let previous = selected["image"]
+        .as_str()
+        .ok_or("container image is missing")?;
+    if previous.len() > 512 {
+        return Err("existing image exceeds review limit".into());
+    }
+    let diff = format!(
+        "container {container} image (triggers rollout):\n- {}\n+ {image}",
+        safety::safe_lines(previous, 512)
+    );
+    selected["image"] = json!(image);
+    Ok((spec, diff))
+}
+fn check_gitops(object: &Value) -> Result<()> {
     for field in ["labels", "annotations"] {
         if let Some(values) = object["metadata"][field].as_object()
             && (values.keys().any(|key| {
@@ -58,10 +111,12 @@ pub(crate) fn expected_spec(
                     ["argocd", "flux", "fluxcd"].contains(&v.to_ascii_lowercase().as_str())
                 }))
         {
-            return Err("GitOps-managed workload: change the image in its source repository and reconcile through its controller".into());
+            return Err("GitOps-managed workload: change the reviewed fields in its source repository and reconcile through its controller".into());
         }
     }
-    let mut spec = object["spec"].clone();
+    Ok(())
+}
+fn selected_container<'a>(spec: &'a mut Value, container: &str) -> Result<&'a mut Value> {
     let containers = spec["template"]["spec"]["containers"]
         .as_array_mut()
         .ok_or("deployment has no ordinary containers")?;
@@ -73,21 +128,58 @@ pub(crate) fn expected_spec(
     {
         return Err("container must identify exactly one existing ordinary container".into());
     }
-    let selected = containers
+    containers
         .iter_mut()
         .find(|v| v["name"].as_str() == Some(container))
-        .ok_or("container is missing")?;
-    let previous = selected["image"]
-        .as_str()
-        .ok_or("container image is missing")?;
-    if previous.len() > 512 {
-        return Err("existing image exceeds review limit".into());
+        .ok_or_else(|| "container is missing".into())
+}
+pub(crate) fn expected_resources(
+    object: &Value,
+    container: &str,
+    resources: &ResourceEdit,
+) -> Result<(Value, String)> {
+    resources.validate(container)?;
+    check_gitops(object)?;
+    let mut spec = object["spec"].clone();
+    let selected = selected_container(&mut spec, container)?;
+    if selected["resources"].is_null() {
+        selected["resources"] = json!({});
     }
-    let diff = format!(
-        "container {container} image (triggers rollout):\n- {}\n+ {image}",
-        safety::safe_lines(previous, 512)
+    if !selected["resources"].is_object() {
+        return Err("existing container resources are malformed".into());
+    }
+    let mut diff = format!(
+        "container {container} resources (triggers rollout; other resource keys preserved):"
     );
-    selected["image"] = json!(image);
+    for (section, key, value) in [
+        ("requests", "cpu", &resources.cpu_request),
+        ("requests", "memory", &resources.memory_request),
+        ("limits", "cpu", &resources.cpu_limit),
+        ("limits", "memory", &resources.memory_limit),
+    ] {
+        if !selected["resources"][section][key].is_null()
+            && !selected["resources"][section][key].is_string()
+        {
+            return Err("existing resource quantity is malformed".into());
+        }
+        let previous = selected["resources"][section][key]
+            .as_str()
+            .unwrap_or("unset");
+        if previous.len() > 128 {
+            return Err("existing resource quantity exceeds review limit".into());
+        }
+        diff.push_str(&format!(
+            "\n- {section}.{key}: {}\n+ {section}.{key}: {value}",
+            safety::safe_text(previous, 128)
+        ));
+        if selected["resources"][section].is_null() {
+            selected["resources"][section] = json!({});
+        }
+        if !selected["resources"][section].is_object() {
+            return Err("existing resource section is malformed".into());
+        }
+        selected["resources"][section][key] = json!(value);
+    }
     Ok((spec, diff))
 }
 
@@ -100,6 +192,38 @@ pub(crate) fn check_admission(response: &Value, expected: &Value, original: &Val
         );
     }
     Ok(())
+}
+
+pub(crate) fn check_resource_admission(
+    response: &Value,
+    expected: &Value,
+    original: &Value,
+    container: &str,
+) -> Result<()> {
+    // Canonicalize only the four reviewed quantities; compare every other field
+    // strictly so equivalent Kubernetes spellings do not mask admission effects.
+    let mut response = response.clone();
+    let mut expected = expected.clone();
+    for spec in [&mut response["spec"], &mut expected] {
+        let selected = selected_container(spec, container)?;
+        for section in ["requests", "limits"] {
+            for key in ["cpu", "memory"] {
+                let quantity = selected["resources"][section][key]
+                    .as_str()
+                    .ok_or("admitted resource quantity is missing")?;
+                let (value, rounded) = if key == "cpu" {
+                    crate::metrics::normalize_cpu_quantity(quantity)?
+                } else {
+                    crate::metrics::normalize_memory_quantity(quantity)?
+                };
+                if rounded {
+                    return Err("admission changed a resource quantity to an inexact value".into());
+                }
+                selected["resources"][section][key] = json!(value);
+            }
+        }
+    }
+    check_admission(&response, &expected, original)
 }
 
 pub(crate) fn check_metadata(response: &Value, original: &Value) -> Result<()> {
@@ -121,6 +245,69 @@ pub(crate) fn check_metadata(response: &Value, original: &Value) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn resource_admission_permits_only_equivalent_quantity_spellings() -> Result<()> {
+        let resources = ResourceEdit {
+            cpu_request: "0.1".into(),
+            memory_request: "64Mi".into(),
+            cpu_limit: "1".into(),
+            memory_limit: "128Mi".into(),
+        };
+        let original = object();
+        let (expected, _) = expected_resources(&original, "api", &resources)?;
+        let mut admitted = original.clone();
+        admitted["spec"] = expected.clone();
+        admitted["spec"]["template"]["spec"]["containers"][0]["resources"]["requests"]["cpu"] =
+            json!("100m");
+        admitted["spec"]["template"]["spec"]["containers"][0]["resources"]["limits"]["memory"] =
+            json!("134217728");
+        check_resource_admission(&admitted, &expected, &original, "api")?;
+        admitted["spec"]["replicas"] = json!(99);
+        assert!(check_resource_admission(&admitted, &expected, &original, "api").is_err());
+        admitted["spec"] = expected.clone();
+        admitted["spec"]["template"]["spec"]["containers"][0]["resources"]["limits"]["cpu"] =
+            json!("2");
+        assert!(check_resource_admission(&admitted, &expected, &original, "api").is_err());
+        Ok(())
+    }
+    #[test]
+    fn resource_edits_preserve_unreviewed_data_and_require_exact_bounded_quantities() -> Result<()>
+    {
+        let resources = ResourceEdit {
+            cpu_request: "100m".into(),
+            memory_request: "64Mi".into(),
+            cpu_limit: "500m".into(),
+            memory_limit: "128Mi".into(),
+        };
+        let mut original = object();
+        original["spec"]["template"]["spec"]["containers"][0]["resources"] = json!({"requests":{"ephemeral-storage":"1Gi"},"limits":{"example.com/gpu":"1"},"claims":[{"name":"pool"}]});
+        let (spec, diff) = expected_resources(&original, "api", &resources)?;
+        assert_eq!(
+            spec["template"]["spec"]["containers"][0]["resources"]["limits"]["example.com/gpu"],
+            "1"
+        );
+        assert_eq!(
+            spec["template"]["spec"]["containers"][0]["resources"]["requests"]["ephemeral-storage"],
+            "1Gi"
+        );
+        assert_eq!(
+            spec["template"]["spec"]["containers"][0]["env"][0]["value"],
+            "private-canary"
+        );
+        assert!(!diff.contains("private-canary"));
+        assert!(diff.contains("+ limits.cpu: 500m"));
+        for invalid in ["0", "65", "NaN", "100n\u{001b}"] {
+            let mut changed = resources.clone();
+            changed.cpu_limit = invalid.into();
+            assert!(changed.validate("api").is_err());
+        }
+        let mut reversed = resources.clone();
+        reversed.memory_limit = "1Mi".into();
+        assert!(reversed.validate("api").is_err());
+        original["metadata"]["labels"] = json!({"argocd.argoproj.io/instance":"app"});
+        assert!(expected_resources(&original, "api", &resources).is_err());
+        Ok(())
+    }
     #[test]
     fn independent_admission_metadata_changes_are_not_silently_approved() {
         let original = object();

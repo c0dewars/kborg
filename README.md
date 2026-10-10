@@ -22,7 +22,6 @@ The native launcher uses the release binary under `target/release`; the live
 session defaults to read-only. `--demo` explores all 17 built-in resource types
 without cluster credentials.
 
-
 Requirements: Rust 1.99 (pinned), the platform linker (Visual Studio C++ tools on Windows), and a terminal. Docker Desktop with Kubernetes and kubectl are needed only for local integration tests. Cargo downloads the pinned dependencies on first build. Git is useful for development. No Node/Python runtime, AI account, Helm, or kubectl runtime backend is required.
 
 ```powershell
@@ -39,7 +38,7 @@ For a real cluster, use an explicitly selected trusted kubeconfig and a least-pr
 .\target\release\kborg.exe --help
 ```
 
-Existing Docker Desktop admin kubeconfig works, but the fixture reader is preferable for local testing. No kubeconfig changes are made. Certificate/token authentication is supported; exec-based cloud helpers and legacy auth providers are rejected until their trust model is implemented. All real clusters are labeled PRODUCTION.
+Existing Docker Desktop admin kubeconfig works, but the fixture reader is preferable for local testing. No kubeconfig changes are made. Certificate/token authentication is supported. Unix ExecCredential helpers require a reviewed absolute native executable, a context/endpoint/CA-bound trust policy and explicit `--allow-auth-helper --auth-helper-policy FILE`. Legacy auth providers remain rejected. All real clusters are labeled PRODUCTION.
 
 ## Docker Desktop acceptance and local fixtures
 
@@ -66,11 +65,13 @@ Omit `-KeepFixtures` for automatic cleanup. Failed runs clean up even when reten
 
 ## Interface
 
-Tab changes focus between resources and objects. Responsive bordered panels show readiness, restarts and age when space permits. Type `:pods`, `:deploy`, `:svc` or `:nodes` for quick navigation, `:ns NAME` for namespace, `:all` for all namespaces, and `:sort name|namespace|status|restarts|age` to sort. `S` cycles sorting; PageUp/PageDown/Home/End navigate tables. Up/down or j/k navigate, Enter opens redacted JSON, `/` filters cached names, `r` refreshes, `c` selects context, `n` changes namespace (`*` means all namespaces), `R` discovers resources/CRDs, `m` opens pod/node metrics with bounded CPU/memory history and five-second refresh, `w` switches live watch/polling, `y` opens YAML, `l` selects bounded pod logs, `L` previous logs, `f` follows a selected container, `o` opens context summaries, `e` reviews an image edit, `a` opens actions, `t` opens themes, `?` shows help, Esc closes and `q` exits. Click resource/object rows or scroll using the mouse. ASCII rendering is conservative: non-ASCII display characters become `?`; raw JSON retains safely escaped Unicode.
+![Native KBorg resource browser](docs/evidence/ui-priorities/demo-pods.png)
 
-Live clusters use bounded LIST/WATCH with bookmarks, reconnect/backoff and expired-version relisting. Use `--poll` or `w` for explicit five-second polling; offline demo uses polling. Failed requests mark data STALE. Reads are limited to 1,000 objects/8 MiB retained data, with 200-object pages and 8 MiB response bodies. Narrow namespace scope when TRUNCATED appears. Logs require `--allow-logs`, are capped at 200 lines/256 KiB, and can still contain sensitive data.
+Tab changes focus between resources and objects. Responsive bordered panels show readiness, restarts and age when space permits. Type `:pods`, `:deploy`, `:svc` or `:nodes` for quick navigation, `:ns NAME` for namespace, `:all` for all namespaces, and `:sort name|namespace|status|restarts|age` to sort. `S` cycles sorting; PageUp/PageDown/Home/End navigate tables. Up/down or j/k navigate, Enter opens a readable object overview, `J` opens redacted JSON, `/` filters cached names, `r` refreshes, `c` selects context, `n` changes namespace (`*` means all namespaces), `R` discovers resources/CRDs, `m` opens pod/node metrics with bounded CPU/memory history and five-second refresh, `w` switches live watch/polling, `y` opens YAML, `l` selects bounded pod logs, `L` previous logs, `f` follows a selected container, `o` opens continuous independent context watches, `e` reviews an image edit, `V` reviews deployment CPU/memory requests and limits, `E` reviews an interactive pod shell, `a` opens actions, `t` opens themes, `?` shows help, Esc closes and `q` exits. Click resource/object rows or scroll using the mouse. ASCII rendering is conservative: non-ASCII display characters become `?`; raw JSON retains safely escaped Unicode.
 
-Mutations require `--write`, a server dry-run and exact `namespace/name` confirmation within 60 seconds. `s` scales deployments (0..20), `x` restarts, Delete deletes an allowed individual object. UID/resourceVersion preconditions reject stale targets; no automatic mutation retries. System namespaces and cluster-scoped mutations are blocked. Generic edits, force deletion and finalizer manipulation are absent. Confirm the complete displayed target before typing; on small terminals enlarge the window to inspect long targets. Noninteractive writes are rejected.
+Live clusters use bounded LIST/WATCH with bookmarks, reconnect/backoff and expired-version relisting. Use `--poll` or `w` for explicit five-second polling; offline demo uses polling. Failed requests mark data STALE. Reads are limited to 1,000 objects/8 MiB retained data, with 200-object pages and 8 MiB response bodies. Narrow namespace scope when TRUNCATED appears. Log snapshots require `--allow-logs` and are capped at 200 lines/256 KiB. Follow defaults to one hour, with `--log-seconds 1..86400`; the TUI retains the newest 2,000 lines/256 KiB and marks evictions/truncation. Quiet streams remain open. A stream stops at 64 MiB received, its configured deadline, transport failure, or 1 MiB/5,000-line per-second flood limits. Logs can still contain sensitive data.
+
+Mutations require `--write`, a server dry-run and exact `namespace/name` confirmation within 60 seconds. `s` scales deployments (0..20), `x` restarts, `V` sets four reviewed container CPU/memory request/limit fields, and Delete deletes an allowed individual object. UID/resourceVersion preconditions reject stale targets; no automatic mutation retries. System namespaces and cluster-scoped mutations are blocked. Generic edits, force deletion and finalizer manipulation are absent. Confirm the complete displayed target before typing; on small terminals enlarge the window to inspect long targets. Noninteractive writes are rejected.
 
 ## Themes
 
@@ -94,7 +95,7 @@ TLS validation is required. Secrets are excluded from built-in and discovered ki
 
 Writes use a local durable intent/outcome audit spool; this is supplementary and mutable by the operator, not centralized protected audit. Windows config directories outside the test harness inherit their existing user ACLs; verify them before using writes on sensitive clusters. Same-user path replacement races are not eliminated by symlink checks. Authentication revocation, malicious local software and cluster admission remain outside the client trust boundary.
 
-KBorg 0.3 adds bounded native exec/output attach, finite loopback forwarding, explicit multi-context snapshots and controlled deployment image changes. Each privileged operation requires separate opt-in and target review. Automatic AI diagnosis, arbitrary plugins/tool handoff, generic YAML apply, interactive stdin/TTY, interactive external pagers/editors, signed distribution and protected centralized audit remain incomplete or gated. This prerelease is suitable for isolated local testing; see `docs/REMAINING_WORK.md` for the current acceptance register.
+The current development iteration adds reviewed native stdin/TTY sessions, longer rolling logs, continuous context watches, resource-budget edits and optional metrics comparisons to the 0.3 baseline. Each privileged operation requires separate opt-in and target review. Automatic AI diagnosis, generic YAML apply, remote full-screen applications, interactive external pagers/editors, signed distribution and protected centralized audit remain incomplete or gated. This prerelease is suitable for isolated local testing; see `docs/REMAINING_WORK.md` for the current acceptance register.
 
 ## Startup and first use
 
@@ -112,7 +113,7 @@ kborg copilot login --cli <absolute-trusted-copilot-executable> --host acme.ghe.
 
 Context export omits object names, cluster identity, workload specs, logs, labels and arbitrary status messages. Bounded type/reason strings can still contain confidential text or prompt injection: inspect before manually sharing. Copilot manages login credentials and may have its own telemetry/storage. Do not assume GitHub Enterprise Server login provides a Copilot service; supported login hosts are GitHub.com and GitHub Enterprise Cloud data-residency `*.ghe.com`. See [official Copilot authentication](https://docs.github.com/en/enterprise-cloud%40latest/copilot/how-tos/copilot-cli/set-up-copilot-cli/authenticate-copilot-cli).
 
-Automatic AI diagnosis remains a production gate requiring isolation, tested tool denial, explicit per-request payload review and policy evidence. Other AI providers are excluded. UI visual refinement follows feature completion and must preserve measured CPU/memory budgets.
+Automatic AI diagnosis remains a production gate requiring isolation, tested tool denial, explicit per-request payload review and policy evidence. Other AI providers are excluded. The current UI refinement has native PTY captures and a retained short CPU/memory sample; longer soak and accessibility acceptance remain open.
 
 ## Platform, security and performance evidence
 
@@ -137,7 +138,7 @@ kborg --demo metrics pods
 
 A watch cannot represent a complete view above its 1,000-object/8 MiB cache budget: it clears data, displays STALE/TRUNCATED and stops. Narrow the namespace or explicitly select polling for bounded partial results. Individual response streams are also capped at 8 MiB. Input remains responsive during background reads; obsolete watches are aborted at scope changes.
 
-Pod/container and node usage come from `metrics.k8s.io/v1beta1`; this requires an installed and correctly secured Metrics Server or compatible provider. The app never installs one. CPU is normalized using checked integer nanocores and exact decimal millicores; memory uses checked bytes. Raw quantities, measurement timestamp/window and any upward rounding remain explicit. Missing, forbidden or malformed metrics produce errors and do not invalidate resource browsing or fabricate zero usage. Success and error dialogs wrap for narrow terminals. No percentages are inferred without capacity/request denominators. The metrics modal retains up to 64 identities with 60 samples each for ten minutes, shows exact latest/min/max values and ASCII charts, marks missing/error measurements as gaps, and resets history on context/scope/namespace or known UID changes. Repeated API timestamps do not create new samples.
+Pod/container and node usage come from `metrics.k8s.io/v1beta1`; this requires an installed and correctly secured Metrics Server or compatible provider. The app never installs one. CPU is normalized using checked integer nanocores and exact decimal millicores; memory uses checked bytes. Raw quantities, measurement timestamp/window and any upward rounding remain explicit. Missing, forbidden or malformed metrics produce errors and do not invalidate resource browsing or fabricate zero usage. Success and error dialogs wrap for narrow terminals. Press `M` or use `--metrics-resources` for an explicit extra pod/node read and usage comparisons with current requests/limits or allocatable/capacity. Percentages use checked integer arithmetic and are omitted for missing/zero/invalid bases. Missing Metrics API UID receives a qualified name-based label; known UID changes or resources created after measurement suppress comparisons. No percentages are inferred without a known positive denominator. The metrics modal retains up to 64 identities with 60 samples each for ten minutes, shows exact latest/min/max values and ASCII charts, marks missing/error measurements as gaps, and resets history on context/scope/namespace or known UID changes. Repeated API timestamps do not create new samples.
 
 See `docs/WATCH_METRICS_REVIEW.md` and `docs/WATCH_METRICS_UX.md` for actual and controlled-test distinctions. Remaining production gates and broader roadmap features still apply.
 
@@ -165,3 +166,41 @@ For native local acceptance, inspect the Docker Desktop endpoint and run
 `scripts/test-local.py --expected-server https://127.0.0.1:PORT`. It provisions
 uniquely owned restricted fixtures, runs operation/watch/subresource tests, and
 removes its namespaces and temporary ten-minute credentials.
+
+## Interactive sessions and native inspection
+
+```sh
+kborg --context docker-desktop -n YOUR_NAMESPACE --write --allow-exec --interactive --session-seconds 900 exec POD CONTAINER -- sh
+kborg --context docker-desktop -n YOUR_NAMESPACE --write --allow-attach --interactive attach POD CONTAINER
+kborg --context docker-desktop -n YOUR_NAMESPACE --interactive view pods POD
+kborg --context docker-desktop --follow --json overview CONTEXT_A CONTEXT_B
+kborg --context docker-desktop --write set-resources DEPLOYMENT CONTAINER 100m 64Mi 500m 128Mi
+```
+
+Sessions support stdin, remote TTY resize, local `Ctrl-]` disconnect and terminal
+restoration. Output allows printable UTF-8, line editing controls and selected
+SGR; clipboard/OSC, hyperlinks, queries, cursor/private controls and bidi are
+removed. Remote full-screen applications remain unsupported. Sessions last at
+most 1..3600 seconds and stop at 16 MiB output/1 MiB input; disconnect does not
+prove remote termination. All ordinary-container sessions retain separate
+capabilities, exact target review and UID/resourceVersion rechecks.
+
+The built-in `view --interactive` pager launches no external tool. It supports
+search, page/home/end navigation, horizontal pan, resize and JSON/YAML toggling.
+Native tool filters remain separately reviewed and time/output bounded.
+
+`extensions register NAME --tool ABS [--tool-arg ARG]` creates a private data-only
+registration after `REGISTER EXTENSION`; every invocation still requires
+`--allow-extensions --allow-tools extensions run NAME RESOURCE OBJECT` and a fresh
+complete `RUN TOOL` input review. Executable updates invalidate registrations;
+arguments remain literal. No output is applied to Kubernetes and no in-process
+plugin is loaded. Trusted native programs retain OS-user permissions.
+
+`copilot preflight --cli ABS_NATIVE --host github.com` fingerprints a selected
+SDK and checks fresh fake-file sandbox canaries without reading real tokens or
+making a model request. `copilot preview RESOURCE NAME --host HOST` shows a local
+minimized bundle. Automated diagnosis remains disabled until independent
+hostname-bound egress, dedicated credential authority and publisher provenance
+are validated.
+
+Current local acceptance and screenshots: [priority session](docs/PRIORITIES_ACCEPTANCE.md).

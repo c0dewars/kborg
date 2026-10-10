@@ -4,7 +4,7 @@
 
 Use an archive matching your OS and CPU from the private release. Obtain its expected digest through a trusted channel and run `scripts/Verify-Package.ps1 -Archive FILE -ExpectedSha256 HASH` before extraction. A checksum delivered beside an archive detects corruption but does not authenticate a publisher. Current packages are unsigned; production distribution requires your organization's signing and verification process.
 
-Keep binaries in versioned directories and place only the selected directory on PATH. Run `kborg --version`, `kborg demo`, then a least-privilege `doctor` with an explicit kubeconfig/context/namespace before enabling operations. No cluster component or second Docker daemon is required. Docker Desktop's Kubernetes endpoint is accessible to the native Windows and WSL2 clients with verified CA material.
+Keep binaries in versioned directories and place only the selected directory on PATH. Run `kborg --version`, `kborg demo`, then a least-privilege `list pods --json` with an explicit kubeconfig/context/namespace before enabling operations. No cluster component or second Docker daemon is required. Docker Desktop's Kubernetes endpoint is accessible to the native Windows and WSL2 clients with verified CA material.
 
 For rollback, stop KBorg and select the previous versioned binary. This does not undo Kubernetes operations. Keep a protected backup of user settings before upgrades. Config schema 1 rejects unknown versions; migration is deliberate and never executes a config file. Uninstall by removing the chosen binary directory; retain or explicitly remove your settings/audit spool according to retention policy. No automatic cleanup of kubeconfig or cluster objects occurs.
 
@@ -12,7 +12,7 @@ For rollback, stop KBorg and select the previous versioned binary. This does not
 
 `kborg config init settings.json` creates a new strict JSON file. Pass it explicitly with `--config`; no project-local executable configuration is auto-loaded. `config validate` validates without connecting. CLI context/namespace/theme values override file defaults. Files can constrain capabilities but never enable writes or log/subresource access without their CLI flags. Profile `read-only` refuses `--write`; profile `operator` still requires `--write`, separate capability opt-ins, and target confirmation. These are local client controls, not a substitute for RBAC/admission or a policy against a user running another binary.
 
-Supported fields: `schema_version` (1), `profile` (`read-only` or `operator`), optional `context`, `namespace`, `theme`, and booleans `no_splash`, `poll`, `allow_logs`, `allow_exec`, `allow_attach`, `allow_forward`, `allow_tools`. Unknown/duplicate fields fail. Default generated config prohibits sensitive capabilities. Config never stores credentials.
+Supported fields: `schema_version` (1), `profile` (`read-only` or `operator`), optional `context`, `namespace`, `theme`, and booleans `no_splash`, `poll`, `allow_logs`, `allow_exec`, `allow_attach`, `allow_forward`, `allow_tools`, `allow_extensions`, `allow_auth_helper`. Unknown/duplicate fields fail. Default generated config prohibits sensitive capabilities. Config never stores credentials.
 
 `kborg completions bash|zsh|fish|powershell` emits a static script; review and load it through your shell's normal configuration. It makes no cluster calls.
 
@@ -22,7 +22,7 @@ Run `kborg audit pending --json` after a crash or uncertain response. Missing, i
 
 ## Support and production rollout
 
-Kubernetes 1.34 is the minimum binding. Previously tested minors are 1.34, 1.35 and 1.36; future minors require compatibility runs. Certificate/token authentication is supported. Exec auth helpers remain blocked. Real provider identity rotation, proxy support, enterprise account policies and terminal combinations need deployment-specific acceptance.
+Kubernetes 1.34 is the minimum binding. Previously tested minors are 1.34, 1.35 and 1.36; future minors require compatibility runs. Certificate/token authentication is supported. ExecCredential helpers require a reviewed immutable native executable and host/context/CA-bound policy; legacy providers remain blocked. Real provider identity rotation, proxy support, enterprise account policies and terminal combinations need deployment-specific acceptance.
 
 Start with a dedicated read-only identity and narrow namespace, then a small staging pilot. Grant only reviewed operation verbs; enforce allowed images/fields and Pod Security on the API server. Test dry-run changes, stale resources, revocation, endpoint outage and audit failures. Promote only after the current register's required gates have evidence. Report security issues privately through the process in SECURITY.md; do not attach tokens, kubeconfig, Secrets or production logs.
 
@@ -56,11 +56,62 @@ with the exact inspected Docker Desktop HTTPS endpoint. Rust, kubectl and Docker
 Desktop must already be installed. The stdlib-only harness verifies the selected
 context and embedded CA, digest-pins BusyBox, uses unique restricted namespaces
 and scoped ten-minute service-account tokens, and checks ownership before cleanup.
-It runs all four live integration tests including real RBAC denials, resource
-version conflicts, watch revocation and loopback forwarding. It does not reset
+It runs six live integration tests covering real RBAC denials, resource
+version conflicts, watch revocation, loopback forwarding, long logs, interactive
+sessions and reviewed authentication helpers. It does not reset
 Docker, alter the current context, or reuse preexisting workloads.
 
 `scripts/test-terminal.py --binary target/release/kborg` exercises demo keyboard
 navigation and terminal restoration in a native PTY. `--screenshots DIRECTORY`
 optionally captures PNGs using Pillow. PTY evidence does not certify every terminal
 emulator, screen reader or OS.
+
+## Reviewed authentication helpers
+
+`auth-helper review --executable ABS [--env NAME=VALUE] --output NEW_POLICY`
+reviews the selected kubeconfig's exact ExecCredential argv and environment,
+selected user/context, endpoint, CA and native executable SHA-256. Type
+`TRUST AUTH HELPER` to create a private policy without executing the helper.
+Enable with `--allow-auth-helper --auth-helper-policy FILE`; profile files can
+forbid this capability. Approved provider configuration paths/profile values may
+be supplied explicitly. PATH, generic interpreters and raw secret environment
+variables are rejected, so chained provider CLIs may require a native adapter.
+
+Runtime supervision uses 15 seconds/256 KiB, no shell, private working directory
+and cleared inherited environment. The helper remains a trusted OS-user program,
+not a sandbox. Token or certificate/key v1/v1beta1 replies require a future
+expiration within 24 hours. Credentials are transient; expiry or 401/403 stops further
+requests until explicit reconnect. Any endpoint/CA/TLS-name/context/argv/env or
+executable change invalidates the policy. Relative certificate/token/CA file
+paths are resolved against the explicit kubeconfig file. Real cloud identities,
+provider-specific chains and stronger handle-based path trust remain gates.
+
+## Interactive local workflows
+
+CLI `--interactive exec/attach` and TUI `E` acquire one terminal owner after exact
+review. `Ctrl-]` disconnects; `Ctrl-C` goes to the remote process. Resize is sent
+through the native Kubernetes protocol. Finite time/input/output budgets and
+terminal restoration apply. Remote full-screen applications and privileged node
+shells are unsupported. Interactive APIs have the same residual subresource
+name-recreation race as noninteractive operations.
+
+`V`/`set-resources` reviews four CPU/memory request/limit values for one ordinary
+deployment container. Requests must be positive and not exceed limits; limits
+are capped at 64 cores/128 GiB. Other resource keys, claims, containers and workload
+fields are preserved. Only equivalent spellings of these four quantities are
+normalized during dry-run comparison; all other spec/metadata effects remain
+strict. Generic YAML edits, resource removal and custom-resource writes remain
+excluded. Every approval displays the complete bounded review; oversized/control
+text is refused instead of clipped.
+
+Long follow keeps a rolling display and marks discarded/truncated lines. End
+resumes tail; Home/Page keys inspect older retained lines. Quiet streams remain
+open within the configured duration. Transport distinguishes 64 MiB follow streams
+from 8 MiB ordinary documents, with 15-second headers and 10-second ordinary-body idle
+budgets. Quiet eight-second watch intervals renew without permanently losing
+fresh counts; transient faults still reconnect and authorization denial stops.
+
+`o`/`overview --follow` watches at most four explicitly named contexts. Each owns
+its credentials/cache/error and one cancellable watch; summaries coalesce in one
+mailbox and close/scope changes abort all feeds. No object data or credentials are
+shared. Broader independent-cluster soak tests remain open.

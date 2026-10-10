@@ -10,7 +10,7 @@ use crossterm::{
     cursor,
     event::{
         self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers,
-        MouseEventKind,
+        MouseEvent, MouseEventKind,
     },
     execute, queue,
     style::{self, Color},
@@ -87,13 +87,16 @@ enum Task {
     Connect(Connection),
     List(String, String),
     Watch(String, String),
-    Metrics(crate::metrics::MetricsScope, String),
+    Metrics(crate::metrics::MetricsScope, String, bool),
+    Inspect(String, String, String),
     Get(String, String, String),
     Yaml(String, String, String),
     Overview(Connection, Vec<String>),
+    PrepareSession(String, String, String, Option<String>, u16),
+    RunSession(Box<crate::ops::ReviewedOperation>, String),
     Containers(String, String, bool, bool),
     Logs(String, String, Option<String>, bool),
-    Follow(String, String, Option<String>, u64),
+    Follow(String, String, Option<String>, u64, u32),
     Discover,
     Prepare(String, String, String, Option<String>, Action),
     Execute(Box<Prepared>, Approval),
@@ -102,6 +105,9 @@ enum Reply {
     Connected(String, String, String, Vec<Kind>),
     Items(Value),
     Detail(String),
+    Object(Box<Value>),
+    Overview(crate::overview::OverviewFeed),
+    SessionPrepared(Box<crate::ops::ReviewedOperation>),
     Containers(String, String, Vec<String>, bool, bool),
     Following,
     Catalog(Vec<Kind>),
@@ -151,7 +157,7 @@ type WatchMailbox = std::sync::Arc<WatchSlot>;
 
 #[derive(Default)]
 struct LogState {
-    text: String,
+    buffer: crate::logs::RollingLog,
     dirty: bool,
 }
 #[derive(Default)]
@@ -181,20 +187,10 @@ impl LogSlot {
             if self.generation.load(std::sync::atomic::Ordering::SeqCst) != generation {
                 return false;
             }
-            // A single bounded mailbox, never one queued message per log line.
-            let line = safety::safe_text(line, 4096);
-            if state.text.len() + line.len() < crate::logs::MAX_LOG_BYTES {
-                state.text.push_str(&line);
-                state.text.push('\n');
-                state.dirty = true;
-                return true;
-            }
-            if state.text.len() <= crate::logs::MAX_LOG_BYTES {
-                state
-                    .text
-                    .push_str("[Stopped: display reached 256 KiB; start a new session]\n");
-                state.dirty = true;
-            }
+            // The newest bounded window remains available throughout a long session.
+            state.buffer.push(line);
+            state.dirty = true;
+            return true;
         }
         false
     }
@@ -204,7 +200,7 @@ impl LogSlot {
             return None;
         }
         state.dirty = false;
-        Some(state.text.clone())
+        Some(state.buffer.text())
     }
 }
 
@@ -277,14 +273,23 @@ fn worker() -> Worker {
                             }
                         }
                     }
-                    Task::Metrics(scope, n) => {
+                    Task::Metrics(scope, n, include_resources) => {
                         let result = if let Some(g) = gateway.as_ref() {
-                            match tokio::time::timeout(Duration::from_secs(20), crate::metrics::collect(g, scope, &n)).await {
+                            let future = async { if include_resources { crate::metrics::collect_with_allocations(g,scope,&n).await } else { crate::metrics::collect(g,scope,&n).await } };
+                            match tokio::time::timeout(Duration::from_secs(if include_resources {35} else {20}), future).await {
                                 Ok(result) => result,
                                 Err(_) => Err("Metrics request timed out; resource browsing remains available.".into()),
                             }
                         } else { Err("Not connected; select a context or retry.".into()) };
                         Reply::Metrics(scope, n, result)
+                    }
+                    Task::RunSession(reviewed, typed) => {
+                        if let Some(g) = gateway.as_ref() {
+                            match crate::ops::run(g, *reviewed, &typed).await {
+                                Ok(message) => Reply::Notice(message),
+                                Err(error) => Reply::Failure(error),
+                            }
+                        } else { Reply::Failure("Session unavailable; reconnect before review.".into()) }
                     }
                     task => {
                         if let Some(g) = gateway.as_mut() {
@@ -292,21 +297,28 @@ fn worker() -> Worker {
                                 Ok(match task {
                                     Task::List(k,n) => Reply::Items(g.list(&k,&n).await?),
                                     Task::Get(k,n,name) => Reply::Detail(serde_json::to_string_pretty(&g.get(&k,&n,&name).await?).map_err(|_| "serialization failed")?),
+                                    Task::Inspect(k,n,name) => Reply::Object(Box::new(g.get(&k,&n,&name).await?)),
                                     Task::Yaml(k,n,name) => Reply::Detail(crate::inspect::yaml(&g.get(&k,&n,&name).await?)?),
-                                    Task::Overview(options,names) => Reply::Detail(crate::overview::text(&crate::overview::collect(&options,&names).await?)),
+                                    Task::Overview(options,names) => Reply::Overview(crate::overview::OverviewFeed::new(&options,&names)?),
+                                    Task::PrepareSession(n,name,container,uid,seconds) => {
+                                        let prepared = crate::ops::prepare(g,&n,&name,crate::ops::Request::InteractiveExec {container,argv:vec!["/bin/sh".into(),"-i".into()],seconds}).await?;
+                                        if uid.as_deref().is_none_or(|uid| uid != prepared.uid()) { return Err("Selected pod was replaced; select and review again.".into()); }
+                                        Reply::SessionPrepared(Box::new(prepared))
+                                    },
                                     Task::Containers(n,name,previous,follow) => {
                                         let names = g.containers(&n,&name).await?;
                                         Reply::Containers(n,name,names,previous,follow)
                                     },
                                     Task::Logs(n,name,container,previous) => Reply::Detail(g.logs(&n,&name,container,previous).await?),
-                                    Task::Follow(n,name,container,generation) => {
+                                    Task::Follow(n,name,container,generation,seconds) => {
                                         if log_results.generation.load(std::sync::atomic::Ordering::SeqCst) != generation {return Ok(Reply::Following);}
-                                        let mut feed = g.follow_logs(&n,&name,container,false).await?;
+                                        let mut feed = g.follow_logs_with_options(&n,&name,container,false,crate::logs::FollowOptions{seconds}).await?;
                                         let mailbox = log_results.clone();
                                         let job = tokio::spawn(async move {
+                                            let mut count = 0usize;
                                             loop {
                                                 match feed.next().await {
-                                                    Ok(Some(line)) => {if !mailbox.append(generation,&line) {break;}},
+                                                    Ok(Some(line)) => {if !mailbox.append(generation,&line) {break;} count += 1; if count.is_multiple_of(64) { tokio::task::yield_now().await; }},
                                                     Ok(None) => {mailbox.append(generation,"[Log stream ended]"); break;},
                                                     Err(error) => {mailbox.append(generation,&format!("[Stopped: {error}]")); break;}
                                                 }
@@ -326,7 +338,7 @@ fn worker() -> Worker {
                                         Reply::Prepared(Box::new(prepared))
                                     },
                                     Task::Execute(p,a) => Reply::Notice(g.execute(*p,a).await?),
-                                    Task::Connect(_) | Task::Watch(..) | Task::Metrics(..) => return Err("invalid worker task".into()),
+                                    Task::Connect(_) | Task::Watch(..) | Task::Metrics(..) | Task::RunSession(..) => return Err("invalid worker task".into()),
                                 })
                             };
                             match tokio::time::timeout(Duration::from_secs(25), future).await {
@@ -350,11 +362,23 @@ fn worker() -> Worker {
     }
 }
 
+const OVERVIEW_CONTEXTS_LABEL: &str = "Overview contexts (comma separated, max 4)";
+const OVERVIEW_INPUT_BYTES: usize = 4 * 253 + 3;
+fn input_limit(label: &str) -> usize {
+    if label == OVERVIEW_CONTEXTS_LABEL {
+        OVERVIEW_INPUT_BYTES
+    } else {
+        100
+    }
+}
+
 enum Modal {
     None,
     Input(&'static str, String),
     Filter(String, String, Option<String>, usize),
     Detail(String, usize),
+    Overview(Box<Value>, usize),
+    LiveOverview(String, usize),
     Metrics(String, usize),
     Follow(String, usize),
     Containers(String, String, Vec<String>, usize, bool, bool),
@@ -370,7 +394,10 @@ enum Modal {
     Themes(Vec<Theme>, usize, Theme),
     NewTheme(String, Theme, Theme),
     Confirm(Box<Prepared>, String),
+    SessionContainers(String, String, Option<String>, Vec<String>, usize),
+    SessionConfirm(Box<crate::ops::ReviewedOperation>, String),
     Scale(String, String, String, Option<String>, String),
+    Resources(String, String, String, Option<String>, String),
     Help(usize),
 }
 #[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
@@ -433,9 +460,78 @@ struct App {
     last_refresh: Instant,
     metrics_history: crate::metrics::MetricsHistory,
     last_metrics: Instant,
+    metrics_resources: bool,
+    overview: Option<crate::overview::OverviewFeed>,
+    pending_session: Option<(Box<crate::ops::ReviewedOperation>, String)>,
     worker: Worker,
 }
 impl App {
+    fn mouse(&mut self, mouse: MouseEvent, width: u16, height: u16) {
+        let layout = Layout::new(width, height);
+        let resources = layout.sidebar.is_some_and(|rect| mouse.column < rect.width)
+            || (layout.sidebar.is_none() && self.left_focus);
+        match mouse.kind {
+            MouseEventKind::ScrollDown if resources => self.move_resource(1),
+            MouseEventKind::ScrollUp if resources => self.move_resource(-1),
+            MouseEventKind::ScrollDown => {
+                self.selected = (self.selected + 1).min(self.visible().len().saturating_sub(1))
+            }
+            MouseEventKind::ScrollUp => self.selected = self.selected.saturating_sub(1),
+            MouseEventKind::Down(_)
+                if resources && mouse.row >= 4 && mouse.row < height.saturating_sub(4) =>
+            {
+                let entries = navigation(&self.kinds);
+                let start = nav_start(&self.kinds, self.kind_index, layout.kind_rows());
+                if let Some(NavEntry::Resource(index)) =
+                    entries.get(start + usize::from(mouse.row - 4))
+                {
+                    if self.kind_index != *index {
+                        self.kind_index = *index;
+                        self.changed();
+                    }
+                    self.left_focus = false;
+                }
+            }
+            MouseEventKind::Down(_)
+                if !resources
+                    && mouse.row >= layout.table.y + 2
+                    && mouse.row < layout.table.y + layout.table.height.saturating_sub(1) =>
+            {
+                let start = self
+                    .selected
+                    .saturating_sub(layout.table_rows().saturating_sub(1));
+                self.selected = (start + usize::from(mouse.row - layout.table.y - 2))
+                    .min(self.visible().len().saturating_sub(1));
+                self.left_focus = false;
+            }
+            _ => {}
+        }
+    }
+    fn move_resource(&mut self, offset: isize) {
+        let order: Vec<_> = navigation(&self.kinds)
+            .iter()
+            .filter_map(|entry| {
+                if let NavEntry::Resource(index) = entry {
+                    Some(*index)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        let current = order
+            .iter()
+            .position(|index| *index == self.kind_index)
+            .unwrap_or(0);
+        let next = current
+            .saturating_add_signed(offset)
+            .min(order.len().saturating_sub(1));
+        if let Some(index) = order.get(next)
+            && self.kind_index != *index
+        {
+            self.kind_index = *index;
+            self.changed();
+        }
+    }
     fn kind(&self) -> String {
         self.kinds
             .get(self.kind_index)
@@ -612,7 +708,7 @@ impl App {
             self.status = "Busy; wait for the current request.".into();
             return;
         }
-        let writes = matches!(&task, Task::Execute(..));
+        let writes = matches!(&task, Task::Execute(..) | Task::RunSession(..));
         match self.worker.tx.try_send((self.epoch, task)) {
             Ok(()) => {
                 self.busy = true;
@@ -634,6 +730,7 @@ impl App {
         self.worker.watch.invalidate(self.epoch);
         self.worker.logs.cancel();
         self.metrics_history.clear();
+        self.overview = None;
     }
     fn connect(&mut self) {
         self.namespace_override = false;
@@ -700,6 +797,27 @@ impl App {
                 Reply::Detail(text) => {
                     self.modal = Modal::Detail(text.replace('\t', " | "), 0);
                 }
+                Reply::Object(object) => self.modal = Modal::Overview(object, 0),
+                Reply::Overview(feed) => {
+                    if matches!(self.modal, Modal::LiveOverview(..)) {
+                        match feed.snapshot() {
+                            Ok(rows) => {
+                                self.modal = Modal::LiveOverview(
+                                    crate::overview::live_text(&rows).replace('\t', " | "),
+                                    0,
+                                );
+                                self.overview = Some(feed);
+                            }
+                            Err(error) => {
+                                self.modal =
+                                    Modal::Detail(format!("Overview unavailable\n{error}"), 0);
+                            }
+                        }
+                    }
+                }
+                Reply::SessionPrepared(prepared) => {
+                    self.modal = Modal::SessionConfirm(prepared, String::new())
+                }
                 Reply::Containers(n, name, names, previous, follow) => {
                     if names.is_empty() {
                         self.status = "No containers found in the selected pod.".into();
@@ -722,6 +840,12 @@ impl App {
                     self.refresh = true;
                 }
                 Reply::Failure(error) => {
+                    if matches!(self.modal, Modal::LiveOverview(..)) {
+                        self.overview = None;
+                        self.modal = Modal::Detail(format!("Overview unavailable\n{error}"), 0);
+                        self.status = error;
+                        continue;
+                    }
                     if matches!(self.modal, Modal::Follow(..)) {
                         self.worker.logs.cancel();
                         self.modal = Modal::Detail(format!("LOGS unavailable\n{error}"), 0);
@@ -794,6 +918,25 @@ impl App {
             self.modal = Modal::Follow(text, *offset);
             changed = true;
         }
+        if let Some(feed) = &self.overview {
+            match feed.take_update() {
+                Ok(Some(rows)) => {
+                    if let Modal::LiveOverview(_, offset) = &self.modal {
+                        self.modal = Modal::LiveOverview(
+                            crate::overview::live_text(&rows).replace('\t', " | "),
+                            *offset,
+                        );
+                        changed = true;
+                    }
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    self.status = error;
+                    self.overview = None;
+                    changed = true;
+                }
+            }
+        }
         changed
     }
     fn theme_picker(&mut self) -> Result<()> {
@@ -818,13 +961,58 @@ impl App {
                 crate::metrics::MetricsScope::Pods
             },
             self.namespace.clone(),
+            self.metrics_resources,
         ));
+    }
+    fn request_shell(&mut self) {
+        if self.busy {
+            self.status = "Busy; wait for the current request.".into();
+            return;
+        }
+        if self.options.connection.demo {
+            self.status = "Pod shells require a live cluster; DEMO has no remote processes.".into();
+            return;
+        }
+        if !self.options.connection.writable || !self.options.connection.allow_exec {
+            self.status =
+                "Pod shell requires --write and the separate --allow-exec capability.".into();
+            return;
+        }
+        if self.kind() != "pods" {
+            self.status = "Pod shells apply to Pods; select a pod.".into();
+            return;
+        }
+        if let Some(object) = self.visible().get(self.selected) {
+            let names: Vec<_> = object["spec"]["containers"]
+                .as_array()
+                .map(|items| {
+                    items
+                        .iter()
+                        .take(64)
+                        .filter_map(|item| item["name"].as_str().map(str::to_owned))
+                        .collect()
+                })
+                .unwrap_or_default();
+            if names.is_empty() || self.selected_uid().is_none() {
+                self.status =
+                    "Pod identity or ordinary containers unavailable; refresh before shell review."
+                        .into();
+                return;
+            }
+            self.modal = Modal::SessionContainers(
+                namespace(object).into(),
+                name(object).into(),
+                self.selected_uid(),
+                names,
+                0,
+            );
+        }
     }
     fn action_menu(&self) -> Vec<String> {
         let kind = self.kind();
         let has_selection = !self.visible().is_empty();
         [
-            "Inspect JSON",
+            "Object overview",
             "Inspect YAML",
             "Logs snapshot",
             "Previous logs",
@@ -835,11 +1023,15 @@ impl App {
             "Change deployment image",
             "Restart deployment",
             "Delete selected resource",
+            "Inspect redacted JSON",
+            "Interactive pod shell",
+            "Metrics with requests and limits (extra reads)",
+            "Edit deployment resource budget",
         ]
         .iter()
         .enumerate()
         .map(|(index, title)| {
-            let reason = if index == 5 || index == 6 {
+            let reason = if index == 5 || index == 6 || index == 13 {
                 None
             } else if !has_selection {
                 Some("select an object")
@@ -847,9 +1039,11 @@ impl App {
                 Some("requires --allow-logs")
             } else if (2..=4).contains(&index) && kind != "pods" {
                 Some("Pods only")
-            } else if index >= 7 && !self.options.connection.writable {
+            } else if ((7..=10).contains(&index) || index == 12 || index == 14)
+                && !self.options.connection.writable
+            {
                 Some("READ ONLY; requires --write")
-            } else if (7..=9).contains(&index) && kind != "deployments.apps" {
+            } else if ((7..=9).contains(&index) || index == 14) && kind != "deployments.apps" {
                 Some("Deployments only")
             } else if index == 10
                 && !matches!(
@@ -858,6 +1052,10 @@ impl App {
                 )
             {
                 Some("unsupported resource")
+            } else if index == 12 && !self.options.connection.allow_exec {
+                Some("requires --allow-exec")
+            } else if index == 12 && (kind != "pods" || self.options.connection.demo) {
+                Some("live Pods only")
             } else {
                 None
             };
@@ -873,9 +1071,10 @@ impl App {
             return;
         }
         let allowed = match &action {
-            Action::Scale(_) | Action::Restart | Action::SetImage { .. } => {
-                self.kind() == "deployments.apps"
-            }
+            Action::Scale(_)
+            | Action::Restart
+            | Action::SetImage { .. }
+            | Action::SetResources { .. } => self.kind() == "deployments.apps",
             Action::Delete => matches!(
                 self.kind().as_str(),
                 "pods" | "deployments.apps" | "services" | "jobs.batch"
@@ -926,13 +1125,18 @@ impl App {
                 }
                 _ => self.modal = Modal::Filter(original, text, original_uid, original_index),
             },
-            Modal::Follow(text, mut offset) => match code {
+            Modal::Follow(text, offset) => match code {
                 KeyCode::Esc | KeyCode::Char('q') => {
                     self.worker.logs.cancel();
                 }
+                KeyCode::End => self.modal = Modal::Follow(text, usize::MAX),
                 _ => {
-                    offset = scroll_offset(&text, offset, code);
-                    self.modal = Modal::Follow(text, offset);
+                    let offset = if offset == usize::MAX {
+                        scroll_offset(&text, 0, KeyCode::End)
+                    } else {
+                        offset
+                    };
+                    self.modal = Modal::Follow(text.clone(), scroll_offset(&text, offset, code));
                 }
             },
             Modal::Containers(n, name, names, mut index, previous, follow) => match code {
@@ -949,8 +1153,14 @@ impl App {
                     if let Some(container) = names.get(index) {
                         if follow {
                             let generation = self.worker.logs.cancel();
-                            self.modal = Modal::Follow("Connecting to logs...".into(), 0);
-                            self.send(Task::Follow(n, name, Some(container.clone()), generation));
+                            self.modal = Modal::Follow("Connecting to logs...".into(), usize::MAX);
+                            self.send(Task::Follow(
+                                n,
+                                name,
+                                Some(container.clone()),
+                                generation,
+                                self.options.log_seconds,
+                            ));
                         } else {
                             self.send(Task::Logs(n, name, Some(container.clone()), previous));
                         }
@@ -997,7 +1207,7 @@ impl App {
                     } else if label == "Filter" {
                         self.filter = text;
                         self.selected = 0;
-                    } else if label == "Overview contexts (comma separated, max 4)" {
+                    } else if label == OVERVIEW_CONTEXTS_LABEL {
                         let names: Vec<String> =
                             text.split(',').map(|name| name.trim().to_owned()).collect();
                         if names.len() > 4 {
@@ -1005,7 +1215,15 @@ impl App {
                         } else if let Err(error) = crate::overview::validate(&names) {
                             self.status = error;
                         } else {
-                            self.send(Task::Overview(self.options.connection.clone(), names));
+                            self.modal = Modal::LiveOverview(
+                                "Connecting independent context watches...".into(),
+                                0,
+                            );
+                            let mut connection = self.options.connection.clone();
+                            if self.namespace_override {
+                                connection.namespace = self.namespace.clone();
+                            }
+                            self.send(Task::Overview(connection, names));
                         }
                     } else if label == "Namespace" {
                         if text == "*" || safety::valid_id(&text) {
@@ -1022,7 +1240,9 @@ impl App {
                     self.modal = Modal::Input(label, text);
                 }
                 KeyCode::Char(c) => {
-                    if !c.is_control() && text.len() < 100 {
+                    if !c.is_control()
+                        && text.len().saturating_add(c.len_utf8()) <= input_limit(label)
+                    {
                         text.push(c);
                     }
                     self.modal = Modal::Input(label, text);
@@ -1036,9 +1256,88 @@ impl App {
                     self.modal = Modal::Detail(text, offset);
                 }
             },
+            Modal::Overview(object, mut offset) => match code {
+                KeyCode::Esc | KeyCode::Char('q') => {}
+                KeyCode::Char('J') => {
+                    self.modal = Modal::Detail(
+                        serde_json::to_string_pretty(&object)
+                            .map_err(|_| "serialization failed")?,
+                        0,
+                    )
+                }
+                KeyCode::Char('y') => self.modal = Modal::Detail(crate::inspect::yaml(&object)?, 0),
+                _ => {
+                    offset = scroll_offset(&overview_text(&object, &self.context), offset, code);
+                    self.modal = Modal::Overview(object, offset);
+                }
+            },
+            Modal::LiveOverview(text, offset) => match code {
+                KeyCode::Esc | KeyCode::Char('q') => self.overview = None,
+                _ => {
+                    self.modal =
+                        Modal::LiveOverview(text.clone(), scroll_offset(&text, offset, code))
+                }
+            },
+            Modal::SessionContainers(n, name, uid, names, index) => match code {
+                KeyCode::Esc => {}
+                KeyCode::Down | KeyCode::Char('j') => {
+                    self.modal = Modal::SessionContainers(
+                        n,
+                        name,
+                        uid,
+                        names.clone(),
+                        (index + 1).min(names.len().saturating_sub(1)),
+                    )
+                }
+                KeyCode::Up | KeyCode::Char('k') => {
+                    self.modal =
+                        Modal::SessionContainers(n, name, uid, names, index.saturating_sub(1))
+                }
+                KeyCode::Enter => {
+                    if let Some(container) = names.get(index) {
+                        self.send(Task::PrepareSession(
+                            n,
+                            name,
+                            container.clone(),
+                            uid,
+                            self.options.session_seconds,
+                        ));
+                    }
+                }
+                _ => self.modal = Modal::SessionContainers(n, name, uid, names, index),
+            },
+            Modal::SessionConfirm(prepared, mut text) => match code {
+                KeyCode::Esc => self.status = "Pod shell canceled.".into(),
+                KeyCode::Enter => {
+                    let (width, height) = terminal::size().map_err(|_| "terminal size failed")?;
+                    if !confirmation_fits(prepared.summary(), &text, width, height) {
+                        self.status = "Enlarge terminal to inspect the complete session review before approving.".into();
+                        self.modal = Modal::SessionConfirm(prepared, text);
+                    } else if text != prepared.confirmation() {
+                        self.status = "Type the exact namespace/pod from the review.".into();
+                        self.modal = Modal::SessionConfirm(prepared, text);
+                    } else {
+                        self.pending_session = Some((prepared, text));
+                    }
+                }
+                KeyCode::Backspace => {
+                    text.pop();
+                    self.modal = Modal::SessionConfirm(prepared, text);
+                }
+                KeyCode::Char(c) if c.is_ascii_graphic() && text.len() < 320 => {
+                    text.push(c);
+                    self.modal = Modal::SessionConfirm(prepared, text);
+                }
+                _ => self.modal = Modal::SessionConfirm(prepared, text),
+            },
             Modal::Metrics(text, mut offset) => match code {
                 KeyCode::Esc | KeyCode::Char('q') => {}
                 KeyCode::Char('m') | KeyCode::Char('r') => {
+                    self.modal = Modal::Metrics(text, offset);
+                    self.request_metrics();
+                }
+                KeyCode::Char('M') => {
+                    self.metrics_resources = true;
                     self.modal = Modal::Metrics(text, offset);
                     self.request_metrics();
                 }
@@ -1071,6 +1370,10 @@ impl App {
                                 KeyCode::Char('e'),
                                 KeyCode::Char('x'),
                                 KeyCode::Delete,
+                                KeyCode::Char('J'),
+                                KeyCode::Char('E'),
+                                KeyCode::Char('M'),
+                                KeyCode::Char('V'),
                             ];
                             if let Some(key) = keys.get(index) {
                                 return self.key(*key);
@@ -1195,17 +1498,50 @@ impl App {
                 }
                 _ => self.modal = Modal::Scale(k, n, name, uid, text),
             },
+            Modal::Resources(k, n, name, uid, mut text) => match code {
+                KeyCode::Esc => {}
+                KeyCode::Enter => {
+                    if self.busy {
+                        self.status = "Busy; wait for the current request before preparing the resource budget.".into();
+                        self.modal = Modal::Resources(k, n, name, uid, text);
+                        return Ok(false);
+                    }
+                    let fields: Vec<_> = text.split_whitespace().collect();
+                    let result = if fields.len() == 5 {
+                        let resources = crate::edit::ResourceEdit {
+                            cpu_request: fields[1].into(),
+                            memory_request: fields[2].into(),
+                            cpu_limit: fields[3].into(),
+                            memory_limit: fields[4].into(),
+                        };
+                        resources.validate(fields[0]).map(|_| Action::SetResources {
+                            container: fields[0].into(),
+                            resources,
+                        })
+                    } else {
+                        Err("Enter five fields: container CPU_REQUEST MEMORY_REQUEST CPU_LIMIT MEMORY_LIMIT".into())
+                    };
+                    match result {
+                        Ok(action) => self.send(Task::Prepare(k, n, name, uid, action)),
+                        Err(error) => {
+                            self.status = error;
+                            self.modal = Modal::Resources(k, n, name, uid, text);
+                        }
+                    }
+                }
+                KeyCode::Backspace => {
+                    text.pop();
+                    self.modal = Modal::Resources(k, n, name, uid, text);
+                }
+                KeyCode::Char(c) if (c.is_ascii_graphic() || c == ' ') && text.len() < 240 => {
+                    text.push(c);
+                    self.modal = Modal::Resources(k, n, name, uid, text);
+                }
+                _ => self.modal = Modal::Resources(k, n, name, uid, text),
+            },
             Modal::Help(offset) => match code {
                 KeyCode::Esc | KeyCode::Char('?') | KeyCode::Char('q') => {}
-                KeyCode::Down | KeyCode::Char('j') => {
-                    self.modal = Modal::Help((offset + 1).min(100))
-                }
-                KeyCode::Up | KeyCode::Char('k') => {
-                    self.modal = Modal::Help(offset.saturating_sub(1))
-                }
-                KeyCode::PageDown => self.modal = Modal::Help((offset + 15).min(100)),
-                KeyCode::PageUp => self.modal = Modal::Help(offset.saturating_sub(15)),
-                _ => self.modal = Modal::Help(offset),
+                _ => self.modal = Modal::Help(scroll_offset(TUI_HELP, offset, code)),
             },
             Modal::None => match code {
                 KeyCode::Char('q') => return Ok(true),
@@ -1220,29 +1556,27 @@ impl App {
                         .map(|(w, h)| Layout::new(w, h).table_rows())
                         .unwrap_or(15)
                         .max(1);
-                    let (index, len) = if self.left_focus {
-                        (&mut self.kind_index, self.kinds.len())
-                    } else {
-                        let len = self.visible().len();
-                        (&mut self.selected, len)
-                    };
+                    if self.left_focus {
+                        self.move_resource(match code {
+                            KeyCode::PageDown => page as isize,
+                            KeyCode::PageUp => -(page as isize),
+                            KeyCode::Home => -(self.kinds.len() as isize),
+                            _ => self.kinds.len() as isize,
+                        });
+                        return Ok(false);
+                    }
+                    let len = self.visible().len();
+                    let index = &mut self.selected;
                     *index = match code {
                         KeyCode::PageDown => index.saturating_add(page).min(len.saturating_sub(1)),
                         KeyCode::PageUp => index.saturating_sub(page),
                         KeyCode::Home => 0,
                         _ => len.saturating_sub(1),
                     };
-                    if self.left_focus {
-                        self.changed();
-                    }
                 }
                 KeyCode::Down | KeyCode::Char('j') => {
                     if self.left_focus {
-                        let index = (self.kind_index + 1).min(self.kinds.len().saturating_sub(1));
-                        if index != self.kind_index {
-                            self.kind_index = index;
-                            self.changed();
-                        }
+                        self.move_resource(1);
                     } else {
                         self.selected =
                             (self.selected + 1).min(self.visible().len().saturating_sub(1));
@@ -1250,11 +1584,7 @@ impl App {
                 }
                 KeyCode::Up | KeyCode::Char('k') => {
                     if self.left_focus {
-                        let index = self.kind_index.saturating_sub(1);
-                        if index != self.kind_index {
-                            self.kind_index = index;
-                            self.changed();
-                        }
+                        self.move_resource(-1);
                     } else {
                         self.selected = self.selected.saturating_sub(1);
                     }
@@ -1263,7 +1593,7 @@ impl App {
                     if self.left_focus {
                         self.left_focus = false;
                     } else if let Some((k, n, name)) = self.selected_target() {
-                        self.send(Task::Get(k, n, name));
+                        self.send(Task::Inspect(k, n, name));
                     }
                 }
                 KeyCode::Char('/') => {
@@ -1275,7 +1605,18 @@ impl App {
                     )
                 }
                 KeyCode::Char(':') => self.modal = Modal::Input("Command", String::new()),
+                KeyCode::Char('J') => {
+                    if let Some((k, n, name)) = self.selected_target() {
+                        self.send(Task::Get(k, n, name));
+                    }
+                }
+                KeyCode::Char('d') => {
+                    if let Some((k, n, name)) = self.selected_target() {
+                        self.send(Task::Inspect(k, n, name));
+                    }
+                }
                 KeyCode::Char('S') => self.set_sort(self.sort.next()),
+                KeyCode::Char('E') => self.request_shell(),
                 KeyCode::Char('n') => {
                     self.modal = Modal::Input("Namespace", self.namespace.clone())
                 }
@@ -1298,7 +1639,14 @@ impl App {
                     }
                 }
                 KeyCode::Char('R') => self.send(Task::Discover),
-                KeyCode::Char('m') => self.request_metrics(),
+                KeyCode::Char('m') => {
+                    self.metrics_resources = false;
+                    self.request_metrics();
+                }
+                KeyCode::Char('M') => {
+                    self.metrics_resources = true;
+                    self.request_metrics();
+                }
                 KeyCode::Char('w') => {
                     if self.options.connection.demo {
                         self.status =
@@ -1317,10 +1665,7 @@ impl App {
                     }
                 }
                 KeyCode::Char('o') => {
-                    self.modal = Modal::Input(
-                        "Overview contexts (comma separated, max 4)",
-                        self.context.clone(),
-                    );
+                    self.modal = Modal::Input(OVERVIEW_CONTEXTS_LABEL, self.context.clone());
                 }
                 KeyCode::Char('e') => {
                     if !self.options.connection.writable {
@@ -1331,6 +1676,16 @@ impl App {
                     } else if let Some((k, n, name)) = self.selected_target() {
                         self.modal =
                             Modal::Image(k, n, name, self.selected_uid(), None, String::new());
+                    }
+                }
+                KeyCode::Char('V') => {
+                    if !self.options.connection.writable {
+                        self.status = "READ ONLY: resource budgets require --write.".into();
+                    } else if self.kind() != "deployments.apps" {
+                        self.status = "Resource budgets apply to deployments.".into();
+                    } else if let Some((k, n, name)) = self.selected_target() {
+                        self.modal =
+                            Modal::Resources(k, n, name, self.selected_uid(), String::new());
                     }
                 }
                 KeyCode::Char('l') | KeyCode::Char('L') | KeyCode::Char('f') => {
@@ -1477,6 +1832,308 @@ fn age(object: &Value, now: i64) -> String {
         format!("{}d", seconds / 86400)
     }
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Health {
+    Healthy,
+    Attention,
+    Neutral,
+}
+fn health(object: &Value) -> Health {
+    let status = summary(object);
+    if [
+        "Failed",
+        "Error",
+        "Crash",
+        "BackOff",
+        "NotReady",
+        "Pending",
+        "Unknown",
+        "Terminating",
+    ]
+    .iter()
+    .any(|needle| status.contains(needle))
+    {
+        return Health::Attention;
+    }
+    match object["kind"].as_str().unwrap_or("") {
+        "Pod" if object["status"]["phase"] == "Running" => {
+            let statuses = object["status"]["containerStatuses"].as_array();
+            let count = object["spec"]["containers"]
+                .as_array()
+                .map(Vec::len)
+                .unwrap_or(0);
+            if count > 0
+                && statuses.is_some_and(|statuses| {
+                    statuses.len() == count && statuses.iter().all(|item| item["ready"] == true)
+                })
+            {
+                Health::Healthy
+            } else {
+                Health::Attention
+            }
+        }
+        "Node" => {
+            if readiness(object) == "True" {
+                Health::Healthy
+            } else {
+                Health::Attention
+            }
+        }
+        "Deployment" | "StatefulSet" | "ReplicaSet" | "DaemonSet" => {
+            let ready = readiness(object);
+            if let Some((ready, desired)) = ready.split_once('/') {
+                if ready == desired {
+                    Health::Healthy
+                } else {
+                    Health::Attention
+                }
+            } else {
+                Health::Neutral
+            }
+        }
+        _ if [
+            "Succeeded",
+            "Complete",
+            "Running",
+            "Active",
+            "Bound",
+            "Ready",
+        ]
+        .contains(&status.as_str()) =>
+        {
+            Health::Healthy
+        }
+        _ => Health::Neutral,
+    }
+}
+fn clean_value(value: &Value) -> String {
+    value
+        .as_str()
+        .map(|value| safety::safe_text(value, 512))
+        .unwrap_or_else(|| {
+            if value.is_null() {
+                "-".into()
+            } else {
+                safety::safe_text(&value.to_string(), 512)
+            }
+        })
+}
+fn overview_text(object: &Value, context: &str) -> String {
+    let now = k8s_openapi::jiff::Timestamp::now().as_second();
+    let kind = object["kind"].as_str().unwrap_or("Resource");
+    let mut lines = vec![
+        format!(
+            "{} / {} / {}",
+            kind.to_ascii_uppercase(),
+            namespace(object),
+            name(object)
+        ),
+        format!(
+            "STATE {}   READY {}   RESTARTS {}   AGE {}",
+            summary(object),
+            readiness(object),
+            restarts(object),
+            age(object, now)
+        ),
+        String::new(),
+        "IDENTITY".into(),
+        format!("Context   {}", safety::safe_text(context, 256)),
+        format!("Namespace {}", namespace(object)),
+        format!("Name      {}", name(object)),
+        format!("UID       {}", clean_value(&object["metadata"]["uid"])),
+        format!(
+            "Version   {}",
+            clean_value(&object["metadata"]["resourceVersion"])
+        ),
+    ];
+    if kind == "Pod" {
+        lines.extend([
+            String::new(),
+            "SCHEDULING & NETWORK".into(),
+            format!("Node      {}", clean_value(&object["spec"]["nodeName"])),
+            format!("Pod IP    {}", clean_value(&object["status"]["podIP"])),
+            format!("QoS       {}", clean_value(&object["status"]["qosClass"])),
+            format!(
+                "Account   {}",
+                clean_value(&object["spec"]["serviceAccountName"])
+            ),
+        ]);
+    }
+    let pod_spec = if kind == "Pod" {
+        &object["spec"]
+    } else {
+        &object["spec"]["template"]["spec"]
+    };
+    let mut remaining = 64usize;
+    for (field, status_field, label) in [
+        ("initContainers", "initContainerStatuses", "INIT CONTAINERS"),
+        ("containers", "containerStatuses", "CONTAINERS"),
+        (
+            "ephemeralContainers",
+            "ephemeralContainerStatuses",
+            "EPHEMERAL CONTAINERS",
+        ),
+    ] {
+        if let Some(containers) = pod_spec[field].as_array() {
+            lines.extend([String::new(), label.into()]);
+            for container in containers.iter().take(remaining) {
+                let container_name = container["name"].as_str().unwrap_or("-");
+                let status = object["status"][status_field]
+                    .as_array()
+                    .and_then(|statuses| {
+                        statuses
+                            .iter()
+                            .find(|status| status["name"] == container_name)
+                    });
+                lines.push(format!(
+                    "{}  ready:{}  restarts:{}",
+                    safety::safe_text(container_name, 256),
+                    status
+                        .map(|status| clean_value(&status["ready"]))
+                        .unwrap_or_else(|| "-".into()),
+                    status
+                        .map(|status| clean_value(&status["restartCount"]))
+                        .unwrap_or_else(|| "-".into())
+                ));
+                lines.push(format!("  image {}", clean_value(&container["image"])));
+                if let Some(status) = status {
+                    for state in ["waiting", "terminated"] {
+                        if !status["state"][state].is_null() {
+                            lines.push(format!(
+                                "  {} {}",
+                                state,
+                                clean_value(&status["state"][state]["reason"])
+                            ));
+                        }
+                    }
+                }
+            }
+            remaining = remaining.saturating_sub(containers.len());
+            if remaining == 0 {
+                lines.push(
+                    "Container overview capped at 64 entries; J shows bounded redacted JSON."
+                        .into(),
+                );
+                break;
+            }
+        }
+    }
+    if let Some(conditions) = object["status"]["conditions"].as_array() {
+        lines.extend([String::new(), "CONDITIONS".into()]);
+        lines.extend(conditions.iter().take(32).map(|condition| {
+            format!(
+                "{:<22} {:<8} {}",
+                clean_value(&condition["type"]),
+                clean_value(&condition["status"]),
+                clean_value(&condition["reason"])
+            )
+        }));
+    }
+    if kind == "Service" {
+        lines.extend([
+            String::new(),
+            "NETWORK".into(),
+            format!("Type      {}", clean_value(&object["spec"]["type"])),
+            format!("ClusterIP {}", clean_value(&object["spec"]["clusterIP"])),
+        ]);
+        if let Some(ports) = object["spec"]["ports"].as_array() {
+            lines.extend(ports.iter().take(32).map(|port| {
+                format!(
+                    "Port      {} / {} -> {}",
+                    clean_value(&port["port"]),
+                    clean_value(&port["protocol"]),
+                    clean_value(&port["targetPort"])
+                )
+            }));
+        }
+    }
+    if kind == "Event" {
+        lines.extend([
+            String::new(),
+            "EVENT".into(),
+            format!("Reason    {}", clean_value(&object["reason"])),
+            format!("Message   {}", clean_value(&object["message"])),
+        ]);
+    }
+    if let Some(labels) = object["metadata"]["labels"].as_object()
+        && !labels.is_empty()
+    {
+        lines.extend([String::new(), "LABELS".into()]);
+        lines.extend(labels.iter().take(32).map(|(key, value)| {
+            format!("{} = {}", safety::safe_text(key, 256), clean_value(value))
+        }));
+    }
+    lines.extend([String::new(), "J redacted JSON   y YAML   Esc close".into()]);
+    safety::safe_lines(&lines.join("\n"), 64 * 1024)
+}
+#[derive(Clone, Copy, Debug)]
+enum NavEntry {
+    Group(&'static str),
+    Resource(usize),
+}
+fn resource_group(kind: &Kind) -> usize {
+    match kind.kind.as_str() {
+        "Pod" | "Deployment" | "StatefulSet" | "DaemonSet" | "ReplicaSet" | "Job" | "CronJob"
+        | "Event" => 0,
+        "Service" | "Ingress" | "EndpointSlice" => 1,
+        "ConfigMap" | "PersistentVolumeClaim" | "Role" | "RoleBinding" | "ServiceAccount" => 2,
+        "Node" | "Namespace" | "StorageClass" | "PersistentVolume" => 3,
+        _ => 4,
+    }
+}
+fn navigation(kinds: &[Kind]) -> Vec<NavEntry> {
+    let mut entries = Vec::new();
+    for (group, title) in [
+        "WORKLOADS",
+        "NETWORK",
+        "CONFIG & ACCESS",
+        "CLUSTER",
+        "DISCOVERED",
+    ]
+    .iter()
+    .enumerate()
+    {
+        let resources: Vec<_> = kinds
+            .iter()
+            .enumerate()
+            .filter(|(_, kind)| resource_group(kind) == group)
+            .map(|(index, _)| NavEntry::Resource(index))
+            .collect();
+        if !resources.is_empty() {
+            entries.push(NavEntry::Group(title));
+            entries.extend(resources);
+        }
+    }
+    entries
+}
+fn nav_start(kinds: &[Kind], index: usize, rows: usize) -> usize {
+    navigation(kinds)
+        .iter()
+        .position(|entry| matches!(entry, NavEntry::Resource(selected) if *selected == index))
+        .unwrap_or(0)
+        .saturating_sub(rows.saturating_sub(1))
+}
+fn resource_label(kind: &Kind) -> String {
+    match kind.kind.as_str() {
+        "PersistentVolumeClaim" => "Volume claims".into(),
+        "ConfigMap" => "Config maps".into(),
+        "StatefulSet" => "Stateful sets".into(),
+        "DaemonSet" => "Daemon sets".into(),
+        "ReplicaSet" => "Replica sets".into(),
+        "CronJob" => "Cron jobs".into(),
+        "RoleBinding" => "Role bindings".into(),
+        "StorageClass" => "Storage classes".into(),
+        _ => {
+            let mut name = kind.plural.clone();
+            if let Some(first) = name.get_mut(..1) {
+                first.make_ascii_uppercase();
+            }
+            name
+        }
+    }
+}
+const TUI_HELP: &str = "BROWSE\n  j / k, arrows       Move through resources and objects\n  Tab                 Focus resources / table\n  Enter / d           Human-readable object overview\n  J / y               Redacted JSON / YAML\n  /                   Live cache filter; Esc restores selection\n  :pods :deploy :svc   Jump directly to a resource\n  :ns NAME / :all      Select namespace / all namespaces\n  S / :sort FIELD     Sort; name, namespace, status, restarts, age\n  PgUp PgDown Home End Navigate pages\n\nOPERATE\n  a                   Visible actions with disabled reasons\n  l / L / f           Logs / previous logs / rolling follow\n  E                   Reviewed pod shell (--write --allow-exec)\n  m / M               Metrics / add requests-limit comparisons (extra reads)\n  c / n / o           Context / namespace / context overview\n  r / R / w           Refresh / discover / watch-poll\n  s / e / V           Scale / image / CPU-memory budget edit\n  x / Delete          Restart / delete\n                      Writes need --write and exact target approval\n\nPERSONALIZE\n  t                   Preview themes; Enter saves\n  N inside themes     Create a custom palette from the preview\n  q                   Quit; Esc closes dialogs\n\nSAFETY\n  Context, namespace and mode remain visible. DEMO is sample data.\n  STALE and TRUNCATED describe incomplete data.\n  Logs require --allow-logs. Secrets and generic patches are excluded.\n  Every mutation retains a full dry-run review and one-use approval.";
+
 #[derive(Clone, Copy, Debug)]
 struct Rect {
     x: u16,
@@ -1488,10 +2145,12 @@ struct Rect {
 struct Layout {
     sidebar: Option<Rect>,
     table: Rect,
+    preview: Option<Rect>,
 }
 impl Layout {
     fn new(width: u16, height: u16) -> Self {
-        let sidebar_width = if width >= 88 { 26 } else { 0 };
+        let sidebar_width = if width >= 88 { 24 } else { 0 };
+        let preview_height = if width >= 70 && height >= 24 { 7 } else { 0 };
         Self {
             sidebar: (sidebar_width > 0).then_some(Rect {
                 x: 0,
@@ -1503,15 +2162,26 @@ impl Layout {
                 x: sidebar_width,
                 y: 3,
                 width: width.saturating_sub(sidebar_width),
-                height: height.saturating_sub(6),
+                height: height.saturating_sub(6 + preview_height),
             },
+            preview: (preview_height > 0).then_some(Rect {
+                x: sidebar_width,
+                y: height.saturating_sub(3 + preview_height),
+                width: width.saturating_sub(sidebar_width),
+                height: preview_height,
+            }),
         }
     }
     fn table_rows(self) -> usize {
         usize::from(self.table.height.saturating_sub(3))
     }
     fn kind_rows(self) -> usize {
-        usize::from(self.table.height.saturating_sub(2))
+        usize::from(
+            self.sidebar
+                .map(|rect| rect.height)
+                .unwrap_or(self.table.height + self.preview.map(|rect| rect.height).unwrap_or(0))
+                .saturating_sub(2),
+        )
     }
 }
 #[derive(Clone, Copy)]
@@ -1711,7 +2381,75 @@ fn panel(
 }
 fn draw(app: &App) -> Result<()> {
     let (w, h) = terminal::size().map_err(|_| "cannot read terminal size")?;
-    render(app, w, h, &mut io::stdout().lock())
+    let mut frame = Vec::new();
+    render(app, w, h, &mut frame)?;
+    let mut out = io::stdout().lock();
+    out.write_all(&frame)
+        .and_then(|_| out.flush())
+        .map_err(|_| "draw failed".into())
+}
+fn modal_rect(modal: &Modal, width: u16, height: u16) -> Rect {
+    let available = height.saturating_sub(6);
+    let compact = matches!(
+        modal,
+        Modal::Input(..)
+            | Modal::Picker(..)
+            | Modal::Themes(..)
+            | Modal::NewTheme(..)
+            | Modal::Image(..)
+            | Modal::Scale(..)
+            | Modal::Resources(..)
+            | Modal::SessionContainers(..)
+    );
+    let modal_width = if compact && width >= 80 {
+        width.saturating_sub(10).min(84)
+    } else {
+        width
+    };
+    let desired = match modal {
+        Modal::Input(..) => 6,
+        Modal::NewTheme(..) | Modal::Image(..) => 8,
+        Modal::Resources(..) => 10,
+        Modal::Scale(..) => 6,
+        Modal::Picker(_, items, _) | Modal::SessionContainers(_, _, _, items, _) => {
+            (items.len() as u16).saturating_add(3)
+        }
+        Modal::Themes(items, ..) => (items.len() as u16).saturating_add(4),
+        _ => available,
+    };
+    let modal_height = desired.min(available).max(2).min(available);
+    Rect {
+        x: width.saturating_sub(modal_width) / 2,
+        y: 3 + available.saturating_sub(modal_height) / 2,
+        width: modal_width,
+        height: modal_height,
+    }
+}
+fn input_lines(label: &str, text: &str, width: usize, height: usize) -> Vec<String> {
+    if height == 0 {
+        return Vec::new();
+    }
+    let mut lines = if height >= 3 {
+        vec![
+            format!("{} / {} bytes", text.len(), input_limit(label)),
+            String::new(),
+        ]
+    } else {
+        Vec::new()
+    };
+    let remaining = height.saturating_sub(lines.len()).max(1);
+    let wrapped = wrap_text(&format!("> {text}_"), width.max(1));
+    let entries: Vec<_> = wrapped.lines().collect();
+    let start = entries.len().saturating_sub(remaining);
+    let first_visible = lines.len();
+    lines.extend(entries.iter().skip(start).map(|line| (*line).to_owned()));
+    if start > 0
+        && let Some(line) = lines.get_mut(first_visible)
+        && line.chars().count() > 1
+    {
+        *line = format!("<{}", line.chars().skip(1).collect::<String>());
+    }
+    lines
 }
 fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
     let t = &app.theme;
@@ -1724,13 +2462,10 @@ fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
     };
     let bg = color("background");
     let fg = color("text");
-    queue!(
-        out,
-        themes::BackgroundColor(bg),
-        terminal::Clear(ClearType::All)
-    )
-    .map_err(|_| "draw failed")?;
     if w < 28 || h < 10 {
+        for y in 0..h {
+            row(out, y, w, "", fg, bg).map_err(|_| "draw failed")?;
+        }
         row(out, 0, w, "KBorg: needs 28x10; q quits", fg, bg).map_err(|_| "draw failed")?;
         if h > 1 {
             row(out, 1, w, &app.status, color("warning"), bg).map_err(|_| "draw failed")?;
@@ -1745,14 +2480,11 @@ fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
     } else {
         "PRODUCTION READ ONLY"
     };
-    let header = format!(
-        "KBorg | {mode}{}",
-        if w >= 80 {
-            format!(" | {}", app.theme.name)
-        } else {
-            String::new()
-        }
-    );
+    let header = if w >= 64 {
+        format!(" KBORG  /  {mode}")
+    } else {
+        format!("KBorg | {mode}")
+    };
     row(
         out,
         0,
@@ -1762,6 +2494,20 @@ fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
         color("status_background"),
     )
     .map_err(|_| "draw failed")?;
+    if w >= 90 {
+        let badge = format!(" {}  v{} ", app.theme.name, env!("CARGO_PKG_VERSION"));
+        let width = badge.len().min(usize::from(w / 3)) as u16;
+        cell(
+            out,
+            w - width,
+            0,
+            width,
+            &badge,
+            color("status_text"),
+            color("status_background"),
+        )
+        .map_err(|_| "draw failed")?;
+    }
     row(
         out,
         1,
@@ -1785,36 +2531,79 @@ fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
         "CACHED"
     };
     let visible = app.visible();
-    row(
-        out,
-        2,
-        w,
-        &format!(
-            "{freshness}{} | {} | {}/{} objects | sort:{}{}",
-            if app.truncated { " TRUNCATED" } else { "" },
-            app.kind(),
-            visible.len(),
-            app.items.len(),
-            app.sort.label(),
-            if app.filter.is_empty() {
-                String::new()
-            } else {
-                format!(" | /{}", app.filter)
-            }
-        ),
-        if app.stale || app.truncated {
-            color("warning")
-        } else {
-            color("muted")
-        },
-        bg,
-    )
-    .map_err(|_| "draw failed")?;
+    row(out, 2, w, "", fg, bg).map_err(|_| "draw failed")?;
+    let healthy = visible
+        .iter()
+        .filter(|object| health(object) == Health::Healthy)
+        .count();
+    let attention = visible
+        .iter()
+        .filter(|object| health(object) == Health::Attention)
+        .count();
+    let resource = app
+        .kinds
+        .get(app.kind_index)
+        .map(resource_label)
+        .unwrap_or_else(|| app.kind());
+    let bands = if w >= 64 {
+        vec![
+            (
+                format!(
+                    " {freshness}{} ",
+                    if app.truncated { " / TRUNCATED" } else { "" }
+                ),
+                if app.stale || app.truncated {
+                    "warning"
+                } else {
+                    "accent"
+                },
+            ),
+            (format!(" {} {resource} ", visible.len()), "text"),
+            (format!(" OK {healthy} "), "success"),
+            (
+                format!(" ATTENTION {attention} "),
+                if attention > 0 { "warning" } else { "muted" },
+            ),
+            (
+                format!(
+                    " SORT:{}{}",
+                    app.sort.label(),
+                    if app.filter.is_empty() {
+                        String::new()
+                    } else {
+                        format!("  /{}", app.filter)
+                    }
+                ),
+                "muted",
+            ),
+        ]
+    } else {
+        vec![(
+            format!(
+                "{freshness}{} | {} {resource} | !{attention}",
+                if app.truncated { " TRUNCATED" } else { "" },
+                visible.len()
+            ),
+            "accent",
+        )]
+    };
+    let mut x = 0u16;
+    for (text, role) in bands {
+        let width = (text.len() as u16).min(w.saturating_sub(x));
+        if width == 0 {
+            break;
+        }
+        cell(out, x, 2, width, &text, color(role), bg).map_err(|_| "draw failed")?;
+        x += width;
+    }
     let layout = Layout::new(w, h);
     let height = layout.table_rows();
-    let sidebar = layout
-        .sidebar
-        .or_else(|| app.left_focus.then_some(layout.table));
+    let sidebar = layout.sidebar.or_else(|| {
+        app.left_focus.then_some(Rect {
+            height: layout.table.height + layout.preview.map(|rect| rect.height).unwrap_or(0),
+            ..layout.table
+        })
+    });
     if let Some(rect) = sidebar {
         panel(
             out,
@@ -1830,19 +2619,33 @@ fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
         )
         .map_err(|_| "draw failed")?;
         let rows = layout.kind_rows();
-        let start = app.kind_index.saturating_sub(rows.saturating_sub(1));
-        for (r, kind) in app.kinds.iter().skip(start).take(rows).enumerate() {
-            let selected = start + r == app.kind_index;
+        let entries = navigation(&app.kinds);
+        let start = nav_start(&app.kinds, app.kind_index, rows);
+        for (r, entry) in entries.iter().skip(start).take(rows).enumerate() {
+            let (text, selected, heading) = match entry {
+                NavEntry::Group(title) => (format!(" {title}"), false, true),
+                NavEntry::Resource(index) => (
+                    format!(
+                        " {} {}",
+                        if *index == app.kind_index { ">" } else { " " },
+                        resource_label(&app.kinds[*index])
+                    ),
+                    *index == app.kind_index,
+                    false,
+                ),
+            };
             cell(
                 out,
                 rect.x + 1,
                 rect.y + 1 + r as u16,
                 rect.width - 2,
-                &format!("{} {}", if selected { ">" } else { " " }, kind.key()),
+                &text,
                 if selected {
                     color("selection_text")
+                } else if heading {
+                    color("accent")
                 } else {
-                    fg
+                    color("muted")
                 },
                 if selected {
                     color("selection_background")
@@ -1895,8 +2698,8 @@ fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
             rect.y + 1,
             rect.width - 2,
             &format!("  {}", table_line(&cols, None, now)),
-            color("muted"),
-            bg,
+            color("selection_text"),
+            color("selection_background"),
         )
         .map_err(|_| "draw failed")?;
         let start = app.selected.saturating_sub(height.saturating_sub(1));
@@ -1967,6 +2770,76 @@ fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
             .map_err(|_| "draw failed")?;
         }
     }
+    if let Some(rect) = layout.preview
+        && (layout.sidebar.is_some() || !app.left_focus)
+    {
+        panel(
+            out,
+            rect,
+            "SELECTED / Enter overview",
+            false,
+            color("muted"),
+            bg,
+        )
+        .map_err(|_| "draw failed")?;
+        let lines = if let Some(object) = visible.get(app.selected) {
+            let spec = if object["kind"] == "Pod" {
+                &object["spec"]
+            } else {
+                &object["spec"]["template"]["spec"]
+            };
+            let image = spec["containers"]
+                .as_array()
+                .and_then(|containers| containers.first())
+                .map(|container| clean_value(&container["image"]))
+                .unwrap_or_else(|| "-".into());
+            vec![
+                format!("{} / {}", namespace(object), name(object)),
+                format!(
+                    "{}   ready {}   restarts {}   age {}",
+                    summary(object),
+                    readiness(object),
+                    restarts(object),
+                    age(object, k8s_openapi::jiff::Timestamp::now().as_second())
+                ),
+                if object["kind"] == "Pod" {
+                    format!(
+                        "Node {}   IP {}",
+                        clean_value(&object["spec"]["nodeName"]),
+                        clean_value(&object["status"]["podIP"])
+                    )
+                } else {
+                    format!(
+                        "Kind {}   version {}",
+                        clean_value(&object["kind"]),
+                        clean_value(&object["metadata"]["resourceVersion"])
+                    )
+                },
+                format!("Image {image}"),
+                "Enter overview   J JSON   y YAML   a actions".into(),
+            ]
+        } else {
+            vec!["Select an object to inspect readiness, identity and image.".into()]
+        };
+        for (r, line) in lines.iter().take(usize::from(rect.height - 2)).enumerate() {
+            cell(
+                out,
+                rect.x + 1,
+                rect.y + 1 + r as u16,
+                rect.width - 2,
+                line,
+                if r == 0 {
+                    color("accent")
+                } else if r == 4 {
+                    color("muted")
+                } else {
+                    fg
+                },
+                bg,
+            )
+            .map_err(|_| "draw failed")?;
+        }
+    }
     row(
         out,
         h - 3,
@@ -1989,7 +2862,7 @@ fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
         h - 2,
         w,
         if w >= 80 {
-            "Enter details | y YAML | l logs | f follow | m metrics | a actions | / filter"
+            " Enter overview  J JSON  y YAML  l logs  f follow  m metrics  a actions  / filter"
         } else {
             "Enter inspect | / filter | : command | a actions"
         },
@@ -1997,7 +2870,7 @@ fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
         bg,
     )
     .map_err(|_| "draw failed")?;
-    row(out, h - 1, w, if w >= 80 { ": resource | S sort | Tab focus | c context | n namespace | r refresh | ? help | q quit" }
+    row(out, h - 1, w, if w >= 80 { " : resource   S sort   Tab focus   c context   n namespace   r refresh   ? help   q quit" }
         else { "q quit | ? help | Tab focus" }, color("muted"), bg).map_err(|_| "draw failed")?;
     match &app.modal {
         Modal::None => {}
@@ -2024,31 +2897,34 @@ fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
         modal => {
             let title = match modal {
                 Modal::Input(label, _) | Modal::Picker(label, ..) => *label,
-                Modal::Follow(..) => "LIVE LOGS / 60s / 256KiB",
+                Modal::Follow(..) => "LOG STREAM / rolling 256KiB / End follows latest",
                 Modal::Containers(..) => "CHOOSE CONTAINER",
                 Modal::Image(..) => "CHANGE DEPLOYMENT IMAGE",
-                Modal::Detail(..) => "INSPECT / PgUp PgDown / Esc close",
-                Modal::Metrics(..) => "METRICS / refresh 5s / m refresh / Esc close",
+                Modal::Detail(..) => "REDACTED INSPECTION / Esc close",
+                Modal::Overview(..) => "OBJECT OVERVIEW / J JSON / y YAML / Esc close",
+                Modal::LiveOverview(..) => "LIVE CONTEXT OVERVIEW / independent watches",
+                Modal::SessionContainers(..) => "POD SHELL / choose ordinary container",
+                Modal::SessionConfirm(..) => "REVIEW POD SHELL / privileged interactive session",
+                Modal::Metrics(..) if app.metrics_resources => {
+                    "METRICS + RESOURCE COMPARISONS / extra reads enabled"
+                }
+                Modal::Metrics(..) => "METRICS / M enables requests-limit comparisons",
                 Modal::Themes(..) => "THEMES / Enter save / Esc restore",
                 Modal::NewTheme(..) => "CREATE CUSTOM THEME / from preview colors",
                 Modal::Confirm(..) => "REVIEW MUTATION / explicit confirmation required",
                 Modal::Scale(..) => "SCALE DEPLOYMENT",
+                Modal::Resources(..) => "RESOURCE BUDGET / reviewed deployment edit",
                 Modal::Help(..) => "HELP / PgUp PgDown / Esc close",
                 Modal::None => "",
                 Modal::Filter(..) => "",
             };
-            let rect = Rect {
-                x: 0,
-                y: 3,
-                width: w,
-                height: h.saturating_sub(6),
-            };
+            let rect = modal_rect(modal, w, h);
             panel(
                 out,
                 rect,
                 title,
                 true,
-                if matches!(modal, Modal::Confirm(..)) {
+                if matches!(modal, Modal::Confirm(..) | Modal::SessionConfirm(..)) {
                     color("warning")
                 } else {
                     color("accent")
@@ -2058,20 +2934,50 @@ fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
             .map_err(|_| "draw failed")?;
             let height = usize::from(rect.height.saturating_sub(2));
             let lines = match modal {
-                Modal::Input(label, text) => vec![
-                    format!(" {label}: {text}_"),
-                    " Enter apply | Esc cancel".into(),
-                ],
-                Modal::Follow(text, offset)
-                | Modal::Detail(text, offset)
-                | Modal::Metrics(text, offset) => {
-                    let wrapped = wrap_text(text, usize::from(w.saturating_sub(2)));
+                Modal::Input(label, text) => input_lines(label, text, usize::from(rect.width.saturating_sub(2)), height),
+                Modal::Detail(text, offset)
+                | Modal::Metrics(text, offset)
+                | Modal::LiveOverview(text, offset) => {
+                    let wrapped = wrap_text(text, usize::from(rect.width.saturating_sub(2)));
                     let offset = (*offset).min(wrapped.lines().count().saturating_sub(1));
                     wrapped.lines().skip(offset).map(str::to_owned).collect()
                 }
+                Modal::Follow(text, offset) => {
+                    let wrapped = wrap_text(text, usize::from(rect.width.saturating_sub(2)));
+                    let offset = if *offset == usize::MAX {
+                        wrapped.lines().count().saturating_sub(height)
+                    } else {
+                        (*offset).min(wrapped.lines().count().saturating_sub(1))
+                    };
+                    wrapped.lines().skip(offset).map(str::to_owned).collect()
+                }
+                Modal::Overview(object, offset) => {
+                    let wrapped = wrap_text(
+                        &overview_text(object, &app.context),
+                        usize::from(rect.width.saturating_sub(2)),
+                    );
+                    wrapped
+                        .lines()
+                        .skip((*offset).min(wrapped.lines().count().saturating_sub(1)))
+                        .map(str::to_owned)
+                        .collect()
+                }
+                Modal::SessionContainers(_, name, _, names, index) => {
+                    std::iter::once(format!("Pod {name} / direct /bin/sh -i / review required"))
+                        .chain(
+                            names
+                                .iter()
+                                .enumerate()
+                                .skip(index.saturating_sub(height.saturating_sub(2)))
+                                .map(|(i, name)| {
+                                    format!(" {} {name}", if i == *index { ">" } else { " " })
+                                }),
+                        )
+                        .collect()
+                }
                 Modal::Containers(_, name, names, index, previous, follow) => {
                     std::iter::once(format!(
-                        " CONTAINER for {name} — {} — Enter select / Esc cancel",
+                        " CONTAINER for {name} | {} | Enter select / Esc cancel",
                         if *follow {
                             "follow"
                         } else if *previous {
@@ -2093,7 +2999,7 @@ fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
                 }
                 Modal::Image(_, _, name, _, container, text) => vec![
                     format!(
-                        " CHANGE IMAGE {name} — {}",
+                        " CHANGE IMAGE {name} | {}",
                         container.as_deref().unwrap_or("enter container name")
                     ),
                     format!(
@@ -2107,7 +3013,7 @@ fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
                     " Enter continue to server dry-run/review | Esc cancel".into(),
                 ],
                 Modal::Picker(label, list, index) => {
-                    std::iter::once(format!(" {label} — arrows / Enter select / Esc cancel"))
+                    std::iter::once(format!(" {label} | arrows / Enter select / Esc cancel"))
                         .chain(
                             list.iter()
                                 .enumerate()
@@ -2147,18 +3053,20 @@ fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
                 Modal::Confirm(p, text) => {
                     confirmation_lines(&p.summary, text, w.saturating_sub(1))
                 }
+                Modal::Resources(_,_,name,_,text) => wrap_text(&format!("Deployment {name}\n\ncontainer CPU_REQUEST MEMORY_REQUEST CPU_LIMIT MEMORY_LIMIT\n\n> {text}_\n\nExample: app 100m 128Mi 500m 512Mi\nEnter server dry-run / full review; Esc cancel"), usize::from(rect.width.saturating_sub(2))).lines().map(str::to_owned).collect(),
                 Modal::Scale(_, _, name, _, text) => vec![
-                    format!(" SCALE {name} — enter replicas 0..20: {text}_"),
+                    format!(" SCALE {name} | enter replicas 0..20: {text}_"),
                     " Enter server dry-run/review | Esc cancel".into(),
                 ],
+                Modal::SessionConfirm(prepared, text) => {
+                    confirmation_lines(prepared.summary(), text, w.saturating_sub(1))
+                }
                 Modal::Help(offset) => {
-                    std::iter::once(" HELP - PgUp/PgDown scroll; Esc close".into())
-                        .chain(
-                            include_str!("../docs/CLI_HELP.txt")
-                                .lines()
-                                .skip(*offset)
-                                .map(|s| format!(" {s}")),
-                        )
+                    let wrapped = wrap_text(TUI_HELP, usize::from(rect.width.saturating_sub(2)));
+                    wrapped
+                        .lines()
+                        .skip((*offset).min(wrapped.lines().count().saturating_sub(1)))
+                        .map(str::to_owned)
                         .collect()
                 }
                 Modal::None => vec![],
@@ -2168,14 +3076,16 @@ fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
                 let selected = line.starts_with(" > ");
                 cell(
                     out,
-                    1,
-                    4 + index as u16,
-                    w.saturating_sub(2),
+                    rect.x + 1,
+                    rect.y + 1 + index as u16,
+                    rect.width.saturating_sub(2),
                     line,
-                    if matches!(modal, Modal::Confirm(..)) {
+                    if matches!(modal, Modal::Confirm(..) | Modal::SessionConfirm(..)) {
                         color("warning")
                     } else if selected {
                         color("selection_text")
+                    } else if !line.is_empty() && line.chars().all(|c| !c.is_ascii_lowercase()) {
+                        color("accent")
                     } else {
                         fg
                     },
@@ -2193,10 +3103,20 @@ fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
                 } else {
                     "Esc cancel | Enlarge terminal to review complete mutation."
                 }
+            } else if let Modal::SessionConfirm(prepared, text) = modal {
+                if confirmation_fits(prepared.summary(), text, w, h) {
+                    "Enter start session | Esc cancel | Ctrl-] ends session"
+                } else {
+                    "Esc cancel | Enlarge terminal to review complete session."
+                }
             } else if matches!(modal, Modal::Input("Command", _)) {
                 "Esc cancel | Enter run | :pods :deploy :svc :nodes | :ns NAME | :sort FIELD"
+            } else if matches!(modal, Modal::LiveOverview(..)) {
+                "Esc stops all context watches | PgUp/PgDown scroll"
+            } else if matches!(modal, Modal::Overview(..)) {
+                "Esc close | J redacted JSON | y YAML | PgUp/PgDown scroll"
             } else if matches!(modal, Modal::Metrics(..)) {
-                "Esc close | m refresh | PgUp/PgDown scroll | Home/End"
+                "Esc close | m refresh | M requests/limits (extra reads) | PgUp/PgDown"
             } else {
                 "Esc close | Enter select | arrows / j k | PgUp PgDown scroll"
             };
@@ -2281,7 +3201,7 @@ fn wrap_text(text: &str, width: usize) -> String {
 pub fn run(options: Options) -> Result<()> {
     let first_run = options.theme.is_none() && themes::first_run()?;
     let theme = themes::find(options.theme.as_deref().unwrap_or(&themes::selected()))?;
-    let _terminal = Terminal::enter(options.mouse)?;
+    let mut terminal_guard = Some(Terminal::enter(options.mouse)?);
     if options.splash && themes::animation_enabled() && !startup_animation(&theme, options.color)? {
         return Ok(());
     }
@@ -2320,6 +3240,9 @@ pub fn run(options: Options) -> Result<()> {
         last_refresh: Instant::now(),
         metrics_history: crate::metrics::MetricsHistory::default(),
         last_metrics: Instant::now(),
+        metrics_resources: false,
+        overview: None,
+        pending_session: None,
         worker: worker(),
     };
     if first_run {
@@ -2332,6 +3255,34 @@ pub fn run(options: Options) -> Result<()> {
     let mut dirty = false;
     loop {
         if app.receive() {
+            dirty = true;
+        }
+        if let Some((prepared, typed)) = app.pending_session.take() {
+            app.worker.logs.cancel();
+            app.overview = None;
+            app.epoch += 1;
+            app.worker.watch.invalidate(app.epoch);
+            app.watching = false;
+            app.stale = true;
+            drop(terminal_guard.take());
+            app.send(Task::RunSession(prepared, typed));
+            while app.write_inflight {
+                app.receive();
+                if app.worker.tx.is_closed() && app.write_inflight {
+                    app.write_inflight = false;
+                    app.busy = false;
+                    app.status =
+                        "Session worker ended; outcome may be unknown. Reconcile before retrying."
+                            .into();
+                    app.sticky_status = true;
+                    app.stale = true;
+                }
+                if app.write_inflight {
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+            }
+            terminal_guard = Some(Terminal::enter(app.options.mouse)?);
+            app.refresh = true;
             dirty = true;
         }
         if matches!(app.modal, Modal::Metrics(..))
@@ -2386,58 +3337,7 @@ pub fn run(options: Options) -> Result<()> {
                 Event::Resize(_, _) => dirty = true,
                 Event::Mouse(mouse) if matches!(app.modal, Modal::None) && !app.write_inflight => {
                     let (w, h) = terminal::size().map_err(|_| "terminal size failed")?;
-                    let layout = Layout::new(w, h);
-                    let resources = layout.sidebar.is_some_and(|rect| mouse.column < rect.width)
-                        || (layout.sidebar.is_none() && app.left_focus);
-                    match mouse.kind {
-                        MouseEventKind::ScrollDown => {
-                            if resources {
-                                let index =
-                                    (app.kind_index + 1).min(app.kinds.len().saturating_sub(1));
-                                if index != app.kind_index {
-                                    app.kind_index = index;
-                                    app.changed();
-                                }
-                            } else {
-                                app.selected =
-                                    (app.selected + 1).min(app.visible().len().saturating_sub(1));
-                            }
-                        }
-                        MouseEventKind::ScrollUp => {
-                            if resources {
-                                let index = app.kind_index.saturating_sub(1);
-                                if index != app.kind_index {
-                                    app.kind_index = index;
-                                    app.changed();
-                                }
-                            } else {
-                                app.selected = app.selected.saturating_sub(1);
-                            }
-                        }
-                        MouseEventKind::Down(_) => {
-                            let top = if resources { 4 } else { 5 };
-                            if mouse.row >= top && mouse.row < h.saturating_sub(4) {
-                                let row = usize::from(mouse.row - top);
-                                if resources {
-                                    let start = app
-                                        .kind_index
-                                        .saturating_sub(layout.kind_rows().saturating_sub(1));
-                                    app.kind_index =
-                                        (start + row).min(app.kinds.len().saturating_sub(1));
-                                    app.left_focus = false;
-                                    app.changed();
-                                } else {
-                                    let start = app
-                                        .selected
-                                        .saturating_sub(layout.table_rows().saturating_sub(1));
-                                    app.selected =
-                                        (start + row).min(app.visible().len().saturating_sub(1));
-                                    app.left_focus = false;
-                                }
-                            }
-                        }
-                        _ => {}
-                    }
+                    app.mouse(mouse, w, h);
                     dirty = true;
                 }
                 _ => {}
@@ -2531,7 +3431,7 @@ fn startup_animation(theme: &Theme, color: bool) -> Result<bool> {
 
 pub fn preview(theme: Theme, color: bool) -> Result<()> {
     if !io::stdout().is_terminal() {
-        println!("{} ({}) — validated palette", theme.name, theme.id);
+        println!("{} ({}) | validated palette", theme.name, theme.id);
         return Ok(());
     }
     let mut out = io::stdout();
@@ -2541,7 +3441,7 @@ pub fn preview(theme: Theme, color: bool) -> Result<()> {
         Color::Reset
     };
     for (role, text) in [
-        ("text", "Resource: demo/api — 2/2 ready"),
+        ("text", "Resource: demo/api | 2/2 ready"),
         ("success", "SUCCESS rollout healthy"),
         ("warning", "PRODUCTION / READ ONLY / STALE"),
         ("danger", "ERROR destructive operation requires approval"),
@@ -2590,6 +3490,11 @@ mod layout_tests {
                     follow: false,
                     previous: false,
                     allow_tools: false,
+                    allow_extensions: false,
+                    log_seconds: 3600,
+                    interactive: false,
+                    session_seconds: 900,
+                    metrics_resources: false,
                     command: vec![],
                 },
                 theme: themes::builtins().remove(0),
@@ -2621,6 +3526,9 @@ mod layout_tests {
                 last_refresh: Instant::now(),
                 metrics_history: crate::metrics::MetricsHistory::default(),
                 last_metrics: Instant::now(),
+                metrics_resources: false,
+                overview: None,
+                pending_session: None,
                 worker: Worker {
                     tx,
                     rx,
@@ -2639,6 +3547,7 @@ mod layout_tests {
         let mut output = Vec::new();
         assert!(render(app, width, height, &mut output).is_ok());
         let mut cells = vec![vec![' '; usize::from(width)]; usize::from(height)];
+        let mut painted = vec![vec![false; usize::from(width)]; usize::from(height)];
         let (mut x, mut y, mut index) = (0usize, 0usize, 0usize);
         while index < output.len() {
             if output[index] == 27 {
@@ -2668,10 +3577,15 @@ mod layout_tests {
                     "paint outside {width}x{height}: {x},{y}"
                 );
                 cells[y][x] = char::from(output[index]);
+                painted[y][x] = true;
                 x += 1;
             }
             index += 1;
         }
+        assert!(
+            painted.iter().flatten().all(|painted| *painted),
+            "frame left stale cells behind"
+        );
         cells
             .into_iter()
             .map(|row| row.into_iter().collect())
@@ -2863,6 +3777,338 @@ mod layout_tests {
         assert!(!app.action_menu()[7].contains("[OFF]"));
     }
     #[test]
+    fn navigation_groups_short_names_and_mouse_hits_visible_rows() {
+        let (mut app, _replies, _commands) = harness();
+        app.left_focus = true;
+        let frame = screen(&app, 120, 32).join("\n");
+        assert!(frame.contains("WORKLOADS") && frame.contains("NETWORK"));
+        assert!(frame.contains("> Pods") && !frame.contains("statefulsets.apps"));
+        let epoch = app.epoch;
+        app.mouse(
+            MouseEvent {
+                kind: MouseEventKind::Down(crossterm::event::MouseButton::Left),
+                column: 3,
+                row: 4,
+                modifiers: KeyModifiers::NONE,
+            },
+            120,
+            32,
+        );
+        assert_eq!(app.epoch, epoch); // A category heading is not a resource.
+        app.mouse(
+            MouseEvent {
+                kind: MouseEventKind::Down(crossterm::event::MouseButton::Left),
+                column: 3,
+                row: 6,
+                modifiers: KeyModifiers::NONE,
+            },
+            120,
+            32,
+        );
+        assert_eq!(app.kind(), "deployments.apps");
+        app.left_focus = true;
+        app.move_resource(1);
+        assert_eq!(app.kind(), "events");
+    }
+    #[test]
+    fn polished_frame_shows_health_selection_preview_and_centered_actions_without_clear() {
+        let (mut app, _replies, _commands) = harness();
+        app.items = vec![
+            serde_json::json!({"kind":"Pod","metadata":{"name":"api","namespace":"test","uid":"pod1"},"spec":{"nodeName":"worker-a","containers":[{"name":"app","image":"example/api:v2"}]},"status":{"phase":"Running","containerStatuses":[{"name":"app","ready":true,"restartCount":0}]}}),
+        ];
+        let frame = screen(&app, 120, 32).join("\n");
+        for label in [
+            "OK 1",
+            "ATTENTION 0",
+            "SELECTED",
+            "worker-a",
+            "example/api:v2",
+        ] {
+            assert!(frame.contains(label));
+        }
+        let mut output = Vec::new();
+        assert!(render(&app, 120, 32, &mut output).is_ok());
+        assert!(!output.windows(4).any(|window| window == b"\x1b[2J"));
+        app.modal = Modal::Picker("Actions", app.action_menu(), 0);
+        let rect = modal_rect(&app.modal, 120, 32);
+        assert!(rect.x > 0 && rect.y > 3 && rect.width < 120);
+        let frame = screen(&app, 120, 32).join("\n");
+        assert!(frame.contains("[OFF]") && frame.contains("Interactive pod shell"));
+    }
+    #[test]
+    fn human_overview_uses_redacted_object_fields_and_json_remains_accessible() {
+        let (mut app, replies, mut commands) = harness();
+        let mut pod = serde_json::json!({"kind":"Pod","metadata":{"name":"api","namespace":"test","uid":"pod1","resourceVersion":"9"},"spec":{"nodeName":"worker-a","containers":[{"name":"app","image":"example/api:v2"}],"password":"canary-secret"},"status":{"phase":"Running","conditions":[{"type":"Ready","status":"True"}],"containerStatuses":[{"name":"app","ready":true,"restartCount":3}]}});
+        safety::redact(&mut pod);
+        let text = overview_text(&pod, "current-context");
+        for label in [
+            "IDENTITY",
+            "CONTAINERS",
+            "SCHEDULING",
+            "worker-a",
+            "example/api:v2",
+            "Ready",
+        ] {
+            assert!(text.contains(label));
+        }
+        assert!(!text.contains("canary-secret"));
+        app.items = vec![pod.clone()];
+        assert!(app.key(KeyCode::Enter).is_ok());
+        assert!(matches!(commands.try_recv(), Ok((_, Task::Inspect(..)))));
+        assert!(replies.send((12, Reply::Object(Box::new(pod)))).is_ok());
+        app.receive();
+        assert!(matches!(app.modal, Modal::Overview(..)));
+        assert!(app.key(KeyCode::Char('J')).is_ok());
+        assert!(matches!(app.modal, Modal::Detail(..)));
+    }
+    #[test]
+    fn pod_shell_picker_preserves_captured_identity_and_capabilities() {
+        let (mut app, _replies, mut commands) = harness();
+        app.items = vec![
+            serde_json::json!({"kind":"Pod","metadata":{"name":"first","namespace":"test","uid":"first-uid"},"spec":{"containers":[{"name":"app"}]}}),
+        ];
+        assert!(app.key(KeyCode::Char('E')).is_ok());
+        assert!(matches!(app.modal, Modal::None));
+        app.options.connection.writable = true;
+        assert!(app.key(KeyCode::Char('E')).is_ok());
+        assert!(matches!(app.modal, Modal::None));
+        app.options.connection.allow_exec = true;
+        assert!(app.key(KeyCode::Char('E')).is_ok());
+        app.items = vec![object("replacement")];
+        assert!(app.key(KeyCode::Enter).is_ok());
+        match commands.try_recv() {
+            Ok((_, Task::PrepareSession(namespace, pod, container, uid, seconds))) => {
+                assert_eq!(
+                    (
+                        namespace.as_str(),
+                        pod.as_str(),
+                        container.as_str(),
+                        uid.as_deref(),
+                        seconds
+                    ),
+                    ("test", "first", "app", Some("first-uid"), 900)
+                );
+            }
+            _ => panic!("shell picker changed target"),
+        }
+    }
+    #[test]
+    fn log_follow_defaults_to_newest_window_and_end_restores_tail() {
+        let (mut app, _replies, _commands) = harness();
+        let text = (0..100)
+            .map(|index| format!("line-{index}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        app.modal = Modal::Follow(text, usize::MAX);
+        assert!(screen(&app, 60, 12).join("\n").contains("line-99"));
+        assert!(app.key(KeyCode::Home).is_ok());
+        assert!(screen(&app, 60, 12).join("\n").contains("line-0"));
+        assert!(app.key(KeyCode::End).is_ok());
+        assert!(matches!(app.modal, Modal::Follow(_, usize::MAX)));
+    }
+    #[test]
+    fn live_context_overview_updates_and_close_rejects_late_feed() -> Result<()> {
+        let rt = runtime()?;
+        let create = || {
+            rt.block_on(async {
+                let feed = crate::overview::OverviewFeed::new(
+                    &Connection {
+                        demo: true,
+                        ..Default::default()
+                    },
+                    &["demo".into()],
+                )?;
+                tokio::time::sleep(Duration::from_millis(20)).await;
+                Ok::<_, String>(feed)
+            })
+        };
+        let (mut app, replies, _commands) = harness();
+        app.modal = Modal::LiveOverview("Connecting...".into(), 0);
+        assert!(replies.send((12, Reply::Overview(create()?))).is_ok());
+        app.receive();
+        assert!(app.overview.is_some());
+        let frame = screen(&app, 80, 24).join("\n");
+        assert!(frame.contains("demo"));
+        assert!(frame.contains("CONTEXT | NAMESPACE | PODS | UNHEALTHY | STATE"));
+        assert!(!frame.contains("CONTEXTNAMESPACE"));
+        app.key(KeyCode::Esc)?;
+        assert!(app.overview.is_none());
+        assert!(replies.send((12, Reply::Overview(create()?))).is_ok());
+        app.receive();
+        assert!(app.overview.is_none() && matches!(app.modal, Modal::None));
+        Ok(())
+    }
+    #[test]
+    fn overview_input_accepts_long_names_and_four_full_utf8_names() {
+        let (mut app, _replies, mut commands) = harness();
+        let names = vec!["a".repeat(150), "b".repeat(160)];
+        app.modal = Modal::Input(OVERVIEW_CONTEXTS_LABEL, String::new());
+        for c in names.join(",").chars() {
+            assert!(app.key(KeyCode::Char(c)).is_ok());
+        }
+        assert!(app.key(KeyCode::Enter).is_ok());
+        match commands.try_recv() {
+            Ok((_, Task::Overview(_, entered))) => assert_eq!(entered, names),
+            _ => panic!("long overview names were not accepted"),
+        }
+        app.busy = false;
+        app.command_epoch = None;
+        let names: Vec<_> = ['a', 'b', 'c', 'd']
+            .iter()
+            .map(|prefix| format!("{prefix}{}", "é".repeat(126)))
+            .collect();
+        let text = names.join(",");
+        assert!(names.iter().all(|name| name.len() == 253));
+        assert_eq!(text.len(), OVERVIEW_INPUT_BYTES);
+        app.modal = Modal::Input(OVERVIEW_CONTEXTS_LABEL, String::new());
+        for c in text.chars() {
+            assert!(app.key(KeyCode::Char(c)).is_ok());
+        }
+        assert!(app.key(KeyCode::Char('x')).is_ok());
+        match &app.modal {
+            Modal::Input(_, entered) => assert_eq!(entered, &text),
+            _ => panic!("input modal changed"),
+        }
+        assert!(app.key(KeyCode::Enter).is_ok());
+        match commands.try_recv() {
+            Ok((_, Task::Overview(_, entered))) => assert_eq!(entered, names),
+            _ => panic!("four maximum-length overview names were not accepted"),
+        }
+        app.busy = false;
+        app.modal = Modal::Input(OVERVIEW_CONTEXTS_LABEL, "a,b,c,d,e".into());
+        assert!(app.key(KeyCode::Enter).is_ok());
+        assert!(commands.try_recv().is_err());
+        assert!(app.status.contains("up to 4"));
+    }
+    #[test]
+    fn overview_input_enforces_byte_boundary_and_keeps_active_tail_visible() {
+        let (mut app, _replies, _commands) = harness();
+        app.modal = Modal::Input(
+            OVERVIEW_CONTEXTS_LABEL,
+            "x".repeat(OVERVIEW_INPUT_BYTES - 1),
+        );
+        assert!(app.key(KeyCode::Char('é')).is_ok()); // Two bytes cannot cross the remaining one-byte budget.
+        match &app.modal {
+            Modal::Input(_, text) => assert_eq!(text.len(), OVERVIEW_INPUT_BYTES - 1),
+            _ => panic!("input modal changed"),
+        }
+        assert!(app.key(KeyCode::Char('x')).is_ok());
+        assert!(app.key(KeyCode::Backspace).is_ok());
+        assert!(app.key(KeyCode::Backspace).is_ok());
+        assert!(app.key(KeyCode::Char('é')).is_ok());
+        match &app.modal {
+            Modal::Input(_, text) => {
+                assert_eq!(text.len(), OVERVIEW_INPUT_BYTES);
+                assert!(text.ends_with('é'));
+            }
+            _ => panic!("input modal changed"),
+        }
+        let text = format!("{},ACTIVE-TAIL", "a".repeat(155));
+        app.modal = Modal::Input(OVERVIEW_CONTEXTS_LABEL, text.clone());
+        for (width, height) in [(28, 10), (48, 12), (80, 24), (120, 32)] {
+            let rect = modal_rect(&app.modal, width, height);
+            let lines = input_lines(
+                OVERVIEW_CONTEXTS_LABEL,
+                &text,
+                usize::from(rect.width - 2),
+                usize::from(rect.height - 2),
+            );
+            assert!(lines.join("").ends_with("ACTIVE-TAIL_"));
+            assert!(screen(&app, width, height).join("\n").contains("TAIL_"));
+        }
+        assert_eq!(
+            input_lines("Command", "abcdefgh", 10, 1),
+            vec!["_".to_owned()]
+        );
+        app.modal = Modal::Input("Namespace", "x".repeat(99));
+        assert!(app.key(KeyCode::Char('é')).is_ok());
+        match &app.modal {
+            Modal::Input(_, text) => assert_eq!(text.len(), 99),
+            _ => panic!("namespace modal changed"),
+        }
+        assert_eq!(input_limit("Command"), 100);
+        assert_eq!(input_limit("Namespace"), 100);
+    }
+    #[test]
+    fn metrics_extra_resource_reads_require_explicit_uppercase_key() {
+        let (mut app, _replies, mut commands) = harness();
+        assert!(app.key(KeyCode::Char('m')).is_ok());
+        assert!(matches!(
+            commands.try_recv(),
+            Ok((_, Task::Metrics(_, _, false)))
+        ));
+        app.busy = false;
+        app.command_epoch = None;
+        app.modal = Modal::None;
+        assert!(app.key(KeyCode::Char('M')).is_ok());
+        assert!(matches!(
+            commands.try_recv(),
+            Ok((_, Task::Metrics(_, _, true)))
+        ));
+        assert!(
+            screen(&app, 80, 24)
+                .join("\n")
+                .contains("extra reads enabled")
+        );
+    }
+    #[test]
+    fn resource_budget_form_captures_uid_and_validates_before_preparation() {
+        let (mut app, _replies, mut commands) = harness();
+        app.kind_index = 1;
+        app.items = vec![object("first")];
+        assert!(app.key(KeyCode::Char('V')).is_ok());
+        assert!(matches!(app.modal, Modal::None));
+        app.options.connection.writable = true;
+        assert!(app.key(KeyCode::Char('V')).is_ok());
+        app.items = vec![object("replacement")];
+        for character in "app 100m 128Mi 500m 512Mi".chars() {
+            assert!(app.key(KeyCode::Char(character)).is_ok());
+        }
+        assert!(app.key(KeyCode::Enter).is_ok());
+        match commands.try_recv() {
+            Ok((
+                _,
+                Task::Prepare(
+                    _,
+                    namespace,
+                    name,
+                    uid,
+                    Action::SetResources {
+                        container,
+                        resources,
+                    },
+                ),
+            )) => {
+                assert_eq!(
+                    (namespace.as_str(), name.as_str(), uid.as_deref()),
+                    ("test", "first", Some("uid-first"))
+                );
+                assert_eq!(container, "app");
+                assert_eq!(
+                    (
+                        resources.cpu_request.as_str(),
+                        resources.memory_request.as_str(),
+                        resources.cpu_limit.as_str(),
+                        resources.memory_limit.as_str()
+                    ),
+                    ("100m", "128Mi", "500m", "512Mi")
+                );
+            }
+            _ => panic!("resource budget form changed target"),
+        }
+        app.busy = false;
+        app.modal = Modal::Resources(
+            "deployments.apps".into(),
+            "test".into(),
+            "first".into(),
+            Some("uid-first".into()),
+            "app 2 1Gi 1 512Mi".into(),
+        );
+        assert!(app.key(KeyCode::Enter).is_ok());
+        assert!(matches!(app.modal, Modal::Resources(..)));
+        assert!(commands.try_recv().is_err());
+    }
+    #[test]
     fn log_mailbox_is_bounded_and_cancel_discards_obsolete_producer() {
         let slot = LogSlot::default();
         let generation = slot.cancel();
@@ -2873,8 +4119,14 @@ mod layout_tests {
             }
         }
         let text = slot.take().unwrap_or_default();
-        assert!(text.len() <= crate::logs::MAX_LOG_BYTES + 1024);
-        assert!(text.contains("display reached"));
+        assert!(text.len() <= crate::logs::MAX_LOG_BYTES);
+        assert!(text.contains("older lines discarded"));
+        assert!(slot.append(generation, "newest retained line"));
+        assert!(
+            slot.take()
+                .unwrap_or_default()
+                .ends_with("newest retained line\n")
+        );
         slot.cancel();
         assert!(!slot.append(generation, "obsolete private log"));
         assert!(slot.take().is_none());

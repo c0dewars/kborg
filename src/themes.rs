@@ -158,6 +158,30 @@ fn basic_index(color: Color) -> Option<u8> {
         Color::Rgb { r, g, b } => nearest_basic(Rgb(r, g, b)),
     })
 }
+#[cfg(any(windows, test))]
+fn native_color(color: Color) -> Color {
+    const NAMED: [Color; 16] = [
+        Color::Black,
+        Color::DarkRed,
+        Color::DarkGreen,
+        Color::DarkYellow,
+        Color::DarkBlue,
+        Color::DarkMagenta,
+        Color::DarkCyan,
+        Color::Grey,
+        Color::DarkGrey,
+        Color::Red,
+        Color::Green,
+        Color::Yellow,
+        Color::Blue,
+        Color::Magenta,
+        Color::Cyan,
+        Color::White,
+    ];
+    basic_index(color)
+        .map(|index| NAMED[usize::from(index)])
+        .unwrap_or(Color::Reset)
+}
 
 fn write_color(
     color: Color,
@@ -202,7 +226,7 @@ impl Command for ForegroundColor {
     }
     #[cfg(windows)]
     fn execute_winapi(&self) -> std::io::Result<()> {
-        style::SetForegroundColor(self.0).execute_winapi()
+        style::SetForegroundColor(native_color(self.0)).execute_winapi()
     }
 }
 
@@ -215,7 +239,7 @@ impl Command for BackgroundColor {
     }
     #[cfg(windows)]
     fn execute_winapi(&self) -> std::io::Result<()> {
-        style::SetBackgroundColor(self.0).execute_winapi()
+        style::SetBackgroundColor(native_color(self.0)).execute_winapi()
     }
 }
 
@@ -745,6 +769,23 @@ fn cloned_theme(id: &str, current: &Theme) -> Result<ThemeFile> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn native_windows_fallback_uses_named_host_palette_colors() {
+        use super::{Color, basic_index, native_color};
+        for index in 0..16 {
+            let color = native_color(Color::AnsiValue(index));
+            assert_eq!(basic_index(color), Some(index));
+            assert!(!matches!(color, Color::Rgb { .. } | Color::AnsiValue(_)));
+        }
+        assert_eq!(native_color(Color::Rgb { r: 255, g: 0, b: 0 }), Color::Red);
+        assert_eq!(
+            native_color(Color::Rgb { r: 128, g: 0, b: 0 }),
+            Color::DarkRed
+        );
+        assert_eq!(native_color(Color::AnsiValue(196)), Color::Red);
+        assert_eq!(native_color(Color::AnsiValue(244)), Color::DarkGrey);
+        assert_eq!(native_color(Color::Reset), Color::Reset);
+    }
     #[test]
     fn declared_terminal_depth_controls_color_encoding() {
         use super::{ColorDepth::*, detected_depth};

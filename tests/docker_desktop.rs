@@ -5,6 +5,66 @@ use kborg::{
 };
 use std::{path::PathBuf, time::Duration};
 
+#[test]
+#[ignore = "requires uniquely owned local fixtures; scripts/test-local.py"]
+fn long_follow_crosses_old_byte_cap_and_a_quiet_network_interval() -> kborg::Result<()> {
+    use k8s_openapi::api::core::v1::Pod;
+    use kube::{
+        Api,
+        api::{DeleteParams, PostParams, Preconditions},
+    };
+    use serde_json::json;
+    runtime()?.block_on(async {
+        let reader=Gateway::connect(options("reader",false)).await?;
+        let namespace=reader.namespace.clone();
+        assert!(namespace.starts_with("kborg-tests-"));
+        let path=PathBuf::from(std::env::var("KBORG_TEST_FIXTURE_CONFIG").map_err(|_|"missing owned fixture credential")?);
+        let config=kube::config::Kubeconfig::read_from(path).map_err(|_|"cannot read scoped fixture config")?;
+        let config=kube::Config::from_custom_kubeconfig(config,&Default::default()).await.map_err(|_|"invalid scoped fixture config")?;
+        assert_eq!(config.default_namespace,namespace);
+        let client=kube::Client::try_from(config).map_err(|_|"fixture client unavailable")?;
+        let pods:Api<Pod>=Api::namespaced(client,&namespace);
+        let listed=reader.list("pods",&namespace).await?;
+        let image=listed["items"].as_array().and_then(|items|items.iter().find_map(|pod|pod["spec"]["containers"][0]["image"].as_str())).ok_or("fixture image missing")?.to_string();
+        let digest=image.rsplit_once("@sha256:").ok_or("fixture image must be pinned")?.1;
+        assert_eq!(digest.len(),64); assert!(digest.bytes().all(|b|b.is_ascii_hexdigit()));
+        let pod:Pod=serde_json::from_value(json!({"apiVersion":"v1","kind":"Pod","metadata":{"name":"long-follow","namespace":namespace},"spec":{
+            "automountServiceAccountToken":false,"terminationGracePeriodSeconds":1,
+            "securityContext":{"runAsNonRoot":true,"runAsUser":1000,"seccompProfile":{"type":"RuntimeDefault"}},
+            "containers":[{"name":"sample","image":image,"command":["sh","-c","printf 'START_LONG_LOG\\n'; dd if=/dev/zero bs=1000 count=300 2>/dev/null | tr '\\000' x; printf '\\n'; sleep 15; printf 'AFTER_QUIET\\n'; sleep 60"],
+                "securityContext":{"allowPrivilegeEscalation":false,"readOnlyRootFilesystem":true,"capabilities":{"drop":["ALL"]}},
+                "resources":{"requests":{"cpu":"10m","memory":"8Mi"},"limits":{"cpu":"100m","memory":"32Mi"}}}]
+        }})).map_err(|_|"invalid log fixture")?;
+        let created=pods.create(&PostParams::default(),&pod).await.map_err(|_|"cannot create owned log fixture")?;
+        let uid=created.metadata.uid.ok_or("fixture UID missing")?;
+        let result=async {
+            tokio::time::timeout(Duration::from_secs(60),async {
+                loop {
+                    let pod=pods.get("long-follow").await.map_err(|_|"fixture read failed")?;
+                    if pod.status.and_then(|status|status.conditions).is_some_and(|conditions|conditions.iter().any(|condition|condition.type_=="Ready" && condition.status=="True")) {break;}
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
+                Ok::<_,String>(())
+            }).await.map_err(|_|"log fixture readiness timed out")??;
+            let mut feed=reader.follow_logs_with_options(&namespace,"long-follow",Some("sample".into()),false,kborg::logs::FollowOptions{seconds:45}).await?;
+            let mut saw_large=false;
+            let mut quiet_started=None;
+            while let Some(line)=feed.next().await? {
+                assert!(!line.contains('\x1b'));
+                if line.contains("line truncated at 4096 bytes") {saw_large=true;quiet_started=Some(std::time::Instant::now());}
+                if line.contains("AFTER_QUIET") {
+                    assert!(saw_large,"follow did not cross the old 256 KiB cap");
+                    assert!(quiet_started.is_some_and(|started|started.elapsed()>Duration::from_secs(10)),"quiet network interval was not demonstrated");
+                    return Ok::<_,String>(());
+                }
+            }
+            Err("live log stream ended before the quiet interval resumed".into())
+        }.await;
+        pods.delete("long-follow",&DeleteParams{preconditions:Some(Preconditions{uid:Some(uid),resource_version:None}),..Default::default()}).await.map_err(|_|"owned log fixture cleanup failed")?;
+        result
+    })
+}
+
 fn options(identity: &str, writable: bool) -> Connection {
     let path = std::env::var(format!(
         "KBORG_TEST_{}_CONFIG",
@@ -50,7 +110,10 @@ fn isolated_cluster_acceptance() {
         assert!(!config.to_string().contains("KBORG_TEST_CANARY"));
         let yaml = kborg::inspect::yaml(&config).unwrap_or_else(|e| panic!("{e}"));
         assert!(!yaml.contains("KBORG_TEST_CANARY"));
-        let pod = items[0]["metadata"]["name"]
+        let pod = items
+            .iter()
+            .find(|pod| pod["metadata"]["labels"]["app"] == "kborg-sample")
+            .unwrap_or_else(|| panic!("owned sample pod missing"))["metadata"]["name"]
             .as_str()
             .unwrap_or_else(|| panic!("missing pod name"));
         let logs = reader
@@ -207,6 +270,51 @@ fn isolated_cluster_acceptance() {
         assert_eq!(
             changed["spec"]["template"]["spec"]["containers"][0]["image"],
             replacement
+        );
+        tokio::time::sleep(Duration::from_secs(5)).await;
+        let budgets = operator
+            .prepare(
+                "deployments",
+                &ns,
+                "sample",
+                Action::SetResources {
+                    container: "sample".into(),
+                    resources: kborg::edit::ResourceEdit {
+                        cpu_request: "0.01".into(),
+                        memory_request: "8Mi".into(),
+                        cpu_limit: "0.2".into(),
+                        memory_limit: "64Mi".into(),
+                    },
+                },
+            )
+            .await
+            .unwrap_or_else(|e| panic!("resources dry-run: {e}"));
+        assert!(budgets.summary.contains("+ limits.cpu: 0.2"));
+        let approval = Approval::confirm(
+            budgets.target.clone(),
+            budgets.action.clone(),
+            &format!("{ns}/sample"),
+        )
+        .unwrap_or_else(|e| panic!("{e}"));
+        operator
+            .execute(budgets, approval)
+            .await
+            .unwrap_or_else(|e| panic!("resources execute: {e}"));
+        let updated = operator
+            .get("deployments", &ns, "sample")
+            .await
+            .unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(
+            updated["spec"]["template"]["spec"]["containers"][0]["image"],
+            replacement
+        );
+        assert_eq!(
+            updated["spec"]["template"]["spec"]["containers"][0]["resources"]["limits"]["cpu"],
+            "200m"
+        );
+        assert_eq!(
+            updated["spec"]["template"]["spec"]["containers"][0]["resources"]["limits"]["memory"],
+            "64Mi"
         );
         let delete = operator
             .prepare("services", &ns, "delete-me", Action::Delete)
