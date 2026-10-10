@@ -21,6 +21,15 @@ pub enum Request {
     Attach {
         container: String,
     },
+    InteractiveExec {
+        container: String,
+        argv: Vec<String>,
+        seconds: u16,
+    },
+    InteractiveAttach {
+        container: String,
+        seconds: u16,
+    },
     PortForward {
         local_port: u16,
         remote_port: u16,
@@ -30,8 +39,8 @@ pub enum Request {
 impl Request {
     fn capability(&self) -> usize {
         match self {
-            Self::Exec { .. } => 0,
-            Self::Attach { .. } => 1,
+            Self::Exec { .. } | Self::InteractiveExec { .. } => 0,
+            Self::Attach { .. } | Self::InteractiveAttach { .. } => 1,
             Self::PortForward { .. } => 2,
         }
     }
@@ -39,12 +48,17 @@ impl Request {
         match self {
             Self::Exec { .. } => "exec",
             Self::Attach { .. } => "attach",
+            Self::InteractiveExec { .. } => "interactive-exec",
+            Self::InteractiveAttach { .. } => "interactive-attach",
             Self::PortForward { .. } => "port-forward",
         }
     }
     fn validate(&self) -> Result<()> {
         match self {
-            Self::Exec { container, argv } => {
+            Self::Exec { container, argv }
+            | Self::InteractiveExec {
+                container, argv, ..
+            } => {
                 crate::edit::validate(container, "placeholder:1")?;
                 if argv.is_empty()
                     || argv.len() > 64
@@ -60,6 +74,9 @@ impl Request {
                 }
             }
             Self::Attach { container } => crate::edit::validate(container, "placeholder:1")?,
+            Self::InteractiveAttach { container, .. } => {
+                crate::edit::validate(container, "placeholder:1")?
+            }
             Self::PortForward {
                 local_port,
                 remote_port,
@@ -69,6 +86,11 @@ impl Request {
                     return Err("forwarding requires local port 1024..65535, remote port 1..65535 and duration 1..300 seconds".into());
                 }
             }
+        }
+        if let Self::InteractiveExec { seconds, .. } | Self::InteractiveAttach { seconds, .. } =
+            self
+        {
+            crate::session::validate_lifetime(*seconds)?;
         }
         Ok(())
     }
@@ -86,6 +108,12 @@ pub struct ReviewedOperation {
 impl ReviewedOperation {
     pub fn summary(&self) -> &str {
         &self.summary
+    }
+    pub fn uid(&self) -> &str {
+        &self.uid
+    }
+    pub fn confirmation(&self) -> String {
+        format!("{}/{}", self.namespace, self.pod)
     }
 }
 
@@ -123,6 +151,32 @@ pub async fn prepare(
                 "container: {container}\nRead-only stdout/stderr attachment; no stdin or TTY. 30-second deadline."
             )
         }
+        Request::InteractiveExec {
+            container,
+            argv,
+            seconds,
+        } => {
+            verify_container(object.spec.as_ref(), container)?;
+            format!(
+                "container: {container}\nDirect argv: {}\n{}",
+                serde_json::to_string(argv).map_err(|_| "cannot review arguments")?,
+                crate::session::review(*seconds)
+            )
+        }
+        Request::InteractiveAttach { container, seconds } => {
+            verify_container(object.spec.as_ref(), container)?;
+            if !object.spec.as_ref().is_some_and(|spec| {
+                spec.containers
+                    .iter()
+                    .any(|c| c.name == *container && c.stdin == Some(true) && c.tty == Some(true))
+            }) {
+                return Err("interactive attach requires a container originally configured with stdin:true and tty:true".into());
+            }
+            format!(
+                "container: {container}\nAttach to the existing container process; entered commands affect that process.\n{}",
+                crate::session::review(*seconds)
+            )
+        }
         Request::PortForward {
             local_port,
             remote_port,
@@ -131,7 +185,7 @@ pub async fn prepare(
             "127.0.0.1:{local_port} -> pod:{remote_port}; {seconds} seconds; at most 4 simultaneous clients. Other local users can access the listener."
         ),
     };
-    let summary = safety::safe_lines(
+    let summary = safety::review_text(
         &format!(
             "{}\nserver: {}\ncontext: {}\ntarget: {namespace}/{pod}\nUID: {uid}\nresourceVersion: {version}\n{details}\nKubernetes subresources have no UID precondition; a narrow name-recreation race remains.\nType {namespace}/{pod} to approve within 60 seconds.",
             request.name(),
@@ -139,7 +193,7 @@ pub async fn prepare(
             gateway.context
         ),
         16384,
-    );
+    )?;
     Ok(ReviewedOperation {
         request,
         namespace: namespace.into(),
@@ -158,7 +212,11 @@ fn verify_container(spec: Option<&k8s_openapi::api::core::v1::PodSpec>, name: &s
     Ok(())
 }
 
-pub async fn run(gateway: &Gateway, reviewed: ReviewedOperation, typed: &str) -> Result<String> {
+async fn verify_review(
+    gateway: &Gateway,
+    reviewed: &ReviewedOperation,
+    typed: &str,
+) -> Result<kube::Api<k8s_openapi::api::core::v1::Pod>> {
     if reviewed.created.elapsed() > Duration::from_secs(60)
         || reviewed.session != gateway.operation_session()
         || typed != format!("{}/{}", reviewed.namespace, reviewed.pod)
@@ -166,16 +224,87 @@ pub async fn run(gateway: &Gateway, reviewed: ReviewedOperation, typed: &str) ->
         return Err("operation approval expired or target confirmation changed".into());
     }
     let api = gateway.operation_api(&reviewed.namespace, reviewed.request.capability())?;
-    let current = api
-        .get(&reviewed.pod)
+    let current = tokio::time::timeout(Duration::from_secs(15), api.get(&reviewed.pod))
         .await
+        .map_err(|_| "operation target recheck timed out")?
         .map_err(|_| "cannot recheck operation target")?;
     if current.metadata.uid.as_deref() != Some(&reviewed.uid)
         || current.metadata.resource_version.as_deref() != Some(&reviewed.version)
     {
         return Err("target changed; review again".into());
     }
+    Ok(api)
+}
+
+async fn connect_interactive(
+    api: &kube::Api<k8s_openapi::api::core::v1::Pod>,
+    reviewed: &ReviewedOperation,
+) -> Result<kube::api::AttachedProcess> {
+    let connection = async {
+        match &reviewed.request {
+            Request::InteractiveExec {
+                container, argv, ..
+            } => {
+                api.exec(&reviewed.pod, argv, &crate::session::parameters(container))
+                    .await
+            }
+            Request::InteractiveAttach { container, .. } => {
+                api.attach(&reviewed.pod, &crate::session::parameters(container))
+                    .await
+            }
+            _ => return Err("review does not authorize an interactive session".into()),
+        }
+        .map_err(connection_error)
+    };
+    tokio::time::timeout(Duration::from_secs(15), connection)
+        .await
+        .map_err(|_| "interactive connection timed out; remote outcome unknown")?
+}
+
+/// Controlled-input session entrypoint for UI integrations and owned live tests.
+/// Reuses the exact same one-use target review, capabilities and audit as terminal sessions.
+pub async fn run_interactive(
+    gateway: &Gateway,
+    reviewed: ReviewedOperation,
+    typed: &str,
+    inputs: tokio::sync::mpsc::Receiver<crate::session::Input>,
+    emit: impl FnMut(&str) -> Result<()>,
+) -> Result<crate::session::Outcome> {
+    let seconds = match &reviewed.request {
+        Request::InteractiveExec { seconds, .. } | Request::InteractiveAttach { seconds, .. } => {
+            *seconds
+        }
+        _ => return Err("review does not authorize an interactive session".into()),
+    };
+    let api = verify_review(gateway, &reviewed, typed).await?;
     let audit = start_audit(gateway, &reviewed)?;
+    let result = match connect_interactive(&api, &reviewed).await {
+        Ok(process) => crate::session::pump(process, seconds, inputs, emit).await,
+        Err(error) => Err(error),
+    };
+    finish_audit(
+        &audit,
+        match &result {
+            Ok(outcome) if outcome.remote_outcome_unknown() => {
+                "session-ended-remote-outcome-unknown"
+            }
+            Ok(_) => "succeeded",
+            Err(_) => "failed-or-unknown",
+        },
+    )?;
+    result
+}
+
+pub async fn run(gateway: &Gateway, reviewed: ReviewedOperation, typed: &str) -> Result<String> {
+    let api = verify_review(gateway, &reviewed, typed).await?;
+    if matches!(
+        &reviewed.request,
+        Request::InteractiveExec { .. } | Request::InteractiveAttach { .. }
+    ) {
+        crate::session::ensure_terminal()?;
+    }
+    let audit = start_audit(gateway, &reviewed)?;
+    let mut session_unknown = false;
     let result = match &reviewed.request {
         Request::Exec { container, argv } => {
             let params = AttachParams {
@@ -197,6 +326,18 @@ pub async fn run(gateway: &Gateway, reviewed: ReviewedOperation, typed: &str) ->
                 Err(error) => Err(connection_error(error)),
             }
         }
+        Request::InteractiveExec { seconds, .. } | Request::InteractiveAttach { seconds, .. } => {
+            match connect_interactive(&api, &reviewed).await {
+                Ok(process) => match crate::session::terminal(process, *seconds).await {
+                    Ok(outcome) => {
+                        session_unknown = outcome.remote_outcome_unknown();
+                        Ok(outcome.summary())
+                    }
+                    Err(error) => Err(error),
+                },
+                Err(error) => Err(error),
+            }
+        }
         Request::PortForward {
             local_port,
             remote_port,
@@ -215,7 +356,9 @@ pub async fn run(gateway: &Gateway, reviewed: ReviewedOperation, typed: &str) ->
     };
     finish_audit(
         &audit,
-        if result.is_ok() {
+        if result.is_ok() && session_unknown {
+            "session-ended-remote-outcome-unknown"
+        } else if result.is_ok() {
             "succeeded"
         } else {
             "failed-or-unknown"

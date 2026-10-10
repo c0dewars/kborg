@@ -38,6 +38,9 @@ pub struct MetricsSnapshot {
     pub source: &'static str,
     pub items: Vec<MetricsRow>,
     pub truncated: bool,
+    /// Present only for the explicit additional resource-read workflow.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub allocation_status: Option<String>,
 }
 #[derive(Debug, Serialize)]
 pub struct MetricsRow {
@@ -58,6 +61,8 @@ pub struct MetricsRow {
     /// This does not change the versioned machine-output projection.
     #[serde(skip)]
     pub identity_uid: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub allocations: Option<crate::allocations::ResourceComparison>,
 }
 impl MetricsSnapshot {
     pub fn text(&self) -> String {
@@ -65,6 +70,9 @@ impl MetricsSnapshot {
             "Metrics API {} | {} | measurements include timestamp and window\nNAMESPACE/NAME  CONTAINER  CPU(m)  MEMORY(bytes; exact size)  TIMESTAMP  WINDOW\n",
             self.api_version, self.source
         );
+        if let Some(status) = &self.allocation_status {
+            output.push_str(&format!("Resource comparisons: {status}\n"));
+        }
         for row in &self.items {
             let target = row
                 .namespace
@@ -86,6 +94,9 @@ impl MetricsSnapshot {
                     ""
                 }
             ));
+            if let Some(allocations) = &row.allocations {
+                output.push_str(&allocations.text());
+            }
         }
         if self.items.is_empty() {
             output.push_str("No metrics samples returned.\n");
@@ -463,7 +474,7 @@ fn valid_history_identity(row: &MetricsRow, scope: MetricsScope, namespace: &str
         }
 }
 
-fn format_millicores(nanocores: u64) -> String {
+pub(crate) fn format_millicores(nanocores: u64) -> String {
     let fractional = nanocores % 1_000_000;
     if fractional == 0 {
         (nanocores / 1_000_000).to_string()
@@ -475,7 +486,7 @@ fn format_millicores(nanocores: u64) -> String {
 }
 
 /// Human-readable memory using an exact integral binary unit, without float rounding.
-fn format_memory(bytes: u64) -> String {
+pub(crate) fn format_memory(bytes: u64) -> String {
     if bytes != 0 {
         for (unit, shift) in [
             ("Ei", 60),
@@ -501,6 +512,32 @@ pub async fn collect(gateway: &Gateway, scope: MetricsScope, ns: &str) -> Result
     }
     let api = gateway.metrics_api(scope, ns)?;
     collect_api(api, scope, ns).await
+}
+
+/// Explicit opt-in: usage first, then one separately bounded current resource
+/// read. A denied/failed denominator read retains the valid usage snapshot.
+pub async fn collect_with_allocations(
+    gateway: &Gateway,
+    scope: MetricsScope,
+    ns: &str,
+) -> Result<MetricsSnapshot> {
+    let mut snapshot = collect(gateway, scope, ns).await?;
+    let resource = if scope == MetricsScope::Pods {
+        "pods"
+    } else {
+        "nodes"
+    };
+    let objects = tokio::time::timeout(BUDGET, gateway.list(resource, ns)).await;
+    match objects {
+        Ok(Ok(objects)) => {
+            if let Err(error) = crate::allocations::enrich(&mut snapshot, &objects) {
+                snapshot.allocation_status = Some(format!("Resource denominator snapshot unavailable: {}. Usage retained.", safety::safe_text(&error, 256)));
+            }
+        }
+        Ok(Err(error)) => snapshot.allocation_status = Some(format!("Additional resource read failed: {}. Usage retained; no denominators inferred.", safety::safe_text(&error, 256))),
+        Err(_) => snapshot.allocation_status = Some("Additional resource read exceeded 15-second budget. Usage retained; no denominators inferred.".into()),
+    }
+    Ok(snapshot)
 }
 
 async fn collect_api(
@@ -596,6 +633,7 @@ fn empty(scope: MetricsScope, ns: &str, source: &'static str) -> MetricsSnapshot
         source,
         items: Vec::new(),
         truncated: false,
+        allocation_status: None,
     }
 }
 fn metrics_error(error: kube::Error) -> String {
@@ -669,6 +707,7 @@ fn decode_rows(value: &Value, scope: MetricsScope, ns: &str) -> Result<Vec<Metri
             memory_bytes,
             rounded_up: cpu_rounded || memory_rounded,
             identity_uid: identity_uid.clone(),
+            allocations: None,
         })
     };
     match scope {
@@ -779,7 +818,7 @@ fn valid_timestamp(text: &str) -> bool {
 
 /// Comparable RFC3339 time, including explicit offsets and arbitrary bounded
 /// fractional precision. Only the display quantities use base-unit rounding.
-fn timestamp_key(text: &str) -> Option<(i64, String)> {
+pub(crate) fn timestamp_key(text: &str) -> Option<(i64, String)> {
     if text.len() > 64 || !valid_timestamp(text) {
         return None;
     }
@@ -955,10 +994,10 @@ pub fn demo(scope: MetricsScope, ns: &str) -> Result<MetricsSnapshot> {
     let mut snapshot = empty(scope, ns, "demo (deterministic sample)");
     let value = match scope {
         MetricsScope::Pods => {
-            json!({"metadata":{"name":"api-7d4f9","namespace":"demo"},"timestamp":"2026-01-01T00:00:00Z","window":"30s","containers":[{"name":"api","usage":{"cpu":"125m","memory":"64Mi"}}]})
+            json!({"metadata":{"name":"api-7d4f9","namespace":"demo","uid":"demo-Pod-api-7d4f9"},"timestamp":"2026-10-10T07:00:30Z","window":"30s","containers":[{"name":"app","usage":{"cpu":"125m","memory":"64Mi"}}]})
         }
         MetricsScope::Nodes => {
-            json!({"metadata":{"name":"demo-node"},"timestamp":"2026-01-01T00:00:00Z","window":"30s","usage":{"cpu":"750m","memory":"1Gi"}})
+            json!({"metadata":{"name":"demo-node","uid":"demo-Node-demo-node"},"timestamp":"2026-10-10T07:00:30Z","window":"30s","usage":{"cpu":"750m","memory":"1Gi"}})
         }
     };
     if scope == MetricsScope::Nodes || ns == "*" || ns == "demo" {
@@ -1462,6 +1501,40 @@ mod tests {
         });
         let recorded = requests.lock().unwrap_or_else(|e| panic!("{e}")).clone();
         (result, recorded)
+    }
+    #[test]
+    fn optional_resource_reads_are_explicit_and_forbidden_or_invalid_denominators_retain_usage() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap_or_else(|error| panic!("{error}"));
+        runtime.block_on(async {
+            let usage = page(MetricsScope::Pods, vec![sample(MetricsScope::Pods, "sample")], "", "1");
+            let resource = json!({"apiVersion":"v1","kind":"PodList","metadata":{},"items":[{"metadata":{"name":"sample","namespace":"demo","uid":"resource-uid","creationTimestamp":"2025-12-31T23:59:00Z"},"spec":{"containers":[{"name":"api","resources":{"requests":{"cpu":"125m","memory":"1Mi"},"limits":{"cpu":"1","memory":"2Mi"}}}]}}]});
+            for response in [
+                (200, resource.clone()),
+                (403, json!({"apiVersion":"v1","kind":"Status","status":"Failure","reason":"Forbidden","message":"CANARY credential detail","code":403})),
+                (200, json!({"apiVersion":"v1","kind":"PodList","metadata":{},"items":[{"metadata":{"name":"sample","namespace":"other"}}]})),
+            ] {
+                let (api, requests) = mock_api(MetricsScope::Pods, "demo", vec![(200, usage.clone()), response]);
+                let gateway = Gateway::for_test_client(api.into_client(), "demo");
+                let snapshot = collect_with_allocations(&gateway, MetricsScope::Pods, "demo").await.unwrap_or_else(|error| panic!("{error}"));
+                assert_eq!(snapshot.items.len(), 1);
+                assert_eq!(snapshot.items[0].cpu_nanocores, 1_000_000);
+                assert_eq!(snapshot.items[0].memory_bytes, 1_048_576);
+                assert!(snapshot.allocation_status.is_some());
+                assert!(!snapshot.text().contains("CANARY"));
+                let paths = requests.lock().unwrap_or_else(|error| panic!("{error}"));
+                assert_eq!(paths.len(), 2);
+                assert!(paths[0].starts_with("/apis/metrics.k8s.io/v1beta1/namespaces/demo/pods"));
+                assert!(paths[1].starts_with("/api/v1/namespaces/demo/pods"));
+            }
+            let (api, requests) = mock_api(MetricsScope::Pods, "demo", vec![(200, usage)]);
+            let gateway = Gateway::for_test_client(api.into_client(), "demo");
+            let snapshot = collect(&gateway, MetricsScope::Pods, "demo").await.unwrap_or_else(|error| panic!("{error}"));
+            assert!(snapshot.allocation_status.is_none() && snapshot.items[0].allocations.is_none());
+            assert_eq!(requests.lock().unwrap_or_else(|error| panic!("{error}")).len(), 1);
+        });
     }
     #[test]
     fn mock_interop_pods_nodes_and_projection() {

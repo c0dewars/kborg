@@ -4,7 +4,14 @@ use std::time::{Duration, Instant};
 #[derive(Clone, PartialEq, Eq)]
 pub enum Action {
     Scale(i32),
-    SetImage { container: String, image: String },
+    SetImage {
+        container: String,
+        image: String,
+    },
+    SetResources {
+        container: String,
+        resources: crate::edit::ResourceEdit,
+    },
     Restart,
     Delete,
 }
@@ -16,6 +23,7 @@ impl Action {
             Self::Restart => "restart",
             Self::Delete => "delete",
             Self::SetImage { .. } => "set-image",
+            Self::SetResources { .. } => "set-resources",
         }
     }
 }
@@ -67,6 +75,10 @@ impl Policy {
             Action::SetImage { container, image } if target.resource == "deployments" => {
                 crate::edit::validate(container, image)
             }
+            Action::SetResources {
+                container,
+                resources,
+            } if target.resource == "deployments" => resources.validate(container),
             Action::Restart if target.resource == "deployments" => Ok(()),
             Action::Delete
                 if ["pods", "deployments", "services", "jobs"]

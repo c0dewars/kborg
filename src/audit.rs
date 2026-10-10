@@ -44,6 +44,8 @@ fn parse(id: String, bytes: &[u8]) -> Result<Option<Pending>> {
         "delete"
     } else if action == "set-image" {
         "set-image"
+    } else if action == "set-resources" {
+        "set-resources"
     } else {
         "operation"
     };

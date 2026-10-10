@@ -4,32 +4,42 @@ KBorg 0.3 — Kubernetes operations, under your control
   kborg demo                     Offline sample cluster; no credentials
   kborg startup on|off           Persist startup animation preference
   kborg contexts                 List contexts without connecting
-  kborg overview CONTEXT...       Independent pod summaries, 1..100 contexts
+  kborg overview CONTEXT...       Snapshots 1..100; --follow watches up to 4 contexts
   kborg doctor                   Verify selected context and pod access
   kborg resources                Bounded API discovery (Secrets excluded)
   kborg watch RESOURCE            Bounded live snapshots; --json emits JSONL
-  kborg metrics pods|nodes        CPU/memory with timestamp/window
+  kborg metrics pods|nodes        CPU/memory/history; --metrics-resources comparisons
   kborg list RESOURCE             Bounded resource table; --json for pipelines
   kborg get RESOURCE NAME         Redacted JSON; --yaml for YAML inspection
+  kborg view RESOURCE NAME --interactive  Native searchable JSON/YAML pager
   kborg view RESOURCE NAME --tool ABS [--tool-arg ARG]  Reviewed tool view
   kborg logs POD [CONTAINER]      --allow-logs; optional --follow or --previous
   kborg scale NAME REPLICAS       Deployment scale with terminal approval
   kborg restart NAME              Guarded deployment rollout
   kborg set-image NAME CONTAINER IMAGE   Reviewed deployment image change
+  kborg set-resources NAME CONTAINER CPU_REQ MEM_REQ CPU_LIMIT MEM_LIMIT
   kborg delete RESOURCE NAME      Guarded deletion; no force
-  kborg exec POD CONTAINER -- COMMAND [ARG...]   Bounded noninteractive exec
-  kborg attach POD CONTAINER      Bounded stdout/stderr attachment, no stdin
+  kborg exec POD CONTAINER -- COMMAND [ARG...]   Reviewed exec; --interactive enables stdin/TTY
+  kborg attach POD CONTAINER      Output-only; --interactive enables stdin/TTY
   kborg forward POD LOCAL REMOTE SECONDS   Loopback only, up to 300 seconds
   kborg audit pending             Uncertain local outcomes; never auto-retries
   kborg config init|validate FILE Strict schema-1 JSON configuration
   kborg completions bash|zsh|fish|powershell   Static completion script
+  kborg auth-helper review --executable ABS [--env NAME=VALUE] --output POLICY
+  kborg extensions list | register NAME --tool ABS | remove NAME
+  kborg extensions run NAME RESOURCE OBJECT --allow-extensions --allow-tools
+  kborg copilot preflight --cli ABS_NATIVE --host HOST
+  kborg copilot preview RESOURCE NAME --host HOST
   kborg copilot context RESOURCE NAME --output NEW.json
   kborg copilot login --cli ABSOLUTE_PATH --host github.com
 
 Options (put KBorg flags before exec's -- separator):
   --context NAME     --namespace NAME / -n NAME ("*" for all on reads)
   --kubeconfig FILE  --config FILE  --write (default READ ONLY)  --readonly
-  --allow-tools      --tool ABS     --tool-arg ARG
+  --allow-tools      --tool ABS     --tool-arg ARG    --allow-extensions
+  --allow-auth-helper --auth-helper-policy FILE
+  --interactive     --session-seconds 1..3600    --log-seconds 1..86400
+  --metrics-resources
   --allow-logs       --allow-exec   --allow-attach   --allow-forward
   --poll            --theme ID     --color=never    --json       --yaml
   --no-mouse        --follow          --previous     --no-splash      --demo       --help
@@ -37,11 +47,15 @@ Options (put KBorg flags before exec's -- separator):
 Exec/attach/forward require --write AND their separate --allow-* flag.
 Tool views require --allow-tools and RUN TOOL transfer approval (Unix only).
 Trusted tools retain your OS-user filesystem/network access; no OS sandbox.
-Output is sanitized/captured with a 15s/256KiB budget. No interactive editor.
+Output is sanitized/captured with a 15s/256KiB budget. No external interactive editor.
+Native helper/tool execution is Unix-only; SDK sandbox preflight is macOS-only.
 All writes and subresource operations require exact terminal confirmation.
-Exec has no stdin/TTY, a 30s deadline and bounded output; disconnect cannot
-guarantee remote process termination. Log follow stops after 60s/256KiB.
-Overview permits 4 concurrent contexts with a 30s global deadline.
+Noninteractive exec/attach retain a 30s deadline. Interactive sessions use
+Ctrl-] disconnect, stdin/resize, 1..3600s, 16MiB output/1MiB input. Output filters
+unsafe terminal controls; remote full-screen apps remain unsupported.
+Disconnect cannot guarantee remote termination. Follow defaults 1h; rolling
+display 256KiB/2000 lines, 64MiB wire cap and per-second flood limits.
+Overview snapshots have a 30s global budget; --follow owns up to 4 live watches.
 
 Themes:
   theme list | use ID | reset | new ID --base BUILTIN | clone-current ID
@@ -50,17 +64,18 @@ Themes:
 Replacement preserves an original .json.bak and refuses to overwrite it.
 
 TUI keys:
-  Up/Down, j/k: select   Tab: resources/table   Enter: JSON   y: YAML
+  Up/Down, j/k: select   Tab: resources/table   Enter/d: overview   J: JSON   y: YAML
   :: resource commands (:pods, :deploy, :svc, :nodes, :ns NAME, :all, :ctx)
   S: cycle sort (:sort name|namespace|status|restarts|age)
   /: cache filter   r: refresh   c: contexts   n: namespace   o: overview
-  m: metrics/history (refreshes every 5s; r refreshes)   w: watch/poll   R: discovery   l/L: logs/previous   f: follow
-  a: actions   e: image edit   s: scale   x: restart   Delete: guarded delete
+  m: metrics/history   M: read request/limit bases (refresh5s)   w: watch/poll   R: discovery   l/L: logs/previous   f: follow
+  a: actions   E: reviewed shell   V: reviewed resource budgets   e: image edit   s: scale   x: restart   Delete: guarded delete
   t: themes    ?: help        Esc: close/cancel       q: quit
   Themes: arrows preview, Enter saves, N creates from preview, Esc cancels
   PgUp/PgDown/Home/End: navigate tables and details/logs     Mouse: click rows / scroll
 
-TLS verification is mandatory. Secret reads, auth helpers, impersonation,
-generic patches, automatic AI requests and generic extensions remain disabled.
+TLS verification is mandatory. Secret reads, unreviewed auth helpers,
+impersonation, generic patches and automatic AI requests remain disabled.
+Registered views are opt-in; their OS containment remains a production gate.
 All real clusters are labeled PRODUCTION; this is a target warning, not a
 production certification. See docs/REMAINING_WORK.md for release gates.

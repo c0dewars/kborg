@@ -1,3 +1,13 @@
+# Local development update — 2026-10-10
+
+The current working iteration adds interactive stdin/TTY sessions, longer rolling
+logs, reviewed ExecCredential helpers, continuous context watches, explicit
+metrics allocation comparisons, controlled resource edits, a native pager, opt-in
+view extensions and a second UI refinement. See [current acceptance](PRIORITIES_ACCEPTANCE.md)
+and [remaining gates](REMAINING_WORK.md). Automated Copilot stays disabled after
+preflight; current packages are unsigned. The notes and artifacts below describe
+the original0.3 release source and are preserved as historical evidence.
+
 # KBorg 0.3.0 — renamed client and operational workflows
 
 K8Borg is now **KBorg**, executable `kborg`, private repository `c0dewars/kborg`. Existing pre-rename settings directories and `K8BORG_CONFIG_DIR` / `K8BORG_NO_SPLASH` remain compatible. Built-in theme identifiers remain stable. The updated logo is `assets/kborg-logo.png`.

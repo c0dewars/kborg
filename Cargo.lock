@@ -671,13 +671,16 @@ dependencies = [
 name = "kborg"
 version = "0.3.0"
 dependencies = [
+ "base64",
  "bytes",
  "crossterm",
  "futures-util",
  "http",
+ "http-body",
  "http-body-util",
  "k8s-openapi",
  "kube",
+ "ring",
  "serde",
  "serde_json",
  "tokio",

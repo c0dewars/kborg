@@ -29,6 +29,19 @@ pub fn safe_lines(input: &str, max_chars: usize) -> String {
         .join("\n")
 }
 
+/// Approval text must be complete. Reject instead of silently sanitizing or
+/// clipping target/effect information before a human confirmation.
+pub fn review_text(input: &str, max_chars: usize) -> Result<String> {
+    let shown = safe_lines(input, max_chars);
+    if shown != input {
+        return Err(
+            "operation review contains controls or exceeds its display budget; approval blocked"
+                .into(),
+        );
+    }
+    Ok(shown)
+}
+
 pub fn valid_id(id: &str) -> bool {
     !id.is_empty()
         && id.len() <= 63
@@ -269,6 +282,20 @@ pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn approval_preview_rejects_long_aliases_and_never_omits_effects() -> Result<()> {
+        let summary = format!(
+            "context: {}\nUID:123\nresourceVersion:7\n- limits.cpu: 100m\n+ limits.cpu: 200m\nType test/app to execute",
+            "a".repeat(5000)
+        );
+        assert!(review_text(&summary, 16_384).is_err());
+        let many_lines = "short line\n".repeat(3000);
+        assert!(review_text(many_lines.trim_end(), 16_384).is_err());
+        let ordinary = "context: local\nUID:123\n- limits.cpu:100m\n+ limits.cpu:200m\nType test/app to execute";
+        assert_eq!(review_text(ordinary, 16_384)?, ordinary);
+        assert!(review_text("target: test/app\u{001b}[2J\neffect:delete", 16_384).is_err());
+        Ok(())
+    }
     fn storage_test_dir(label: &str) -> PathBuf {
         let stamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

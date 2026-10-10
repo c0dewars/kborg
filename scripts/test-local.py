@@ -108,7 +108,7 @@ def main():
     if len(digest) != 2 or len(digest[1]) != 64 or any(c not in "0123456789abcdef" for c in digest[1]):
         raise RuntimeError("fixture image must be digest-pinned")
     project = Path(__file__).resolve().parent.parent
-    source_paths = sorted((project / "src").glob("*.rs")) + [project / "Cargo.toml", project / "Cargo.lock", project / "rust-toolchain.toml"]
+    source_paths = sorted((project / "src").glob("*.rs")) + sorted((project / "tests").glob("*.rs")) + [project / "Cargo.toml", project / "Cargo.lock", project / "rust-toolchain.toml", Path(__file__).resolve()]
     source_hashes = {str(path.relative_to(project)): hashlib.sha256(path.read_bytes()).hexdigest() for path in source_paths}
     report = {"schema": 1, "tested_source_sha256": source_hashes,
               "timestamp_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "platform": os.uname().sysname, "architecture": os.uname().machine,
@@ -152,6 +152,8 @@ def main():
                                     rule("apps", ["deployments"], ["get", "list", "watch", "patch", "delete"]),
                                     rule("apps", ["deployments/scale"], ["get", "patch"])]
                         resources = role("reader", ns, reader) + role("operator", ns, operator)
+                        if suite == "desktop":
+                            resources += role("fixture", ns, [rule("", ["pods"], ["get", "create", "delete"])])
                         resources.append(resource("ServiceAccount", "denied", ns, automountServiceAccountToken=False))
                         if suite == "desktop":
                             deployment = resource("Deployment", "sample", ns, spec={"replicas": 1,
@@ -164,7 +166,7 @@ def main():
                                 resource("Service", "delete-me", ns, spec={"selector": {"app": "kborg-sample"}, "ports": [{"port": 8080}]})]
                         else:
                             resources.append(resource("ConfigMap", "initial", ns, data={"sample": "KBORG_WATCH_PAYLOAD_CANARY"}))
-                        identities = ("reader", "operator", "denied")
+                        identities = ("reader", "operator", "denied", "fixture") if suite == "desktop" else ("reader", "operator", "denied")
                         context = "kborg-watch-test" if suite == "watch" else "kborg-test"
                         target = "watch_metrics_acceptance" if suite == "watch" else "docker_desktop"
                         environment_prefix = "KBORG_WATCH" if suite == "watch" else "KBORG_TEST"
@@ -193,6 +195,17 @@ def main():
                         token = config = None
                     output = execute([cargo, "test", "--locked", "--offline", "--test", target, "--", "--ignored", "--nocapture"],
                                      environment=environment, timeout=300)
+                    if suite == "desktop":
+                        compiler = Path(cargo).resolve().parent / "rustc"
+                        # Rustup's sibling shim is the caller-selected trusted toolchain.
+                        if not compiler.exists():
+                            compiler = Path(cargo).parent / "rustc"
+                        environment["KBORG_AUTH_FIXTURE_RUSTC"] = str(compiler)
+                        auth_output = execute([cargo, "test", "--locked", "--offline", "--test", "auth_helper_live", "--", "--ignored", "--nocapture"],
+                                              environment=environment, timeout=180)
+                        if "test result: ok." not in auth_output:
+                            raise RuntimeError("real ExecCredential helper result not confirmed")
+                        record["auth_helper_passed"] = True
                     if "test result: ok." not in output:
                         raise RuntimeError("acceptance result was not confirmed")
                     record["passed"] = True

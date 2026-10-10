@@ -37,6 +37,8 @@ pub struct Connection {
     pub allow_exec: bool,
     pub allow_attach: bool,
     pub allow_port_forward: bool,
+    pub allow_auth_helper: bool,
+    pub auth_helper_policy: Option<PathBuf>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -208,6 +210,76 @@ pub fn contexts(options: &Connection) -> Result<Vec<String>> {
         .collect())
 }
 
+/// Prepare an exact local trust review without running a kubeconfig command.
+pub fn review_auth_helper(
+    options: &Connection,
+    executable: Option<&std::path::Path>,
+    explicit_env: &[(String, String)],
+) -> Result<crate::auth::PreparedPolicy> {
+    if options.demo {
+        return Err("offline demo has no authentication helper".into());
+    }
+    let raw = read_config(options)?;
+    let name = options
+        .context
+        .as_ref()
+        .or(raw.current_context.as_ref())
+        .ok_or("select an auth helper context explicitly")?;
+    let context = raw
+        .contexts
+        .iter()
+        .find(|context| &context.name == name)
+        .and_then(|context| context.context.as_ref())
+        .ok_or("context not found")?;
+    let cluster = raw
+        .clusters
+        .iter()
+        .find(|cluster| cluster.name == context.cluster)
+        .and_then(|cluster| cluster.cluster.as_ref())
+        .ok_or("cluster not found")?;
+    let user_name = context
+        .user
+        .as_deref()
+        .ok_or("context authentication user missing")?;
+    let user = raw
+        .auth_infos
+        .iter()
+        .find(|user| user.name == user_name)
+        .and_then(|user| user.auth_info.as_ref())
+        .ok_or("authentication user missing")?;
+    validate_helper_user(user)?;
+    let exec = user
+        .exec
+        .as_ref()
+        .ok_or("selected kubeconfig user has no ExecCredential helper")?;
+    crate::auth::prepare(
+        crate::auth::Binding::new(name, user_name, cluster, exec)?,
+        executable,
+        explicit_env,
+    )
+}
+
+fn validate_helper_user(user: &kube::config::AuthInfo) -> Result<()> {
+    if user.auth_provider.is_some()
+        || user.username.is_some()
+        || user.password.is_some()
+        || user.token.is_some()
+        || user.token_file.is_some()
+        || user.client_certificate.is_some()
+        || user.client_certificate_data.is_some()
+        || user.client_key.is_some()
+        || user.client_key_data.is_some()
+        || user.impersonate.is_some()
+        || user.impersonate_groups.is_some()
+        || user.impersonate_uid.is_some()
+        || user.impersonate_user_extra.is_some()
+        || !user.other.is_empty()
+    {
+        return Err("ExecCredential helpers cannot be mixed with other authentication, legacy providers or impersonation".into());
+    }
+    Ok(())
+}
+
 pub struct Gateway {
     client: Option<Client>,
     pub context: String,
@@ -263,9 +335,10 @@ impl Gateway {
                 kinds: kinds(),
             });
         }
-        let raw = read_config(&options)?;
+        let mut raw = read_config(&options)?;
         let name = options
             .context
+            .clone()
             .or_else(|| raw.current_context.clone())
             .ok_or("select a context with --context")?;
         let context = raw
@@ -273,18 +346,21 @@ impl Gateway {
             .iter()
             .find(|c| c.name == name)
             .and_then(|c| c.context.as_ref())
-            .ok_or("context not found")?;
+            .ok_or("context not found")?
+            .clone();
         let cluster = raw
             .clusters
             .iter()
             .find(|c| c.name == context.cluster)
             .and_then(|c| c.cluster.as_ref())
-            .ok_or("cluster not found")?;
+            .ok_or("cluster not found")?
+            .clone();
         let user = context
             .user
             .as_ref()
             .and_then(|name| raw.auth_infos.iter().find(|u| &u.name == name))
-            .and_then(|u| u.auth_info.as_ref());
+            .and_then(|u| u.auth_info.as_ref())
+            .cloned();
         if cluster.insecure_skip_tls_verify == Some(true) {
             return Err("insecure TLS is forbidden".into());
         }
@@ -294,9 +370,9 @@ impl Gateway {
                     .into(),
             );
         }
-        if let Some(u) = user {
-            if u.exec.is_some() || u.auth_provider.is_some() {
-                return Err("authentication helpers/providers are disabled until trust and process isolation are implemented; use a short-lived token or client certificate kubeconfig".into());
+        if let Some(u) = &user {
+            if u.auth_provider.is_some() {
+                return Err("legacy authentication providers remain disabled; use a reviewed ExecCredential helper or short-lived token/certificate kubeconfig".into());
             }
             if u.impersonate.is_some()
                 || u.impersonate_groups.is_some()
@@ -315,6 +391,36 @@ impl Gateway {
         if let Some(path) = &cluster.certificate_authority {
             safety::read_small(&PathBuf::from(path), 1024 * 1024)?;
         }
+        let auth_gate = if let Some(user) = &user
+            && let Some(exec) = &user.exec
+        {
+            if !options.allow_auth_helper {
+                return Err("authentication helper is unreviewed/disabled; review it with auth-helper review and enable --allow-auth-helper --auth-helper-policy FILE explicitly".into());
+            }
+            validate_helper_user(user)?;
+            let policy = options
+                .auth_helper_policy
+                .clone()
+                .ok_or("--allow-auth-helper requires --auth-helper-policy FILE")?;
+            let user_name = context.user.as_deref().ok_or("helper user missing")?;
+            let binding = crate::auth::Binding::new(&name, user_name, &cluster, exec)?;
+            let credentials =
+                tokio::task::spawn_blocking(move || crate::auth::acquire(&policy, &binding))
+                    .await
+                    .map_err(|_| "auth helper worker failed; credentials suppressed")??;
+            let (auth, gate) = credentials.into_auth()?;
+            let selected_user = raw
+                .auth_infos
+                .iter_mut()
+                .find(|user| user.name == user_name)
+                .ok_or("helper user missing")?;
+            // Kube's automatic ExecCredential refresh is never configured. The
+            // supervised result is the only credential source for this client.
+            selected_user.auth_info = Some(auth);
+            gate
+        } else {
+            crate::auth::AuthGate::default()
+        };
         let mut config = Config::from_custom_kubeconfig(
             raw,
             &KubeConfigOptions {
@@ -339,7 +445,9 @@ impl Gateway {
         config.default_retry = false;
         config.proxy_url = None;
         config.connect_timeout = Some(Duration::from_secs(5));
-        config.read_timeout = Some(Duration::from_secs(10));
+        // Normal reads remain bounded by BodyBudgetLayer. Quiet log/TTY
+        // sessions use their own explicit lifetime rather than an idle cutoff.
+        config.read_timeout = None;
         config.write_timeout = Some(Duration::from_secs(10));
         let server = config.cluster_url.to_string();
         let namespace = if options.namespace.is_empty() {
@@ -349,12 +457,10 @@ impl Gateway {
         };
         let builder = kube::client::ClientBuilder::try_from(config)
             .map_err(|_| "cannot initialize verified TLS client")?;
-        let layer = tower::util::MapResponseLayer::new(
-            |response: http::Response<Box<kube::client::DynBody>>| {
-                response.map(|body| http_body_util::Limited::new(body, MAX_BODY))
-            },
-        );
-        let client = builder.with_layer(&layer).build();
+        let client = builder
+            .with_layer(&crate::transport::BodyBudgetLayer::default())
+            .with_layer(&auth_gate)
+            .build();
         let serial = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_err(|_| "system clock error")?
@@ -380,6 +486,21 @@ impl Gateway {
     }
     pub fn is_demo(&self) -> bool {
         self.client.is_none()
+    }
+    #[cfg(test)]
+    pub(crate) fn for_test_client(client: Client, namespace: &str) -> Self {
+        Self {
+            client: Some(client),
+            context: "test".into(),
+            server: "https://example.test".into(),
+            namespace: namespace.into(),
+            session: "test".into(),
+            policy: Policy { writable: false },
+            logs: false,
+            operation_capabilities: [false; 3],
+            demo: Vec::new(),
+            kinds: kinds(),
+        }
     }
     pub fn watch(&self, key: &str, ns: &str) -> Result<crate::watch::WatchFeed> {
         let kind = self.find(key)?.clone();
@@ -568,6 +689,24 @@ impl Gateway {
         container: Option<String>,
         previous: bool,
     ) -> Result<crate::logs::LogFeed> {
+        self.follow_logs_with_options(
+            ns,
+            name,
+            container,
+            previous,
+            crate::logs::FollowOptions::default(),
+        )
+        .await
+    }
+    pub async fn follow_logs_with_options(
+        &self,
+        ns: &str,
+        name: &str,
+        container: Option<String>,
+        previous: bool,
+        options: crate::logs::FollowOptions,
+    ) -> Result<crate::logs::LogFeed> {
+        let options = options.validate()?;
         if !self.logs {
             return Err("logs may contain sensitive data; opt in with --allow-logs".into());
         }
@@ -586,9 +725,10 @@ impl Gateway {
         }
         if self.is_demo() {
             let text = self.logs(ns, name, container, false).await?;
-            return Ok(crate::logs::LogFeed::new(futures_util::io::Cursor::new(
-                text.into_bytes(),
-            )));
+            return crate::logs::LogFeed::with_options(
+                futures_util::io::Cursor::new(text.into_bytes()),
+                options,
+            );
         }
         let pods: Api<Pod> = Api::namespaced(self.client.clone().ok_or("no client")?, ns);
         let stream = tokio::time::timeout(
@@ -599,7 +739,9 @@ impl Gateway {
                     container,
                     follow: true,
                     tail_lines: Some(200),
-                    limit_bytes: Some(256 * 1024),
+                    // No lifetime byte cap: the consumer and rolling cache are bounded.
+                    // A response body still has the transport's finite MAX_BODY cap.
+                    limit_bytes: None,
                     timestamps: true,
                     ..Default::default()
                 },
@@ -608,7 +750,7 @@ impl Gateway {
         .await
         .map_err(|_| "log connection timeout")?
         .map_err(api_error)?;
-        Ok(crate::logs::LogFeed::new(stream))
+        crate::logs::LogFeed::with_options(stream, options)
     }
     pub async fn logs(
         &self,
@@ -715,6 +857,11 @@ impl Gateway {
                 .into(),
         };
         self.policy.check(&target, &action)?;
+        for identity in [&target.uid, &target.version] {
+            if identity.len() > 256 || safety::safe_text(identity, 256) != *identity {
+                return Err("operation identity exceeds its bounded plain-text limit".into());
+            }
+        }
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_err(|_| "system clock error")?
@@ -731,6 +878,13 @@ impl Gateway {
                 crate::edit::expected_spec(&object, container, image)?;
                 json!({"metadata":{"uid":target.uid,"resourceVersion":target.version},"spec":{"template":{"spec":{"containers":[{"name":container,"image":image}]}}}})
             }
+            Action::SetResources {
+                container,
+                resources,
+            } => {
+                crate::edit::expected_resources(&object, container, resources)?;
+                json!({"metadata":{"uid":target.uid,"resourceVersion":target.version},"spec":{"template":{"spec":{"containers":[{"name":container,"resources":resources.value()}]}}}})
+            }
             Action::Delete => Value::Null,
         };
         let effect = match &action {
@@ -741,6 +895,10 @@ impl Gateway {
             Action::SetImage { container, image } => {
                 crate::edit::expected_spec(&object, container, image)?.1
             }
+            Action::SetResources {
+                container,
+                resources,
+            } => crate::edit::expected_resources(&object, container, resources)?.1,
             Action::Delete => {
                 "delete object; background cascading; server default grace period; no force".into()
             }
@@ -763,6 +921,7 @@ impl Gateway {
             ns,
             name
         );
+        let summary = safety::review_text(&summary, 16_384)?;
         let prepared = Prepared {
             reviewed_target: target.clone(),
             reviewed_action: action.clone(),
@@ -780,6 +939,16 @@ impl Gateway {
                 Action::SetImage { container, image } => {
                     let (expected, _) = crate::edit::expected_spec(&object, container, image)?;
                     crate::edit::check_admission(&response, &expected, &object)?;
+                }
+                Action::SetResources {
+                    container,
+                    resources,
+                } => {
+                    let (expected, _) =
+                        crate::edit::expected_resources(&object, container, resources)?;
+                    crate::edit::check_resource_admission(
+                        &response, &expected, &object, container,
+                    )?;
                 }
                 Action::Scale(n) if response["spec"]["replicas"] != *n => {
                     return Err(
@@ -835,7 +1004,7 @@ impl Gateway {
                     .map_err(api_error)?;
                 serde_json::to_value(response).map_err(|_| "cannot decode scale response".into())
             }
-            Action::SetImage { .. } => {
+            Action::SetImage { .. } | Action::SetResources { .. } => {
                 let response = api
                     .patch(
                         &prepared.target.name,
@@ -899,6 +1068,19 @@ impl Gateway {
                         if object["metadata"]["uid"] == prepared.target.uid {
                             object["spec"] =
                                 crate::edit::expected_spec(object, &container, &image)?.0;
+                        }
+                    }
+                }
+                Action::SetResources {
+                    container,
+                    resources,
+                } => {
+                    for v in &mut self.demo {
+                        if v["metadata"]["uid"] == prepared.target.uid {
+                            v["spec"] =
+                                crate::edit::expected_resources(v, &container, &resources)?.0;
+                            v["metadata"]["resourceVersion"] =
+                                json!(format!("{}r", prepared.target.version));
                         }
                     }
                 }
@@ -984,13 +1166,13 @@ fn demo_objects() -> Vec<Value> {
             "Pod",
             "api-7d4f9",
             json!({"phase":"Running","containerStatuses":[{"name":"app","ready":true,"restartCount":0,"state":{"running":{}}}]}),
-            json!({"nodeName":"demo-node","containers":[{"name":"app","image":"example/demo:v1"}]}),
+            json!({"nodeName":"demo-node","containers":[{"name":"app","image":"example/demo:v1","resources":{"requests":{"cpu":"250m","memory":"128Mi"},"limits":{"cpu":"1","memory":"512Mi"}}}]}),
         ),
         object(
             "Pod",
             "worker-6a1bc",
             json!({"phase":"Running","containerStatuses":[{"name":"app","ready":false,"restartCount":7,"state":{"waiting":{"reason":"CrashLoopBackOff"}}}]}),
-            json!({"nodeName":"demo-node","containers":[{"name":"app","image":"example/demo:v1"}]}),
+            json!({"nodeName":"demo-node","containers":[{"name":"app","image":"example/demo:v1","resources":{"requests":{"cpu":"250m","memory":"128Mi"},"limits":{"cpu":"1","memory":"512Mi"}}}]}),
         ),
         object(
             "Deployment",
@@ -1051,7 +1233,7 @@ fn demo_objects() -> Vec<Value> {
         object(
             "Node",
             "demo-node",
-            json!({"conditions":[{"type":"Ready","status":"True"}],"capacity":{"cpu":"4","memory":"8Gi"}}),
+            json!({"conditions":[{"type":"Ready","status":"True"}],"capacity":{"cpu":"4","memory":"8Gi"},"allocatable":{"cpu":"3500m","memory":"7Gi"}}),
             json!({"unschedulable":false}),
         ),
         object("Role", "viewer", json!({}), json!({})),
@@ -1233,6 +1415,21 @@ pub fn summary(object: &Value) -> String {
 mod tests {
     use super::*;
     use crate::cli::runtime;
+    #[test]
+    fn offline_resource_edit_is_sealed_and_preserves_container_fields() -> Result<()> {
+        runtime()?.block_on(async {
+            let mut gateway=Gateway::connect(Connection{demo:true,writable:true,..Default::default()}).await?;
+            let action=Action::SetResources{container:"app".into(),resources:crate::edit::ResourceEdit{cpu_request:"100m".into(),memory_request:"64Mi".into(),cpu_limit:"500m".into(),memory_limit:"128Mi".into()}};
+            let prepared=gateway.prepare("deployments","demo","api",action).await?;
+            assert!(prepared.summary.contains("+ requests.cpu: 100m"));
+            let approval=Approval::confirm(prepared.target.clone(),prepared.action.clone(),"demo/api")?;
+            gateway.execute(prepared,approval).await?;
+            let object=gateway.get("deployments","demo","api").await?;
+            assert_eq!(object["spec"]["template"]["spec"]["containers"][0]["image"],"example/demo:v1");
+            assert_eq!(object["spec"]["template"]["spec"]["containers"][0]["resources"]["limits"]["memory"],"128Mi");
+            Ok(())
+        })
+    }
     #[test]
     fn summaries_report_init_readiness_deletion_and_node_health() {
         let pod = json!({"kind":"Pod","status":{"phase":"Running","containerStatuses":[{"ready":false}]}});

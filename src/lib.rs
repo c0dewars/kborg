@@ -21,3 +21,11 @@ pub mod ops;
 pub mod overview;
 
 pub mod handoff;
+
+pub mod advice;
+pub mod allocations;
+pub mod auth;
+pub mod extensions;
+pub mod pager;
+pub mod session;
+pub mod transport;

@@ -117,6 +117,7 @@ pub struct WatchFeed {
     rv: String,
     initialized: bool,
     stream: Option<Events>,
+    stream_started: Instant,
     stream_deadline: Instant,
     retry_at: Instant,
     failures: u32,
@@ -135,6 +136,7 @@ impl WatchFeed {
             rv: String::new(),
             initialized: false,
             stream: None,
+            stream_started: now,
             stream_deadline: now,
             retry_at: now,
             failures: 0,
@@ -286,12 +288,15 @@ impl WatchFeed {
                 Err(message) => self.fail_closed(&message),
             };
         }
+        let mut recovering = false;
         if self.stream.is_none() {
             let params = WatchParams {
                 timeout: Some(8),
                 bookmarks: true,
                 ..Default::default()
             };
+            let started = Instant::now();
+            recovering = self.failures > 0;
             match timeout_at(
                 Instant::now() + Duration::from_secs(10),
                 self.api.watch(&params, &self.rv),
@@ -300,13 +305,20 @@ impl WatchFeed {
             {
                 Ok(Ok(stream)) => {
                     self.stream = Some(Box::pin(stream));
+                    self.stream_started = started;
                     self.stream_deadline = Instant::now() + WATCH_BUDGET;
                 }
                 Ok(Err(error)) => return self.api_failure(error),
                 Err(_) => return self.retry("watch connection timed out; reconnecting", false),
             }
         }
-        let mut batch_deadline = self.stream_deadline;
+        // Inspect queued control/error events before declaring a resume healthy.
+        let mut batch_deadline = if recovering {
+            self.stream_deadline
+                .min(Instant::now() + Duration::from_millis(100))
+        } else {
+            self.stream_deadline
+        };
         for index in 0..100 {
             let Some(stream) = self.stream.as_mut() else {
                 break;
@@ -314,7 +326,33 @@ impl WatchFeed {
             let event = match timeout_at(batch_deadline, stream.next()).await {
                 Ok(Some(Ok(event))) => event,
                 Ok(Some(Err(error))) => return self.api_failure(error),
-                Ok(None) => return self.retry("watch stream ended; reconnecting", false),
+                Ok(None) if self.stream_started.elapsed() >= Duration::from_secs(7) => {
+                    // The server normally closes the requested eight-second watch.
+                    // This is renewal, not a transport failure or stale LIST.
+                    self.stream = None;
+                    self.failures = 0;
+                    self.retry_at = Instant::now();
+                    return self.snapshot(
+                        false,
+                        "watch interval completed; renewing at retained resourceVersion",
+                    );
+                }
+                Ok(None) if index == 0 => {
+                    // An empty successful resourceVersion watch is also a valid
+                    // unchanged interval. Pace renewal to prevent empty-200 loops.
+                    self.stream = None;
+                    self.failures = 0;
+                    self.retry_at = Instant::now() + Duration::from_millis(500 + self.retry_jitter);
+                    return self.snapshot(
+                        false,
+                        "empty watch completed; resourceVersion cache retained",
+                    );
+                }
+                Ok(None) => return self.retry("watch stream ended early; reconnecting", false),
+                Err(_) if index == 0 && recovering => {
+                    self.failures = 0;
+                    return self.snapshot(false, "watch reconnected at retained resourceVersion");
+                }
                 Err(_) if index > 0 && batch_deadline < self.stream_deadline => break,
                 Err(_) => return self.retry("watch time budget ended; reconnecting", false),
             };
@@ -359,6 +397,30 @@ impl WatchFeed {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn quiet_watch_renewal_and_successful_resume_restore_live_without_event() {
+        runtime().block_on(async {
+            let (mut feed, requests) = feed(vec![(200, list("1")), (200, String::new())]);
+            assert!(!feed.next().await.stale);
+            feed.failures = 3;
+            let resumed = feed.next().await;
+            assert!(!resumed.stale);
+            assert_eq!(resumed.resource_version, "1");
+            assert_eq!(feed.failures, 0);
+            assert_eq!(requests.lock().unwrap_or_else(|e| panic!("{e}")).len(), 2);
+            feed.stream = Some(Box::pin(futures_util::stream::empty()));
+            feed.retry_at = Instant::now();
+            feed.stream_started = Instant::now() - Duration::from_secs(8);
+            let renewed = feed.next().await;
+            assert!(!renewed.stale);
+            assert!(!renewed.terminal);
+            assert_eq!(renewed.resource_version, "1");
+            assert!(renewed.message.contains("renewing"));
+            assert_eq!(feed.failures, 0);
+            assert!(feed.stream.is_none());
+            assert!(feed.retry_at <= Instant::now());
+        });
+    }
     use super::*;
     use kube::{Client, api::ApiResource};
     use std::sync::{Arc, Mutex};
