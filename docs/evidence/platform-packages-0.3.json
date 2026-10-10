@@ -1,0 +1,70 @@
+{
+  "finalPackagingSource": "e6de8e834edc665b04255384d34d725d782df87b",
+  "verifiedAtUtc": "2026-10-10T00:14:49.4958270Z",
+  "artifacts": [
+    {
+      "dependencyNotices": 198,
+      "version": "0.3.0",
+      "sbomComponents": 198,
+      "unsignedProvenanceVerified": true,
+      "sha256": "ce331456466b2fba4070818f10382d34019635aab77c68c6a1e52e2d8bba4c6b",
+      "target": "aarch64-apple-darwin",
+      "sourceCommit": "d4d377bb5d62a728a184988f51c834fb61591212",
+      "brandAssetsPresent": true,
+      "noticeHashesVerified": true,
+      "archive": "kborg-0.3.0-aarch64-apple-darwin.tar.gz"
+    },
+    {
+      "dependencyNotices": 198,
+      "version": "0.3.0",
+      "sbomComponents": 198,
+      "unsignedProvenanceVerified": true,
+      "sha256": "56832dfe328a1e7f5fd25e4d0335411e39b8938cbb0a6af28bc50b10f48e8132",
+      "target": "aarch64-unknown-linux-gnu",
+      "sourceCommit": "d4d377bb5d62a728a184988f51c834fb61591212",
+      "brandAssetsPresent": true,
+      "noticeHashesVerified": true,
+      "archive": "kborg-0.3.0-aarch64-unknown-linux-gnu.tar.gz"
+    },
+    {
+      "dependencyNotices": 198,
+      "version": "0.3.0",
+      "sbomComponents": 198,
+      "unsignedProvenanceVerified": true,
+      "sha256": "8902ec08c1ab664142aaf5e7f801cf8dbeae8b5e8a63f53455ecd0a07f4d3019",
+      "target": "x86_64-apple-darwin",
+      "sourceCommit": "d4d377bb5d62a728a184988f51c834fb61591212",
+      "brandAssetsPresent": true,
+      "noticeHashesVerified": true,
+      "archive": "kborg-0.3.0-x86_64-apple-darwin.tar.gz"
+    },
+    {
+      "dependencyNotices": 198,
+      "version": "0.3.0",
+      "sbomComponents": 198,
+      "unsignedProvenanceVerified": true,
+      "sha256": "f8e91ddcdd8904089554f64caca0f65ecb025ceb34a276702a109180695092c7",
+      "target": "x86_64-unknown-linux-gnu",
+      "sourceCommit": "d4d377bb5d62a728a184988f51c834fb61591212",
+      "brandAssetsPresent": true,
+      "noticeHashesVerified": true,
+      "archive": "kborg-0.3.0-x86_64-unknown-linux-gnu.tar.gz"
+    },
+    {
+      "sha256": "ede8720f07cb42d0554aca64009899d6a3668fd6c5f78ee447bc7de785e7ffbc",
+      "brandAssetsPresent": true,
+      "sbomComponents": 198,
+      "sourceCommit": "e6de8e834edc665b04255384d34d725d782df87b",
+      "version": "0.3.0",
+      "archive": "kborg-0.3.0-x86_64-pc-windows-msvc.zip",
+      "noticeHashesVerified": true,
+      "target": "x86_64-pc-windows-msvc",
+      "unsignedProvenanceVerified": true,
+      "dependencyNotices": 198
+    }
+  ],
+  "explanation": "Four Unix packages are from prior successful native CI jobs; Windows x64 is a fresh final-source native local rebuild. The final-source CI run did not start. Source difference is Git byte-preservation attributes only.",
+  "schema": 1,
+  "runtimeSource": "d4d377bb5d62a728a184988f51c834fb61591212",
+  "finalSixPlatformAcceptance": "BLOCKED by GitHub account billing/spending limit; Windows ARM64 unavailable"
+}

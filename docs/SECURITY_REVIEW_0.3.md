@@ -28,3 +28,7 @@ No unresolved high-severity finding was established by this limited review. That
 ## Acceptance still required
 
 Run final combined tests/lint and real disposable-cluster mutation, subresource and log lifecycle checks against the final source. Test authentication expiry, network failures, cancellation and terminal restoration on the supported native platforms. Production gates remain for managed Windows ACL provisioning, race-resistant filesystem operations where hostile local writers are in scope, protected audit/server admission, cloud auth helper trust, advisor OS isolation, signing/notarization, broad terminal/accessibility coverage and staged organizational acceptance. No Copilot model request or real identity login was performed in this review.
+
+## Subsequent integrated validation
+
+The combined Windows (83 library tests plus metrics contract) and WSL (84 library tests) suites and strict all-targets Clippy passed. Disposable Docker Desktop mutation and native Windows/WSL subresource lifecycle checks also passed, as recorded in RELEASE_REPORT_0.3.md and NATIVE_OPERATIONS.md. These results close the local integration checks above; they do not close the explicitly listed production or broader platform acceptance gates. Final native artifact identity is recorded in PLATFORM_BUILDS_0.3.md.
