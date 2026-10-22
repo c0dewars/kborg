@@ -35,6 +35,8 @@ pub struct Connection {
     pub logs: bool,
     pub allow_helm: bool,
     pub allow_helm_write: bool,
+    pub allow_helm_hooks: bool,
+    pub allow_helm_crds: bool,
     pub allow_exec: bool,
     pub allow_attach: bool,
     pub allow_port_forward: bool,
@@ -422,6 +424,8 @@ pub struct Gateway {
     logs: bool,
     allow_helm: bool,
     allow_helm_write: bool,
+    allow_helm_hooks: bool,
+    allow_helm_crds: bool,
     lifecycle_connection: Option<crate::helm_lifecycle::StaticConnection>,
     operation_capabilities: [bool; 3],
     demo: Vec<Value>,
@@ -463,6 +467,8 @@ impl Gateway {
                 logs: true,
                 allow_helm: true,
                 allow_helm_write: options.allow_helm_write,
+                allow_helm_hooks: options.allow_helm_hooks,
+                allow_helm_crds: options.allow_helm_crds,
                 lifecycle_connection: None,
                 operation_capabilities: [
                     options.allow_exec,
@@ -623,6 +629,8 @@ impl Gateway {
             logs: options.logs,
             allow_helm: options.allow_helm,
             allow_helm_write: options.allow_helm_write,
+            allow_helm_hooks: options.allow_helm_hooks,
+            allow_helm_crds: options.allow_helm_crds,
             lifecycle_connection,
             operation_capabilities: [
                 options.allow_exec,
@@ -667,6 +675,16 @@ impl Gateway {
         }
         Ok(&self.session)
     }
+    pub(crate) fn helm_extension_access(&self, hooks: bool, crds: bool) -> Result<()> {
+        self.helm_lifecycle_session()?;
+        if hooks && !self.allow_helm_hooks {
+            return Err("Helm hooks require explicit --allow-helm-hooks".into());
+        }
+        if crds && !self.allow_helm_crds {
+            return Err("Helm CRD actions require explicit --allow-helm-crds".into());
+        }
+        Ok(())
+    }
     #[cfg(test)]
     pub(crate) fn for_test_client(client: Client, namespace: &str) -> Self {
         Self {
@@ -679,6 +697,8 @@ impl Gateway {
             logs: false,
             allow_helm: false,
             allow_helm_write: false,
+            allow_helm_hooks: false,
+            allow_helm_crds: false,
             lifecycle_connection: None,
             operation_capabilities: [false; 3],
             demo: Vec::new(),
@@ -701,6 +721,19 @@ impl Gateway {
         gateway.policy.writable = true;
         gateway.allow_helm_write = true;
         gateway.lifecycle_connection = Some(connection);
+        gateway
+    }
+    #[cfg(test)]
+    pub(crate) fn for_helm_extension_test_client(
+        client: Client,
+        namespace: &str,
+        connection: crate::helm_lifecycle::StaticConnection,
+        hooks: bool,
+        crds: bool,
+    ) -> Self {
+        let mut gateway = Self::for_helm_lifecycle_test_client(client, namespace, connection);
+        gateway.allow_helm_hooks = hooks;
+        gateway.allow_helm_crds = crds;
         gateway
     }
     pub fn watch(&self, key: &str, ns: &str) -> Result<crate::watch::WatchFeed> {

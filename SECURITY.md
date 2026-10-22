@@ -18,9 +18,7 @@ objects. Known-key and private-key redaction cannot classify every
 confidential custom value. Logs and explicitly requested values remain sensitive.
 
 Helm lifecycle requires `--write --allow-helm --allow-helm-write` and an explicitly
-trusted native Helm executable at exactly version 4.3.1 on Unix. It accepts local deterministic packaged charts
-for allowlisted namespaced resources only; hooks, CRDs, cluster/system targets,
-recognized GitOps resources and foreign adoption are refused. The complete
+trusted native Helm executable at exactly version 4.3.1 on Unix. It accepts deterministic packaged charts from local files or digest-pinned OCI registries. Hooks and create-only CRD bootstrap require separate explicit capabilities and full review. Ordinary resources and custom resources are namespaced; cluster/system targets beyond the reviewed CRD bootstrap, recognized GitOps resources and foreign adoption are refused. The complete
 15-minute review includes redacted current/desired resource bodies, exact
 arguments and input hashes. Fresh plan, history and UID/resourceVersion checks
 precede execution, but Helm's requests do not carry those UID preconditions; a
@@ -35,3 +33,5 @@ fixed and identity-checked, including quiet streams; newly matching or replaceme
 Pods are not silently admitted. Init and ephemeral sources are excluded from
 merges. These controls do not classify confidential log content or guarantee
 lossless ordering, reconnection or rotation history.
+
+OCI acquisition uses an isolated verified HTTPS client, bounded digest-checked downloads and explicitly host-bound registry credentials. It never uses Kubernetes credentials or Helm/Docker credential stores. Digests do not verify publisher identity. Hook workloads may affect external systems and retained hooks may survive uninstall. CRDs are created in a separate review, never upgraded/deleted; their UID/RV and validated namespaced schemas bind custom resource reviews. See [extension boundaries](docs/HELM_EXTENSIONS.md).

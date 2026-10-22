@@ -38,4 +38,7 @@ pub mod ui_logs;
 
 pub mod helm;
 
+pub mod helm_crds;
+pub mod helm_extensions;
 pub mod helm_lifecycle;
+pub mod helm_oci;

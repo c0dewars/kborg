@@ -34,6 +34,9 @@ const MAX_RESOURCES: usize = 128;
 const REVIEW_LIFETIME: Duration = Duration::from_secs(900);
 #[derive(Clone, Debug)]
 pub enum Request {
+    InstallCrds {
+        chart: PathBuf,
+    },
     Install {
         chart: PathBuf,
         values: Option<PathBuf>,
@@ -50,6 +53,7 @@ pub enum Request {
 impl Request {
     fn name(&self) -> &'static str {
         match self {
+            Self::InstallCrds { .. } => "crds",
             Self::Install { .. } => "install",
             Self::Upgrade { .. } => "upgrade",
             Self::Rollback { .. } => "rollback",
@@ -64,6 +68,9 @@ pub struct Options {
     pub release: String,
     pub storage: Storage,
     pub seconds: u16,
+    pub allow_hooks: bool,
+    pub allow_crds: bool,
+    pub registry: crate::helm_oci::Options,
 }
 #[derive(Debug, Serialize)]
 pub struct Outcome {
@@ -384,6 +391,7 @@ struct Identity {
 struct Resource {
     identity: Identity,
     object: Value,
+    api: ApiResource,
 }
 #[derive(Clone, PartialEq, Eq)]
 struct Seal {
@@ -405,10 +413,16 @@ pub struct Prepared {
     seals: Vec<Seal>,
     canonical: String,
     chart_hash: Option<String>,
+    chart_source: Option<String>,
     values_hash: Option<String>,
     summary: String,
     created: Instant,
     demo: bool,
+    hooks: crate::helm_extensions::HookPlan,
+    hook_seals: Vec<Seal>,
+    crds: crate::helm_extensions::CrdPlan,
+    crd_seals: Vec<Option<crate::helm_crds::Binding>>,
+    bindings: Vec<crate::helm_crds::Binding>,
 }
 impl Prepared {
     pub fn summary(&self) -> &str {
@@ -445,11 +459,22 @@ fn snapshot(path: &Path, destination: &Path, limit: u64) -> Result<String> {
     }
     Ok(hash(&bytes))
 }
+#[cfg(test)]
 fn scan_chart(bytes: &[u8]) -> Result<()> {
-    let mut budget = 0usize;
-    scan_archive(bytes, 0, &mut budget)
+    inspect_chart(bytes, false).map(|_| ())
 }
-fn scan_archive(bytes: &[u8], depth: usize, budget: &mut usize) -> Result<()> {
+fn inspect_chart(bytes: &[u8], allow_crds: bool) -> Result<crate::helm_extensions::CrdPlan> {
+    let mut budget = 0usize;
+    let mut crds = Vec::new();
+    scan_archive(bytes, 0, &mut budget, &mut crds)?;
+    crate::helm_extensions::crds(&crds.join("\n---\n"), allow_crds)
+}
+fn scan_archive(
+    bytes: &[u8],
+    depth: usize,
+    budget: &mut usize,
+    crds: &mut Vec<String>,
+) -> Result<()> {
     if depth > 4 {
         return Err("bundled chart nesting exceeds four levels".into());
     }
@@ -534,10 +559,24 @@ fn scan_archive(bytes: &[u8], depth: usize, budget: &mut usize) -> Result<()> {
                 "chart links, extended headers and special archive entries are forbidden".into(),
             );
         }
-        if name.split('/').any(|part| part == "crds") {
-            return Err(
-                "chart CRDs need a separate cluster-scoped review and are unsupported".into(),
-            );
+        if header[156] != b'5'
+            && name.split('/').any(|part| part == "crds")
+            && [".yaml", ".yml", ".json"]
+                .iter()
+                .any(|extension| name.ends_with(extension))
+        {
+            let text =
+                std::str::from_utf8(&tar[start..end]).map_err(|_| "chart CRDs must be UTF-8")?;
+            if crds
+                .iter()
+                .map(String::len)
+                .sum::<usize>()
+                .saturating_add(text.len())
+                > crate::helm_extensions::MAX_EXTENSION_BYTES
+            {
+                return Err("chart CRDs exceed4 MiB".into());
+            }
+            crds.push(text.into());
         }
         if name.ends_with("/Chart.yaml") {
             chart = true;
@@ -545,7 +584,7 @@ fn scan_archive(bytes: &[u8], depth: usize, budget: &mut usize) -> Result<()> {
         if name.contains("/charts/")
             && (name.ends_with(".tgz") || tar[start..end].starts_with(&[0x1f, 0x8b]))
         {
-            scan_archive(&tar[start..end], depth + 1, budget)?;
+            scan_archive(&tar[start..end], depth + 1, budget, crds)?;
         } else if name.contains("/templates/") {
             let text = std::str::from_utf8(&tar[start..end])
                 .map_err(|_| "chart templates must be UTF-8")?;
@@ -605,7 +644,15 @@ fn deterministic_printf(text: &str) -> Result<()> {
     }
     Ok(())
 }
+#[cfg(test)]
 fn parse_resources(manifest: &str, namespace: &str) -> Result<Vec<Resource>> {
+    parse_resources_with(manifest, namespace, &[])
+}
+fn parse_resources_with(
+    manifest: &str,
+    namespace: &str,
+    bindings: &[crate::helm_crds::Binding],
+) -> Result<Vec<Resource>> {
     if manifest.len() > 4 * 1024 * 1024 {
         return Err("rendered manifest exceeds 4 MiB".into());
     }
@@ -639,7 +686,7 @@ fn parse_resources(manifest: &str, namespace: &str) -> Result<Vec<Resource>> {
                 "every resource needs an explicit valid metadata.name; generateName is unsupported",
             )?
             .to_owned();
-        resource_api(&api, &kind)?;
+        let resource_api = resource_api(&api, &kind).or_else(|_| bindings.iter().find_map(|binding| binding.definition.resource_api(&api, &kind)).ok_or_else(|| "custom resource requires --allow-helm-crds, an Established sealed Namespaced CRD, and a fresh review".to_owned()))?;
         let ns = object["metadata"]["namespace"]
             .as_str()
             .filter(|ns| !ns.is_empty())
@@ -664,7 +711,14 @@ fn parse_resources(manifest: &str, namespace: &str) -> Result<Vec<Resource>> {
             name,
         };
         if resources
-            .insert(identity.clone(), Resource { identity, object })
+            .insert(
+                identity.clone(),
+                Resource {
+                    identity,
+                    object,
+                    api: resource_api,
+                },
+            )
             .is_some()
         {
             return Err("duplicate rendered resource identity".into());
@@ -770,11 +824,8 @@ async fn resource_seals(
     let mut existing = Vec::new();
     let mut current_bytes = 0usize;
     for resource in resources {
-        let api: Api<DynamicObject> = Api::namespaced_with(
-            client.clone(),
-            &options.namespace,
-            &resource_api(&resource.identity.api_version, &resource.identity.kind)?,
-        );
+        let api: Api<DynamicObject> =
+            Api::namespaced_with(client.clone(), &options.namespace, &resource.api);
         let object = tokio::time::timeout(
             Duration::from_secs(10),
             api.get_opt(&resource.identity.name),
@@ -1220,13 +1271,14 @@ fn lifecycle_args(options: &Options, request: &Request, root: &Path, dry: bool) 
                 ]);
             }
         }
+        Request::InstallCrds { .. } => return vec![],
         Request::Rollback { revision } => args.push(revision.to_string()),
         Request::Uninstall => args.extend(["--cascade=foreground".into()]),
     }
-    args.extend([
-        "--no-hooks".into(),
-        format!("--timeout={}s", options.seconds),
-    ]);
+    if !options.allow_hooks {
+        args.push("--no-hooks".into());
+    }
+    args.push(format!("--timeout={}s", options.seconds));
     if dry {
         args.push(
             if matches!(request, Request::Uninstall) {
@@ -1258,32 +1310,73 @@ async fn get_manifest(
     let capture = command(context, args, 30, None).await?;
     String::from_utf8(capture.stdout).map_err(|_| "stored Helm manifest is not UTF-8".into())
 }
-async fn no_stored_hooks(context: &ProcessContext, options: &Options, revision: u32) -> Result<()> {
-    let mut args = vec![
-        "get".into(),
-        "hooks".into(),
-        options.release.clone(),
-        "--revision".into(),
-        revision.to_string(),
-    ];
-    args.extend(common(options, &context.root));
-    if !command(context, args, 30, None)
-        .await?
-        .stdout
-        .iter()
-        .all(u8::is_ascii_whitespace)
-    {
-        return Err(
-            "stored release contains hooks; lifecycle refuses unreviewed hook resources".into(),
-        );
+fn operation(request: &Request) -> crate::helm_extensions::Operation {
+    use crate::helm_extensions::Operation;
+    match request {
+        Request::Install { .. } | Request::InstallCrds { .. } => Operation::Install,
+        Request::Upgrade { .. } => Operation::Upgrade,
+        Request::Rollback { .. } => Operation::Rollback,
+        Request::Uninstall => Operation::Uninstall,
     }
-    Ok(())
+}
+async fn stored_hooks(
+    gateway: &Gateway,
+    options: &Options,
+    selected: &Release,
+    request: &Request,
+) -> Result<crate::helm_extensions::HookPlan> {
+    if selected.name != options.release
+        || selected.namespace != options.namespace
+        || selected.storage != options.storage
+    {
+        return Err("stored hook selection escaped the reviewed release identity".into());
+    }
+    let raw = helm::lifecycle_hooks(gateway, selected).await?;
+    crate::helm_extensions::hooks(
+        &raw,
+        &options.namespace,
+        &options.release,
+        operation(request),
+        options.allow_hooks,
+    )
+}
+async fn parse_resolved(
+    manifest: &str,
+    options: &Options,
+    client: &Client,
+    bindings: &mut Vec<crate::helm_crds::Binding>,
+) -> Result<Vec<Resource>> {
+    for object in crate::helm_extensions::documents(manifest, MAX_RESOURCES)? {
+        let api = object["apiVersion"]
+            .as_str()
+            .ok_or("manifest apiVersion missing")?;
+        let kind = object["kind"].as_str().ok_or("manifest kind missing")?;
+        if resource_api(api, kind).is_ok()
+            || bindings
+                .iter()
+                .any(|binding| binding.definition.resource_api(api, kind).is_some())
+        {
+            continue;
+        }
+        if !options.allow_crds {
+            return Err("custom resources require --allow-helm-crds and an already Established reviewed Namespaced CRD; run separate CRD bootstrap first".into());
+        }
+        if bindings.len() >= crate::helm_extensions::MAX_CRDS {
+            return Err("chart exceeds16 custom-resource API bindings".into());
+        }
+        bindings.push(crate::helm_crds::resolve(client, api, kind).await?);
+    }
+    parse_resources_with(manifest, &options.namespace, bindings)
 }
 async fn dry_plan(
+    gateway: &Gateway,
     context: &ProcessContext,
     options: &Options,
     request: &Request,
-) -> Result<Vec<Resource>> {
+    client: &Client,
+    bindings: &mut Vec<crate::helm_crds::Binding>,
+    selected_hooks: Option<&Release>,
+) -> Result<(Vec<Resource>, crate::helm_extensions::HookPlan)> {
     let capture = command(
         context,
         lifecycle_args(options, request, &context.root, true),
@@ -1296,29 +1389,190 @@ async fn dry_plan(
             let release: Value = serde_json::from_slice(&capture.stdout).map_err(
                 |_| "Helm dry-run did not return bounded release JSON; diagnostics suppressed",
             )?;
-            if release
-                .get("hooks")
-                .and_then(Value::as_array)
-                .is_some_and(|hooks| !hooks.is_empty())
-            {
-                return Err(
-                    "chart contains hooks; use a hook-free packaged chart for lifecycle review"
-                        .into(),
-                );
-            }
-            parse_resources(
+            let hooks = crate::helm_extensions::hooks(
+                &release["hooks"],
+                &options.namespace,
+                &options.release,
+                operation(request),
+                options.allow_hooks,
+            )?;
+            let resources = parse_resolved(
                 release["manifest"]
                     .as_str()
                     .ok_or("Helm dry-run has no rendered manifest")?,
-                &options.namespace,
+                options,
+                client,
+                bindings,
             )
+            .await?;
+            Ok((resources, hooks))
         }
-        Request::Rollback { revision } => parse_resources(
-            &get_manifest(context, options, *revision).await?,
-            &options.namespace,
-        ),
-        Request::Uninstall => Ok(vec![]),
+        Request::Rollback { revision } => {
+            let selected = selected_hooks
+                .filter(|selected| selected.revision == *revision)
+                .ok_or("rollback hook revision selection missing or changed")?;
+            Ok((
+                parse_resolved(
+                    &get_manifest(context, options, *revision).await?,
+                    options,
+                    client,
+                    bindings,
+                )
+                .await?,
+                stored_hooks(gateway, options, selected, request).await?,
+            ))
+        }
+        Request::Uninstall => Ok((
+            vec![],
+            stored_hooks(
+                gateway,
+                options,
+                selected_hooks.ok_or("current hook revision selection missing")?,
+                request,
+            )
+            .await?,
+        )),
+        Request::InstallCrds { .. } => {
+            Err("CRD bootstrap does not render release resources".into())
+        }
     }
+}
+fn canonical_plan(
+    resources: &[Resource],
+    hooks: &crate::helm_extensions::HookPlan,
+) -> Result<String> {
+    serde_json::to_string(&(canonical(resources)?, &hooks.canonical))
+        .map_err(|_| "cannot seal full Helm plan".into())
+}
+async fn hook_preflight(
+    client: &Client,
+    plan: &crate::helm_extensions::HookPlan,
+    prior: &crate::helm_extensions::HookPlan,
+    options: &Options,
+    dry_run: bool,
+) -> Result<(Vec<Seal>, Vec<Value>)> {
+    use kube::api::{DeleteParams, Patch, PatchParams, PostParams, Preconditions};
+    let active = plan
+        .active()
+        .into_iter()
+        .map(|hook| (hook.identity.clone(), hook))
+        .collect::<BTreeMap<_, _>>();
+    let mut seals = Vec::new();
+    let mut objects = Vec::new();
+    let mut bytes = 0usize;
+    for hook in active.into_values() {
+        let api: Api<DynamicObject> = Api::namespaced_with(
+            client.clone(),
+            &options.namespace,
+            &crate::helm_extensions::native_api(&hook.identity.api_version, &hook.identity.kind)?,
+        );
+        let current = api
+            .get_opt(&hook.identity.name)
+            .await
+            .map_err(|error| api_failure(error, "hook identity preflight"))?;
+        let identity = Identity {
+            api_version: hook.identity.api_version.clone(),
+            kind: hook.identity.kind.clone(),
+            namespace: hook.identity.namespace.clone(),
+            name: hook.identity.name.clone(),
+        };
+        let (uid, version) = if let Some(current) = current {
+            let object =
+                serde_json::to_value(&current).map_err(|_| "cannot inspect hook resource")?;
+            bytes = bytes
+                .checked_add(
+                    serde_json::to_vec(&object)
+                        .map_err(|_| "cannot measure hook")?
+                        .len(),
+                )
+                .filter(|bytes| *bytes <= 8 * 1024 * 1024)
+                .ok_or("existing hooks exceed8 MiB")?;
+            ownership(&object, options)?;
+            if !hook.deletes_before_creation()
+                || !prior
+                    .all
+                    .iter()
+                    .any(|old| old.identity == hook.identity && old.matches_existing(&object))
+            {
+                return Err("existing hook name does not match a stored authorized hook template with before-hook-creation policy; foreign adoption/deletion refused".into());
+            }
+            let uid = current
+                .metadata
+                .uid
+                .filter(|uid| !uid.is_empty())
+                .ok_or("hook UID missing")?;
+            let version = current
+                .metadata
+                .resource_version
+                .filter(|version| !version.is_empty())
+                .ok_or("hook resourceVersion missing")?;
+            if dry_run {
+                api.delete(
+                    &hook.identity.name,
+                    &DeleteParams {
+                        dry_run: true,
+                        preconditions: Some(Preconditions {
+                            uid: Some(uid.clone()),
+                            resource_version: Some(version.clone()),
+                        }),
+                        ..Default::default()
+                    },
+                )
+                .await
+                .map_err(|error| api_failure(error, "hook delete dry-run"))?;
+                api.patch(&hook.identity.name,&PatchParams::apply("helm").dry_run(),&Patch::Apply(&hook.object)).await.map_err(|error|api_failure(error,"hook replacement admission dry-run (changed immutable fields need a new hook name)"))?;
+            }
+            objects.push(object);
+            (Some(uid), Some(version))
+        } else {
+            if dry_run {
+                // Authorization is evaluated even for an absent named object.
+                // This cannot simulate admission of a future completed Job.
+                if hook.deletes_before_creation()
+                    || hook.deletes_on_success()
+                    || hook.deletes_on_failure()
+                {
+                    match api
+                        .delete(
+                            &hook.identity.name,
+                            &DeleteParams {
+                                dry_run: true,
+                                ..Default::default()
+                            },
+                        )
+                        .await
+                    {
+                        Ok(_) => {}
+                        Err(kube::Error::Api(status)) if status.code == 404 => {}
+                        Err(error) => {
+                            return Err(api_failure(
+                                error,
+                                "future hook delete authorization dry-run",
+                            ));
+                        }
+                    }
+                }
+                let object: DynamicObject = serde_json::from_value(hook.object.clone())
+                    .map_err(|_| "invalid hook object")?;
+                api.create(
+                    &PostParams {
+                        dry_run: true,
+                        ..Default::default()
+                    },
+                    &object,
+                )
+                .await
+                .map_err(|error| api_failure(error, "hook create dry-run"))?;
+            }
+            (None, None)
+        };
+        seals.push(Seal {
+            identity,
+            uid,
+            version,
+        });
+    }
+    Ok((seals, objects))
 }
 async fn admission(
     client: Client,
@@ -1331,11 +1585,8 @@ async fn admission(
     use kube::api::{DeleteParams, Patch, PatchParams, PostParams, Preconditions};
     let desired_ids = desired.iter().map(|r| &r.identity).collect::<BTreeSet<_>>();
     for resource in affected {
-        let api: Api<DynamicObject> = Api::namespaced_with(
-            client.clone(),
-            &options.namespace,
-            &resource_api(&resource.identity.api_version, &resource.identity.kind)?,
-        );
+        let api: Api<DynamicObject> =
+            Api::namespaced_with(client.clone(), &options.namespace, &resource.api);
         let seal = seals
             .iter()
             .find(|seal| seal.identity == resource.identity)
@@ -1419,9 +1670,16 @@ async fn prepare_inner(gateway: &Gateway, options: Options, request: Request) ->
     if matches!(request, Request::Rollback { revision: 0 }) {
         return Err("rollback needs an explicit positive revision".into());
     }
+    gateway.helm_extension_access(options.allow_hooks, options.allow_crds)?;
+    if matches!(request, Request::InstallCrds { .. }) && !options.allow_crds {
+        return Err("CRD bootstrap requires --allow-helm-crds".into());
+    }
     let session = gateway.helm_lifecycle_session()?.to_owned();
     if gateway.is_demo() {
-        let selected = if matches!(request, Request::Install { .. }) {
+        let selected = if matches!(
+            request,
+            Request::Install { .. } | Request::InstallCrds { .. }
+        ) {
             None
         } else {
             Some(helm::select_release(
@@ -1469,10 +1727,16 @@ async fn prepare_inner(gateway: &Gateway, options: Options, request: Request) ->
             seals: vec![],
             canonical: String::new(),
             chart_hash: None,
+            chart_source: None,
             values_hash: None,
             summary,
             created: Instant::now(),
             demo: true,
+            hooks: Default::default(),
+            hook_seals: vec![],
+            crds: Default::default(),
+            crd_seals: vec![],
+            bindings: vec![],
         });
     }
     let (client, connection, _) = gateway.helm_lifecycle_access()?;
@@ -1501,16 +1765,46 @@ async fn prepare_inner(gateway: &Gateway, options: Options, request: Request) ->
         );
     }
     let mut chart_hash = None;
+    let mut chart_source = None;
     let mut values_hash = None;
-    if let Request::Install { chart, values } | Request::Upgrade { chart, values } = &request {
-        if chart.extension().is_none_or(|extension| extension != "tgz") {
-            return Err("Helm lifecycle accepts a local packaged .tgz chart only; no directory/repository/OCI fetch".into());
+    let input = match &request {
+        Request::Install { chart, values } | Request::Upgrade { chart, values } => {
+            Some((chart, values.as_ref()))
         }
-        chart_hash = Some(snapshot(chart, &workspace.0.join("chart.tgz"), MAX_CHART)?);
-        scan_chart(&safety::read_small(
-            &workspace.0.join("chart.tgz"),
-            MAX_CHART,
-        )?)?;
+        Request::InstallCrds { chart } => Some((chart, None)),
+        _ => None,
+    };
+    let mut crds = crate::helm_extensions::CrdPlan::default();
+    if let Some((chart, values)) = input {
+        let source = chart.to_str().ok_or("chart source must be UTF-8")?;
+        if source.starts_with("oci://") {
+            let reference = crate::helm_oci::Reference::parse(source)?;
+            let acquired = crate::helm_oci::acquire(
+                &reference,
+                &options.registry,
+                &workspace.0.join("chart.tgz"),
+            )
+            .await?;
+            chart_source = Some(format!(
+                "OCI source: {}\nManifest digest: {}\nChart layer digest: {}\nConfig digest: {}\nDownloaded and sealed before review; no registry access during execution.",
+                acquired.reference,
+                acquired.manifest_digest,
+                acquired.chart_digest,
+                acquired.config_digest
+            ));
+            chart_hash = Some(file_hash(&workspace.0.join("chart.tgz"), MAX_CHART)?);
+        } else {
+            if chart.extension().is_none_or(|extension| extension != "tgz") {
+                return Err(
+                    "Helm lifecycle requires a local .tgz or digest-pinned oci:// chart".into(),
+                );
+            }
+            chart_hash = Some(snapshot(chart, &workspace.0.join("chart.tgz"), MAX_CHART)?);
+        }
+        crds = inspect_chart(
+            &safety::read_small(&workspace.0.join("chart.tgz"), MAX_CHART)?,
+            options.allow_crds,
+        )?;
         if let Some(values) = values {
             values_hash = Some(snapshot(
                 values,
@@ -1519,6 +1813,23 @@ async fn prepare_inner(gateway: &Gateway, options: Options, request: Request) ->
             )?);
         }
     }
+    if matches!(request, Request::InstallCrds { .. }) {
+        return prepare_crds(
+            gateway,
+            options,
+            request,
+            tool,
+            workspace,
+            connection,
+            session,
+            chart_hash,
+            chart_source,
+            crds,
+        )
+        .await;
+    }
+    let crd_seals = crd_preflight(&client, &crds, false).await?;
+    let mut bindings = Vec::new();
     let inventory = helm::list(gateway, &options.namespace).await?;
     if inventory.truncated || !inventory.issues.is_empty() {
         return Err("Helm lifecycle requires a complete Secret and ConfigMap inventory in the selected namespace; check storage read permissions".into());
@@ -1575,19 +1886,37 @@ async fn prepare_inner(gateway: &Gateway, options: Options, request: Request) ->
         vec![]
     };
     let old = if let Some(selected) = &selected {
-        no_stored_hooks(&context, &options, selected.revision).await?;
-        parse_resources(
+        parse_resolved(
             &get_manifest(&context, &options, selected.revision).await?,
-            &options.namespace,
-        )?
+            &options,
+            &client,
+            &mut bindings,
+        )
+        .await?
     } else {
         vec![]
     };
-    if let Request::Rollback { revision } = &request {
-        no_stored_hooks(&context, &options, *revision).await?;
-    }
-    let desired = dry_plan(&context, &options, &request).await?;
-    let canonical = canonical(&desired)?;
+    let prior_hooks = if let Some(selected) = &selected {
+        stored_hooks(gateway, &options, selected, &request).await?
+    } else {
+        crate::helm_extensions::HookPlan::default()
+    };
+    let selected_hooks = if matches!(request, Request::Rollback { .. }) {
+        rollback_target.as_ref()
+    } else {
+        selected.as_ref()
+    };
+    let (desired, hooks) = dry_plan(
+        gateway,
+        &context,
+        &options,
+        &request,
+        &client,
+        &mut bindings,
+        selected_hooks,
+    )
+    .await?;
+    let canonical = canonical_plan(&desired, &hooks)?;
     let mut affected = BTreeMap::new();
     for r in old.into_iter().chain(desired.iter().cloned()) {
         affected.insert(r.identity.clone(), r);
@@ -1596,9 +1925,25 @@ async fn prepare_inner(gateway: &Gateway, options: Options, request: Request) ->
     if resources.len() > MAX_RESOURCES {
         return Err("operation affects more than 128 resources".into());
     }
+    let active_hooks = hooks.active();
+    if resources.len() + active_hooks.len() > MAX_RESOURCES
+        || active_hooks.iter().any(|hook| {
+            resources.iter().any(|resource| {
+                resource.identity.api_version == hook.identity.api_version
+                    && resource.identity.kind == hook.identity.kind
+                    && resource.identity.name == hook.identity.name
+            })
+        })
+    {
+        return Err(
+            "hook and ordinary resource identities collide or exceed128 affected resources".into(),
+        );
+    }
+    let (hook_seals, existing_hooks) =
+        hook_preflight(&client, &hooks, &prior_hooks, &options, true).await?;
     let (seals, existing) = resource_seals(client.clone(), &resources, &options, true).await?;
     admission(
-        client,
+        client.clone(),
         &desired,
         &resources,
         &seals,
@@ -1607,7 +1952,7 @@ async fn prepare_inner(gateway: &Gateway, options: Options, request: Request) ->
     )
     .await?;
     let mut summary = format!(
-        "REVIEW HELM {} / TRUSTED EXTERNAL HELM 4\nContext: {}\nVerified endpoint: {}\nRelease: {}/{} | {} storage\nCurrent release: {}\nExecutable: {}\nExecutable SHA-256: {}\nChart SHA-256: {}\nValues SHA-256: {}\nBudget: {} seconds; 8 MiB process output captured privately; no raw diagnostics shown.\nHooks disabled; CRDs, cluster/system/cross-namespace/GitOps targets and foreign resource adoption forbidden.\nNo plugins, post-renderer, repository/OCI or dependency fetch. Upgrade resets chart defaults then reuses stored overrides plus the explicit values file.\nNative Helm server-connected simulation and per-resource API dry-run passed. These are not a transaction or readiness guarantee.\nHelm renders deterministic packaged input again; exact canonical plan, history and live UID/resourceVersion are rechecked before execution.\nHelm's own API requests do not carry the reviewed UID preconditions: a concurrent replacement remains a race.\nNo automatic rollback/retry. Cancellation, timeout, client failure and partial writes require reconciliation; remote changes may already have occurred.\nTrusted Helm retains your OS-user filesystem/network permissions and receives the private static credential; this is not an OS sandbox.\nKnown-field redaction can hide changed sensitive values; hashes bind exact chart/values and the complete private manifest. Custom values can still be confidential.\n\nAFFECTED RESOURCE IDENTITIES\n",
+        "REVIEW HELM {} / TRUSTED EXTERNAL HELM 4\nContext: {}\nVerified endpoint: {}\nRelease: {}/{} | {} storage\nCurrent release: {}\nExecutable: {}\nExecutable SHA-256: {}\nChart SHA-256: {}\nValues SHA-256: {}\nBudget: {} seconds; 8 MiB process output captured privately; no raw diagnostics shown.\nHooks require separate explicit capability and complete event/create/delete review. CRDs are retained create-only bootstrap objects; custom resources require sealed Established Namespaced CRDs. Cluster/system/cross-namespace/GitOps targets and foreign resource adoption forbidden.\nNo registry access during execution; no plugins, post-renderer, repository or dependency fetch. Upgrade resets chart defaults then reuses stored overrides plus the explicit values file.\nNative Helm server-connected simulation and per-resource API dry-run passed. These are not a transaction or readiness guarantee.\nHelm renders deterministic packaged input again; exact canonical plan, history and live UID/resourceVersion are rechecked before execution.\nHelm's own API requests do not carry the reviewed UID preconditions: a concurrent replacement remains a race.\nNo automatic rollback/retry. Cancellation, timeout, client failure and partial writes require reconciliation; remote changes may already have occurred.\nTrusted Helm retains your OS-user filesystem/network permissions and receives the private static credential; this is not an OS sandbox.\nKnown-field redaction can hide changed sensitive values; hashes bind exact chart/values and the complete private manifest. Custom values can still be confidential.\n\nAFFECTED RESOURCE IDENTITIES\n",
         request.name(),
         safety::safe_text(&gateway.context, 253),
         safety::safe_text(&gateway.server, 1024),
@@ -1641,6 +1986,9 @@ async fn prepare_inner(gateway: &Gateway, options: Options, request: Request) ->
             }
         ));
     }
+    if let Some(source) = &chart_source {
+        summary.push_str(&format!("\n{source}\n"));
+    }
     summary.push_str(&format!("\nExact argv (private static connection path contains no credentials in argv): {:?}\nSource request: {}\n",lifecycle_args(&options,&request,&workspace.0,false),safety::safe_text(&format!("{request:?}"),16384)));
     if let Some(target) = &rollback_target {
         summary.push_str(&format!(
@@ -1671,6 +2019,37 @@ async fn prepare_inner(gateway: &Gateway, options: Options, request: Request) ->
         ));
     }
     summary.push_str("Controllers and Kubernetes garbage collection may create/update/delete dependent Pods, ReplicaSets, storage or other children; these are not individually UID-preconditioned by Helm.\n");
+    summary.push_str(&hooks.review());
+    summary
+        .push_str("\nHOOK OBJECTS (known fields redacted; commands may have external effects)\n");
+    for hook in &hooks.all {
+        summary.push_str(&review_object(hook.object.clone())?);
+        summary.push_str("\n---\n");
+    }
+    for (definition, seal) in crds.definitions.iter().zip(&crd_seals) {
+        if let Some(binding) = seal {
+            summary.push_str(&format!(
+                "\nPACKAGED CRD RETAINED / SKIPPED BY HELM: {} UID {} RV {}; no update/delete\n",
+                definition.name, binding.uid, binding.resource_version
+            ));
+            summary.push_str(&review_object(binding.definition.object.clone())?);
+        }
+    }
+    for binding in &bindings {
+        summary.push_str(&format!("\nSEALED CUSTOM API: {} UID {} RV {}; Namespaced, Established; CRD itself is never upgraded/deleted\n",binding.definition.name,binding.uid,binding.resource_version));
+        if !crds
+            .definitions
+            .iter()
+            .any(|definition| definition.name == binding.definition.name)
+        {
+            summary.push_str(&review_object(binding.definition.object.clone())?);
+        }
+    }
+    summary.push_str("\nCURRENT HOOK OBJECTS (known fields redacted)\n");
+    for object in existing_hooks {
+        summary.push_str(&review_object(object)?);
+        summary.push_str("\n---\n");
+    }
     summary.push_str("\nCURRENT OBJECTS (known fields redacted)\n");
     for object in existing {
         summary.push_str(&review_object(object)?);
@@ -1707,11 +2086,236 @@ async fn prepare_inner(gateway: &Gateway, options: Options, request: Request) ->
         seals,
         canonical,
         chart_hash,
+        chart_source,
         values_hash,
         summary,
         created: Instant::now(),
         demo: false,
+        hooks,
+        hook_seals,
+        crds,
+        crd_seals,
+        bindings,
     })
+}
+fn crd_api() -> ApiResource {
+    ApiResource {
+        group: "apiextensions.k8s.io".into(),
+        version: "v1".into(),
+        api_version: "apiextensions.k8s.io/v1".into(),
+        kind: "CustomResourceDefinition".into(),
+        plural: "customresourcedefinitions".into(),
+    }
+}
+async fn crd_preflight(
+    client: &Client,
+    plan: &crate::helm_extensions::CrdPlan,
+    create_missing: bool,
+) -> Result<Vec<Option<crate::helm_crds::Binding>>> {
+    use kube::api::PostParams;
+    let api: Api<DynamicObject> = Api::all_with(client.clone(), &crd_api());
+    let mut seals = Vec::new();
+    for definition in &plan.definitions {
+        let current = api.get_opt(&definition.name).await.map_err(|error| {
+            api_failure(error, "exact CRD read (needs get permission on this CRD)")
+        })?;
+        if let Some(current) = current {
+            let object = serde_json::to_value(current).map_err(|_| "invalid live CRD")?;
+            let binding = crate::helm_crds::validate_live(object.clone())?;
+            if !definition.matches_existing(&object) {
+                return Err("existing CRD differs from the packaged definition; create-only policy never upgrades or adopts a different schema".into());
+            }
+            seals.push(Some(binding));
+        } else {
+            if !create_missing {
+                return Err("packaged CRD is absent; run a separately reviewed helm crds RELEASE CHART bootstrap, wait for Established, then prepare this release again".into());
+            }
+            let object: DynamicObject = serde_json::from_value(definition.object.clone())
+                .map_err(|_| "invalid packaged CRD")?;
+            let admitted = api
+                .create(
+                    &PostParams {
+                        dry_run: true,
+                        ..Default::default()
+                    },
+                    &object,
+                )
+                .await
+                .map_err(|error| {
+                    api_failure(
+                        error,
+                        "CRD create dry-run (needs explicit cluster-scoped create permission)",
+                    )
+                })?;
+            let mut admitted =
+                serde_json::to_value(admitted).map_err(|_| "invalid admitted CRD")?;
+            if admitted["metadata"]["finalizers"]
+                == json!(["customresourcecleanup.apiextensions.k8s.io"])
+            {
+                admitted["metadata"]
+                    .as_object_mut()
+                    .ok_or("invalid admitted metadata")?
+                    .remove("finalizers");
+            }
+            if !definition.matches_existing(&admitted) {
+                return Err(
+                    "CRD admission changed reviewed schema fields; no bootstrap submitted".into(),
+                );
+            }
+            let _ = crate::helm_extensions::crd_definition(admitted)?;
+            seals.push(None);
+        }
+    }
+    Ok(seals)
+}
+fn same_crd_seals(
+    left: &[Option<crate::helm_crds::Binding>],
+    right: &[Option<crate::helm_crds::Binding>],
+) -> bool {
+    left.len() == right.len()
+        && left.iter().zip(right).all(|(a, b)| match (a, b) {
+            (None, None) => true,
+            (Some(a), Some(b)) => {
+                a.uid == b.uid
+                    && a.resource_version == b.resource_version
+                    && a.definition.name == b.definition.name
+            }
+            _ => false,
+        })
+}
+#[allow(clippy::too_many_arguments)]
+async fn prepare_crds(
+    gateway: &Gateway,
+    options: Options,
+    request: Request,
+    tool: Tool,
+    workspace: Workspace,
+    connection: StaticConnection,
+    session: String,
+    chart_hash: Option<String>,
+    chart_source: Option<String>,
+    crds: crate::helm_extensions::CrdPlan,
+) -> Result<Prepared> {
+    if crds.definitions.is_empty() {
+        return Err("packaged chart has no supported crds/ definitions to bootstrap".into());
+    }
+    let (client, _, _) = gateway.helm_lifecycle_access()?;
+    let crd_seals = crd_preflight(&client, &crds, true).await?;
+    let mut summary = format!(
+        "REVIEW CREATE-ONLY CLUSTER CRDs\nContext: {}\nVerified endpoint: {}\nConfirmation label: {}/{} (not a namespace restriction on CRDs)\nChart SHA-256: {}\nCRDs extend the API for ALL namespaces. Only Namespaced custom-resource definitions without conversion webhooks are accepted.\nOnly missing CRDs are created; matching Established CRDs are retained with UID/resourceVersion seals. No CRD update/delete, Helm release record or ordinary chart resource is created.\nCRDs and their data remain after release uninstall. No automatic rollback/retry; cancellation may leave partially created cluster APIs.\nAfter this bootstrap is Established, prepare and approve the ordinary Helm release separately.\nBudget: {} seconds; review expires in15 minutes.\n",
+        safety::safe_text(&gateway.context, 253),
+        safety::safe_text(&gateway.server, 1024),
+        options.namespace,
+        options.release,
+        chart_hash.as_deref().unwrap_or("missing"),
+        options.seconds
+    );
+    if let Some(source) = &chart_source {
+        summary.push_str(source);
+        summary.push('\n');
+    }
+    for (definition, seal) in crds.definitions.iter().zip(&crd_seals) {
+        summary.push_str(&format!(
+            "\n{} {}\n",
+            if seal.is_some() {
+                "RETAIN EXISTING"
+            } else {
+                "CREATE MISSING"
+            },
+            definition.name
+        ));
+        summary.push_str(&review_object(definition.object.clone())?);
+        if let Some(binding) = seal {
+            summary.push_str(&format!(
+                "\nLive UID {} RV {}\n",
+                binding.uid, binding.resource_version
+            ));
+            summary.push_str(&review_object(binding.definition.object.clone())?);
+        }
+    }
+    summary.push_str(&format!("\nExact CRD plan SHA-256: {}\nType {}/{} to execute the cluster-scoped create-only plan.\n",hash(crds.canonical.as_bytes()),options.namespace,options.release));
+    if summary.len() > MAX_REVIEW {
+        return Err("complete CRD review exceeds512 KiB; split the bootstrap".into());
+    }
+    let canonical = crds.canonical.clone();
+    Ok(Prepared {
+        options,
+        request,
+        tool: Some(tool),
+        workspace: Some(workspace),
+        connection: Some(connection),
+        session,
+        selected: None,
+        rollback_target: None,
+        history: vec![],
+        resources: vec![],
+        seals: vec![],
+        canonical,
+        chart_hash,
+        chart_source,
+        values_hash: None,
+        summary,
+        created: Instant::now(),
+        demo: false,
+        hooks: Default::default(),
+        hook_seals: vec![],
+        crds,
+        crd_seals,
+        bindings: vec![],
+    })
+}
+async fn execute_crds(gateway: &Gateway, prepared: &Prepared) -> Result<()> {
+    use kube::api::PostParams;
+    gateway.helm_extension_access(false, true)?;
+    let (client, _, _) = gateway.helm_lifecycle_access()?;
+    let api: Api<DynamicObject> = Api::all_with(client, &crd_api());
+    for (definition, seal) in prepared.crds.definitions.iter().zip(&prepared.crd_seals) {
+        if seal.is_some() {
+            continue;
+        }
+        // Never convert an unexpected AlreadyExists into adoption or update.
+        let object: DynamicObject = serde_json::from_value(definition.object.clone())
+            .map_err(|_| "invalid reviewed CRD")?;
+        let created = api
+            .create(&PostParams::default(), &object)
+            .await
+            .map_err(|error| {
+                api_failure(
+                    error,
+                    "CRD create; previous definitions may already exist; reconcile before retry",
+                )
+            })?;
+        let created_value = serde_json::to_value(&created)
+            .map_err(|_| "cannot inspect created CRD; outcome unknown")?;
+        if !definition.matches_existing(&created_value) {
+            return Err("created CRD differs from its reviewed schema; stop and reconcile; no further definitions created".into());
+        }
+        let uid = created
+            .metadata
+            .uid
+            .ok_or("created CRD omitted UID; outcome unknown")?;
+        loop {
+            let current = api
+                .get(&definition.name)
+                .await
+                .map_err(|error| api_failure(error, "CRD establishment"))?;
+            if current.metadata.uid.as_deref() != Some(&uid) {
+                return Err(
+                    "CRD was replaced during bootstrap; no further definitions created".into(),
+                );
+            }
+            let object = serde_json::to_value(current).map_err(|_| "invalid CRD response")?;
+            if !definition.matches_existing(&object) {
+                return Err("CRD schema changed during establishment; stop and reconcile".into());
+            }
+            if crate::helm_extensions::CrdDefinition::established(&object) {
+                let _ = crate::helm_crds::validate_live(object)?;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    }
+    Ok(())
 }
 fn review_object(mut object: Value) -> Result<String> {
     if let Some(map) = object.as_object_mut() {
@@ -1720,6 +2324,7 @@ fn review_object(mut object: Value) -> Result<String> {
     if let Some(metadata) = object.get_mut("metadata").and_then(Value::as_object_mut) {
         metadata.remove("managedFields");
     }
+    helm::redact_values(&mut object, 0, &mut 0)?;
     safety::redact(&mut object);
     crate::inspect::yaml(&object)
 }
@@ -1740,7 +2345,11 @@ fn start_audit(prepared: &Prepared, context: &str) -> Result<PathBuf> {
         .map_err(|_| "invalid audit clock")?
         .as_nanos();
     let path = dir.join(format!("{stamp}-helm-{}.jsonl", std::process::id()));
-    let value = json!({"schema_version":1,"stage":"intent","context":context,"namespace":prepared.options.namespace,"resource":"helm-releases","name":prepared.options.release,"uid":prepared.selected.as_ref().map(|r|r.uid.as_str()).unwrap_or("absent"),"action":format!("helm-{}",prepared.request.name()),"plan_sha256":hash(prepared.canonical.as_bytes()),"timestamp_unix_ns":stamp.to_string()});
+    let bootstrap = matches!(prepared.request, Request::InstallCrds { .. });
+    let mut value = json!({"schema_version":1,"stage":"intent","context":context,"namespace":if bootstrap {"[cluster]"} else {&prepared.options.namespace},"resource":if bootstrap {"customresourcedefinitions"} else {"helm-releases"},"name":prepared.options.release,"uid":prepared.selected.as_ref().map(|r|r.uid.as_str()).unwrap_or("absent"),"action":format!("helm-{}",prepared.request.name()),"plan_sha256":hash(prepared.canonical.as_bytes()),"timestamp_unix_ns":stamp.to_string()});
+    if bootstrap {
+        value["crd_targets"] = json!(prepared.crds.definitions.iter().zip(&prepared.crd_seals).map(|(definition, seal)| json!({"name":definition.name,"action":if seal.is_some(){"retain"}else{"create"},"uid":seal.as_ref().map(|binding|binding.uid.as_str())})).collect::<Vec<_>>());
+    }
     safety::write_new(&path, format!("{value}\n").as_bytes())?;
     Ok(path)
 }
@@ -1787,6 +2396,7 @@ async fn check_current_release(gateway: &Gateway, prepared: &Prepared) -> Result
     Ok(())
 }
 async fn validate_final(gateway: &Gateway, prepared: &Prepared) -> Result<ProcessContext> {
+    gateway.helm_extension_access(prepared.options.allow_hooks, prepared.options.allow_crds)?;
     let (client, connection, _) = gateway.helm_lifecycle_access()?;
     connection.gate.check_live()?;
     let context = ProcessContext {
@@ -1804,10 +2414,17 @@ async fn validate_final(gateway: &Gateway, prepared: &Prepared) -> Result<Proces
         storage: prepared.options.storage,
     };
     context.tool.check()?;
-    if let Request::Install { chart, values } | Request::Upgrade { chart, values } =
-        &prepared.request
-    {
-        if prepared.chart_hash.as_deref() != Some(file_hash(chart, MAX_CHART)?.as_str()) {
+    let input = match &prepared.request {
+        Request::Install { chart, values } | Request::Upgrade { chart, values } => {
+            Some((chart, values.as_ref()))
+        }
+        Request::InstallCrds { chart } => Some((chart, None)),
+        _ => None,
+    };
+    if let Some((chart, values)) = input {
+        if prepared.chart_source.is_none()
+            && prepared.chart_hash.as_deref() != Some(file_hash(chart, MAX_CHART)?.as_str())
+        {
             return Err("source chart changed after review; no write sent".into());
         }
         if let Some(values) = values
@@ -1826,9 +2443,50 @@ async fn validate_final(gateway: &Gateway, prepared: &Prepared) -> Result<Proces
             return Err("private reviewed input changed; prepare again".into());
         }
     }
+    let current_crds = crd_preflight(
+        &client,
+        &prepared.crds,
+        matches!(prepared.request, Request::InstallCrds { .. }),
+    )
+    .await?;
+    if !same_crd_seals(&current_crds, &prepared.crd_seals) {
+        return Err(
+            "packaged CRD UID/resourceVersion or absence changed after review; prepare again"
+                .into(),
+        );
+    }
+    if matches!(prepared.request, Request::InstallCrds { .. }) {
+        let observed = inspect_chart(
+            &safety::read_small(&context.root.join("chart.tgz"), MAX_CHART)?,
+            true,
+        )?;
+        if observed.canonical != prepared.canonical || prepared.created.elapsed() > REVIEW_LIFETIME
+        {
+            return Err("CRD plan changed or review expired".into());
+        }
+        return Ok(context);
+    }
+    crate::helm_crds::recheck(&client, &prepared.bindings).await?;
     check_current_release(gateway, prepared).await?;
-    let desired = dry_plan(&context, &prepared.options, &prepared.request).await?;
-    if canonical(&desired)? != prepared.canonical {
+    let mut bindings = prepared.bindings.clone();
+    let (desired, hooks) = dry_plan(
+        gateway,
+        &context,
+        &prepared.options,
+        &prepared.request,
+        &client,
+        &mut bindings,
+        if matches!(prepared.request, Request::Rollback { .. }) {
+            prepared.rollback_target.as_ref()
+        } else {
+            prepared.selected.as_ref()
+        },
+    )
+    .await?;
+    if bindings.len() != prepared.bindings.len()
+        || hooks.canonical != prepared.hooks.canonical
+        || canonical_plan(&desired, &hooks)? != prepared.canonical
+    {
         return Err("Helm rendered a different plan after approval; no write sent; inspect dynamic templates or cluster changes".into());
     }
     let (seals, _) = resource_seals(
@@ -1850,7 +2508,34 @@ async fn validate_final(gateway: &Gateway, prepared: &Prepared) -> Result<Proces
         matches!(prepared.request, Request::Uninstall),
     )
     .await?;
-    let (fresh, _) = resource_seals(client, &prepared.resources, &prepared.options, false).await?;
+    let prior_hooks = if let Some(release) = &prepared.selected {
+        stored_hooks(gateway, &prepared.options, release, &prepared.request).await?
+    } else {
+        Default::default()
+    };
+    let (hook_seals, _) =
+        hook_preflight(&client, &hooks, &prior_hooks, &prepared.options, true).await?;
+    if hook_seals != prepared.hook_seals {
+        return Err("hook UID/resourceVersion changed after review; no action submitted".into());
+    }
+    let (fresh, _) = resource_seals(
+        client.clone(),
+        &prepared.resources,
+        &prepared.options,
+        false,
+    )
+    .await?;
+    let (fresh_hooks, _) =
+        hook_preflight(&client, &hooks, &prior_hooks, &prepared.options, false).await?;
+    if fresh_hooks != prepared.hook_seals {
+        return Err("hook changed during final validation; no action submitted".into());
+    }
+    crate::helm_crds::recheck(&client, &prepared.bindings).await?;
+    let final_crds = crd_preflight(&client, &prepared.crds, false).await?;
+    if !same_crd_seals(&final_crds, &prepared.crd_seals) {
+        return Err("packaged CRD changed during final validation; no action submitted".into());
+    }
+
     if fresh != prepared.seals || prepared.created.elapsed() > REVIEW_LIFETIME {
         return Err(
             "resource changed or review expired during final validation; no write sent".into(),
@@ -1878,11 +2563,8 @@ async fn verify_uninstalled(gateway: &Gateway, prepared: &Prepared) -> Result<()
     while !pending.is_empty() {
         let mut retained = Vec::new();
         for resource in pending {
-            let api: Api<DynamicObject> = Api::namespaced_with(
-                client.clone(),
-                &prepared.options.namespace,
-                &resource_api(&resource.identity.api_version, &resource.identity.kind)?,
-            );
+            let api: Api<DynamicObject> =
+                Api::namespaced_with(client.clone(), &prepared.options.namespace, &resource.api);
             if let Some(current) = api
                 .get_opt(&resource.identity.name)
                 .await
@@ -1962,6 +2644,32 @@ pub async fn run(
     };
     let audit = start_audit(&prepared, &gateway.context)?;
     let operation_started = Instant::now();
+    if matches!(prepared.request, Request::InstallCrds { .. }) {
+        let result = tokio::select! {result=tokio::time::timeout(Duration::from_secs(u64::from(prepared.options.seconds)),execute_crds(gateway,&prepared))=>result.map_err(|_|"CRD bootstrap deadline exceeded; definitions may already exist".to_owned()).and_then(|result|result),_=canceled(&mut cancel)=>Err("CRD bootstrap canceled; definitions may already exist".into())};
+        let success = result.is_ok();
+        finish_audit(
+            &audit,
+            if success {
+                "succeeded"
+            } else {
+                "failed-or-unknown"
+            },
+        )?;
+        return Ok(Outcome {
+            success,
+            uncertain: !success,
+            summary: match result {
+                Ok(()) => format!(
+                    "CRD bootstrap completed: {} reviewed definitions Established or retained. No Helm release record was created. Prepare the ordinary release separately; CRDs persist through uninstall.",
+                    prepared.crds.definitions.len()
+                ),
+                Err(error) => format!(
+                    "CRD bootstrap outcome UNKNOWN: {}. Inspect exact reviewed CRD names and audit pending; do not retry automatically.",
+                    safety::safe_text(&error, 1024)
+                ),
+            },
+        });
+    }
     let mut result = command_with_cancel(
         &context,
         lifecycle_args(&prepared.options, &prepared.request, &context.root, false),
@@ -2146,6 +2854,17 @@ mod tests {
     fn resource_plan_has_explicit_scope_identities_and_redacted_secrets() -> Result<()> {
         let manifest = "apiVersion: v1\nkind: Secret\nmetadata:\n  name: db\nstringData:\n  password: PRIVATE_CANARY\n---\napiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: app\nspec:\n  template:\n    spec:\n      containers:\n      - name: app\n        image: busybox:1\n        env:\n        - name: API_KEY\n          value: PRIVATE_CANARY\n";
         let resources = parse_resources(manifest, "test")?;
+        let mut custom = json!({"apiVersion":"example.test/v1","kind":"Widget","metadata":{"name":"app","namespace":"test"},"spec":{"apiKey":"KEY_CANARY","api_key":"KEY_CANARY","passphrase":"PHRASE_CANARY","privateKey":"PRIVATE_CANARY","tls":{"key":"TLS_CANARY","certificate":"public certificate"},"unusual":"-----BEGIN EC PRIVATE KEY-----\nPEM_CANARY\n-----END EC PRIVATE KEY-----","image":"example:v1","replicas":2}});
+        let shown = review_object(custom.clone())?;
+        assert!(!shown.contains("CANARY"));
+        assert!(
+            shown.contains("example:v1")
+                && shown.contains("public certificate")
+                && shown.contains("\"replicas\": 2")
+        );
+        helm::redact_values(&mut custom, 0, &mut 0)?;
+        safety::redact(&mut custom);
+        assert_eq!(shown, review_object(custom)?);
         assert_eq!(resources.len(), 2);
         assert!(resources.iter().all(|r| r.identity.namespace == "test"));
         let rendered = resources
@@ -2182,6 +2901,9 @@ mod tests {
             release: "demo-api".into(),
             storage: Storage::Secret,
             seconds: 60,
+            allow_hooks: false,
+            allow_crds: false,
+            registry: Default::default(),
         }
     }
     #[test]
@@ -2355,6 +3077,119 @@ mod tests {
             let client=mock_client(move|_,uri,_|{let mut object=owned(uri.rsplit('/').next().unwrap_or("cm"),"uid");object["data"]=json!({"private":"X".repeat(3*1024*1024)});(200,object)});
             let resources=parse_resources("apiVersion: v1\nkind: ConfigMap\nmetadata:\n name: a\n---\napiVersion: v1\nkind: ConfigMap\nmetadata:\n name: b\n---\napiVersion: v1\nkind: ConfigMap\nmetadata:\n name: c\n","demo")?;
             assert!(resource_seals(client,&resources,&options(),true).await.is_err_and(|error|error.contains("aggregate")));Ok(())
+        })
+    }
+    fn reviewed_hook() -> Result<crate::helm_extensions::HookPlan> {
+        let mut object = owned("check", "unused");
+        object["metadata"]
+            .as_object_mut()
+            .ok_or("fixture metadata")?
+            .remove("uid");
+        object["metadata"]
+            .as_object_mut()
+            .ok_or("fixture metadata")?
+            .remove("resourceVersion");
+        object["metadata"]["annotations"]["helm.sh/hook"] = json!("pre-install,pre-upgrade");
+        object["data"] = json!({"result":"reviewed"});
+        crate::helm_extensions::hooks_from_manifests(
+            &object.to_string(),
+            "demo",
+            "demo-api",
+            crate::helm_extensions::Operation::Install,
+            true,
+        )
+    }
+    #[test]
+    fn hook_preflight_rejects_foreign_collision_requires_delete_rights_and_seals_uid() -> Result<()>
+    {
+        crate::cli::runtime()?.block_on(async {
+            let plan=reviewed_hook()?;
+            let mut existing=plan.all[0].object.clone();existing["metadata"]["uid"]=json!("captured");existing["metadata"]["resourceVersion"]=json!("7");
+            let object=existing.clone();let client=mock_client(move|method,_,_|{assert_eq!(method,http::Method::GET);(200,object.clone())});
+            assert!(hook_preflight(&client,&plan,&Default::default(),&options(),true).await.is_err_and(|error|error.contains("foreign adoption")));
+            let object=existing.clone();let client=mock_client(move|method,_,body|{if method==http::Method::GET{(200,object.clone())}else{if method==http::Method::DELETE{assert_eq!(body["preconditions"]["uid"],"captured");assert_eq!(body["dryRun"],json!(["All"]));}(200,body)}});
+            let (seals,_)=hook_preflight(&client,&plan,&plan,&options(),true).await?;assert_eq!(seals[0].uid.as_deref(),Some("captured"));
+            let client=mock_client(|method,_,_|if method==http::Method::GET{(404,json!({"apiVersion":"v1","kind":"Status","code":404,"reason":"NotFound"}))}else{assert_eq!(method,http::Method::DELETE);(403,json!({"apiVersion":"v1","kind":"Status","code":403,"reason":"Forbidden","message":"PRIVATE_DELETE_CANARY"}))});
+            assert!(hook_preflight(&client,&plan,&Default::default(),&options(),true).await.is_err_and(|error|error.contains("authorization")&&!error.contains("CANARY")));
+            existing["data"]["result"]=json!("foreign mutation");let client=mock_client(move|_,_,_|(200,existing.clone()));
+            assert!(hook_preflight(&client,&plan,&plan,&options(),true).await.is_err());
+            Ok(())
+        })
+    }
+    fn test_crd() -> Value {
+        json!({"apiVersion":"apiextensions.k8s.io/v1","kind":"CustomResourceDefinition","metadata":{"name":"widgets.example.com"},"spec":{"group":"example.com","scope":"Namespaced","names":{"plural":"widgets","kind":"Widget"},"versions":[{"name":"v1","served":true,"storage":true,"schema":{"openAPIV3Schema":{"type":"object","properties":{"spec":{"type":"object","properties":{"value":{"type":"string"}}}}}}}]}})
+    }
+    #[test]
+    fn crd_bootstrap_dry_runs_create_retains_existing_and_rejects_admission_drift() -> Result<()> {
+        crate::cli::runtime()?.block_on(async {
+            let plan=crate::helm_extensions::crds(&test_crd().to_string(),true)?;
+            for mutate in [false,true] {
+                let client=mock_client(move|method,uri,mut body|{if method==http::Method::GET{(404,json!({"apiVersion":"v1","kind":"Status","code":404,"reason":"NotFound"}))}else{assert_eq!(method,http::Method::POST);assert!(uri.contains("dryRun=All"));if mutate{body["spec"]["versions"][0]["schema"]["openAPIV3Schema"]["properties"]["spec"]["properties"]["value"]["type"]=json!("integer");}(201,body)}});
+                let result=crd_preflight(&client,&plan,true).await;
+                if mutate{assert!(result.is_err_and(|error|error.contains("changed reviewed schema")));}else{assert!(result?.iter().all(Option::is_none));}
+            }
+            let mut existing=test_crd();existing["metadata"]["uid"]=json!("uid-crd");existing["metadata"]["resourceVersion"]=json!("7");existing["metadata"]["finalizers"]=json!(["customresourcecleanup.apiextensions.k8s.io"]);existing["status"]["conditions"]=json!([{"type":"Established","status":"True"}]);
+            let client=mock_client(move|method,_,_|{assert_eq!(method,http::Method::GET);(200,existing.clone())});
+            let first=crd_preflight(&client,&plan,true).await?;let second=crd_preflight(&client,&plan,false).await?;assert!(same_crd_seals(&first,&second));assert_eq!(first[0].as_ref().map(|binding|binding.uid.as_str()),Some("uid-crd"));
+            Ok(())
+        })
+    }
+    #[test]
+    fn crd_execution_creates_only_missing_and_rejects_live_admission_drift() -> Result<()> {
+        crate::cli::runtime()?.block_on(async {
+            let demo = Gateway::connect(crate::gateway::Connection {
+                demo: true,
+                writable: true,
+                allow_helm_write: true,
+                allow_helm_crds: true,
+                ..Default::default()
+            })
+            .await?;
+            let mut config = options();
+            config.allow_crds = true;
+            for mutate in [false, true] {
+                let mut prepared = prepare(
+                    &demo,
+                    config.clone(),
+                    Request::InstallCrds {
+                        chart: PathBuf::from("/demo/crds.tgz"),
+                    },
+                )
+                .await?;
+                prepared.crds = crate::helm_extensions::crds(&test_crd().to_string(), true)?;
+                prepared.crd_seals = vec![None];
+                let mut live = test_crd();
+                live["metadata"]["uid"] = json!("created");
+                live["metadata"]["resourceVersion"] = json!("1");
+                live["status"]["conditions"] = json!([{"type":"Established","status":"True"}]);
+                let client = mock_client(move |method, uri, body| {
+                    assert!(!uri.contains("dryRun"));
+                    assert!(method == http::Method::POST || method == http::Method::GET);
+                    if method == http::Method::POST {
+                        assert_eq!(body["metadata"]["name"], "widgets.example.com");
+                    }
+                    let mut result = live.clone();
+                    if mutate {
+                        result["spec"]["versions"][0]["schema"]["openAPIV3Schema"]["properties"]
+                            ["spec"]["properties"]["value"]["type"] = json!("integer");
+                    }
+                    (200, result)
+                });
+                let gateway = Gateway::for_helm_extension_test_client(
+                    client,
+                    "demo",
+                    static_connection()?,
+                    false,
+                    true,
+                );
+                let result = execute_crds(&gateway, &prepared).await;
+                if mutate {
+                    assert!(result.is_err_and(|error| error.contains("reviewed schema")));
+                } else {
+                    result?;
+                }
+            }
+            Ok(())
         })
     }
     #[test]

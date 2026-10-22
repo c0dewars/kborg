@@ -1,6 +1,10 @@
+# OCI charts, reviewed hooks and CRDs — 2026-10-22
+
+The latest iteration adds digest-pinned OCI chart acquisition with verified HTTPS and explicit registry credentials, reviewed pre/post lifecycle hooks, and a separate create-only CRD bootstrap followed by schema-bound custom-resource lifecycle. The full-width Helm UI adds `:helm-crds` and `c`, source fields accept OCI digests, and capability states remain visible. See [extension guide](HELM_EXTENSIONS.md) for supported scope and limits.
+
 # Local development update — 2026-10-22
 
-The latest iteration adds reviewed Helm install, upgrade, rollback and uninstall
+This earlier iteration added reviewed Helm install, upgrade, rollback and uninstall
 from the CLI and Helm view, plus fixed-membership workload/selector logs across
 up to eight Pods and 32 ordinary-container streams. Lifecycle requires all three
 flags `--write --allow-helm --allow-helm-write`, exact trusted Unix Helm 4.3.1 and

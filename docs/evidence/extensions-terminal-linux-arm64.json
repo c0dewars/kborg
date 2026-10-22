@@ -1,0 +1,250 @@
+{
+  "schema": 1,
+  "platform": "Linux",
+  "architecture": "aarch64",
+  "binary": "/build/work/target/release/kborg",
+  "binary_sha256": "7009d2e711e2483690e042beaa7132f52b93431dabb8ccb81f11f0fe0b43b604",
+  "elapsed_seconds": 45.455,
+  "child_cpu_seconds": 0.195886,
+  "peak_rss_bytes": 13959168,
+  "idle_output_bytes_over_2_seconds": 0,
+  "terminal_restored": true,
+  "screens": [
+    {
+      "name": "demo-pods",
+      "width": 120,
+      "height": 32
+    },
+    {
+      "name": "command-completion",
+      "width": 120,
+      "height": 32
+    },
+    {
+      "name": "deployments",
+      "width": 120,
+      "height": 32
+    },
+    {
+      "name": "filtered-pods",
+      "width": 120,
+      "height": 32
+    },
+    {
+      "name": "object-overview",
+      "width": 120,
+      "height": 32
+    },
+    {
+      "name": "json",
+      "width": 120,
+      "height": 32
+    },
+    {
+      "name": "containers",
+      "width": 120,
+      "height": 32
+    },
+    {
+      "name": "actions",
+      "width": 120,
+      "height": 32
+    },
+    {
+      "name": "aliases",
+      "width": 120,
+      "height": 32
+    },
+    {
+      "name": "sorted-pods",
+      "width": 120,
+      "height": 32
+    },
+    {
+      "name": "metrics-table",
+      "width": 120,
+      "height": 32
+    },
+    {
+      "name": "metrics",
+      "width": 120,
+      "height": 32
+    },
+    {
+      "name": "allocations",
+      "width": 120,
+      "height": 32
+    },
+    {
+      "name": "log-detail",
+      "width": 120,
+      "height": 32
+    },
+    {
+      "name": "merged-logs",
+      "width": 120,
+      "height": 32
+    },
+    {
+      "name": "log-controls",
+      "width": 120,
+      "height": 32
+    },
+    {
+      "name": "helm-releases",
+      "width": 120,
+      "height": 32
+    },
+    {
+      "name": "helm-lifecycle-denied",
+      "width": 120,
+      "height": 32
+    },
+    {
+      "name": "helm-history",
+      "width": 120,
+      "height": 32
+    },
+    {
+      "name": "helm-values",
+      "width": 120,
+      "height": 32
+    },
+    {
+      "name": "helm-resources",
+      "width": 120,
+      "height": 32
+    },
+    {
+      "name": "pulses",
+      "width": 120,
+      "height": 32
+    },
+    {
+      "name": "xray",
+      "width": 120,
+      "height": 32
+    },
+    {
+      "name": "saved-resources",
+      "width": 120,
+      "height": 32
+    },
+    {
+      "name": "live-overview",
+      "width": 120,
+      "height": 32
+    },
+    {
+      "name": "themes",
+      "width": 120,
+      "height": 32
+    },
+    {
+      "name": "create-theme",
+      "width": 120,
+      "height": 32
+    },
+    {
+      "name": "narrow",
+      "width": 48,
+      "height": 12
+    },
+    {
+      "name": "helm-install-form",
+      "width": 120,
+      "height": 32
+    },
+    {
+      "name": "helm-install-review",
+      "width": 120,
+      "height": 32
+    },
+    {
+      "name": "helm-review-cancelled",
+      "width": 120,
+      "height": 32
+    },
+    {
+      "name": "helm-oci-default-off",
+      "width": 120,
+      "height": 32
+    },
+    {
+      "name": "helm-review-narrow",
+      "width": 48,
+      "height": 12
+    },
+    {
+      "name": "helm-unread-review-denied",
+      "width": 48,
+      "height": 12
+    },
+    {
+      "name": "helm-install-simulated",
+      "width": 48,
+      "height": 12
+    },
+    {
+      "name": "helm-upgrade-form",
+      "width": 120,
+      "height": 32
+    },
+    {
+      "name": "helm-upgrade-simulated",
+      "width": 120,
+      "height": 32
+    },
+    {
+      "name": "helm-rollback-form",
+      "width": 120,
+      "height": 32
+    },
+    {
+      "name": "helm-rollback-simulated",
+      "width": 120,
+      "height": 32
+    },
+    {
+      "name": "helm-uninstall-form",
+      "width": 120,
+      "height": 32
+    },
+    {
+      "name": "helm-uninstall-simulated",
+      "width": 120,
+      "height": 32
+    },
+    {
+      "name": "helm-crds-denied",
+      "width": 120,
+      "height": 32
+    },
+    {
+      "name": "workload-logs",
+      "width": 120,
+      "height": 32
+    },
+    {
+      "name": "multi-pod-logs",
+      "width": 120,
+      "height": 32
+    },
+    {
+      "name": "multi-pod-log-range",
+      "width": 120,
+      "height": 32
+    },
+    {
+      "name": "helm-oci-explicit-policy",
+      "width": 120,
+      "height": 32
+    },
+    {
+      "name": "helm-crds-form",
+      "width": 120,
+      "height": 32
+    }
+  ],
+  "scope": "three native PTY sessions, offline samples, OCI/CRD forms and SIMULATED Helm lifecycle; no registry/tool/cluster writes; ASCII truecolor; not a real-terminal/platform matrix"
+}

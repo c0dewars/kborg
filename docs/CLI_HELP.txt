@@ -25,7 +25,8 @@ KBorg 0.3 — Kubernetes operations, under your control
   kborg helm [list]               Native Helm releases (--allow-helm)
   kborg helm history RELEASE      Stored revision history; history RELEASE is an alias
   kborg helm detail|resources|values RELEASE REVISION   Explicit selected-revision reads
-  kborg helm install|upgrade RELEASE CHART.tgz   Reviewed local chart lifecycle
+  kborg helm install|upgrade RELEASE CHART      Reviewed local .tgz or digest-pinned OCI
+  kborg helm crds RELEASE CHART                  Separate create-only chart CRD review
   kborg helm rollback RELEASE REVISION           Reviewed stored revision rollback
   kborg helm uninstall RELEASE                  Reviewed release/resource deletion
   kborg scale [RESOURCE] NAME REPLICAS   Deployment/StatefulSet scale (0..20)
@@ -57,14 +58,23 @@ Options (put KBorg flags before exec's -- separator):
   --tail 1..2000      --since-seconds 1..86400   --head (logs only)
   --allow-helm       --helm-storage secret|configmap   --all-containers
   --allow-helm-write --helm-tool ABS --helm-values FILE --helm-timeout 1..900
+  --allow-helm-hooks --allow-helm-crds            Separate default-off capabilities
+  --helm-registry-ca ABS --helm-registry-auth ABS  Explicit OCI TLS/auth files
   --allow-logs       --allow-exec   --allow-attach   --allow-forward
   --poll            --theme ID     --color=never    --json       --yaml
   --no-mouse        --follow          --previous     --no-splash      --demo       --help
 
 Exec/attach/forward require --write AND their separate --allow-* flag.
 Helm lifecycle requires --write --allow-helm --allow-helm-write and a trusted
-Helm 4.3.1 executable. Local deterministic .tgz charts only; no hooks/plugins/CRDs.
-Complete namespace-scoped review and namespace/release confirmation expire in 15 minutes.
+Helm 4.3.1 executable. Sources are local deterministic .tgz charts or exact
+oci://HOST/repository/chart@sha256:<64 lowercase hex> references; tags are refused.
+OCI bytes are verified by digest; this does not verify authorship or signatures.
+Registry auth is an explicit private JSON file, never ambient Docker/Helm credentials.
+Hooks require --allow-helm-hooks and complete review of their resources and lifecycle.
+CRDs require --allow-helm-crds plus separate helm crds review before chart installation.
+CRD schema creation is cluster-wide; only Namespaced custom-resource APIs are accepted.
+Schemas are retained on release uninstall; no schema upgrade/delete.
+Complete target review and namespace/release confirmation expire in 15 minutes.
 Ctrl-C cancels; partial or unknown outcomes require inspection before retrying.
 Multi-Pod logs capture at most 8 Pods/32 ordinary containers with one shared budget.
 Membership stays fixed until an explicit new capture; replacements stop the stream.
@@ -96,6 +106,7 @@ TUI navigation (k9s command grammar; full compatibility register in docs/K9S_COM
   :can u:NAME|g:NAME|s:NAME         Declared RBAC evidence
   :dir PATH  :screendump           Local manifests / explicitly saved snapshots
   :helm [NAMESPACE] :history NAME   Native release metadata and stored revisions
+  :helm-install :helm-crds         Release or separate create-only CRD installation form
   :logs LABELS                   Capture fixed multi-Pod logs in current namespace
   :themes :metrics :overview :actions  Additional KBorg views
   :q :quit / Ctrl-C               Quit
@@ -113,6 +124,7 @@ TUI navigation (k9s command grammar; full compatibility register in docs/K9S_COM
   Pod s: shell   a: attach   F: prepare forwarding   f: show forward
   Workload s: scale (supported families)   r: restart (supported families)
   Helm: Enter/r history; history Enter/v stored values; d metadata; m resource identities; y metadata YAML
+  Helm: i install; u upgrade; c chart CRDs; history r rollback; Ctrl-D uninstall
   Logs: a toggles all ordinary containers; Pod l honors default-container annotation
   Logs: 0 tail,1 head,2 1m,3 5m,4 15m,5 30m,6 1h; s autoscroll,w wrap,t timestamps,f fullscreen
   Themes: arrows preview, Enter saves, N creates from preview, Esc cancels
@@ -131,7 +143,8 @@ Registered views are opt-in; their OS containment remains a production gate.
 All real clusters are labeled PRODUCTION; this is a target warning, not a
 production certification. See docs/REMAINING_WORK.md for release gates.
 
-Helm list: i install / u upgrade / Enter or r history / Ctrl-D uninstall.
-Helm history: r rollback selected revision. Forms require local chart/values paths.
+Helm list: i install / u upgrade / c chart CRDs / Enter or r history / Ctrl-D uninstall.
+Helm history: r rollback selected revision. Charts use local .tgz paths or pinned OCI;
+values files remain explicit local paths. Hooks/CRDs stay disabled without their flags.
 Helm review: scroll through every line, then type namespace/release and Enter.
 Workload l/p opens merged current/previous logs; group a cannot widen source scope.

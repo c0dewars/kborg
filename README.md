@@ -80,11 +80,10 @@ Native resource mutations require `--write`, server dry-run and exact `namespace
 Helm releases are available through `:helm` with `--allow-helm`; Enter opens revision
 history and selected values. Reviewed install, upgrade, rollback and uninstall
 require all three flags `--write --allow-helm --allow-helm-write`, an explicitly
-trusted Helm 4.3.1 executable and local deterministic packaged charts. The
+trusted Helm 4.3.1 executable and deterministic packaged charts from local files or digest-pinned OCI registries. The
 15-minute review binds inputs, release history and live resource identities;
-fresh final checks precede execution. Hooks, CRDs, cluster/system targets,
-recognized GitOps resources and foreign adoption are rejected. Read the
-[Helm lifecycle guide](docs/HELM_LIFECYCLE.md) before enabling writes.
+fresh final checks precede execution. Hooks and create-only CRD bootstrap require separate explicit opt-ins; other cluster/system targets, recognized GitOps resources and foreign adoption are rejected. Read the
+[Helm lifecycle guide](docs/HELM_LIFECYCLE.md) before enabling writes. Explicit hook and create-only CRD workflows are described in [Helm extensions](docs/HELM_EXTENSIONS.md).
 
 `logs POD --all-containers` and the log-view `a` key merge ordinary containers.
 Workload `l`/`p`, `logs deploy/NAME` and `logs --selector app=web` capture a fixed
@@ -93,7 +92,7 @@ Source labels, per-source failures and shared limits remain visible; new rollout
 Pods are not added automatically. Init and ephemeral sources are excluded from
 merges. Docker Desktop supplies real CPU and memory data through the explicitly
 installed provider described in [Desktop metrics setup](docs/DESKTOP_METRICS.md).
-See [current acceptance](docs/HELM_LIFECYCLE_ACCEPTANCE.md) for source-specific
+See [current acceptance](docs/HELM_EXTENSIONS_ACCEPTANCE.md) for source-specific
 validation and remaining limits.
 
 ## Themes
@@ -226,7 +225,8 @@ minimized bundle. Automated diagnosis remains disabled until independent
 hostname-bound egress, dedicated credential authority and publisher provenance
 are validated.
 
-Current local acceptance: [Helm lifecycle and workload logs](docs/HELM_LIFECYCLE_ACCEPTANCE.md).
+Current local acceptance: [OCI charts, hooks and CRDs](docs/HELM_EXTENSIONS_ACCEPTANCE.md).
+Previous [Helm lifecycle and workload logs](docs/HELM_LIFECYCLE_ACCEPTANCE.md) retain their original scope.
 Earlier implementation evidence and screenshots remain in the historical
 [Helm, Pod logs and Desktop metrics report](docs/HELM_LOGS_METRICS_ACCEPTANCE.md),
 [k9s navigation session](docs/K9S_ACCEPTANCE.md) and

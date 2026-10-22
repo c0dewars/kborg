@@ -1,5 +1,8 @@
 # Helm lifecycle and workload-log acceptance
 
+Historical evidence for the lifecycle/workload-log iteration. Current source and
+OCI/hook/CRD support are recorded in [HELM_EXTENSIONS_ACCEPTANCE.md](HELM_EXTENSIONS_ACCEPTANCE.md).
+
 Date: 2026-10-22. Local continuation of `ca15b02`; this report covers the
 `codex/helm-lifecycle-workload-logs` source. Exact file and executable hashes are
 retained in [validation evidence](evidence/lifecycle-validation-summary.json).
