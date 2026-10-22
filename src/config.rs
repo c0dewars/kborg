@@ -168,6 +168,8 @@ mod tests {
             follow: false,
             previous: false,
             log_seconds: crate::logs::DEFAULT_FOLLOW_SECONDS,
+            log_read: crate::logs::ReadOptions::default(),
+            selector: String::new(),
             interactive: false,
             metrics_resources: false,
             session_seconds: 900,

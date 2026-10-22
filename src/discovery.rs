@@ -153,13 +153,42 @@ fn append_resources(
         if !verbs.iter().any(|v| v.as_str() == Some("list")) {
             continue;
         }
-        let item = Kind {
+        let mut item = Kind {
             plural: name.into(),
             kind: kind.into(),
             group: group.into(),
             version: version.into(),
             namespaced,
+            short_names: match resource.get("shortNames") {
+                None | Some(Value::Null) => Vec::new(),
+                Some(Value::Array(names)) if names.len() <= 32 => names
+                    .iter()
+                    .map(|name| {
+                        name.as_str()
+                            .filter(|name| segment(name, false))
+                            .map(str::to_owned)
+                            .ok_or_else(|| {
+                                "invalid discovery short name; previous catalog retained".to_owned()
+                            })
+                    })
+                    .collect::<Result<Vec<_>>>()?,
+                _ => return Err("invalid discovery short names; previous catalog retained".into()),
+            },
         };
+        if let Some(singular) = resource
+            .get("singularName")
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+        {
+            if !segment(singular, false) {
+                return Err("invalid discovery singular name; previous catalog retained".into());
+            }
+            item.short_names.push(singular.into());
+        }
+        item.short_names
+            .extend(super::builtin_aliases(kind).iter().map(|s| (*s).to_owned()));
+        item.short_names.sort();
+        item.short_names.dedup();
         if !seen.insert(item.key()) {
             return Err("duplicate discovery resource; previous catalog retained".into());
         }
@@ -231,6 +260,20 @@ mod tests {
     }
     fn page(value: Value) -> (u16, Vec<u8>) {
         (200, value.to_string().into_bytes())
+    }
+    #[test]
+    fn preserves_server_short_and_singular_names_and_k9s_defaults() -> Result<()> {
+        let mut found = Vec::new();
+        append_resources(
+            &json!({"groupVersion":"apps/v1","resources":[{"name":"deployments","kind":"Deployment","singularName":"deployment","shortNames":["deploy"],"namespaced":true,"verbs":["list"]}]}),
+            "apps",
+            "v1",
+            &mut found,
+            &mut HashSet::new(),
+        )?;
+        assert_eq!(found[0].short_names, vec!["deploy", "deployment", "dp"]);
+        assert!(append_resources(&json!({"groupVersion":"v1","resources":[{"name":"things","kind":"Thing","shortNames":["../x"],"namespaced":true,"verbs":["list"]}]}), "", "v1", &mut found, &mut HashSet::new()).is_err());
+        Ok(())
     }
     #[test]
     fn preferred_path_validation_blocks_injection_duplicates_and_group_overflow() {

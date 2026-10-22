@@ -115,6 +115,9 @@ impl ReviewedOperation {
     pub fn confirmation(&self) -> String {
         format!("{}/{}", self.namespace, self.pod)
     }
+    pub fn is_port_forward(&self) -> bool {
+        matches!(self.request, Request::PortForward { .. })
+    }
 }
 
 pub async fn prepare(
@@ -350,6 +353,10 @@ pub async fn run(gateway: &Gateway, reviewed: ReviewedOperation, typed: &str) ->
                 *remote_port,
                 *seconds,
                 &reviewed.uid,
+                ForwardControl {
+                    cancel: None,
+                    on_bound: |_: &str| Ok(()),
+                },
             )
             .await
         }
@@ -359,6 +366,49 @@ pub async fn run(gateway: &Gateway, reviewed: ReviewedOperation, typed: &str) ->
         if result.is_ok() && session_unknown {
             "session-ended-remote-outcome-unknown"
         } else if result.is_ok() {
+            "succeeded"
+        } else {
+            "failed-or-unknown"
+        },
+    )?;
+    result
+}
+
+/// Run the reviewed forwarding session with an explicit UI-owned cancellation handle.
+/// The caller must keep this future polled; the callback runs after loopback bind.
+pub async fn run_forward(
+    gateway: &Gateway,
+    reviewed: ReviewedOperation,
+    typed: &str,
+    cancel: tokio::sync::oneshot::Receiver<()>,
+    on_bound: impl FnMut(&str) -> Result<()>,
+) -> Result<String> {
+    let Request::PortForward {
+        local_port,
+        remote_port,
+        seconds,
+    } = &reviewed.request
+    else {
+        return Err("review does not authorize port forwarding".into());
+    };
+    let api = verify_review(gateway, &reviewed, typed).await?;
+    let audit = start_audit(gateway, &reviewed)?;
+    let result = forward(
+        api,
+        &reviewed.pod,
+        *local_port,
+        *remote_port,
+        *seconds,
+        &reviewed.uid,
+        ForwardControl {
+            cancel: Some(cancel),
+            on_bound,
+        },
+    )
+    .await;
+    finish_audit(
+        &audit,
+        if result.is_ok() {
             "succeeded"
         } else {
             "failed-or-unknown"
@@ -423,6 +473,10 @@ impl Drop for ForwardGuard {
         self.0.abort();
     }
 }
+struct ForwardControl<F> {
+    cancel: Option<tokio::sync::oneshot::Receiver<()>>,
+    on_bound: F,
+}
 async fn forward(
     api: kube::Api<k8s_openapi::api::core::v1::Pod>,
     pod: &str,
@@ -430,10 +484,18 @@ async fn forward(
     remote: u16,
     seconds: u16,
     uid: &str,
+    control: ForwardControl<impl FnMut(&str) -> Result<()>>,
 ) -> Result<String> {
+    let ForwardControl {
+        cancel,
+        mut on_bound,
+    } = control;
     let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, local))
         .await
         .map_err(|_| "cannot bind loopback forwarding port")?;
+    on_bound(&format!(
+        "Forwarding 127.0.0.1:{local} -> {pod}:{remote}; maximum {seconds} seconds; cancel to close listener and active connections"
+    ))?;
     let session = async {
         let mut clients = FuturesUnordered::new();
         loop {
@@ -475,16 +537,28 @@ async fn forward(
                     .0
                     .take_stream(remote)
                     .ok_or("forward stream unavailable")?;
-                tokio::io::copy_bidirectional(&mut socket, &mut stream)
-                    .await
-                    .map_err(|_| "forward stream failed")?;
+                // A browser refresh or reset closes only this client. Target UID,
+                // authorization and upgrade failures above still stop the session.
+                let _ = tokio::io::copy_bidirectional(&mut socket, &mut stream).await;
                 Ok::<(), String>(())
             });
         }
         #[allow(unreachable_code)]
         Ok::<(), String>(())
     };
-    match tokio::time::timeout(Duration::from_secs(u64::from(seconds)), session).await {
+    let stopped = async {
+        if let Some(cancel) = cancel {
+            let _ = cancel.await;
+        } else {
+            std::future::pending::<()>().await;
+        }
+    };
+    let result = tokio::select! {
+        biased;
+        _ = stopped => return Ok("Forwarding canceled; listener and active connections closed".into()),
+        result = tokio::time::timeout(Duration::from_secs(u64::from(seconds)), session) => result,
+    };
+    match result {
         Err(_) => Ok("Forwarding session ended; listener and active connections closed".into()),
         Ok(Err(error)) => Err(error),
         Ok(Ok(())) => Ok("Forwarding session ended".into()),
@@ -525,6 +599,51 @@ fn finish_audit(path: &std::path::Path, status: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn forwarding_can_cancel_after_bind_and_releases_listener() -> Result<()> {
+        crate::cli::runtime()?.block_on(async {
+            let reserved = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+                .map_err(|_| "cannot reserve test loopback port")?;
+            let port = reserved
+                .local_addr()
+                .map_err(|_| "cannot inspect test port")?
+                .port();
+            drop(reserved);
+            let service = tower::service_fn(|_: http::Request<kube::client::Body>| async {
+                Ok::<_, std::convert::Infallible>(http::Response::new(http_body_util::Full::new(
+                    bytes::Bytes::new(),
+                )))
+            });
+            let api = kube::Api::namespaced(kube::Client::new(service, "test"), "test");
+            let (cancel, stopped) = tokio::sync::oneshot::channel();
+            let mut cancel = Some(cancel);
+            let result = forward(
+                api,
+                "pod",
+                port,
+                8080,
+                300,
+                "uid",
+                ForwardControl {
+                    cancel: Some(stopped),
+                    on_bound: |message: &str| {
+                        assert!(message.contains(&format!("127.0.0.1:{port}")));
+                        cancel
+                            .take()
+                            .ok_or("test cancellation already consumed")?
+                            .send(())
+                            .map_err(|_| "test cancellation receiver closed".to_owned())
+                    },
+                },
+            )
+            .await?;
+            assert!(result.contains("canceled"));
+            let rebound = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, port))
+                .map_err(|_| "forward listener was not released")?;
+            drop(rebound);
+            Ok(())
+        })
+    }
     #[test]
     fn restrictive_request_validation() {
         assert!(

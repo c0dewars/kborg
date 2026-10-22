@@ -79,6 +79,98 @@ fn options(identity: &str, writable: bool) -> Connection {
         ..Default::default()
     }
 }
+
+async fn controlled_workload_edits(
+    operator: &mut Gateway,
+    namespace: &str,
+    image: &str,
+) -> kborg::Result<()> {
+    use serde_json::json;
+    for (resource, name, path) in [
+        ("statefulsets", "edit-stateful", "/template/spec/containers"),
+        ("daemonsets", "edit-daemon", "/template/spec/containers"),
+        (
+            "cronjobs",
+            "edit-cron",
+            "/jobTemplate/spec/template/spec/containers",
+        ),
+    ] {
+        let before = operator.get(resource, namespace, name).await?;
+        let mut expected = before["spec"].clone();
+        let selected = expected
+            .pointer_mut(path)
+            .ok_or("live edit fixture has no containers")?;
+        selected[0]["image"] = json!(image);
+        selected[0]["resources"]["requests"]["cpu"] = json!("10m");
+        selected[0]["resources"]["requests"]["memory"] = json!("8Mi");
+        selected[0]["resources"]["limits"]["cpu"] = json!("200m");
+        selected[0]["resources"]["limits"]["memory"] = json!("64Mi");
+        let reviewed = operator
+            .prepare(
+                resource,
+                namespace,
+                name,
+                Action::SetContainer {
+                    container: "sample".into(),
+                    edit: kborg::edit::ContainerEdit {
+                        image: image.into(),
+                        resources: Some(kborg::edit::ResourceEdit {
+                            cpu_request: "0.01".into(),
+                            memory_request: "8Mi".into(),
+                            cpu_limit: "0.2".into(),
+                            memory_limit: "64Mi".into(),
+                        }),
+                    },
+                },
+            )
+            .await
+            .map_err(|error| format!("{resource}/{name} edit preparation: {error}"))?;
+        assert_eq!(
+            reviewed.target.uid,
+            before["metadata"]["uid"]
+                .as_str()
+                .ok_or("fixture UID missing")?
+        );
+        assert!(!reviewed.target.version.is_empty());
+        assert!(reviewed.summary.contains(image));
+        assert!(reviewed.summary.contains("+ limits.cpu: 0.2"));
+        let unchanged = operator.get(resource, namespace, name).await?;
+        assert_eq!(
+            unchanged["spec"], before["spec"],
+            "dry-run modified {resource}"
+        );
+        let reviewed_version = reviewed.target.version.clone();
+        let approval = Approval::confirm(
+            reviewed.target.clone(),
+            reviewed.action.clone(),
+            &format!("{namespace}/{name}"),
+        )?;
+        operator
+            .execute(reviewed, approval)
+            .await
+            .map_err(|error| format!("{resource}/{name} edit execution: {error}"))?;
+        let after = operator.get(resource, namespace, name).await?;
+        assert_eq!(after["metadata"]["uid"], before["metadata"]["uid"]);
+        assert_ne!(after["metadata"]["resourceVersion"], reviewed_version);
+        assert_eq!(
+            after["spec"], expected,
+            "unreviewed fields changed in {resource}"
+        );
+        if resource == "statefulsets" {
+            assert_eq!(after["spec"]["replicas"], 0);
+        }
+        if resource == "daemonsets" {
+            assert_eq!(
+                after["spec"]["template"]["spec"]["nodeSelector"]["kborg.io/isolated-edit-fixture"],
+                namespace
+            );
+        }
+        if resource == "cronjobs" {
+            assert_eq!(after["spec"]["suspend"], true);
+        }
+    }
+    Ok(())
+}
 #[test]
 #[ignore = "requires isolated Docker Desktop fixtures; run scripts/Test-DockerDesktop.ps1"]
 fn isolated_cluster_acceptance() {
@@ -96,6 +188,36 @@ fn isolated_cluster_acceptance() {
             .as_array()
             .unwrap_or_else(|| panic!("missing items"));
         assert!(!items.is_empty());
+        let selected = reader
+            .list_selector("po", &ns, "app in (kborg-sample)")
+            .await
+            .unwrap_or_else(|error| panic!("live label selector: {error}"));
+        let selected = selected["items"]
+            .as_array()
+            .unwrap_or_else(|| panic!("selector items missing"));
+        assert!(!selected.is_empty());
+        assert!(
+            selected
+                .iter()
+                .all(|pod| pod["metadata"]["labels"]["app"] == "kborg-sample")
+        );
+        let no_match = reader
+            .list_selector("po", &ns, "app=not-the-owned-fixture")
+            .await
+            .unwrap_or_else(|error| panic!("no-match label selector: {error}"));
+        assert_eq!(no_match["items"], serde_json::json!([]));
+        let mut no_match_watch = reader
+            .watch_selector("po", &ns, "app=not-the-owned-fixture")
+            .unwrap_or_else(|error| panic!("no-match watch setup: {error}"));
+        let initial = no_match_watch.next().await;
+        assert!(initial.objects.is_empty());
+        assert!(!initial.stale && !initial.terminal);
+        let watched = tokio::time::timeout(Duration::from_secs(15), no_match_watch.next())
+            .await
+            .unwrap_or_else(|error| panic!("no-match native watch: {error}"));
+        assert!(watched.objects.is_empty());
+        assert!(!watched.stale && !watched.terminal);
+        drop(no_match_watch);
         assert!(reader.list("secrets", &ns).await.is_err());
         assert!(
             reader
@@ -122,6 +244,31 @@ fn isolated_cluster_acceptance() {
             .unwrap_or_else(|e| panic!("logs: {e}"));
         assert!(logs.contains("KBorg fixture"));
         assert!(!logs.chars().any(|c| c == '\x1b' || c == '\r'));
+        let head = reader
+            .logs_with_options(
+                &ns,
+                pod,
+                Some("sample".into()),
+                false,
+                kborg::logs::ReadOptions {
+                    tail_lines: 2,
+                    since_seconds: None,
+                    head: true,
+                },
+            )
+            .await
+            .unwrap_or_else(|error| panic!("head logs: {error}"));
+        assert!(head.lines().count() <= 2);
+        let first = head
+            .lines()
+            .next()
+            .unwrap_or_else(|| panic!("head logs empty"));
+        assert!(kborg::logs::without_timestamp(first).contains("KBorg fixture"));
+        assert_ne!(
+            kborg::logs::without_timestamp(first),
+            first,
+            "timestamp was not retained"
+        );
         assert_eq!(
             reader
                 .containers(&ns, pod)
@@ -316,6 +463,9 @@ fn isolated_cluster_acceptance() {
             updated["spec"]["template"]["spec"]["containers"][0]["resources"]["limits"]["memory"],
             "64Mi"
         );
+        controlled_workload_edits(&mut operator, &ns, &replacement)
+            .await
+            .unwrap_or_else(|error| panic!("controlled workload edit acceptance: {error}"));
         let delete = operator
             .prepare("services", &ns, "delete-me", Action::Delete)
             .await

@@ -30,6 +30,11 @@ fn closed_downstream_exits_cleanly_for_every_read_output_family() -> std::io::Re
         &["--demo", "resources"],
         &["--demo", "contexts"],
         &["--demo", "doctor"],
+        &["--demo", "pulses"],
+        &["--demo", "xray", "pods"],
+        &["--demo", "workloads"],
+        &["--demo", "can", "u:demo"],
+        &["dir", "."],
         &["--demo", "--allow-logs", "logs", "api-7d4f9"],
     ];
     for argv in commands {
