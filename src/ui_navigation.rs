@@ -101,42 +101,6 @@ pub fn resource(words: &[String]) -> Result<ResourceCommand> {
     Ok(command)
 }
 
-pub fn aliases(kind: &str) -> &'static [&'static str] {
-    match kind {
-        "Pod" => &["po"],
-        "Deployment" => &["deploy", "dp"],
-        "Service" => &["svc"],
-        "Node" => &["no"],
-        "Namespace" => &["ns"],
-        "Event" => &["ev"],
-        "StatefulSet" => &["sts"],
-        "DaemonSet" => &["ds"],
-        "ReplicaSet" => &["rs"],
-        "ReplicationController" => &["rc"],
-        "CronJob" => &["cj"],
-        "Ingress" => &["ing"],
-        "ConfigMap" => &["cm"],
-        "ServiceAccount" => &["sa"],
-        "PersistentVolume" => &["pv"],
-        "PersistentVolumeClaim" => &["pvc"],
-        "StorageClass" => &["sc"],
-        "Endpoints" => &["ep"],
-        "EndpointSlice" => &["eps"],
-        "HorizontalPodAutoscaler" => &["hpa"],
-        "PodDisruptionBudget" => &["pdb"],
-        "NetworkPolicy" => &["netpol"],
-        "ResourceQuota" => &["quota"],
-        "LimitRange" => &["limits"],
-        "CustomResourceDefinition" => &["crd", "crds"],
-        "PriorityClass" => &["pc"],
-        "CertificateSigningRequest" => &["csr"],
-        "PodSecurityPolicy" => &["psp"],
-        "VolumeAttachment" => &["va"],
-        "APIService" => &["apiservices"],
-        _ => &[],
-    }
-}
-
 pub const SPECIAL: &[&str] = &[
     "actions",
     "discover",

@@ -1,3 +1,16 @@
+# Local development update — 2026-10-22
+
+The current iteration adds full-width k9s command navigation, native Helm release
+and revision browsing, redacted selected values, merged ordinary-container Pod
+logs, and CPU/memory tables with numeric sorting and session history. Docker
+Desktop now has an explicitly installed Metrics Server with verified TLS on both
+hops. Helm/log workflows also run against an isolated minikube cluster. See
+[current acceptance](HELM_LOGS_METRICS_ACCEPTANCE.md),
+[exact command compatibility](K9S_COMPATIBILITY.md) and
+[remaining work](REMAINING_WORK.md). Helm lifecycle mutations and external
+production gates remain open. No new release is published by this local session.
+The dated reports below preserve their original artifact scope.
+
 # Local development update — 2026-10-10
 
 The current working iteration adds interactive stdin/TTY sessions, longer rolling

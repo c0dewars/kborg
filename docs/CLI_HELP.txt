@@ -19,6 +19,10 @@ KBorg 0.3 — Kubernetes operations, under your control
   kborg view RESOURCE NAME --interactive  Native searchable JSON/YAML pager
   kborg view RESOURCE NAME --tool ABS [--tool-arg ARG]  Reviewed tool view
   kborg logs POD [CONTAINER]      --allow-logs; optional --follow or --previous
+  kborg logs POD --all-containers Merged ordinary-container logs with source prefixes
+  kborg helm [list]               Native Helm releases (--allow-helm)
+  kborg helm history RELEASE      Stored revision history; history RELEASE is an alias
+  kborg helm detail|resources|values RELEASE REVISION   Explicit selected-revision reads
   kborg scale [RESOURCE] NAME REPLICAS   Deployment/StatefulSet scale (0..20)
   kborg restart [RESOURCE] NAME    Guarded Deployment/StatefulSet/DaemonSet restart
   kborg set-image [RESOURCE] NAME CONTAINER IMAGE   Reviewed image change
@@ -46,6 +50,7 @@ Options (put KBorg flags before exec's -- separator):
   --interactive     --session-seconds 1..3600    --log-seconds 1..86400
   --metrics-resources  --selector LABELS / -l LABELS (ui/list/watch)
   --tail 1..2000      --since-seconds 1..86400   --head (logs only)
+  --allow-helm       --helm-storage secret|configmap   --all-containers
   --allow-logs       --allow-exec   --allow-attach   --allow-forward
   --poll            --theme ID     --color=never    --json       --yaml
   --no-mouse        --follow          --previous     --no-splash      --demo       --help
@@ -78,6 +83,7 @@ TUI navigation (k9s command grammar; full compatibility register in docs/K9S_COM
   :pulses :workloads :xray RESOURCE  Health and relationships
   :can u:NAME|g:NAME|s:NAME         Declared RBAC evidence
   :dir PATH  :screendump           Local manifests / explicitly saved snapshots
+  :helm [NAMESPACE] :history NAME   Native release metadata and stored revisions
   :themes :metrics :overview :actions  Additional KBorg views
   :q :quit / Ctrl-C               Quit
 
@@ -85,17 +91,27 @@ TUI navigation (k9s command grammar; full compatibility register in docs/K9S_COM
   /REGEX: filter   /!REGEX: inverse   /-f TEXT: fuzzy   /-l LABELS: server selector
   Tab: command completion   Up/Down: command history   [ / ]: back/forward
   d: describe   y: redacted YAML   l: logs   p: previous logs   Ctrl-R: refresh
-  Shift-N/A/S: sort name/age/status   0: all namespaces   Space: mark
+  Shift-N/A/S: sort name/age/status   C/M: CPU/memory sort on Pods and Nodes
+  CPU/MEM refresh every 15s; - means unknown; ~ means UID absent, creation-time checked
+  Table quantities are rounded to fit; d/m and CLI metrics retain exact measured values
+  0: all namespaces   Space: mark
   Ctrl-S: explicitly save redacted resource snapshot   c: copy name (OSC52)
   e: reviewed container editor   Ctrl-D: reviewed deletion
   Pod s: shell   a: attach   F: prepare forwarding   f: show forward
   Workload s: scale (supported families)   r: restart (supported families)
+  Helm: Enter/r history; history Enter/v stored values; d metadata; m resource identities; y metadata YAML
+  Logs: a toggles all ordinary containers; Pod l honors default-container annotation
   Logs: 0 tail,1 head,2 1m,3 5m,4 15m,5 30m,6 1h; s autoscroll,w wrap,t timestamps,f fullscreen
   Themes: arrows preview, Enter saves, N creates from preview, Esc cancels
   Writes require --write and full exact target review; sessions need --allow-*.
   Unimplemented upstream operations show their limitation and never run another action.
 
-TLS verification is mandatory. Secret reads, unreviewed auth helpers,
+Helm is read-only; --allow-helm authorizes only bounded Helm-owned release storage.
+Values are stored overrides with known fields redacted; custom keys may remain confidential.
+Raw Helm storage, chart files/defaults, notes and manifests are never exported.
+Merged logs include at most 16 ordinary containers and one shared output/session budget.
+
+TLS verification is mandatory. General Secret reads, unreviewed auth helpers,
 impersonation, generic patches and automatic AI requests remain disabled.
 Registered views are opt-in; their OS containment remains a production gate.
 All real clusters are labeled PRODUCTION; this is a target warning, not a

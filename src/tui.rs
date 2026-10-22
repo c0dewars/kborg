@@ -20,8 +20,12 @@ use crossterm::{
     },
 };
 use serde_json::Value;
+#[path = "ui_helm.rs"]
+mod helm_ui;
 #[path = "ui_navigation.rs"]
 mod nav;
+#[path = "ui_metrics.rs"]
+mod table_metrics;
 use std::{
     io::{self, IsTerminal, Write},
     sync::mpsc::{self, Receiver},
@@ -109,6 +113,7 @@ enum Task {
     Can(String, String),
     Directory(std::path::PathBuf),
     Manifest(std::path::PathBuf),
+    Helm(helm_ui::Request, u64),
     Prepare(String, String, String, Option<String>, Action),
     Execute(Box<Prepared>, Approval),
 }
@@ -119,6 +124,7 @@ enum Reply {
     Object(Box<Value>),
     Drill(Box<Value>),
     Directory(crate::navigation_views::Directory),
+    Helm(u64, Result<helm_ui::Response>),
     Overview(crate::overview::OverviewFeed),
     SessionPrepared(Box<crate::ops::ReviewedOperation>),
     ForwardQueued,
@@ -380,6 +386,10 @@ fn worker() -> Worker {
                             }else{Reply::Failure("Forward canceled before start: context or scope changed; review again.".into())}
                         }else{Reply::Failure("Not connected; review again after reconnecting.".into())}
                     }
+                    Task::Helm(request,generation)=>{
+                        let result=if let Some(gateway)=gateway.as_ref(){match tokio::time::timeout(Duration::from_secs(23),helm_ui::read(gateway,request)).await{Ok(result)=>result,Err(_)=>Err("Helm read deadline exceeded; metadata may be incomplete. Retry explicitly.".into())}}else{Err("Not connected; select a context before reading Helm releases.".into())};
+                        Reply::Helm(generation,result)
+                    }
                     Task::Directory(path)=>match crate::navigation_views::directory(&path){Ok(directory)=>Reply::Directory(directory),Err(error)=>Reply::Failure(error)},
                     Task::Manifest(path)=>match crate::navigation_views::preview_manifest(&path){Ok(text)=>Reply::Detail(text),Err(error)=>Reply::Failure(error)},
                     task => {
@@ -411,19 +421,23 @@ fn worker() -> Worker {
                                     Task::Containers(target,generation) => {
                                         let value=g.get("pods",&target.namespace,&target.pod).await?;
                                         if value["metadata"]["uid"].as_str()!=Some(&target.uid) {return Err("Selected pod was replaced; select it again.".into());}
-                                        Reply::Containers(target,generation,pod_container_names(&value))
+                                        Reply::Containers(target,generation,std::iter::once("*".to_owned()).chain(pod_container_names(&value)).collect())
                                     },
                                     Task::Logs(target,generation,read) => {
-                                        let before=g.get("pods",&target.namespace,&target.pod).await?;
-                                        if before["metadata"]["uid"].as_str()!=Some(&target.uid) {return Err("Selected pod was replaced; select it again.".into());}
-                                        let text=g.logs_with_options(&target.namespace,&target.pod,target.container.clone(),target.previous,read).await?;
-                                        let after=g.get("pods",&target.namespace,&target.pod).await?;
-                                        if after["metadata"]["uid"].as_str()!=Some(&target.uid) {return Err("Pod changed while reading logs; output discarded.".into());}
+                                        let text=if target.all {g.merged_logs(&target.namespace,&target.pod,&target.uid,target.previous,read).await?}
+                                        else {
+                                            let before=g.get("pods",&target.namespace,&target.pod).await?;
+                                            if before["metadata"]["uid"].as_str()!=Some(&target.uid) {return Err("Selected pod was replaced; select it again.".into());}
+                                            let text=g.logs_with_options(&target.namespace,&target.pod,target.container.clone(),target.previous,read).await?;
+                                            let after=g.get("pods",&target.namespace,&target.pod).await?;
+                                            if after["metadata"]["uid"].as_str()!=Some(&target.uid) {return Err("Pod changed while reading logs; output discarded.".into());}
+                                            text
+                                        };
                                         Reply::Logs(generation,text)
                                     },
                                     Task::Follow(target,generation,seconds,read) => {
                                         if log_results.generation.load(std::sync::atomic::Ordering::SeqCst) != generation {return Ok(Reply::Following);}
-                                        let mut feed = g.follow_logs_resumable(&target.namespace,&target.pod,target.container,&target.uid,crate::logs::FollowOptions{seconds},read).await?;
+                                        let mut feed=if target.all {ActiveLogFeed::Merged(g.follow_merged_logs(&target.namespace,&target.pod,&target.uid,crate::logs::FollowOptions{seconds},read).await?)}else{ActiveLogFeed::Single(Box::new(g.follow_logs_resumable(&target.namespace,&target.pod,target.container,&target.uid,crate::logs::FollowOptions{seconds},read).await?))};
                                         let mailbox = log_results.clone();
                                         let job = tokio::spawn(async move {
                                             let mut count = 0usize;
@@ -447,7 +461,7 @@ fn worker() -> Worker {
                                         Reply::Prepared(Box::new(prepared))
                                     },
                                     Task::Execute(p,a) => Reply::Notice(g.execute(*p,a).await?),
-                                    Task::Connect(_) | Task::Watch(..) | Task::Metrics(..) | Task::RunSession(..) | Task::RunForward(..) | Task::Directory(_) | Task::Manifest(_) => return Err("invalid worker task".into()),
+                                    Task::Connect(_) | Task::Watch(..) | Task::Metrics(..) | Task::RunSession(..) | Task::RunForward(..) | Task::Directory(_) | Task::Manifest(_) | Task::Helm(..) => return Err("invalid worker task".into()),
                                 })
                             };
                             match tokio::time::timeout(Duration::from_secs(25), future).await {
@@ -524,6 +538,9 @@ enum Modal {
     Directory(crate::navigation_views::Directory, usize),
     ForwardForm(String, String, Option<String>, [String; 3], usize),
     ForwardView,
+    Helm(Box<helm_ui::Table>),
+    HelmLoading(&'static str),
+    HelmDocument(String, String, usize),
 }
 struct ContainerDraft {
     kind: String,
@@ -543,6 +560,19 @@ struct LogTarget {
     uid: String,
     previous: bool,
     follow: bool,
+    all: bool,
+}
+enum ActiveLogFeed {
+    Single(Box<crate::logs::LogFeed>),
+    Merged(crate::logs::MergedLogFeed),
+}
+impl ActiveLogFeed {
+    async fn next(&mut self) -> Result<Option<String>> {
+        match self {
+            Self::Single(feed) => feed.next().await,
+            Self::Merged(feed) => feed.next().await,
+        }
+    }
 }
 #[derive(Clone)]
 struct ViewState {
@@ -563,6 +593,8 @@ enum Sort {
     Restarts,
     Age,
     Ready,
+    Cpu,
+    Memory,
 }
 impl Sort {
     fn label(self) -> &'static str {
@@ -573,6 +605,8 @@ impl Sort {
             Self::Restarts => "restarts",
             Self::Age => "age",
             Self::Ready => "ready",
+            Self::Cpu => "cpu",
+            Self::Memory => "memory",
         }
     }
 }
@@ -604,6 +638,7 @@ struct App {
     restoring_uid: Option<String>,
     subviews: Vec<Modal>,
     log_target: Option<LogTarget>,
+    helm_generation: u64,
     last_forward: String,
     desired_resource: Option<String>,
     status: String,
@@ -624,6 +659,8 @@ struct App {
     last_refresh: Instant,
     metrics_history: crate::metrics::MetricsHistory,
     last_metrics: Instant,
+    last_table_metrics: Option<Instant>,
+    table_metrics: table_metrics::TableMetrics,
     metrics_resources: bool,
     overview: Option<crate::overview::OverviewFeed>,
     pending_session: Option<(Box<crate::ops::ReviewedOperation>, String)>,
@@ -685,6 +722,26 @@ impl App {
                 Sort::Status => summary(a).cmp(&summary(b)),
                 Sort::Restarts => restarts(b).cmp(&restarts(a)),
                 Sort::Ready => ready_sort_key(a).cmp(&ready_sort_key(b)),
+                Sort::Cpu => self
+                    .table_metrics
+                    .sort_usage(b)
+                    .map(|usage| usage.cpu_nanocores)
+                    .cmp(
+                        &self
+                            .table_metrics
+                            .sort_usage(a)
+                            .map(|usage| usage.cpu_nanocores),
+                    ),
+                Sort::Memory => self
+                    .table_metrics
+                    .sort_usage(b)
+                    .map(|usage| usage.memory_bytes)
+                    .cmp(
+                        &self
+                            .table_metrics
+                            .sort_usage(a)
+                            .map(|usage| usage.memory_bytes),
+                    ),
                 Sort::Age => timestamp(a)
                     .unwrap_or(i64::MAX)
                     .cmp(&timestamp(b).unwrap_or(i64::MAX)),
@@ -708,7 +765,7 @@ impl App {
         self.status = format!(
             "Sorted by {}{}.",
             sort.label(),
-            if sort == Sort::Restarts {
+            if matches!(sort, Sort::Restarts | Sort::Cpu | Sort::Memory) {
                 " (highest first)"
             } else {
                 ""
@@ -835,6 +892,13 @@ impl App {
             [_] => (resource.clone(), None, None),
             _ => return Err("Use RESOURCE, VERSION/RESOURCE or GROUP/VERSION/RESOURCE.".into()),
         };
+        if let Some((index, _)) = self.kinds.iter().enumerate().find(|(_, kind)| {
+            kind.key() == resource
+                && version.is_none_or(|version| kind.version == version)
+                && group.is_none_or(|group| kind.group == group)
+        }) {
+            return Ok(index);
+        }
         let matches: Vec<_> = self
             .kinds
             .iter()
@@ -845,7 +909,6 @@ impl App {
                     && (kind.key() == resource
                         || kind.plural == resource
                         || kind.kind.eq_ignore_ascii_case(&resource)
-                        || nav::aliases(&kind.kind).contains(&resource.as_str())
                         || kind.short_names.contains(&resource))
             })
             .map(|(index, _)| index)
@@ -869,7 +932,6 @@ impl App {
         kinds.sort_by_key(|kind| kind.key());
         for kind in kinds {
             let mut aliases = kind.short_names.clone();
-            aliases.extend(nav::aliases(&kind.kind).iter().map(|s| (*s).to_owned()));
             aliases.sort();
             aliases.dedup();
             lines.push(format!(
@@ -935,8 +997,8 @@ impl App {
             }
             ("all", []) => return self.command("ns all"),
             ("sort", [key]) => {
-                let sort = match key.as_str() { "name" => Some(Sort::Name), "namespace" | "ns" => Some(Sort::Namespace), "status" => Some(Sort::Status), "restarts" => Some(Sort::Restarts), "age" => Some(Sort::Age), "ready"=>Some(Sort::Ready), _ => None };
-                if let Some(sort) = sort { self.set_sort(sort); } else { self.status = "Sort: name | namespace | status | restarts | age".into(); }
+                let sort = match key.as_str() { "name" => Some(Sort::Name), "namespace" | "ns" => Some(Sort::Namespace), "status" => Some(Sort::Status), "restarts" => Some(Sort::Restarts), "age" => Some(Sort::Age), "ready"=>Some(Sort::Ready), "cpu"=>Some(Sort::Cpu),"memory"|"mem"=>Some(Sort::Memory), _ => None };
+                if let Some(sort) = sort { self.set_sort(sort); } else { self.status = "Sort: name | namespace | status | restarts | age | ready | cpu | memory".into(); }
             }
             ("themes", []) => self.theme_picker()?,
             ("overview", []) => self.modal = Modal::Input(OVERVIEW_CONTEXTS_LABEL, self.context.clone()),
@@ -961,7 +1023,15 @@ impl App {
             ("cow",_)=>self.modal=Modal::Detail(format!(" {}\n < {} >\n  \\   ^__^\n   \\  (oo)\\_______\n      (__)\\       )\\\n          ||----w |\n          ||     ||", "_".repeat(args.join(" ").len().min(70)),safety::safe_text(&args.join(" "),70)),0),
             ("can",_)=>self.status="Use :can u:USER | g:GROUP | s:NAMESPACE:SERVICEACCOUNT".into(),
             ("rbacs"|"policies"|"users"|"groups",_)=>self.status="Use :can u:USER, g:GROUP or s:NAMESPACE:SERVICEACCOUNT to inspect native RBAC policy. Subject-list views are unavailable.".into(),
-            ("benchmarks"|"benchmark"|"be"|"scans"|"scan"|"pop"|"popeye"|"helm"|"history",_)=>self.status="This k9s view requires an external Helm/scanner/benchmark integration; it is unavailable. No command was executed.".into(),
+            ("helm",[])=>self.request_helm(helm_ui::Request::List(self.namespace.clone(),self.options.helm_storage),false),
+            ("helm",[ns]) if ns=="all" || ns=="*" || safety::valid_id(ns)=>self.request_helm(helm_ui::Request::List(if ns=="all"{"*".into()}else{ns.clone()},self.options.helm_storage),false),
+            ("history",[name]) if crate::helm::valid_release_name(name)=>self.request_helm(helm_ui::Request::NamedHistory(self.namespace.clone(),name.clone(),self.options.helm_storage),false),
+            ("history",[])=>{
+                let selected=self.subviews.iter().rev().find_map(|modal|if let Modal::Helm(table)=modal{table.selected().cloned()}else{None});
+                if let Some(release)=selected{self.request_helm(helm_ui::Request::History(release),false);}else{self.status="Use :history RELEASE or select a release in :helm and press Enter.".into();}
+            }
+            ("helm"|"history",_)=>self.status="Use :helm [NAMESPACE] or :history RELEASE; --allow-helm enables live release storage reads.".into(),
+            ("benchmarks"|"benchmark"|"be"|"scans"|"scan"|"pop"|"popeye",_)=>self.status="This k9s view requires an external scanner/benchmark integration; it is unavailable. No command was executed.".into(),
             ("secrets"|"secret"|"sec",_)=>self.status="Secrets are explicitly excluded from KBorg discovery and inspection.".into(),
             _ => {
                 let command = match nav::resource(&words) { Ok(command)=>command, Err(error)=>{self.status=error;return Ok(false);} };
@@ -1032,7 +1102,6 @@ impl App {
                     kind.key(),
                 ]);
                 values.extend(kind.short_names.clone());
-                values.extend(nav::aliases(&kind.kind).iter().map(|s| (*s).to_owned()));
             }
             values
         } else if token.starts_with('@') || matches!(prefix.trim(), "ctx" | "context" | "contexts")
@@ -1049,10 +1118,19 @@ impl App {
                 })
                 .collect()
         } else if prefix.trim() == "sort" {
-            vec!["name", "namespace", "status", "restarts", "age"]
-                .into_iter()
-                .map(str::to_owned)
-                .collect()
+            vec![
+                "name",
+                "namespace",
+                "status",
+                "restarts",
+                "age",
+                "ready",
+                "cpu",
+                "memory",
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .collect()
         } else {
             let mut values = self.known_namespaces.clone();
             values.extend(["all".into(), self.namespace.clone()]);
@@ -1251,7 +1329,10 @@ impl App {
         self.sticky_status = false;
         self.worker.watch.invalidate(self.epoch);
         self.worker.logs.cancel();
+        self.helm_generation = self.helm_generation.wrapping_add(1);
         self.metrics_history.clear();
+        self.table_metrics.clear();
+        self.last_table_metrics = None;
         self.overview = None;
         self.marks.clear();
         self.subviews.clear();
@@ -1265,8 +1346,23 @@ impl App {
         self.connecting_epoch = Some(self.epoch);
         self.send(Task::Connect(self.options.connection.clone()));
     }
+    fn expire_table_metrics(&mut self, now: Instant) -> bool {
+        if !self.table_metrics.expired(now) {
+            return false;
+        }
+        let uid = self.selected_uid();
+        self.table_metrics.expire();
+        if let Some(uid) = uid {
+            self.selected = self
+                .visible()
+                .iter()
+                .position(|object| object["metadata"]["uid"].as_str() == Some(&uid))
+                .unwrap_or(self.selected);
+        }
+        true
+    }
     fn receive(&mut self) -> bool {
-        let mut changed = false;
+        let mut changed = self.expire_table_metrics(Instant::now());
         let forward = self.worker.forward.text();
         if forward != self.last_forward {
             self.last_forward = forward;
@@ -1329,6 +1425,23 @@ impl App {
                         "{} objects | cached filter | refresh every 5s",
                         self.items.len()
                     );
+                }
+                Reply::Helm(generation, result) => {
+                    if generation != self.helm_generation
+                        || !matches!(self.modal, Modal::HelmLoading(_))
+                    {
+                        continue;
+                    }
+                    self.modal = match result {
+                        Ok(helm_ui::Response::Table(table)) => Modal::Helm(table),
+                        Ok(helm_ui::Response::Document(title, text)) => {
+                            Modal::HelmDocument(title, text, 0)
+                        }
+                        Err(error) => {
+                            self.status = error.clone();
+                            Modal::HelmDocument("HELM READ UNAVAILABLE".into(), error, 0)
+                        }
+                    };
                 }
                 Reply::Detail(text) => {
                     self.modal = Modal::Detail(text.replace('\t', " | "), 0);
@@ -1478,12 +1591,25 @@ impl App {
                 }
                 Reply::Metrics(scope, namespace, result) => {
                     let now = Instant::now();
+                    // Retry from completion, so a stalled provider cannot keep
+                    // the command queue continuously busy after its deadline.
+                    if (scope == crate::metrics::MetricsScope::Nodes && self.kind() == "nodes")
+                        || (scope == crate::metrics::MetricsScope::Pods
+                            && self.kind() == "pods"
+                            && namespace == self.namespace)
+                    {
+                        self.last_table_metrics = Some(now);
+                    }
+
+                    let selected_uid = self.selected_uid();
                     let text = match result {
                         Ok(snapshot) => {
+                            self.table_metrics.record(&snapshot, &self.items, now);
                             self.metrics_history.record(&self.context, &snapshot, now);
                             format!("{}\n{}", self.metrics_history.text(now), snapshot.text())
                         }
                         Err(error) => {
+                            self.table_metrics.fail(&error);
                             self.metrics_history.record_error(
                                 &self.context,
                                 scope,
@@ -1496,6 +1622,13 @@ impl App {
                             )
                         }
                     };
+                    if let Some(uid) = selected_uid {
+                        self.selected = self
+                            .visible()
+                            .iter()
+                            .position(|object| object["metadata"]["uid"].as_str() == Some(&uid))
+                            .unwrap_or(self.selected);
+                    }
                     if let Modal::Metrics(_, offset) = &self.modal {
                         self.modal = Modal::Metrics(text, *offset);
                     }
@@ -1555,6 +1688,21 @@ impl App {
         self.modal = Modal::Themes(all, index, self.theme.clone());
         Ok(())
     }
+    fn refresh_table_metrics(&mut self) {
+        if self.busy || !matches!(self.kind().as_str(), "pods" | "nodes") {
+            return;
+        }
+        self.last_table_metrics = Some(Instant::now());
+        self.send(Task::Metrics(
+            if self.kind() == "nodes" {
+                crate::metrics::MetricsScope::Nodes
+            } else {
+                crate::metrics::MetricsScope::Pods
+            },
+            self.namespace.clone(),
+            false,
+        ));
+    }
     fn request_metrics(&mut self) {
         if self.busy {
             self.status = "Busy; wait for the current request.".into();
@@ -1564,6 +1712,9 @@ impl App {
             self.modal = Modal::Metrics("Loading Metrics API...".into(), 0);
         }
         self.last_metrics = Instant::now();
+        if matches!(self.kind().as_str(), "pods" | "nodes") {
+            self.last_table_metrics = Some(self.last_metrics);
+        }
         self.send(Task::Metrics(
             if self.kind() == "nodes" {
                 crate::metrics::MetricsScope::Nodes
@@ -1656,6 +1807,10 @@ impl App {
         }
     }
     fn request_logs(&mut self, previous: bool, follow: bool) {
+        if !follow && !previous {
+            self.request_log_picker(previous, follow);
+            return;
+        }
         if self.busy {
             self.status = "Busy; wait before opening logs.".into();
             return;
@@ -1664,23 +1819,72 @@ impl App {
             self.status = "Logs may contain sensitive data; opt in with --allow-logs.".into();
             return;
         }
+        let Some(object) = self
+            .visible()
+            .get(self.selected)
+            .map(|object| (*object).clone())
+        else {
+            return;
+        };
+        if self.kind() != "pods" {
+            self.status = "Logs apply to core Pods; choose a Pod.".into();
+            return;
+        }
+        let Some(uid) = self.selected_uid() else {
+            self.status = "Pod UID unavailable; refresh before reading logs.".into();
+            return;
+        };
+        let ordinary = ordinary_container_names(&object);
+        let preferred =
+            object["metadata"]["annotations"]["kubectl.kubernetes.io/default-container"]
+                .as_str()
+                .filter(|container| ordinary.iter().any(|name| name == container))
+                .map(str::to_owned)
+                .or_else(|| (ordinary.len() == 1).then(|| ordinary[0].clone()));
+        let target = LogTarget {
+            namespace: namespace(&object).into(),
+            pod: name(&object).into(),
+            uid,
+            all: preferred.is_none(),
+            container: preferred.or_else(|| ordinary.first().cloned()),
+            previous,
+            follow,
+        };
+        self.open_logs(target, self.options.log_read);
+    }
+    fn request_log_picker(&mut self, previous: bool, follow: bool) {
+        if self.busy {
+            self.status = "Busy; wait before opening logs.".into();
+            return;
+        }
+        if !self.options.connection.logs {
+            self.status = "Logs require --allow-logs.".into();
+            return;
+        }
         if let Some((kind, namespace, pod)) = self.selected_target() {
             if kind != "pods" {
-                self.status = "Logs apply to Pods; choose a pod.".into();
+                self.status = "Logs apply to core Pods.".into();
                 return;
             }
             let Some(uid) = self.selected_uid() else {
-                self.status = "Pod UID unavailable; refresh before reading logs.".into();
+                self.status = "Pod UID unavailable; refresh first.".into();
                 return;
             };
+            let container = self
+                .visible()
+                .get(self.selected)
+                .and_then(|object| ordinary_container_names(object).into_iter().next());
             let target = LogTarget {
                 namespace,
                 pod,
-                container: None,
+                container,
                 uid,
                 previous,
                 follow,
+                all: false,
             };
+            self.subviews
+                .retain(|modal| !matches!(modal, Modal::Follow(_) | Modal::Containers(..)));
             let generation = self.worker.logs.cancel();
             self.modal = Modal::Containers(target.clone(), vec![], 0);
             self.send(Task::Containers(target, generation));
@@ -1692,10 +1896,13 @@ impl App {
             self.close_subview();
             return;
         }
+        self.subviews
+            .retain(|modal| !matches!(modal, Modal::Follow(_) | Modal::Containers(..)));
         let generation = self.worker.logs.cancel();
         let mut view = crate::ui_logs::LogView::new("Connecting to logs...".into(), read);
         view.following = target.follow && !read.head && !target.previous;
         view.previous = target.previous;
+        view.enable_all_containers(true);
         self.log_target = Some(target.clone());
         self.modal = Modal::Follow(Box::new(view));
         if target.follow && !target.previous && !read.head {
@@ -1724,7 +1931,7 @@ impl App {
             return;
         }
         let generation = self.worker.logs.cancel();
-        view.update("Connecting to logs...".into());
+        view.replace_source("Connecting to logs...".into());
         view.following = target.follow && !target.previous && !read.head;
         self.modal = Modal::Follow(view);
         if target.follow && !target.previous && !read.head {
@@ -1737,6 +1944,25 @@ impl App {
         } else {
             self.send(Task::Logs(target, generation, read));
         }
+    }
+    fn request_helm(&mut self, request: helm_ui::Request, preserve_current: bool) {
+        if self.busy {
+            self.status = "Wait for the current request before reading Helm releases.".into();
+            return;
+        }
+        if !self.options.connection.demo && !self.options.connection.allow_helm {
+            self.status="Helm reads require --allow-helm. Stored release metadata and explicit values may contain confidential data.".into();
+            return;
+        }
+        if preserve_current {
+            let current = std::mem::replace(&mut self.modal, Modal::None);
+            if !matches!(current, Modal::None) {
+                self.push_subview(current);
+            }
+        }
+        self.helm_generation = self.helm_generation.wrapping_add(1);
+        self.modal = Modal::HelmLoading(request.label());
+        self.send(Task::Helm(request, self.helm_generation));
     }
     fn action_menu(&self) -> Vec<String> {
         let kind = self.kind();
@@ -1853,8 +2079,10 @@ impl App {
                 | Modal::LiveOverview(..)
                 | Modal::Directory(..)
                 | Modal::ForwardView
+                | Modal::HelmDocument(..)
                 | Modal::Help(..) => true,
                 Modal::Follow(view) => !view.is_filtering(),
+                Modal::Helm(table) => !table.is_filtering(),
                 _ => false,
             }
         {
@@ -1871,6 +2099,46 @@ impl App {
         self.sticky_status = false;
         let modal = std::mem::replace(&mut self.modal, Modal::None);
         match modal {
+            Modal::HelmLoading(label) => {
+                if matches!(code, KeyCode::Esc | KeyCode::Char('q')) {
+                    self.helm_generation = self.helm_generation.wrapping_add(1);
+                    self.close_subview();
+                } else {
+                    self.modal = Modal::HelmLoading(label);
+                }
+            }
+            Modal::Helm(mut table) => match table.key(code) {
+                helm_ui::Action::Close => {
+                    self.helm_generation = self.helm_generation.wrapping_add(1);
+                    self.close_subview();
+                }
+                helm_ui::Action::Request(request) => {
+                    self.modal = Modal::Helm(table);
+                    self.request_helm(request, true);
+                }
+                helm_ui::Action::Metadata(release) => {
+                    let text = crate::inspect::yaml(
+                        &serde_json::to_value(release)
+                            .map_err(|_| "Helm metadata encoding failed")?,
+                    )?;
+                    self.push_subview(Modal::Helm(table));
+                    self.modal =
+                        Modal::HelmDocument("HELM SAFE REVISION METADATA / YAML".into(), text, 0);
+                }
+                helm_ui::Action::Unavailable(reason) => {
+                    self.status = reason.into();
+                    self.modal = Modal::Helm(table);
+                }
+                helm_ui::Action::None => self.modal = Modal::Helm(table),
+            },
+            Modal::HelmDocument(title, text, offset) => {
+                if matches!(code, KeyCode::Esc | KeyCode::Char('q')) {
+                    self.close_subview();
+                } else {
+                    let offset = scroll_offset(&text, offset, code);
+                    self.modal = Modal::HelmDocument(title, text, offset);
+                }
+            }
             Modal::ForwardView => match code {
                 KeyCode::Esc | KeyCode::Char('q') => self.close_subview(),
                 KeyCode::Char('s') => {
@@ -1956,18 +2224,76 @@ impl App {
                 _ => self.modal = Modal::Directory(directory, index),
             },
             Modal::PodContainers(object, mut index) => {
-                let names = pod_container_names(&object);
+                let names = pod_log_choices(&object);
                 match code {
-                    KeyCode::Char('s'|'a')=>{
-                        let attach=code==KeyCode::Char('a');
-                        if self.busy || !self.options.connection.writable || !(if attach{self.options.connection.allow_attach}else{self.options.connection.allow_exec}) || self.options.connection.demo {
-                            self.status=if attach{"Attach requires a live Pod, --write and --allow-attach."}else{"Shell requires a live Pod, --write and --allow-exec."}.into();self.modal=Modal::PodContainers(object,index);
-                        }else if let Some(container)=names.get(index){let namespace=namespace(&object).to_owned();let pod=name(&object).to_owned();let uid=object["metadata"]["uid"].as_str().map(str::to_owned);let request=if attach{crate::ops::Request::InteractiveAttach{container:container.clone(),seconds:self.options.session_seconds}}else{crate::ops::Request::InteractiveExec{container:container.clone(),argv:vec!["/bin/sh".into(),"-i".into()],seconds:self.options.session_seconds}};self.push_subview(Modal::PodContainers(object,index));self.send(Task::PrepareSession(namespace,pod,uid,request));}
+                    KeyCode::Char('s' | 'a') => {
+                        if names.get(index).is_some_and(|name| name == "*") {
+                            self.status = "Choose a specific container for shell or attach.".into();
+                            self.modal = Modal::PodContainers(object, index);
+                            return Ok(false);
+                        }
+                        let attach = code == KeyCode::Char('a');
+                        if self.busy
+                            || !self.options.connection.writable
+                            || !(if attach {
+                                self.options.connection.allow_attach
+                            } else {
+                                self.options.connection.allow_exec
+                            })
+                            || self.options.connection.demo
+                        {
+                            self.status = if attach {
+                                "Attach requires a live Pod, --write and --allow-attach."
+                            } else {
+                                "Shell requires a live Pod, --write and --allow-exec."
+                            }
+                            .into();
+                            self.modal = Modal::PodContainers(object, index);
+                        } else if let Some(container) = names.get(index) {
+                            let namespace = namespace(&object).to_owned();
+                            let pod = name(&object).to_owned();
+                            let uid = object["metadata"]["uid"].as_str().map(str::to_owned);
+                            let request = if attach {
+                                crate::ops::Request::InteractiveAttach {
+                                    container: container.clone(),
+                                    seconds: self.options.session_seconds,
+                                }
+                            } else {
+                                crate::ops::Request::InteractiveExec {
+                                    container: container.clone(),
+                                    argv: vec!["/bin/sh".into(), "-i".into()],
+                                    seconds: self.options.session_seconds,
+                                }
+                            };
+                            self.push_subview(Modal::PodContainers(object, index));
+                            self.send(Task::PrepareSession(namespace, pod, uid, request));
+                        }
                     }
-                    KeyCode::Char('f')=>{self.push_subview(Modal::PodContainers(object,index));self.modal=Modal::ForwardView;}
-                    KeyCode::Char('F')=>{
-                        if self.busy || !self.options.connection.writable || !self.options.connection.allow_port_forward || self.options.connection.demo {self.status="Port-forward requires a live Pod, --write and --allow-port-forward.".into();self.modal=Modal::PodContainers(object,index);}
-                        else{let namespace=namespace(&object).to_owned();let pod=name(&object).to_owned();let uid=object["metadata"]["uid"].as_str().map(str::to_owned);self.push_subview(Modal::PodContainers(object,index));self.modal=Modal::ForwardForm(namespace,pod,uid,["8080".into(),"80".into(),"300".into()],0);}
+                    KeyCode::Char('f') => {
+                        self.push_subview(Modal::PodContainers(object, index));
+                        self.modal = Modal::ForwardView;
+                    }
+                    KeyCode::Char('F') => {
+                        if self.busy
+                            || !self.options.connection.writable
+                            || !self.options.connection.allow_port_forward
+                            || self.options.connection.demo
+                        {
+                            self.status="Port-forward requires a live Pod, --write and --allow-port-forward.".into();
+                            self.modal = Modal::PodContainers(object, index);
+                        } else {
+                            let namespace = namespace(&object).to_owned();
+                            let pod = name(&object).to_owned();
+                            let uid = object["metadata"]["uid"].as_str().map(str::to_owned);
+                            self.push_subview(Modal::PodContainers(object, index));
+                            self.modal = Modal::ForwardForm(
+                                namespace,
+                                pod,
+                                uid,
+                                ["8080".into(), "80".into(), "300".into()],
+                                0,
+                            );
+                        }
                     }
                     KeyCode::Esc | KeyCode::Char('q') => self.close_subview(),
                     KeyCode::Down | KeyCode::Char('j') => {
@@ -1977,7 +2303,7 @@ impl App {
                     KeyCode::Up | KeyCode::Char('k') => {
                         self.modal = Modal::PodContainers(object, index.saturating_sub(1))
                     }
-                    KeyCode::Enter | KeyCode::Char('l') | KeyCode::Char('L'|'p') => {
+                    KeyCode::Enter | KeyCode::Char('l') | KeyCode::Char('L' | 'p') => {
                         if !self.options.connection.logs {
                             self.status = "Logs require --allow-logs.".into();
                             self.modal = Modal::PodContainers(object, index);
@@ -1998,10 +2324,23 @@ impl App {
                                     LogTarget {
                                         namespace: n,
                                         pod,
-                                        container: Some(container),
+                                        all: container == "*",
+                                        container: if container == "*" {
+                                            self.subviews.last().and_then(|modal| {
+                                                if let Modal::PodContainers(object, _) = modal {
+                                                    ordinary_container_names(object)
+                                                        .into_iter()
+                                                        .next()
+                                                } else {
+                                                    None
+                                                }
+                                            })
+                                        } else {
+                                            Some(container)
+                                        },
                                         uid,
-                                        previous: matches!(code,KeyCode::Char('L'|'p')),
-                                        follow: !matches!(code,KeyCode::Char('L'|'p')),
+                                        previous: matches!(code, KeyCode::Char('L' | 'p')),
+                                        follow: !matches!(code, KeyCode::Char('L' | 'p')),
                                     },
                                     self.options.log_read,
                                 );
@@ -2173,8 +2512,23 @@ impl App {
                     }
                     LogAction::Reload(read) => self.reload_logs(view, read),
                     LogAction::AllContainers => {
-                        self.status="All-container merged logs are unavailable; Esc returns to choose another container.".into();
-                        self.modal = Modal::Follow(view);
+                        if self.busy {
+                            self.status =
+                                "Wait for the current request before changing log sources.".into();
+                            self.modal = Modal::Follow(view);
+                        } else if let Some(target) = &mut self.log_target {
+                            if target.all && target.container.is_none() {
+                                self.status="No preferred single container; choose one from the Pod container view.".into();
+                                self.modal = Modal::Follow(view);
+                            } else {
+                                target.all = !target.all;
+                                view.replace_source("Connecting to selected log sources...".into());
+                                let read = view.range;
+                                self.reload_logs(view, read);
+                            }
+                        } else {
+                            self.modal = Modal::Follow(view);
+                        }
                     }
                     LogAction::Clear => {
                         if let Ok(mut state) = self.worker.logs.state.lock() {
@@ -2184,7 +2538,17 @@ impl App {
                         self.modal = Modal::Follow(view);
                     }
                     LogAction::Mark => {
-                        if view.following {let generation=self.worker.logs.generation.load(std::sync::atomic::Ordering::SeqCst);self.worker.logs.append(generation,"[---------------- KBorg log mark ----------------]");}
+                        if view.following {
+                            let generation = self
+                                .worker
+                                .logs
+                                .generation
+                                .load(std::sync::atomic::Ordering::SeqCst);
+                            self.worker.logs.append(
+                                generation,
+                                "[---------------- KBorg log mark ----------------]",
+                            );
+                        }
                         self.modal = Modal::Follow(view);
                     }
                     LogAction::None => self.modal = Modal::Follow(view),
@@ -2205,7 +2569,10 @@ impl App {
                 KeyCode::Enter => {
                     if let Some(container) = names.get(index) {
                         let mut target = target;
-                        target.container = Some(container.clone());
+                        target.all = container == "*";
+                        if !target.all {
+                            target.container = Some(container.clone());
+                        }
                         self.open_logs(target, self.options.log_read);
                     }
                 }
@@ -2399,8 +2766,11 @@ impl App {
                     } else if label == "Namespace" {
                         if text == "*" || safety::valid_id(&text) {
                             self.namespace = text;
-                            self.namespace_override = true;self.desired_resource=None;
-                            if let Ok(index)=self.resolve_resource("v1/pods"){self.kind_index=index;}
+                            self.namespace_override = true;
+                            self.desired_resource = None;
+                            if let Ok(index) = self.resolve_resource("v1/pods") {
+                                self.kind_index = index;
+                            }
                             self.changed();
                         } else {
                             self.status = "Invalid namespace.".into();
@@ -2503,8 +2873,8 @@ impl App {
                         self.modal = Modal::SessionConfirm(prepared, text);
                     } else {
                         if prepared.is_port_forward() {
-                            let generation=self.worker.forward.cancel();
-                            self.send(Task::RunForward(prepared, text,generation));
+                            let generation = self.worker.forward.cancel();
+                            self.send(Task::RunForward(prepared, text, generation));
                         } else {
                             self.pending_session = Some((prepared, text));
                         }
@@ -2588,7 +2958,8 @@ impl App {
                                 if label == "Context (Pod view)"
                                     && let Ok(index) = self.resolve_resource("pods")
                                 {
-                                    self.kind_index = index;self.desired_resource=None;
+                                    self.kind_index = index;
+                                    self.desired_resource = None;
                                 }
                                 self.options.connection.context = Some(value.clone());
                                 self.connect();
@@ -2603,8 +2974,11 @@ impl App {
                             } else {
                                 value.clone()
                             };
-                            self.namespace_override = true;self.desired_resource=None;
-                            if let Ok(index)=self.resolve_resource("v1/pods"){self.kind_index=index;}
+                            self.namespace_override = true;
+                            self.desired_resource = None;
+                            if let Ok(index) = self.resolve_resource("v1/pods") {
+                                self.kind_index = index;
+                            }
                             self.changed();
                         }
                     }
@@ -2761,12 +3135,25 @@ impl App {
             },
             Modal::None => match code {
                 KeyCode::Char('q') => return Ok(true),
-                KeyCode::Esc=>{
-                    if !self.filter.is_empty(){let uid=self.selected_uid();self.filter.clear();self.selected=uid.and_then(|uid|self.visible().iter().position(|object|object["metadata"]["uid"].as_str()==Some(&uid))).unwrap_or(0);}
-                    else if !self.selector.is_empty(){self.selector.clear();self.changed();}
-                    else{self.go_back();}
+                KeyCode::Esc => {
+                    if !self.filter.is_empty() {
+                        let uid = self.selected_uid();
+                        self.filter.clear();
+                        self.selected = uid
+                            .and_then(|uid| {
+                                self.visible().iter().position(|object| {
+                                    object["metadata"]["uid"].as_str() == Some(&uid)
+                                })
+                            })
+                            .unwrap_or(0);
+                    } else if !self.selector.is_empty() {
+                        self.selector.clear();
+                        self.changed();
+                    } else {
+                        self.go_back();
+                    }
                 }
-                KeyCode::Char('[')=>self.go_back(),
+                KeyCode::Char('[') => self.go_back(),
                 KeyCode::Char(']') => self.go_forward(),
                 KeyCode::Char('-') => self.last_view(),
                 KeyCode::Tab | KeyCode::BackTab => {
@@ -2824,7 +3211,13 @@ impl App {
                 KeyCode::Char('N') => self.set_sort(Sort::Name),
                 KeyCode::Char('A') => self.set_sort(Sort::Age),
                 KeyCode::Char('E') => self.request_shell(),
-                KeyCode::Char('n')=>{if let Some((_,namespace,_))=self.selected_target(){self.copy_text(&namespace)?;self.status="Namespace sent to terminal clipboard (OSC52 support required).".into();}}
+                KeyCode::Char('n') => {
+                    if let Some((_, namespace, _)) = self.selected_target() {
+                        self.copy_text(&namespace)?;
+                        self.status =
+                            "Namespace sent to terminal clipboard (OSC52 support required).".into();
+                    }
+                }
                 KeyCode::Char('c') => {
                     if self.kind() == "nodes" && self.options.connection.writable {
                         self.status =
@@ -2832,8 +3225,9 @@ impl App {
                         return Ok(false);
                     }
                     if let Some(object) = self.visible().get(self.selected) {
-                        self.copy_text(name(object))?;self.status="Name sent to terminal clipboard (OSC52 support required).".into();
-
+                        self.copy_text(name(object))?;
+                        self.status =
+                            "Name sent to terminal clipboard (OSC52 support required).".into();
                     }
                 }
                 KeyCode::Char('t') => {
@@ -2870,10 +3264,31 @@ impl App {
                     self.metrics_resources = false;
                     self.request_metrics();
                 }
-                KeyCode::Char('M'|'C')=>self.status="CPU/memory sorting is unavailable without metrics table columns. :metrics resources shows qualified comparisons.".into(),
-                KeyCode::Char('w')=>{if let Some((_,namespace,_))=self.selected_target(){return self.command(&format!("ns {namespace}"));}}
-                KeyCode::Char('0')=>return self.command("ns all"),
-                KeyCode::Char('1'..='9')=>self.status="Namespace favorites are not configured; :ns opens the namespace picker.".into(),
+                KeyCode::Char('M' | 'C') => {
+                    if matches!(self.kind().as_str(), "pods" | "nodes") {
+                        self.set_sort(if code == KeyCode::Char('C') {
+                            Sort::Cpu
+                        } else {
+                            Sort::Memory
+                        });
+                        if !self.busy && self.last_table_metrics.is_none() {
+                            self.refresh_table_metrics();
+                        }
+                    } else {
+                        self.status="CPU/memory usage sorting applies to Pod and Node tables; :metrics shows exact samples.".into();
+                    }
+                }
+                KeyCode::Char('w') => {
+                    if let Some((_, namespace, _)) = self.selected_target() {
+                        return self.command(&format!("ns {namespace}"));
+                    }
+                }
+                KeyCode::Char('0') => return self.command("ns all"),
+                KeyCode::Char('1'..='9') => {
+                    self.status =
+                        "Namespace favorites are not configured; :ns opens the namespace picker."
+                            .into()
+                }
                 KeyCode::Char(' ') => {
                     if let Some(uid) = self.selected_uid() {
                         if !self.marks.remove(&uid) {
@@ -2894,7 +3309,10 @@ impl App {
                     }
                 }
                 KeyCode::Char('o') => {
-                    if self.kind()!="pods" {self.status="Show Node applies to core Pods.".into();return Ok(false);}
+                    if self.kind() != "pods" {
+                        self.status = "Show Node applies to core Pods.".into();
+                        return Ok(false);
+                    }
                     let node = self
                         .visible()
                         .get(self.selected)
@@ -2912,14 +3330,15 @@ impl App {
                     if !self.options.connection.writable {
                         self.status = "READ ONLY: resource budgets require --write.".into();
                     } else if !crate::edit::supports_resource(&self.kind()) {
-                        self.status = "Resource budgets apply to supported workload containers.".into();
+                        self.status =
+                            "Resource budgets apply to supported workload containers.".into();
                     } else if let Some((k, n, name)) = self.selected_target() {
                         self.modal =
                             Modal::Resources(k, n, name, self.selected_uid(), String::new());
                     }
                 }
                 KeyCode::Char('l') => self.request_logs(false, true),
-                KeyCode::Char('L'|'p') => self.request_logs(true, false),
+                KeyCode::Char('L' | 'p') => self.request_logs(true, false),
                 KeyCode::Char('s') => {
                     if self.kind() == "pods" {
                         self.request_shell();
@@ -2948,6 +3367,15 @@ impl App {
             return self.key(code);
         }
         if modifiers.contains(KeyModifiers::CONTROL) {
+            if let Modal::Helm(table) = &self.modal {
+                if code == KeyCode::Char('r') {
+                    let request = table.refresh();
+                    self.request_helm(request, false);
+                } else if code == KeyCode::Char('s') {
+                    self.status="Helm release export is unavailable; y shows safe selected revision metadata only.".into();
+                }
+                return Ok(false);
+            }
             if matches!(self.modal, Modal::Follow(_)) {
                 if code == KeyCode::Char('r') {
                     if self.busy {
@@ -3025,6 +3453,20 @@ fn pod_container_names(object: &Value) -> Vec<String> {
         .flat_map(|field| object["spec"][field].as_array().into_iter().flatten())
         .filter_map(|container| container["name"].as_str().map(str::to_owned))
         .take(128)
+        .collect()
+}
+fn ordinary_container_names(object: &Value) -> Vec<String> {
+    object["spec"]["containers"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|container| container["name"].as_str().map(str::to_owned))
+        .take(128)
+        .collect()
+}
+fn pod_log_choices(object: &Value) -> Vec<String> {
+    std::iter::once("*".to_owned())
+        .chain(pod_container_names(object))
         .collect()
 }
 fn namespace(object: &Value) -> &str {
@@ -3371,7 +3813,7 @@ fn resource_label(kind: &Kind) -> String {
         }
     }
 }
-const TUI_HELP: &str = "NAVIGATE LIKE K9S\n  :pod :pods :po           Singular, plural or discovered short name\n  :pod NAMESPACE          Resource in namespace; all means all namespaces\n  :pod /api|web           Resource plus regex filter\n  :pod app=api,tier=web    Server-side label selector\n  :pod @CONTEXT           Switch context; context names retain their case\n  :ctx / :ctx NAME        Context picker (Pod view) / direct switch (same view)\n  :ns / :ns NAME          Namespace picker / direct switch (Pod view)\n  Ctrl-A / :aliases       Resource alias picker; Enter navigates\n  :pulses / :pu           Read-only cluster health snapshot\n  :xray po|svc|dp [NS]    Ownership and service relationship snapshot\n  :screendump / :sd       Browse saved redacted resource snapshots\n  :can u:NAME             Read-only RBAC subject view\n  :dir PATH               Browse local YAML directory; no apply\n  :q :q! :qa :Q :quit     Quit (in-flight mutations must finish)\n\nCOMMAND PROMPT\n  : / Tab                 Open prompt; Tab completes; Shift-Tab reverses\n  Up / Down               Recall in-session command history\n  Left Right Home End     Edit at cursor; Ctrl-U clears\n  Enter / Esc             Run command / cancel without changing view\n  [ / ] / -               Previous / next / last view\n  Esc                     Close view or return to previous resource\n\nFILTER\n  /PATTERN                Case-insensitive regex over namespace/name/status\n  /!PATTERN               Inverse regex\n  /-f PATTERN             Fuzzy subsequence match\n  /-l LABEL_SELECTOR      Apply server-side label selector on Enter\n  Enter / Esc             Keep / restore previous filter and selected UID\n\nRESOURCE TABLE\n  j k / arrows            Move; PgUp PgDown Home End page\n  Enter                   Drill into containers, related Pods or namespace\n  d                       Describe selected object (redacted overview)\n  y / v                   View redacted YAML; J views JSON\n  c / n                   Copy name / namespace via terminal OSC52 clipboard\n  w / 0                   Warp to selected namespace / all namespaces\n  N / A / S / R           Sort by name / age / status / readiness\n  Space / Ctrl-Space      Mark / mark range (visual only; no bulk mutations)\n  Ctrl-Backslash          Clear marks\n  Ctrl-S                  Save current visible redacted resource snapshot\n  Ctrl-R / :discover      Refresh / API discovery; r restarts workloads\n  l / p                   Follow logs / previous logs (--allow-logs)\n  Pod s / a / f / F       Shell / attach / forwards / new forward\n  Workload s / r          Scale Deployment-StatefulSet / reviewed restart\n  e                       Controlled workload container editor\n  Ctrl-D                  Reviewed deletion; Ctrl-K force kill disabled\n  o                       Show selected Pod's Node\n\nKBORG COMMANDS\n  :actions                Discover actions with capability reasons\n  :scale :image :restart  Explicit reviewed workload operations\n  :metrics [resources]    Metrics / opt into requests-limit comparisons\n  :overview               Live overview of up to four explicit contexts\n  :themes                 Theme preview and custom palette creation\n\nLIMITS AND SAFETY\n  Context, namespace and mode remain visible; DEMO is sample data.\n  STALE and TRUNCATED indicate incomplete data. Regex uses bounded Rust regex\n  syntax; look-around and backreferences are unavailable. Secrets excluded.\n  e edits only ordinary-container image and optional CPU/memory budget on\n  Deployments, StatefulSets, DaemonSets and CronJobs, with captured UID, fresh\n  server dry-run and full review. Generic YAML editing/apply is unavailable.\n  Transfer, node cordon/uncordon/drain/shell, CPU-memory sorting, Helm,\n  benchmarks and external scans have explicit unavailable messages.\n  Visual marks never authorize bulk writes. Every mutation requires --write\n  plus one-use approval; shell/attach/forward need separate capabilities.";
+const TUI_HELP: &str = "NAVIGATE LIKE K9S\n  :pod :pods :po           Singular, plural or discovered short name\n  :pod NAMESPACE          Resource in namespace; all means all namespaces\n  :pod /api|web           Resource plus regex filter\n  :pod app=api,tier=web    Server-side label selector\n  :pod @CONTEXT           Switch context; context names retain their case\n  :ctx / :ctx NAME        Context picker (Pod view) / direct switch (same view)\n  :ns / :ns NAME          Namespace picker / direct switch (Pod view)\n  Ctrl-A / :aliases       Resource alias picker; Enter navigates\n  :pulses / :pu           Read-only cluster health snapshot\n  :xray po|svc|dp [NS]    Ownership and service relationship snapshot\n  :screendump / :sd       Browse saved redacted resource snapshots\n  :can u:NAME             Read-only RBAC subject view\n  :dir PATH               Browse local YAML directory; no apply\n  :helm [NAMESPACE]       Native release metadata (--allow-helm)\n  :history RELEASE        Selected release revision history\n  :q :q! :qa :Q :quit     Quit (in-flight mutations must finish)\n\nCOMMAND PROMPT\n  : / Tab                 Open prompt; Tab completes; Shift-Tab reverses\n  Up / Down               Recall in-session command history\n  Left Right Home End     Edit at cursor; Ctrl-U clears\n  Enter / Esc             Run command / cancel without changing view\n  [ / ] / -               Previous / next / last view\n  Esc                     Close view or return to previous resource\n\nFILTER\n  /PATTERN                Case-insensitive regex over namespace/name/status\n  /!PATTERN               Inverse regex\n  /-f PATTERN             Fuzzy subsequence match\n  /-l LABEL_SELECTOR      Apply server-side label selector on Enter\n  Enter / Esc             Keep / restore previous filter and selected UID\n\nRESOURCE TABLE\n  j k / arrows            Move; PgUp PgDown Home End page\n  Enter                   Drill into containers, related Pods or namespace\n  d                       Describe selected object (redacted overview)\n  y / v                   View redacted YAML; J views JSON\n  c / n                   Copy name / namespace via terminal OSC52 clipboard\n  w / 0                   Warp to selected namespace / all namespaces\n  N / A / S / R           Sort by name / age / status / readiness\n  C / M                   Sort Pods/Nodes by CPU / memory, highest first\n  CPU/MEM snapshots refresh every 15s while the table is visible; - means\n  unknown, never zero. ~ indicates Metrics API omitted UID; creation checked.\n  Table CPU/MEM labels are rounded; d or m shows exact measured quantities.\n  Space / Ctrl-Space      Mark / mark range (visual only; no bulk mutations)\n  Ctrl-Backslash          Clear marks\n  Ctrl-S                  Save current visible redacted resource snapshot\n  Ctrl-R / :discover      Refresh / API discovery; r restarts workloads\n  l / p                   Follow logs / previous logs (--allow-logs)\n  Pod s / a / f / F       Shell / attach / forwards / new forward\n  Workload s / r          Scale Deployment-StatefulSet / reviewed restart\n  e                       Controlled workload container editor\n  Ctrl-D                  Reviewed deletion; Ctrl-K force kill disabled\n  o                       Show selected Pod's Node\n\nHELM AND LOGS\n  Helm Enter / r          Release revision history\n  History Enter / v       Explicit selected revision stored values\n  Helm d / m / y          Metadata / resource identities / metadata YAML\n  Helm Ctrl-R / /         Refresh / filter; Esc returns to previous view\n  Log a                   Toggle all ordinary containers / preferred container\n  Log 0..6                Tail / head / last 1m,5m,15m,30m,1h\n  Log s w t f             Autoscroll / wrap / timestamps / fullscreen\n  Pod l honors the default-container annotation, otherwise merges multiple\n  ordinary containers. Each merged line carries a namespace/Pod/container.\n\nKBORG COMMANDS\n  :actions                Discover actions with capability reasons\n  :scale :image :restart  Explicit reviewed workload operations\n  :metrics [resources]    Metrics / opt into requests-limit comparisons\n  :overview               Live overview of up to four explicit contexts\n  :themes                 Theme preview and custom palette creation\n\nLIMITS AND SAFETY\n  Context, namespace and mode remain visible; DEMO is sample data.\n  STALE and TRUNCATED indicate incomplete data. Regex uses bounded Rust regex\n  syntax; look-around and backreferences are unavailable. Secrets excluded.\n  e edits only ordinary-container image and optional CPU/memory budget on\n  Deployments, StatefulSets, DaemonSets and CronJobs, with captured UID, fresh\n  server dry-run and full review. Generic YAML editing/apply is unavailable.\n  Transfer and node cordon/uncordon/drain/shell,\n  benchmarks and external scans have explicit unavailable messages.\n  Helm release reads need --allow-helm. Values are stored overrides with\n  known fields redacted; custom keys can remain confidential. Rollback and\n  uninstall are unavailable. Raw storage, chart files and notes are excluded.\n  Visual marks never authorize bulk writes. Every mutation requires --write\n  plus one-use approval; shell/attach/forward need separate capabilities.";
 
 #[derive(Clone, Copy, Debug)]
 struct Rect {
@@ -3409,6 +3851,8 @@ enum Column {
     Age,
     Node,
     Ip,
+    Cpu,
+    Memory,
 }
 impl Column {
     fn title(self) -> &'static str {
@@ -3421,6 +3865,8 @@ impl Column {
             Self::Age => "AGE",
             Self::Node => "NODE",
             Self::Ip => "IP",
+            Self::Cpu => "CPU(m)",
+            Self::Memory => "MEM",
         }
     }
     fn value(self, object: &Value, now: i64) -> String {
@@ -3439,6 +3885,7 @@ impl Column {
             Self::Age => age(object, now),
             Self::Node => clean_value(&object["spec"]["nodeName"]),
             Self::Ip => clean_value(&object["status"]["podIP"]),
+            Self::Cpu | Self::Memory => "-".into(),
         }
     }
 }
@@ -3479,11 +3926,31 @@ fn columns(width: usize, namespaced: bool) -> Vec<(Column, usize)> {
     columns
 }
 fn table_line(columns: &[(Column, usize)], object: Option<&Value>, now: i64) -> String {
+    table_line_with_metrics(columns, object, now, None)
+}
+fn table_line_with_metrics(
+    columns: &[(Column, usize)],
+    object: Option<&Value>,
+    now: i64,
+    usage: Option<&table_metrics::Usage>,
+) -> String {
     columns
         .iter()
         .map(|(column, width)| {
             let text = object
-                .map(|object| column.value(object, now))
+                .map(|object| match (column, usage) {
+                    (Column::Cpu, Some(usage)) => format!(
+                        "{}{}",
+                        table_metrics::compact_cpu(usage.cpu_nanocores),
+                        if usage.identity_verified { "" } else { "~" }
+                    ),
+                    (Column::Memory, Some(usage)) => format!(
+                        "{}{}",
+                        table_metrics::compact_memory(usage.memory_bytes),
+                        if usage.identity_verified { "" } else { "~" }
+                    ),
+                    _ => column.value(object, now),
+                })
                 .unwrap_or_else(|| column.title().into());
             format!("{:<width$}", display(&text, *width), width = *width)
         })
@@ -3708,7 +4175,11 @@ fn render_log_modal(
                 "{}/{} / {} | ",
                 target.namespace,
                 target.pod,
-                target.container.as_deref().unwrap_or("default")
+                if target.all {
+                    "ALL ordinary containers"
+                } else {
+                    target.container.as_deref().unwrap_or("default")
+                }
             )
         })
         .unwrap_or_default();
@@ -3907,25 +4378,33 @@ fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
             visible.len(),
             if !filtered { "" } else { " FILTERED" }
         );
+        let title = if w >= 90 && matches!(app.kind().as_str(), "pods" | "nodes") {
+            format!("{title} | {}", app.table_metrics.label(Instant::now()))
+        } else {
+            title
+        };
         panel(out, rect, &title, true, color("muted"), bg).map_err(|_| "draw failed")?;
         let namespaced = app
             .kinds
             .get(app.kind_index)
             .is_some_and(|kind| kind.namespaced);
         let column_width = usize::from(rect.width - 5);
-        let mut cols = columns(
-            column_width.saturating_sub(if app.kind() == "pods" && column_width >= 110 {
-                23 + if column_width >= 135 { 17 } else { 0 }
-            } else {
-                0
-            }),
-            namespaced,
-        );
-        if app.kind() == "pods" && column_width >= 110 {
+        let measured = matches!(app.kind().as_str(), "pods" | "nodes") && column_width >= 70;
+        let node_columns = app.kind() == "pods" && column_width >= 130;
+        let ip_column = node_columns && column_width >= 155;
+        let reserved = if measured { 20 } else { 0 }
+            + if node_columns { 23 } else { 0 }
+            + if ip_column { 17 } else { 0 };
+        let mut cols = columns(column_width.saturating_sub(reserved), namespaced);
+        if measured {
+            cols.push((Column::Cpu, 9));
+            cols.push((Column::Memory, 9));
+        }
+        if node_columns {
             cols.push((Column::Node, 22));
-            if column_width >= 135 {
-                cols.push((Column::Ip, 16));
-            }
+        }
+        if ip_column {
+            cols.push((Column::Ip, 16));
         }
         let now = k8s_openapi::jiff::Timestamp::now().as_second();
         cell(
@@ -3969,7 +4448,12 @@ fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
                     } else {
                         " "
                     },
-                    table_line(&cols, Some(object), now)
+                    table_line_with_metrics(
+                        &cols,
+                        Some(object),
+                        now,
+                        app.table_metrics.usage(object, Instant::now())
+                    )
                 ),
                 if selected {
                     color("selection_text")
@@ -4034,7 +4518,7 @@ fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
         if w >= 100 {
             " d describe  y/v YAML  e edit  l logs  s shell  f forwards  ? help"
         } else {
-            "d describe | y YAML | l logs | ? help"
+            "d describe | y YAML | l logs | C/M CPU/mem | m metrics | ? help"
         },
         color("accent"),
         bg,
@@ -4133,6 +4617,9 @@ fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
             let title = match modal {
                 Modal::Input(label, _) | Modal::Picker(label, ..) => *label,
                 Modal::Follow(view) => return render_log_modal(app, view, w, h, out),
+                Modal::Helm(table) => table.title(),
+                Modal::HelmLoading(_) => "HELM / bounded storage read",
+                Modal::HelmDocument(title, ..) => title.as_str(),
                 Modal::Containers(..) => "CHOOSE CONTAINER",
                 Modal::Image(..) => "CHANGE DEPLOYMENT IMAGE",
                 Modal::Detail(..) => "REDACTED INSPECTION / Esc close",
@@ -4177,6 +4664,9 @@ fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
             .map_err(|_| "draw failed")?;
             let height = usize::from(rect.height.saturating_sub(2));
             let lines = match modal {
+                Modal::Helm(table)=>table.lines(usize::from(rect.width.saturating_sub(2)),height),
+                Modal::HelmLoading(label)=>vec![(*label).into(),String::new(),"Esc cancels this view; late results cannot reopen it.".into()],
+                Modal::HelmDocument(_,text,offset)=>wrap_text(text,usize::from(rect.width.saturating_sub(2))).lines().skip(*offset).map(str::to_owned).collect(),
                 Modal::Input(label, text) => input_lines(label, text, usize::from(rect.width.saturating_sub(2)), height),
                 Modal::EditContainers(_,_,name,_,values,index)=>std::iter::once(format!("{name} | Enter choose / Esc cancel")).chain(values.iter().enumerate().skip(index.saturating_sub(height.saturating_sub(2))).map(|(i,value)|format!("{} {}  {}",if i==*index{">"}else{" "},value.name,value.image))).collect(),
                 Modal::Editor(draft)=>{
@@ -4188,9 +4678,10 @@ fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
                     lines
                 }
                 Modal::PodContainers(object,index)=>{
-                    let names=pod_container_names(object);
+                    let names=pod_log_choices(object);
                     let mut lines=vec![format!("Pod {}/{} | {}",namespace(object),name(object),summary(object)),String::new(),"   NAME                     READY  RESTARTS  STATE / IMAGE".into()];
                     for (i,name) in names.iter().enumerate().skip(index.saturating_sub(height.saturating_sub(4))) {
+                        if name=="*"{lines.push(format!("{} ALL ordinary containers ({}) | Enter merged logs",if i==*index{">"}else{" "},ordinary_container_names(object).len()));continue;}
                         let status=["containerStatuses","initContainerStatuses","ephemeralContainerStatuses"].iter().flat_map(|field|object["status"][field].as_array().into_iter().flatten()).find(|status|status["name"].as_str()==Some(name));
                         let ready=status.map(|v|v["ready"]==true).unwrap_or(false);
                         let restarts=status.and_then(|v|v["restartCount"].as_u64()).unwrap_or(0);
@@ -4213,7 +4704,7 @@ fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
                 Modal::Follow(view)=>view.render(usize::from(rect.width.saturating_sub(2)),height),
                 Modal::Overview(object, offset) => {
                     let wrapped = wrap_text(
-                        &overview_text(object, &app.context),
+                        &format!("{}{}",overview_text(object, &app.context),app.table_metrics.usage(object,Instant::now()).map(|usage|format!("\n\nMEASURED USAGE\nCPU {}m | Memory {}B ({})\nTimestamp {} | Window {}\nBound UID {} | {}",crate::metrics::format_millicores(usage.cpu_nanocores),usage.memory_bytes,crate::metrics::format_memory(usage.memory_bytes),usage.timestamp,usage.window,usage.identity_uid,if usage.identity_verified{"Metrics API UID verified"}else{"Metrics API UID absent; entire sample window checked against current object creation"})).unwrap_or_default()),
                         usize::from(rect.width.saturating_sub(2)),
                     );
                     wrapped
@@ -4253,7 +4744,7 @@ fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
                             .enumerate()
                             .skip(index.saturating_sub(height.saturating_sub(2)))
                             .map(|(i, name)| {
-                                format!(" {} {name}", if i == *index { ">" } else { " " })
+                                format!(" {} {}", if i == *index { ">" } else { " " },if name=="*"{"ALL ordinary containers"}else{name})
                             }),
                     )
                     .collect()
@@ -4376,6 +4867,10 @@ fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
                 "Esc stops all context watches | PgUp/PgDown scroll"
             } else if matches!(modal, Modal::Overview(..)) {
                 "Esc close | J redacted JSON | y YAML | PgUp/PgDown scroll"
+            } else if let Modal::Helm(table) = modal {
+                table.help()
+            } else if matches!(modal, Modal::HelmDocument(..)) {
+                "Stored revision read | PgUp/PgDown scroll | Esc back"
             } else if matches!(modal, Modal::Metrics(..)) {
                 "Esc close | m refresh | M requests/limits (extra reads) | PgUp/PgDown"
             } else {
@@ -4503,6 +4998,7 @@ pub fn run(options: Options) -> Result<()> {
         restoring_uid: None,
         subviews: vec![],
         log_target: None,
+        helm_generation: 0,
         last_forward: String::new(),
         desired_resource: None,
         status: "Starting...".into(),
@@ -4523,6 +5019,8 @@ pub fn run(options: Options) -> Result<()> {
         last_refresh: Instant::now(),
         metrics_history: crate::metrics::MetricsHistory::default(),
         last_metrics: Instant::now(),
+        last_table_metrics: None,
+        table_metrics: Default::default(),
         metrics_resources: false,
         overview: None,
         pending_session: None,
@@ -4609,6 +5107,18 @@ pub fn run(options: Options) -> Result<()> {
                     app.field_selector.clone(),
                 )
             });
+            dirty = true;
+        }
+        if app.connected
+            && !app.busy
+            && !app.stale
+            && matches!(app.modal, Modal::None)
+            && matches!(app.kind().as_str(), "pods" | "nodes")
+            && app
+                .last_table_metrics
+                .is_none_or(|last| last.elapsed() >= Duration::from_secs(15))
+        {
+            app.refresh_table_metrics();
             dirty = true;
         }
         // At most one redraw per event-loop tick; polling never blocks terminal input.
@@ -4790,6 +5300,8 @@ mod layout_tests {
                     yaml: false,
                     follow: false,
                     previous: false,
+                    all_containers: false,
+                    helm_storage: None,
                     allow_tools: false,
                     allow_extensions: false,
                     log_seconds: 3600,
@@ -4826,6 +5338,7 @@ mod layout_tests {
                 restoring_uid: None,
                 subviews: vec![],
                 log_target: None,
+                helm_generation: 0,
                 last_forward: String::new(),
                 desired_resource: None,
                 status: "waiting".into(),
@@ -4846,6 +5359,8 @@ mod layout_tests {
                 last_refresh: Instant::now(),
                 metrics_history: crate::metrics::MetricsHistory::default(),
                 last_metrics: Instant::now(),
+                last_table_metrics: None,
+                table_metrics: Default::default(),
                 metrics_resources: false,
                 overview: None,
                 pending_session: None,
@@ -4860,6 +5375,98 @@ mod layout_tests {
             replies,
             commands,
         )
+    }
+    #[test]
+    fn helm_reads_require_capability_and_late_results_do_not_reopen_views() -> Result<()> {
+        let (mut app, replies, mut commands) = harness();
+        app.command("helm")?;
+        assert!(commands.try_recv().is_err());
+        assert!(app.status.contains("--allow-helm"));
+        app.options.connection.allow_helm = true;
+        app.command("helm")?;
+        let generation = match commands.try_recv() {
+            Ok((_, Task::Helm(helm_ui::Request::List(ns, None), generation))) => {
+                assert_eq!(ns, "test");
+                generation
+            }
+            _ => return Err("missing Helm read".into()),
+        };
+        assert!(matches!(app.modal, Modal::HelmLoading(_)));
+        app.key(KeyCode::Esc)?;
+        replies
+            .send((
+                app.epoch,
+                Reply::Helm(
+                    generation,
+                    Ok(helm_ui::Response::Document(
+                        "old".into(),
+                        "late secret read".into(),
+                    )),
+                ),
+            ))
+            .map_err(|_| "reply closed")?;
+        app.receive();
+        assert!(matches!(app.modal, Modal::None));
+        assert!(!screen(&app, 80, 24).join("\n").contains("late secret read"));
+        app.command("history my.api")?;
+        assert!(
+            matches!(commands.try_recv(),Ok((_,Task::Helm(helm_ui::Request::NamedHistory(_,name,None),_))) if name=="my.api")
+        );
+        Ok(())
+    }
+    #[test]
+    fn pod_log_defaults_and_source_toggle_preserve_captured_identity() -> Result<()> {
+        let (mut app, _replies, mut commands) = harness();
+        app.options.connection.logs = true;
+        let mut pod = object("api");
+        pod["apiVersion"] = "v1".into();
+        pod["kind"] = "Pod".into();
+        pod["spec"] = serde_json::json!({"containers":[{"name":"app"},{"name":"sidecar"}],"initContainers":[{"name":"init"}]});
+        app.items = vec![pod.clone()];
+        app.subviews
+            .push(Modal::Follow(Box::new(crate::ui_logs::LogView::new(
+                "older session".into(),
+                Default::default(),
+            ))));
+        app.request_logs(false, true);
+        assert!(
+            !app.subviews
+                .iter()
+                .any(|modal| matches!(modal, Modal::Follow(_)))
+        );
+        let uid = match commands.try_recv() {
+            Ok((_, Task::Follow(target, _, _, _))) => {
+                assert!(target.all);
+                assert_eq!(target.container.as_deref(), Some("app"));
+                target.uid
+            }
+            _ => return Err("missing merged follow".into()),
+        };
+        app.busy = false;
+        app.items[0]["metadata"]["uid"] = "replacement".into();
+        app.key(KeyCode::Char('a'))?;
+        match commands.try_recv() {
+            Ok((_, Task::Follow(target, _, _, _))) => {
+                assert!(!target.all);
+                assert_eq!(target.uid, uid);
+                assert_eq!(target.container.as_deref(), Some("app"));
+            }
+            _ => return Err("missing single follow".into()),
+        };
+        app.busy = false;
+        app.key(KeyCode::Esc)?;
+        pod["metadata"]["annotations"] =
+            serde_json::json!({"kubectl.kubernetes.io/default-container":"sidecar"});
+        app.items = vec![pod];
+        app.request_logs(false, true);
+        assert!(
+            matches!(commands.try_recv(),Ok((_,Task::Follow(target,_,_,_))) if !target.all && target.container.as_deref()==Some("sidecar"))
+        );
+        assert_eq!(
+            pod_log_choices(&app.items[0]),
+            vec!["*", "app", "sidecar", "init"]
+        );
+        Ok(())
     }
     fn object(name: &str) -> Value {
         serde_json::json!({"kind":"Deployment","metadata":{"name":name,"namespace":"test","uid":format!("uid-{name}")}})
@@ -5160,7 +5767,8 @@ mod layout_tests {
         custom.group = "example.test".into();
         custom.short_names = vec!["custompo".into()];
         app.kinds.push(custom);
-        assert!(app.resolve_resource("pods").is_err());
+        assert_eq!(app.resolve_resource("pods"), Ok(0));
+        assert_eq!(app.resolve_resource("po"), Ok(0));
         assert_eq!(app.resolve_resource("v1/pods"), Ok(0));
         assert_eq!(app.resolve_resource("custompo"), Ok(app.kinds.len() - 1));
         assert!(app.command("secret").is_ok());
@@ -5301,6 +5909,7 @@ mod layout_tests {
                 uid: "uid".into(),
                 previous: false,
                 follow: false,
+                all: false,
             },
             (0..20).map(|index| format!("container-{index}")).collect(),
             19,
@@ -5351,6 +5960,110 @@ mod layout_tests {
         assert_eq!(app.selected_uid().as_deref(), Some("uid-z"));
         assert_eq!(display("long-name", 5), "long~");
         assert_eq!(display("\u{1b}[31mname", 20), "[31mname");
+    }
+    #[test]
+    fn table_metrics_sort_exact_usage_and_missing_rows_last_preserving_uid() -> Result<()> {
+        let (mut app, replies, mut commands) = harness();
+        let pod = |name: &str, uid: &str| serde_json::json!({"apiVersion":"v1","kind":"Pod","metadata":{"name":name,"namespace":"test","uid":uid},"spec":{"containers":[{"name":"app"}]}});
+        app.items = vec![
+            pod("big", "big-uid"),
+            pod("small", "small-uid"),
+            pod("unknown", "unknown-uid"),
+        ];
+        let row = |name: &str, uid: &str, cpu: u64, memory: u64| crate::metrics::MetricsRow {
+            name: name.into(),
+            namespace: Some("test".into()),
+            container: Some("app".into()),
+            timestamp: "2026-10-22T12:00:30Z".into(),
+            window: "30s".into(),
+            cpu_raw: format!("{cpu}n"),
+            memory_raw: memory.to_string(),
+            cpu_nanocores: cpu,
+            cpu_millicores: crate::metrics::format_millicores(cpu),
+            memory_bytes: memory,
+            rounded_up: false,
+            identity_uid: Some(uid.into()),
+            allocations: None,
+        };
+        let snapshot = crate::metrics::MetricsSnapshot {
+            api_version: "metrics.k8s.io/v1beta1",
+            scope: crate::metrics::MetricsScope::Pods,
+            namespace: Some("test".into()),
+            source: "demo (test)",
+            items: vec![
+                row("big", "big-uid", 100_000_001, 2_097_152),
+                row("small", "small-uid", 9_000_001, 67_108_864),
+            ],
+            truncated: false,
+            allocation_status: None,
+        };
+        app.selected = 1;
+        replies
+            .send((
+                app.epoch,
+                Reply::Metrics(
+                    crate::metrics::MetricsScope::Pods,
+                    "test".into(),
+                    Ok(snapshot),
+                ),
+            ))
+            .map_err(|_| "reply closed")?;
+        app.receive();
+        app.last_table_metrics = Some(Instant::now());
+        app.key(KeyCode::Char('C'))?;
+        assert_eq!(
+            app.visible()
+                .iter()
+                .map(|object| name(object))
+                .collect::<Vec<_>>(),
+            vec!["big", "small", "unknown"]
+        );
+        assert_eq!(app.selected_uid().as_deref(), Some("small-uid"));
+        app.key(KeyCode::Char('M'))?;
+        assert_eq!(
+            app.visible()
+                .iter()
+                .map(|object| name(object))
+                .collect::<Vec<_>>(),
+            vec!["small", "big", "unknown"]
+        );
+        let frame = screen(&app, 120, 24).join("\n");
+        assert!(frame.contains("CPU(m)"));
+        assert!(frame.contains("MEM"));
+        assert!(frame.contains("9        "));
+        assert!(frame.contains("64Mi"));
+        let usage = table_metrics::Usage {
+            cpu_nanocores: 72_574_100,
+            memory_bytes: 1_268_680 * 1024,
+            timestamp: "now".into(),
+            window: "30s".into(),
+            identity_uid: "small-uid".into(),
+            identity_verified: false,
+        };
+        let compact = table_line_with_metrics(
+            &[(Column::Cpu, 9), (Column::Memory, 9)],
+            Some(&app.items[1]),
+            0,
+            Some(&usage),
+        );
+        assert_eq!(
+            compact, "72.57~    1.21Gi~  ",
+            "each tilde must be the UID marker, with units intact"
+        );
+        assert!(commands.try_recv().is_err());
+        // Expiry reorders missing values by name but preserves the selected UID.
+        let before = app.selected_uid();
+        assert!(app.expire_table_metrics(Instant::now() + Duration::from_secs(46)));
+        assert_eq!(app.selected_uid(), before);
+        app.items[1]["metadata"]["uid"] = "new-uid".into();
+        assert!(
+            app.table_metrics
+                .usage(&app.items[1], Instant::now())
+                .is_none()
+        );
+        app.changed();
+        assert!(app.table_metrics.label(Instant::now()).contains("loading"));
+        Ok(())
     }
     #[test]
     fn closed_metrics_view_does_not_reopen_on_late_reply() {
@@ -5989,6 +6702,7 @@ mod layout_tests {
     #[test]
     fn missing_metrics_does_not_invalidate_resource_data() {
         let (mut app, replies, _commands) = harness();
+        app.last_table_metrics = Instant::now().checked_sub(Duration::from_secs(30));
         app.items = vec![object("a")];
         app.command_epoch = Some(12);
         app.busy = true;
@@ -6006,6 +6720,12 @@ mod layout_tests {
                 .is_ok()
         );
         app.receive();
+        assert!(
+            app.last_table_metrics
+                .is_some_and(|last| last.elapsed() < Duration::from_secs(1)),
+            "retry quiet period must begin after the failed response, not request start"
+        );
+        assert!(!app.busy);
         assert_eq!(app.items.len(), 1);
         assert!(!app.stale);
         assert!(matches!(app.modal, Modal::Metrics(..)));

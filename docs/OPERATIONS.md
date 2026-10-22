@@ -12,7 +12,7 @@ For rollback, stop KBorg and select the previous versioned binary. This does not
 
 `kborg config init settings.json` creates a new strict JSON file. Pass it explicitly with `--config`; no project-local executable configuration is auto-loaded. `config validate` validates without connecting. CLI context/namespace/theme values override file defaults. Files can constrain capabilities but never enable writes or log/subresource access without their CLI flags. Profile `read-only` refuses `--write`; profile `operator` still requires `--write`, separate capability opt-ins, and target confirmation. These are local client controls, not a substitute for RBAC/admission or a policy against a user running another binary.
 
-Supported fields: `schema_version` (1), `profile` (`read-only` or `operator`), optional `context`, `namespace`, `theme`, and booleans `no_splash`, `poll`, `allow_logs`, `allow_exec`, `allow_attach`, `allow_forward`, `allow_tools`, `allow_extensions`, `allow_auth_helper`. Unknown/duplicate fields fail. Default generated config prohibits sensitive capabilities. Config never stores credentials.
+Supported fields: `schema_version` (1), `profile` (`read-only` or `operator`), optional `context`, `namespace`, `theme`, and booleans `no_splash`, `poll`, `allow_logs`, `allow_helm`, `allow_exec`, `allow_attach`, `allow_forward`, `allow_tools`, `allow_extensions`, `allow_auth_helper`. Unknown/duplicate fields fail. Default generated config prohibits sensitive capabilities. Config never stores credentials.
 
 `kborg completions bash|zsh|fish|powershell` emits a static script; review and load it through your shell's normal configuration. It makes no cluster calls.
 
@@ -115,3 +115,33 @@ fresh counts; transient faults still reconnect and authorization denial stops.
 its credentials/cache/error and one cancellable watch; summaries coalesce in one
 mailbox and close/scope changes abort all feeds. No object data or credentials are
 shared. Broader independent-cluster soak tests remain open.
+
+## Helm, merged logs and Desktop metrics
+
+Launch `./scripts/start-local.sh --context docker-desktop --allow-helm --allow-logs --no-splash`.
+`:helm` lists Helm release storage in the current namespace; Enter/r opens history,
+and Enter on a revision shows redacted stored overrides. `d` shows metadata,
+`m` lists rendered resource identities, and `y` shows the safe YAML projection.
+`--helm-storage secret|configmap` disambiguates duplicate driver names. This reads
+Helm v3/v4 Kubernetes storage directly; no Helm executable is needed for browsing.
+`--allow-helm` is separate from logs and general resource access. Kubernetes RBAC
+must allow the requested Secret/ConfigMap reads; Kubernetes cannot enforce a
+label selector as a Secret permission boundary. Use a dedicated namespace and
+least-privilege identity. Generic Secret browsing remains disabled. Known-key
+redaction cannot identify every confidential custom chart value.
+
+`logs POD --all-containers` reads ordinary containers with namespace/Pod/container
+labels. Add `--follow --log-seconds 60` for a finite live merge. Init and ephemeral
+containers are excluded; at most 16 ordinary containers and four simultaneous
+connection openings are supported. Follow is arrival-ordered; snapshots sort by
+Kubernetes timestamp and apply one shared head/tail limit. Source failures remain
+visible while other sources continue. Every session shares deadline, rate and
+64 MiB consumed-byte limits; each HTTP response also has its own transport cap.
+The visible cache remains 256 KiB/2,000 lines. This does not guarantee lossless
+ordering across containers, rotation, restarts or reconnects.
+
+Desktop metrics installation and certificate renewal are documented in
+[DESKTOP_METRICS.md](DESKTOP_METRICS.md). KBorg itself never installs a provider.
+The explicit setup helper installs one Helm-owned Metrics Server release; the
+ordinary application only reads the Metrics API. Current-session acceptance and
+remaining gaps are in [HELM_LOGS_METRICS_ACCEPTANCE.md](HELM_LOGS_METRICS_ACCEPTANCE.md).

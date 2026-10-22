@@ -80,6 +80,7 @@ pub struct LogView {
     // A paused reader gets a stable bounded window. Collection keeps replacing
     // `text`, but rolling eviction cannot silently move the frozen viewport.
     paused: Option<String>,
+    freeze_new_source: bool,
     offset: usize,
     filter: String,
     draft: Option<String>,
@@ -105,6 +106,7 @@ impl LogView {
             horizontal: 0,
             text: bounded_text(&text),
             paused: None,
+            freeze_new_source: false,
             offset: 0,
             filter: String::new(),
             draft: None,
@@ -117,9 +119,29 @@ impl LogView {
     }
     pub fn update(&mut self, text: String) {
         self.text = bounded_text(&text);
+        if self.freeze_new_source
+            && self
+                .text
+                .lines()
+                .any(|line| !line.is_empty() && !line.starts_with("[Log stream "))
+        {
+            self.freeze_new_source = false;
+            if !self.autoscroll {
+                self.paused = Some(self.text.clone());
+            }
+        }
         if self.autoscroll && !self.column_lock {
             self.horizontal = 0;
         }
+    }
+    /// Switch source identity without retaining a frozen window from the old
+    /// container. Preferences survive; a paused view freezes fresh records.
+    pub fn replace_source(&mut self, text: String) {
+        self.text = bounded_text(&text);
+        self.paused = None;
+        self.offset = 0;
+        self.freeze_new_source = true;
+        self.notice = None;
     }
     pub fn enable_all_containers(&mut self, enabled: bool) {
         self.all_containers = enabled;
@@ -545,6 +567,28 @@ mod tests {
         assert_eq!(view.key(KeyCode::Char('a')), LogAction::None);
         view.enable_all_containers(true);
         assert_eq!(view.key(KeyCode::Char('a')), LogAction::AllContainers);
+    }
+    #[test]
+    fn source_toggle_clears_paused_old_data_and_preserves_view_preferences() {
+        let mut view = LogView::new("old-container-data".into(), ReadOptions::default());
+        view.key(KeyCode::Char('s'));
+        view.show_timestamps = true;
+        view.wrap = true;
+        type_filter(&mut view, "data");
+        view.replace_source("Connecting...".into());
+        view.update("[Log stream merge: two ordinary containers]".into());
+        assert!(
+            !view
+                .render(80, 20)
+                .iter()
+                .any(|line| line.contains("old-container"))
+        );
+        view.update("2026-10-22T12:00:00Z [default/app:two] fresh-data".into());
+        let fresh = view.render(80, 20);
+        view.update("2026-10-22T12:00:01Z [default/app:two] newer-data".into());
+        assert_eq!(view.render(80, 20), fresh);
+        assert!(fresh.iter().any(|line| line.contains("fresh-data")));
+        assert!(view.show_timestamps && view.wrap && !view.autoscroll);
     }
     #[test]
     fn render_bounds_controls_and_empty_narrow_views() {

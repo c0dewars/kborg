@@ -1,5 +1,7 @@
 # k9s navigation iteration: implementation and acceptance
 
+Historical navigation iteration. The later same-day [Helm/log/metrics report](HELM_LOGS_METRICS_ACCEPTANCE.md) supersedes its remaining-work statements and metrics-provider status. Binary hashes and counts below remain evidence only for this earlier source.
+
 Recorded 2026-10-22 for KBorg 0.3.0 on branch `codex/k9s-navigation`. This iteration replaces the persistent sidebar with full-width command navigation and expands native workflows. Exact compatibility and the remaining differences are in [K9S_COMPATIBILITY.md](K9S_COMPATIBILITY.md); release and external acceptance gates remain in [REMAINING_WORK.md](REMAINING_WORK.md). This is a locally tested development build, with no claim of complete k9s parity or independent production certification.
 
 ## Delivered behavior

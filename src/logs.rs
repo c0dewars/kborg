@@ -1,9 +1,19 @@
 //! Pull-driven, time-bounded log follow with a rolling display and flood guards.
 use crate::{Result, safety};
-use futures_util::io::{AsyncBufRead, AsyncReadExt};
+use futures_util::{
+    StreamExt,
+    io::{AsyncBufRead, AsyncReadExt},
+};
 use k8s_openapi::api::core::v1::Pod;
 use kube::{Api, api::LogParams};
-use std::{collections::VecDeque, pin::Pin, time::Duration};
+use std::{
+    collections::VecDeque,
+    future::Future,
+    pin::Pin,
+    sync::{Arc, Mutex},
+    task::Poll,
+    time::Duration,
+};
 use tokio::time::Instant;
 
 pub const MAX_LOG_BYTES: usize = 256 * 1024;
@@ -15,6 +25,62 @@ const MAX_RATE_BYTES: usize = 1024 * 1024;
 const MAX_RATE_LINES: usize = 5000;
 const MAX_RECONNECTS: u32 = 5;
 const CONNECT_BUDGET: Duration = Duration::from_secs(15);
+/// Pod-wide logging deliberately excludes init and ephemeral containers.
+pub const MAX_MERGED_CONTAINERS: usize = 16;
+const MERGED_OPEN_CONCURRENCY: usize = 4;
+
+#[derive(Default)]
+struct MergeBudget {
+    total_bytes: usize,
+    rate_epoch: Option<Instant>,
+    rate_bytes: usize,
+    rate_lines: usize,
+    stopped: Option<String>,
+}
+impl MergeBudget {
+    fn charge(&mut self, bytes: usize, lines: usize) -> Result<()> {
+        if let Some(error) = &self.stopped {
+            return Err(error.clone());
+        }
+        let now = Instant::now();
+        if self
+            .rate_epoch
+            .is_none_or(|epoch| now.saturating_duration_since(epoch) >= Duration::from_secs(1))
+        {
+            self.rate_epoch = Some(now);
+            self.rate_bytes = 0;
+            self.rate_lines = 0;
+        }
+        self.total_bytes = self.total_bytes.saturating_add(bytes);
+        self.rate_bytes = self.rate_bytes.saturating_add(bytes);
+        self.rate_lines = self.rate_lines.saturating_add(lines);
+        let error = if self.total_bytes > crate::transport::LOG_STREAM_BYTES {
+            Some(
+                "merged logs reached the shared 64 MiB session byte limit; start a new session to continue",
+            )
+        } else if self.rate_bytes > MAX_RATE_BYTES {
+            Some("merged log flood exceeded the shared 1 MiB/second limit; all streams stopped")
+        } else if self.rate_lines > MAX_RATE_LINES {
+            Some(
+                "merged log flood exceeded the shared 5000 lines/second limit; all streams stopped",
+            )
+        } else {
+            None
+        };
+        if let Some(error) = error {
+            self.stopped = Some(error.into());
+            return Err(error.into());
+        }
+        Ok(())
+    }
+}
+type SharedMergeBudget = Arc<Mutex<MergeBudget>>;
+fn charge_merge(budget: &SharedMergeBudget, bytes: usize, lines: usize) -> Result<()> {
+    budget
+        .lock()
+        .map_err(|_| "merged log budget unavailable")?
+        .charge(bytes, lines)
+}
 
 /// Server-side retrieval range. Timestamps are always retained in the raw
 /// bounded cache so toggling their display never loses or refetches records.
@@ -269,6 +335,8 @@ pub struct LogFeed {
     reconnects: u32,
     last_timestamp: Option<String>,
     reconnect_pending: bool,
+    merge_budget: Option<SharedMergeBudget>,
+    last_control: bool,
 }
 
 #[derive(Clone)]
@@ -334,6 +402,14 @@ pub(crate) async fn verify_uid(api: &Api<Pod>, name: &str, uid: &str) -> Result<
     }
 }
 impl LogFeed {
+    fn stop_merge_for_identity(&self, message: String) -> String {
+        if let Some(budget) = &self.merge_budget
+            && let Ok(mut budget) = budget.lock()
+        {
+            budget.stopped = Some(format!("{message}; all merged streams stopped"));
+        }
+        message
+    }
     #[cfg(test)]
     pub(crate) fn new(reader: impl AsyncBufRead + Send + 'static) -> Self {
         Self::create(reader, FollowOptions::default())
@@ -393,6 +469,8 @@ impl LogFeed {
             reconnects: 0,
             last_timestamp: None,
             reconnect_pending: false,
+            merge_budget: None,
+            last_control: false,
         }
     }
     fn rate_window(&mut self) {
@@ -404,6 +482,9 @@ impl LogFeed {
         }
     }
     fn line(&mut self) -> Result<String> {
+        if let Some(budget) = &self.merge_budget {
+            charge_merge(budget, 0, 1)?;
+        }
         self.rate_window();
         self.rate_lines += 1;
         if self.rate_lines > MAX_RATE_LINES {
@@ -477,7 +558,9 @@ impl LogFeed {
             match check_uid(&source.api, &source.name, &source.uid, deadline).await {
                 Ok(()) => {}
                 Err(ReopenFailure::Retry) => continue,
-                Err(ReopenFailure::Stop(message)) => return Err(message),
+                Err(ReopenFailure::Stop(message)) => {
+                    return Err(self.stop_merge_for_identity(message));
+                }
             }
             match tokio::time::timeout_at(deadline, source.api.log_stream(&source.name, &params))
                 .await
@@ -488,7 +571,9 @@ impl LogFeed {
                     match check_uid(&source.api, &source.name, &source.uid, deadline).await {
                         Ok(()) => {}
                         Err(ReopenFailure::Retry) => continue,
-                        Err(ReopenFailure::Stop(message)) => return Err(message),
+                        Err(ReopenFailure::Stop(message)) => {
+                            return Err(self.stop_merge_for_identity(message));
+                        }
                     }
                     self.reader = Box::pin(reader);
                     self.pending.clear();
@@ -511,6 +596,7 @@ impl LogFeed {
     /// One sanitized line at a time. Oversized lines are truncated explicitly.
     /// Quiet streams wait until the configured deadline; dropping cancels the body.
     pub async fn next(&mut self) -> Result<Option<String>> {
+        self.last_control = false;
         if self.ended {
             return Ok(None);
         }
@@ -518,6 +604,7 @@ impl LogFeed {
             return match self.reconnect().await {
                 Ok(message) => {
                     self.reconnect_pending = false;
+                    self.last_control = true;
                     Ok(Some(message))
                 }
                 Err(error) => {
@@ -557,6 +644,9 @@ impl LogFeed {
                     return self.line().map(Some);
                 }
                 Ok(Ok(count)) => {
+                    if let Some(budget) = &self.merge_budget {
+                        charge_merge(budget, count, 0)?;
+                    }
                     self.total_bytes += count;
                     if self.total_bytes > crate::transport::LOG_STREAM_BYTES {
                         self.ended = true;
@@ -581,6 +671,7 @@ impl LogFeed {
                         && self.total_bytes < crate::transport::LOG_STREAM_BYTES
                     {
                         self.reconnect_pending = true;
+                        self.last_control = true;
                         return Ok(Some("[Log stream interrupted; reconnecting. Overlap may repeat records; rotation/restarts may leave gaps]".into()));
                     }
                     self.ended = true;
@@ -599,9 +690,795 @@ impl LogFeed {
     }
 }
 
+/// Validate the complete Pod identity before deriving ordinary container names.
+/// A same-name replacement must never silently join an existing log session.
+pub(crate) fn ordinary_container_names(
+    pod: &Pod,
+    ns: &str,
+    name: &str,
+    uid: &str,
+) -> Result<Vec<String>> {
+    validate_merge_target(ns, name, uid)?;
+    if pod.metadata.name.as_deref() != Some(name)
+        || pod.metadata.namespace.as_deref() != Some(ns)
+        || pod.metadata.uid.as_deref() != Some(uid)
+    {
+        return Err("merged log target was replaced or returned outside the selected scope; reopen the selected pod".into());
+    }
+    let containers = &pod
+        .spec
+        .as_ref()
+        .ok_or("merged log target has no pod spec")?
+        .containers;
+    if containers.is_empty() || containers.len() > MAX_MERGED_CONTAINERS {
+        return Err(format!(
+            "merged logs require 1..{MAX_MERGED_CONTAINERS} ordinary containers; select one container instead"
+        ));
+    }
+    let mut names = Vec::with_capacity(containers.len());
+    for container in containers {
+        if !safety::valid_id(&container.name) || names.contains(&container.name) {
+            return Err(
+                "merged log pod contains invalid or duplicate ordinary container names".into(),
+            );
+        }
+        names.push(container.name.clone());
+    }
+    Ok(names)
+}
+pub(crate) fn validate_merge_target(ns: &str, name: &str, uid: &str) -> Result<()> {
+    if !safety::valid_id(ns)
+        || name.is_empty()
+        || name.len() > 253
+        || !name
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'-' | b'.'))
+        || uid.is_empty()
+        || uid.len() > 253
+        || safety::safe_text(uid, 253) != uid
+    {
+        return Err("invalid identity-bound merged log target".into());
+    }
+    Ok(())
+}
+
+type PendingSource = Pin<Box<dyn Future<Output = (LogFeed, Result<Option<String>>)> + Send>>;
+struct MergedSource {
+    identity: String,
+    pending: Option<PendingSource>,
+    notice: Option<String>,
+}
+fn pending_source(mut feed: LogFeed) -> PendingSource {
+    Box::pin(async move {
+        let result = feed.next().await;
+        (feed, result)
+    })
+}
+fn source_notice(identity: &str, message: &str) -> String {
+    bounded_line(&format!("[Log stream {identity}: {message}]"))
+}
+fn source_line(identity: &str, line: &str, control: bool) -> String {
+    // Leave the timestamp first: local timestamp toggling and reconnect semantics
+    // remain meaningful. Application text can never impersonate a merge notice.
+    if control {
+        return source_notice(identity, line.trim_start_matches('[').trim_end_matches(']'));
+    }
+    if let Some((timestamp, message)) = line.split_once(' ')
+        && crate::metrics::timestamp_key(timestamp).is_some()
+    {
+        return bounded_line(&format!("{timestamp} [{identity}] {message}"));
+    }
+    bounded_line(&format!("[{identity}] {line}"))
+}
+fn open_failure(error: kube::Error, previous: bool) -> String {
+    match error {
+        kube::Error::Api(response) => format!(
+            "{} unavailable (Kubernetes API {}); other container streams continue",
+            if previous { "previous logs" } else { "logs" },
+            response.code
+        ),
+        _ => "log connection failed; other container streams continue (server details suppressed)"
+            .into(),
+    }
+}
+
+/// One bounded read future per source; no spawned tasks, queues or detached work.
+/// Ready sources rotate fairly. Dropping the feed cancels every open body/read.
+pub struct MergedLogFeed {
+    sources: Vec<MergedSource>,
+    cursor: usize,
+    deadline: Instant,
+    budget: SharedMergeBudget,
+    header: Option<String>,
+    ended: bool,
+    snapshot_mode: bool,
+}
+impl MergedLogFeed {
+    pub(crate) async fn open(
+        api: Api<Pod>,
+        name: &str,
+        uid: &str,
+        previous: bool,
+        follow: Option<FollowOptions>,
+        read_options: ReadOptions,
+    ) -> Result<Self> {
+        let ns = api
+            .namespace()
+            .ok_or("merged logs require a concrete namespace")?
+            .to_owned();
+        validate_merge_target(&ns, name, uid)?;
+        let read_options = read_options.validate()?;
+        if previous && follow.is_some() {
+            return Err("previous container logs support snapshots only; omit follow".into());
+        }
+        let options = follow
+            .unwrap_or(FollowOptions {
+                seconds: CONNECT_BUDGET.as_secs() as u32,
+            })
+            .validate()?;
+        let started = Instant::now();
+        let deadline = started + Duration::from_secs(u64::from(options.seconds));
+        let connect_deadline = deadline.min(started + CONNECT_BUDGET);
+        let pod = tokio::time::timeout_at(connect_deadline, api.get(name))
+            .await
+            .map_err(|_| "merged log pod lookup timed out")?
+            .map_err(|error| match error {
+                kube::Error::Api(response) => format!("cannot read merged-log Pod specification (Kubernetes API {}); all-container logs require pod get permission", response.code),
+                _ => "merged-log Pod lookup failed; check connectivity and pod get permission (server details suppressed)".into(),
+            })?;
+        let names = ordinary_container_names(&pod, &ns, name, uid)?;
+        let mut opened =
+            futures_util::stream::iter(names.into_iter().enumerate().map(|(index, container)| {
+                let api = api.clone();
+                async move {
+                    let result = async {
+                        let params = read_options.params(
+                            Some(container.clone()),
+                            previous,
+                            follow.is_some(),
+                        )?;
+                        let reader = tokio::time::timeout_at(
+                            connect_deadline,
+                            api.log_stream(name, &params),
+                        )
+                        .await
+                        .map_err(|_| {
+                            "log connection timed out; other container streams continue".to_owned()
+                        })?
+                        .map_err(|error| open_failure(error, previous))?;
+                        let mut feed = LogFeed::with_read_options(reader, options, read_options)?;
+                        feed.deadline = deadline;
+                        if follow.is_some() {
+                            feed = feed.with_resume(
+                                api,
+                                name,
+                                uid,
+                                Some(container.clone()),
+                                read_options,
+                            )?;
+                        }
+                        Ok(feed)
+                    }
+                    .await;
+                    (index, container, result)
+                }
+            }))
+            .buffer_unordered(MERGED_OPEN_CONCURRENCY)
+            .collect::<Vec<_>>()
+            .await;
+        // No source body is polled before this post-open identity check.
+        match check_uid(&api, name, uid, connect_deadline).await {
+            Ok(()) => {},
+            Err(ReopenFailure::Stop(error)) => return Err(error),
+            Err(ReopenFailure::Retry) => return Err("merged log target identity verification failed; reopen after checking connectivity".into()),
+        }
+        opened.sort_by_key(|(index, _, _)| *index);
+        Self::from_sources_at(
+            &ns,
+            name,
+            uid,
+            opened
+                .into_iter()
+                .map(|(_, name, result)| (name, result))
+                .collect(),
+            deadline,
+        )
+    }
+    pub(crate) fn from_sources(
+        ns: &str,
+        name: &str,
+        uid: &str,
+        sources: Vec<(String, Result<LogFeed>)>,
+        options: FollowOptions,
+    ) -> Result<Self> {
+        let options = options.validate()?;
+        Self::from_sources_at(
+            ns,
+            name,
+            uid,
+            sources,
+            Instant::now() + Duration::from_secs(u64::from(options.seconds)),
+        )
+    }
+    fn from_sources_at(
+        ns: &str,
+        name: &str,
+        uid: &str,
+        sources: Vec<(String, Result<LogFeed>)>,
+        deadline: Instant,
+    ) -> Result<Self> {
+        validate_merge_target(ns, name, uid)?;
+        if sources.is_empty() || sources.len() > MAX_MERGED_CONTAINERS {
+            return Err(
+                "merged log source count exceeded its bounded ordinary-container scope".into(),
+            );
+        }
+        let budget: SharedMergeBudget = Arc::new(Mutex::new(MergeBudget::default()));
+        let mut names = Vec::with_capacity(sources.len());
+        let mut merged = Vec::with_capacity(sources.len());
+        for (container, result) in sources {
+            if !safety::valid_id(&container) || names.contains(&container) {
+                return Err("invalid or duplicate merged log source".into());
+            }
+            names.push(container.clone());
+            let identity = format!("{ns}/{name}:{container}");
+            let (pending, notice) = match result {
+                Ok(mut feed) => {
+                    feed.deadline = deadline;
+                    feed.merge_budget = Some(budget.clone());
+                    (Some(pending_source(feed)), None)
+                }
+                Err(error) => (
+                    None,
+                    Some(source_notice(&identity, &safety::safe_text(&error, 512))),
+                ),
+            };
+            merged.push(MergedSource {
+                identity,
+                pending,
+                notice,
+            });
+        }
+        Ok(Self {
+            sources: merged,
+            cursor: 0,
+            deadline,
+            budget,
+            header: Some(format!(
+                "[Log stream merge: {} ordinary containers; pod UID {uid}; delivery in arrival order, source timestamps preserved; init/ephemeral excluded]",
+                names.len()
+            )),
+            ended: false,
+            snapshot_mode: false,
+        })
+    }
+    pub async fn next(&mut self) -> Result<Option<String>> {
+        if self.ended {
+            return Ok(None);
+        }
+        let shared_error = self
+            .budget
+            .lock()
+            .map_err(|_| "merged log budget unavailable")?
+            .stopped
+            .clone();
+        if let Some(error) = shared_error {
+            self.stop();
+            return Err(error);
+        }
+        if Instant::now() >= self.deadline {
+            self.stop();
+            return Err("merged log session deadline reached; all streams stopped; start a new session to continue".into());
+        }
+        if let Some(header) = self.header.take() {
+            return Ok(Some(header));
+        }
+        let count = self.sources.len();
+        for distance in 0..count {
+            let index = (self.cursor + distance) % count;
+            if let Some(notice) = self.sources[index].notice.take() {
+                self.cursor = (index + 1) % count;
+                return Ok(Some(notice));
+            }
+        }
+        let ready = std::future::poll_fn(|cx| {
+            let mut active = false;
+            for distance in 0..count {
+                let index = (self.cursor + distance) % count;
+                if let Some(pending) = self.sources[index].pending.as_mut() {
+                    active = true;
+                    if let Poll::Ready(result) = pending.as_mut().poll(cx) {
+                        return Poll::Ready(Some((index, result)));
+                    }
+                }
+            }
+            if active {
+                Poll::Pending
+            } else {
+                Poll::Ready(None)
+            }
+        });
+        let ready = match tokio::time::timeout_at(self.deadline, ready).await {
+            Ok(ready) => ready,
+            Err(_) => {
+                self.stop();
+                return Err("merged log session deadline reached; all streams stopped; start a new session to continue".into());
+            }
+        };
+        let Some((index, (feed, result))) = ready else {
+            self.stop();
+            return Ok(None);
+        };
+        self.sources[index].pending = None;
+        self.cursor = (index + 1) % count;
+        // A shared budget violation is fatal to every source, not a recoverable
+        // per-container failure. No remaining buffered data is delivered.
+        let shared_error = self
+            .budget
+            .lock()
+            .map_err(|_| "merged log budget unavailable")?
+            .stopped
+            .clone();
+        if let Some(error) = shared_error {
+            self.stop();
+            return Err(error);
+        }
+        match result {
+            Ok(Some(line)) => {
+                let output = source_line(&self.sources[index].identity, &line, feed.last_control);
+                if let Err(error) =
+                    charge_merge(&self.budget, output.len().saturating_sub(line.len()), 0)
+                {
+                    self.stop();
+                    return Err(error);
+                }
+                self.sources[index].pending = Some(pending_source(feed));
+                Ok(Some(output))
+            }
+            Ok(None) => Ok(Some(source_notice(
+                &self.sources[index].identity,
+                if self.snapshot_mode && feed.total_bytes >= MAX_LOG_BYTES {
+                    "ended at the requested server byte limit; the final record may be incomplete; other container streams continue"
+                } else {
+                    "ended; other container streams continue"
+                },
+            ))),
+            Err(error) => Ok(Some(source_notice(
+                &self.sources[index].identity,
+                &safety::safe_text(&error, 512),
+            ))),
+        }
+    }
+    fn stop(&mut self) {
+        self.ended = true;
+        self.sources.clear();
+    }
+    /// A bounded timestamp-ordered projection. Selection is global across the
+    /// sources, rather than multiplying the requested head/tail by their count.
+    pub(crate) async fn snapshot(mut self, options: ReadOptions) -> Result<String> {
+        let options = options.validate()?;
+        self.snapshot_mode = true;
+        const NOTICE_BYTES: usize = 16 * 1024;
+        let mut notices = String::new();
+        let mut lines = Vec::new();
+        let mut bytes = 0usize;
+        let mut ordinal = 0usize;
+        let mut discarded = false;
+        loop {
+            let line = match self.next().await {
+                Ok(Some(line)) => line,
+                Ok(None) => break,
+                Err(error) => {
+                    notices.push_str(&format!("[Stopped: {}]\n", safety::safe_text(&error, 512)));
+                    break;
+                }
+            };
+            if line.starts_with("[Log stream ") {
+                if notices.len() + line.len() < NOTICE_BYTES - 1024 {
+                    notices.push_str(&line);
+                    notices.push('\n');
+                }
+                continue;
+            }
+            let key = line
+                .split_once(' ')
+                .and_then(|(time, _)| crate::metrics::timestamp_key(time));
+            let entry = (key, ordinal, line);
+            ordinal += 1;
+            let index = lines.partition_point(|old: &(Option<(i64, String)>, usize, String)| {
+                (old.0.as_ref(), old.1) <= (entry.0.as_ref(), entry.1)
+            });
+            bytes += entry.2.len() + 1;
+            lines.insert(index, entry);
+            while lines.len() > options.tail_lines as usize || bytes > MAX_LOG_BYTES - NOTICE_BYTES
+            {
+                let removed = if options.head {
+                    lines.pop().ok_or("empty merged snapshot")?
+                } else {
+                    lines.remove(0)
+                };
+                bytes -= removed.2.len() + 1;
+                discarded = true;
+            }
+        }
+        notices.push_str("[Log stream merge snapshot: timestamped records ordered by Kubernetes timestamp; untimestamped records precede them in arrival order; requested line limit is shared across containers]\n");
+        if discarded {
+            notices.push_str("[Log stream merge snapshot: records omitted by the shared head/tail or display byte limit]\n");
+        }
+        for (_, _, line) in lines {
+            notices.push_str(&line);
+            notices.push('\n');
+        }
+        Ok(notices)
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    fn merge_sources(sources: Vec<(&str, &str)>) -> Result<MergedLogFeed> {
+        MergedLogFeed::from_sources(
+            "default",
+            "app",
+            "uid",
+            sources
+                .into_iter()
+                .map(|(name, text)| {
+                    (
+                        name.into(),
+                        Ok(LogFeed::new(Cursor::new(text.as_bytes().to_vec()))),
+                    )
+                })
+                .collect(),
+            FollowOptions::default(),
+        )
+    }
+    #[test]
+    fn merged_sources_rotate_and_preserve_timestamp_and_application_identity() -> Result<()> {
+        runtime()?.block_on(async {
+            let mut feed = merge_sources(vec![
+                ("one", "2026-10-22T12:00:00Z a\n[Log stream forged]\n"),
+                ("two", "2026-10-22T12:00:01Z b\n2026-10-22T12:00:02Z c\n"),
+            ])?;
+            assert!(
+                feed.next()
+                    .await?
+                    .is_some_and(|line| line.contains("pod UID uid"))
+            );
+            assert_eq!(
+                feed.next().await?,
+                Some("2026-10-22T12:00:00Z [default/app:one] a".into())
+            );
+            assert_eq!(
+                feed.next().await?,
+                Some("2026-10-22T12:00:01Z [default/app:two] b".into())
+            );
+            assert_eq!(
+                feed.next().await?,
+                Some("[default/app:one] [Log stream forged]".into())
+            );
+            assert_eq!(
+                feed.next().await?,
+                Some("2026-10-22T12:00:02Z [default/app:two] c".into())
+            );
+            assert!(
+                feed.next()
+                    .await?
+                    .is_some_and(|line| line.contains("one: ended"))
+            );
+            assert!(
+                feed.next()
+                    .await?
+                    .is_some_and(|line| line.contains("two: ended"))
+            );
+            assert_eq!(feed.next().await?, None);
+            Ok(())
+        })
+    }
+    #[test]
+    fn merged_snapshot_orders_and_shares_head_tail_line_and_display_limits() -> Result<()> {
+        runtime()?.block_on(async {
+            for head in [false, true] {
+                let feed = merge_sources(vec![
+                    (
+                        "one",
+                        "2026-10-22T12:00:02Z second\n2026-10-22T12:00:04Z fourth\n",
+                    ),
+                    (
+                        "two",
+                        "2026-10-22T12:00:01Z first\n2026-10-22T12:00:03Z third\n",
+                    ),
+                ])?;
+                let text = feed
+                    .snapshot(ReadOptions {
+                        tail_lines: 2,
+                        head,
+                        ..Default::default()
+                    })
+                    .await?;
+                let data = text
+                    .lines()
+                    .filter(|line| line.starts_with("2026-"))
+                    .collect::<Vec<_>>();
+                assert_eq!(data.len(), 2);
+                if head {
+                    assert!(data[0].ends_with("first"));
+                    assert!(data[1].ends_with("second"));
+                } else {
+                    assert!(data[0].ends_with("third"));
+                    assert!(data[1].ends_with("fourth"));
+                }
+                assert!(text.len() <= MAX_LOG_BYTES);
+                assert!(text.contains("line limit is shared"));
+            }
+            let oversized = format!("2026-10-22T12:00:01Z {}\n", "é".repeat(5000)).repeat(200);
+            let text = merge_sources(vec![("one", &oversized), ("two", &oversized)])?
+                .snapshot(ReadOptions::default())
+                .await?;
+            assert!(text.len() <= MAX_LOG_BYTES);
+            assert!(text.contains("shared"));
+            Ok(())
+        })
+    }
+    #[test]
+    fn merged_line_byte_and_total_budgets_are_global_and_fatal() -> Result<()> {
+        runtime()?.block_on(async {
+            let many = "x\n".repeat(3000);
+            let mut feed = merge_sources(vec![("one", &many), ("two", &many)])?;
+            let mut delivered = 0;
+            let error = loop {
+                match feed.next().await {
+                    Ok(Some(_)) => delivered += 1,
+                    Ok(None) => return Err("shared line guard failed".into()),
+                    Err(error) => break error,
+                }
+            };
+            assert!(error.contains("shared 5000 lines"));
+            assert!(delivered <= MAX_RATE_LINES + 1);
+            assert_eq!(feed.next().await?, None);
+            let bytes = format!("{}\n", "x".repeat(3999)).repeat(160);
+            let mut feed = merge_sources(vec![("one", &bytes), ("two", &bytes)])?;
+            let error = loop {
+                match feed.next().await {
+                    Ok(Some(_)) => {}
+                    Ok(None) => return Err("shared byte rate guard failed".into()),
+                    Err(error) => break error,
+                }
+            };
+            assert!(error.contains("shared 1 MiB/second"));
+            assert_eq!(feed.next().await?, None);
+            let mut feed = merge_sources(vec![("one", "abc\n"), ("two", "def\n")])?;
+            feed.budget.lock().map_err(|_| "test budget")?.total_bytes =
+                crate::transport::LOG_STREAM_BYTES - 2;
+            assert!(feed.next().await?.is_some());
+            assert!(
+                feed.next()
+                    .await
+                    .is_err_and(|error| error.contains("shared 64 MiB"))
+            );
+            assert_eq!(feed.next().await?, None);
+            Ok(())
+        })
+    }
+    struct QuietDrop(Arc<std::sync::atomic::AtomicUsize>);
+    impl Drop for QuietDrop {
+        fn drop(&mut self) {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+    impl futures_util::io::AsyncRead for QuietDrop {
+        fn poll_read(
+            self: Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+            _: &mut [u8],
+        ) -> Poll<std::io::Result<usize>> {
+            Poll::Pending
+        }
+    }
+    fn quiet_merge(dropped: Arc<std::sync::atomic::AtomicUsize>) -> Result<MergedLogFeed> {
+        MergedLogFeed::from_sources(
+            "default",
+            "app",
+            "uid",
+            ["one", "two"]
+                .into_iter()
+                .map(|name| {
+                    (
+                        name.into(),
+                        LogFeed::with_options(
+                            futures_util::io::BufReader::new(QuietDrop(dropped.clone())),
+                            FollowOptions::default(),
+                        ),
+                    )
+                })
+                .collect(),
+            FollowOptions::default(),
+        )
+    }
+    #[test]
+    fn merged_cancel_and_shared_quiet_deadline_drop_every_pending_reader() -> Result<()> {
+        runtime()?.block_on(async {
+            let dropped = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let mut feed = quiet_merge(dropped.clone())?;
+            assert!(feed.next().await?.is_some());
+            assert!(
+                tokio::time::timeout(Duration::from_millis(5), feed.next())
+                    .await
+                    .is_err()
+            );
+            drop(feed);
+            assert_eq!(dropped.load(std::sync::atomic::Ordering::SeqCst), 2);
+            let mut feed = quiet_merge(dropped.clone())?;
+            feed.deadline = Instant::now() + Duration::from_millis(5);
+            assert!(feed.next().await?.is_some());
+            assert!(
+                feed.next()
+                    .await
+                    .is_err_and(|error| error.contains("deadline"))
+            );
+            assert_eq!(dropped.load(std::sync::atomic::Ordering::SeqCst), 4);
+            assert_eq!(feed.next().await?, None);
+            Ok(())
+        })
+    }
+    #[test]
+    fn merged_reconnect_replacement_stops_and_drops_every_source() -> Result<()> {
+        runtime()?.block_on(async {
+            let (api, _) = resume_api(vec![(200, metadata("replacement"))]);
+            let dropped = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let first = broken_feed(api, "2026-10-22T12:00:00Z first\n")?;
+            let quiet = LogFeed::with_options(
+                futures_util::io::BufReader::new(QuietDrop(dropped.clone())),
+                FollowOptions::default(),
+            )?;
+            let mut feed = MergedLogFeed::from_sources(
+                "default",
+                "app",
+                "uid",
+                vec![("one".into(), Ok(first)), ("two".into(), Ok(quiet))],
+                FollowOptions::default(),
+            )?;
+            assert!(feed.next().await?.is_some());
+            assert!(
+                feed.next()
+                    .await?
+                    .is_some_and(|line| line.ends_with(" first"))
+            );
+            assert!(
+                feed.next()
+                    .await?
+                    .is_some_and(|line| line.contains("interrupted"))
+            );
+            assert!(
+                feed.next()
+                    .await
+                    .is_err_and(|error| error.contains("replaced")
+                        && error.contains("all merged streams stopped"))
+            );
+            assert_eq!(dropped.load(std::sync::atomic::Ordering::SeqCst), 1);
+            assert_eq!(feed.next().await?, None);
+            Ok(())
+        })
+    }
+    fn merge_pod(uid: &str, names: &[&str]) -> String {
+        serde_json::json!({"apiVersion":"v1","kind":"Pod","metadata":{"namespace":"default","name":"app","uid":uid},"spec":{"containers":names.iter().map(|name| serde_json::json!({"name":name,"image":"fixture"})).collect::<Vec<_>>(),"initContainers":[{"name":"init","image":"fixture"}],"ephemeralContainers":[{"name":"debug","image":"fixture"}]} }).to_string()
+    }
+    #[test]
+    fn merged_scope_source_count_and_uid_are_validated_before_reading_logs() -> Result<()> {
+        let pod: Pod =
+            serde_json::from_str(&merge_pod("uid", &["one", "two"])).map_err(|_| "test pod")?;
+        assert_eq!(
+            ordinary_container_names(&pod, "default", "app", "uid")?,
+            ["one", "two"]
+        );
+        assert!(ordinary_container_names(&pod, "other", "app", "uid").is_err());
+        assert!(ordinary_container_names(&pod, "default", "app", "recreated").is_err());
+        let too_many = (0..=MAX_MERGED_CONTAINERS)
+            .map(|n| format!("c{n}"))
+            .collect::<Vec<_>>();
+        let pod: Pod = serde_json::from_str(&merge_pod(
+            "uid",
+            &too_many.iter().map(String::as_str).collect::<Vec<_>>(),
+        ))
+        .map_err(|_| "test pod")?;
+        assert!(ordinary_container_names(&pod, "default", "app", "uid").is_err());
+        runtime()?.block_on(async {
+            let (api, requests) = resume_api(vec![(200, merge_pod("recreated", &["one", "two"]))]);
+            assert!(
+                MergedLogFeed::open(
+                    api,
+                    "app",
+                    "uid",
+                    false,
+                    Some(FollowOptions::default()),
+                    ReadOptions::default()
+                )
+                .await
+                .is_err()
+            );
+            assert_eq!(requests.lock().map_err(|_| "requests")?.len(), 1);
+            Ok(())
+        })
+    }
+    #[test]
+    fn merged_previous_failure_is_source_specific_and_post_open_replacement_is_rejected()
+    -> Result<()> {
+        runtime()?.block_on(async {
+            let (api, requests) = resume_api(vec![(200, merge_pod("uid", &["one", "two"])), (400, serde_json::json!({"apiVersion":"v1","kind":"Status","status":"Failure","message":"CANARY should not leak","reason":"BadRequest","code":400}).to_string()), (200, "2026-10-22T12:00:00Z surviving\n".into()), (200, metadata("uid"))]);
+            let feed = MergedLogFeed::open(api, "app", "uid", true, None, ReadOptions::default()).await?;
+            let text = feed.snapshot(ReadOptions::default()).await?;
+            assert!(text.contains("one: previous logs unavailable (Kubernetes API 400)"));
+            assert!(text.contains("[default/app:two] surviving"));
+            assert!(!text.contains("CANARY"));
+            {
+                let requests = requests.lock().map_err(|_| "requests")?;
+                let log_requests = requests.iter().filter(|request| request.contains("/log?")).collect::<Vec<_>>();
+                assert_eq!(log_requests.len(), 2);
+                assert!(log_requests.iter().all(|uri| uri.contains("previous=true") && uri.contains("timestamps=true")));
+            }
+            let (api, _) = resume_api(vec![(200, merge_pod("uid", &["one", "two"])), (200, "secret first\n".into()), (200, "secret second\n".into()), (200, metadata("replacement"))]);
+            assert!(MergedLogFeed::open(api, "app", "uid", false, Some(FollowOptions::default()), ReadOptions::default()).await.is_err_and(|error| error.contains("replaced")));
+            Ok(())
+        })
+    }
     type Requests = std::sync::Arc<std::sync::Mutex<Vec<String>>>;
+    #[test]
+    fn merged_open_concurrency_is_four_and_never_fetches_init_or_ephemeral_logs() -> Result<()> {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        runtime()?.block_on(async {
+            let active = Arc::new(AtomicUsize::new(0));
+            let maximum = Arc::new(AtomicUsize::new(0));
+            let requests: Requests = Default::default();
+            let (active_service, maximum_service, requests_service) =
+                (active.clone(), maximum.clone(), requests.clone());
+            let service = tower::service_fn(move |request: http::Request<kube::client::Body>| {
+                let (active, maximum, requests) = (
+                    active_service.clone(),
+                    maximum_service.clone(),
+                    requests_service.clone(),
+                );
+                async move {
+                    let uri = request.uri().to_string();
+                    requests
+                        .lock()
+                        .unwrap_or_else(|e| panic!("{e}"))
+                        .push(uri.clone());
+                    let text = if request.uri().path().ends_with("/log") {
+                        let current = active.fetch_add(1, Ordering::SeqCst) + 1;
+                        maximum.fetch_max(current, Ordering::SeqCst);
+                        tokio::time::sleep(Duration::from_millis(5)).await;
+                        active.fetch_sub(1, Ordering::SeqCst);
+                        "2026-10-22T12:00:00Z fixture\n".into()
+                    } else {
+                        merge_pod("uid", &["one", "two", "three", "four", "five", "six"])
+                    };
+                    Ok::<_, std::convert::Infallible>(http::Response::new(
+                        http_body_util::Full::new(bytes::Bytes::from(text)),
+                    ))
+                }
+            });
+            let api = Api::namespaced(kube::Client::new(service, "default"), "default");
+            let feed =
+                MergedLogFeed::open(api, "app", "uid", false, None, ReadOptions::default()).await?;
+            let text = feed.snapshot(ReadOptions::default()).await?;
+            assert_eq!(maximum.load(Ordering::SeqCst), MERGED_OPEN_CONCURRENCY);
+            assert_eq!(active.load(Ordering::SeqCst), 0);
+            let requests = requests.lock().map_err(|_| "requests")?;
+            let log_requests = requests
+                .iter()
+                .filter(|uri| uri.contains("/log?"))
+                .collect::<Vec<_>>();
+            assert_eq!(log_requests.len(), 6);
+            assert!(
+                !log_requests
+                    .iter()
+                    .any(|uri| uri.contains("container=init") || uri.contains("container=debug"))
+            );
+            for name in ["one", "two", "three", "four", "five", "six"] {
+                assert!(text.contains(&format!("[default/app:{name}] fixture")));
+            }
+            Ok(())
+        })
+    }
     fn resume_api(replies: Vec<(u16, String)>) -> (Api<Pod>, Requests) {
         let replies = std::sync::Arc::new(std::sync::Mutex::new(VecDeque::from(replies)));
         let requests: Requests = Default::default();
