@@ -18,7 +18,7 @@ serde-saphyr = { version = "0.0.29", default-features = false, features = ["dese
 regex = "1"
 # Helm release storage uses gzip; maintained bounded decoder, no native zlib.
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
-tokio = { version = "1", features = ["rt", "time", "net", "sync", "io-util"] }
+tokio = { version = "1", features = ["rt", "time", "net", "sync", "io-util", "signal"] }
 http = "1"
 # ExecCredential policy fingerprints and credential encoding (already transitive).
 ring = "0.17"
@@ -34,9 +34,10 @@ lto = "thin"
 strip = true
 
 # Self-spawn supervision fixtures must fit the same 128 MiB executable limit
-# as registered tools. Full DWARF for generated Kubernetes types exceeds it on GNU.
+# as registered tools. Generated Kubernetes types and fixture code exceed it
+# on GNU when DWARF is enabled; production release settings are unchanged.
 [profile.test]
-debug = 1
+debug = 0
 
 [dev-dependencies]
 bytes = "1"

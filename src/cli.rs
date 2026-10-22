@@ -43,6 +43,9 @@ pub struct Options {
     pub previous: bool,
     pub all_containers: bool,
     pub helm_storage: Option<crate::helm::Storage>,
+    pub helm_tool: Option<PathBuf>,
+    pub helm_values: Option<PathBuf>,
+    pub helm_timeout_seconds: u16,
     pub log_seconds: u32,
     pub log_read: crate::logs::ReadOptions,
     pub selector: String,
@@ -69,6 +72,9 @@ fn parse(args: Vec<String>) -> Result<Options> {
         previous: false,
         all_containers: false,
         helm_storage: None,
+        helm_tool: None,
+        helm_values: None,
+        helm_timeout_seconds: 300,
         log_seconds: crate::logs::DEFAULT_FOLLOW_SECONDS,
         log_read: crate::logs::ReadOptions::default(),
         selector: String::new(),
@@ -89,6 +95,32 @@ fn parse(args: Vec<String>) -> Result<Options> {
             "--previous" => opts.previous = true,
             "--all-containers" => opts.all_containers = true,
             "--allow-helm" => opts.connection.allow_helm = true,
+            "--allow-helm-write" => opts.connection.allow_helm_write = true,
+            "--helm-tool" => {
+                let path = PathBuf::from(
+                    args.next()
+                        .ok_or("--helm-tool needs an absolute executable path")?,
+                );
+                if !path.is_absolute() {
+                    return Err("--helm-tool requires an absolute path".into());
+                }
+                opts.helm_tool = Some(path);
+            }
+            "--helm-values" => {
+                opts.helm_values = Some(PathBuf::from(
+                    args.next().ok_or("--helm-values needs a file")?,
+                ))
+            }
+            "--helm-timeout" => {
+                opts.helm_timeout_seconds = args
+                    .next()
+                    .ok_or("--helm-timeout needs seconds")?
+                    .parse()
+                    .map_err(|_| "invalid Helm timeout")?;
+                if !(1..=900).contains(&opts.helm_timeout_seconds) {
+                    return Err("Helm timeout must be 1..900 seconds".into());
+                }
+            }
             "--helm-storage" => {
                 opts.helm_storage = Some(match args.next().as_deref() {
                     Some("secret" | "secrets") => crate::helm::Storage::Secret,
@@ -219,12 +251,35 @@ fn parse(args: Vec<String>) -> Result<Options> {
         opts.command.first().map(String::as_str),
         Some("helm" | "history")
     ) {
-        HelmCommand::parse(opts.command[0].as_str(), &opts.command[1..])?;
+        let request = HelmCommand::parse(opts.command[0].as_str(), &opts.command[1..])?;
+        if request.is_mutation() && opts.json {
+            return Err(
+                "Helm lifecycle actions require a complete interactive review; --json is read-only"
+                    .into(),
+            );
+        }
+        if opts.helm_values.is_some()
+            && !matches!(request, HelmCommand::Install(..) | HelmCommand::Upgrade(..))
+        {
+            return Err("--helm-values requires Helm install or upgrade".into());
+        }
     }
-    if opts.all_containers
-        && (opts.command.first().is_none_or(|command| command != "logs") || opts.command.len() != 2)
+    if opts
+        .command
+        .first()
+        .is_some_and(|command| command == "logs")
     {
-        return Err("--all-containers requires logs POD without an explicit container".into());
+        LogCommand::parse(&opts.command[1..], &opts.selector, opts.all_containers)?;
+    } else if opts.all_containers {
+        return Err("--all-containers requires logs without an explicit container".into());
+    }
+    if (opts.helm_tool.is_some() || opts.helm_values.is_some() || opts.helm_timeout_seconds != 300)
+        && opts
+            .command
+            .first()
+            .is_some_and(|command| !matches!(command.as_str(), "ui" | "helm"))
+    {
+        return Err("Helm tool, values and timeout options require ui or helm".into());
     }
     if opts.helm_storage.is_some()
         && opts
@@ -248,9 +303,9 @@ fn parse(args: Vec<String>) -> Result<Options> {
         && opts
             .command
             .first()
-            .is_some_and(|c| !matches!(c.as_str(), "ui" | "list" | "watch"))
+            .is_some_and(|c| !matches!(c.as_str(), "ui" | "list" | "watch" | "logs"))
     {
-        return Err("--selector requires ui, list or watch".into());
+        return Err("--selector requires ui, list, watch or logs".into());
     }
     if opts.follow
         && opts
@@ -545,32 +600,7 @@ if value["truncated"]==true {eprintln!("TRUNCATED: limit reached; narrow namespa
                 if !outcome.stderr.is_empty() { outputln!("Tool stderr:\n{}", outcome.stderr); }
                 if !outcome.success { return Err("external tool exited unsuccessfully".into()); }
             },
-            "logs"=>{
-                if args.is_empty() || args.len()>2{return Err("usage: logs POD [CONTAINER] [--all-containers] [--follow|--previous] --allow-logs".into());}
-                if opts.all_containers {
-                    let pod=gateway.get("pods",&ns,&args[0]).await?;
-                    let uid=pod["metadata"]["uid"].as_str().ok_or("Pod UID unavailable; merged logs require captured identity")?;
-                    if opts.follow {
-                        let mut feed=gateway.follow_merged_logs(&ns,&args[0],uid,crate::logs::FollowOptions{seconds:opts.log_seconds},opts.log_read).await?;
-                        while let Some(line)=feed.next().await? {
-                            let record=if opts.json {serde_json::json!({"line":line,"container_scope":"all-ordinary","namespace":ns,"pod":args[0],"uid":uid}).to_string()}else{line};
-                            if let Err(error)=writeln!(io::stdout().lock(),"{record}"){if error.kind()==io::ErrorKind::BrokenPipe{return Ok(());}return Err("log output failed".into());}
-                        }
-                    }else {
-                        let logs=gateway.merged_logs(&ns,&args[0],uid,opts.previous,opts.log_read).await?;
-                        if opts.json {print_json(&serde_json::json!({"logs":logs,"bounded":true,"container_scope":"all-ordinary","namespace":ns,"pod":args[0],"uid":uid}))?;}else{outputln!("{logs}");}
-                    }
-                }else if opts.follow {
-                    let mut feed=gateway.follow_logs_with_read_options(&ns,&args[0],args.get(1).cloned(),false,crate::logs::FollowOptions{seconds:opts.log_seconds},opts.log_read).await?;
-                    while let Some(line)=feed.next().await? {
-                        let line=if opts.json {serde_json::json!({"line":line}).to_string()}else{line};
-                        if let Err(error)=writeln!(io::stdout().lock(),"{line}") {if error.kind()==io::ErrorKind::BrokenPipe {return Ok(());}return Err("log output failed".into());}
-                    }
-                }else{
-                    let logs=tokio::time::timeout(Duration::from_secs(15),gateway.logs_with_options(&ns,&args[0],args.get(1).cloned(),opts.previous,opts.log_read)).await.map_err(|_|"logs timed out")??;
-                    if opts.json{print_json(&serde_json::json!({"logs":logs,"bounded":true}))?;}else{outputln!("{logs}");}
-                }
-            },
+            "logs"=>logs_command(&gateway,args,&opts).await?,
             "scale"|"restart"|"delete"|"set-image"|"set-resources"=>{
                 if !io::stdin().is_terminal() || !io::stdout().is_terminal(){return Err("noninteractive writes are disabled; use the interactive TUI or terminal confirmation".into());}
                 let (resource,name,action)=match cmd {
@@ -590,6 +620,353 @@ if value["truncated"]==true {eprintln!("TRUNCATED: limit reached; narrow namespa
         } Ok(())
     })
 }
+#[derive(Debug, PartialEq, Eq)]
+enum LogCommand {
+    Pod {
+        name: String,
+        container: Option<String>,
+    },
+    Workload {
+        resource: String,
+        name: String,
+    },
+    Selector,
+}
+impl LogCommand {
+    fn parse(args: &[String], selector: &str, all_containers: bool) -> Result<Self> {
+        if !selector.is_empty() {
+            if !args.is_empty() {
+                return Err("logs --selector takes no Pod, workload or container argument".into());
+            }
+            return Ok(Self::Selector);
+        }
+        if args.is_empty() || args.len() > 2 {
+            return Err("usage: logs POD [CONTAINER] | logs RESOURCE/NAME | logs --selector LABELS; requires --allow-logs".into());
+        }
+        let (resource, name) = args[0].split_once('/').unwrap_or(("pods", &args[0]));
+        if name.len() > 253 || !name.split('.').all(safety::valid_id) {
+            return Err("invalid Pod/workload name".into());
+        }
+        let kind = crate::gateway::kinds()
+            .into_iter()
+            .find(|kind| {
+                resource.eq_ignore_ascii_case(&kind.kind)
+                    || resource == kind.plural
+                    || resource == kind.key()
+                    || kind.short_names.iter().any(|alias| alias == resource)
+            })
+            .ok_or("unsupported workload resource for logs")?;
+        if kind.plural != "pods" {
+            if args.len() != 1 {
+                return Err("workload logs merge all ordinary containers; an explicit container is unsupported".into());
+            }
+            if !matches!(
+                kind.plural.as_str(),
+                "deployments"
+                    | "statefulsets"
+                    | "daemonsets"
+                    | "replicasets"
+                    | "replicationcontrollers"
+                    | "jobs"
+                    | "cronjobs"
+                    | "services"
+            ) {
+                return Err(
+                    "logs require a Pod, supported workload, Service or label selector".into(),
+                );
+            }
+            return Ok(Self::Workload {
+                resource: kind.key(),
+                name: name.into(),
+            });
+        }
+        if all_containers && args.len() > 1 {
+            return Err("--all-containers cannot combine with an explicit container".into());
+        }
+        if args.get(1).is_some_and(|name| !safety::valid_id(name)) {
+            return Err("invalid container name".into());
+        }
+        Ok(Self::Pod {
+            name: name.into(),
+            container: args.get(1).cloned(),
+        })
+    }
+}
+async fn logs_command(gateway: &Gateway, args: &[String], opts: &Options) -> Result<()> {
+    use crate::logs::{FollowOptions, PodLogSelection};
+    let namespace = &gateway.namespace;
+    let request = LogCommand::parse(args, &opts.selector, opts.all_containers)?;
+    let selection = match &request {
+        LogCommand::Selector => Some(PodLogSelection::Selector(opts.selector.clone())),
+        LogCommand::Workload { resource, name } => {
+            let object = gateway.get(resource, namespace, name).await?;
+            let uid = object["metadata"]["uid"]
+                .as_str()
+                .ok_or("Workload UID unavailable")?
+                .to_owned();
+            Some(PodLogSelection::Workload {
+                resource: resource.clone(),
+                name: name.clone(),
+                uid,
+            })
+        }
+        _ => None,
+    };
+    if let Some(selection) = selection {
+        let membership = gateway.capture_log_membership(namespace, selection).await?;
+        let description = membership.description();
+        if !opts.json {
+            outputln!("{description}");
+        }
+        if opts.follow {
+            let mut feed = gateway
+                .follow_membership_logs(
+                    &membership,
+                    FollowOptions {
+                        seconds: opts.log_seconds,
+                    },
+                    opts.log_read,
+                )
+                .await?;
+            while let Some(line) = feed.next().await? {
+                let record = if opts.json {
+                    serde_json::json!({"line":line,"container_scope":"all-ordinary","pod_scope":"fixed-membership","membership":membership}).to_string()
+                } else {
+                    line
+                };
+                if let Err(error) = writeln!(io::stdout().lock(), "{record}") {
+                    if error.kind() == io::ErrorKind::BrokenPipe {
+                        return Ok(());
+                    }
+                    return Err("log output failed".into());
+                }
+            }
+        } else {
+            let logs = gateway
+                .membership_logs(&membership, opts.previous, opts.log_read)
+                .await?;
+            if opts.json {
+                print_json(
+                    &serde_json::json!({"logs":logs,"bounded":true,"container_scope":"all-ordinary","pod_scope":"fixed-membership","membership":membership}),
+                )?;
+            } else {
+                outputln!("{logs}");
+            }
+        }
+        return Ok(());
+    }
+    let LogCommand::Pod { name, container } = request else {
+        return Err("invalid log target".into());
+    };
+    if opts.all_containers {
+        let pod = gateway.get("pods", namespace, &name).await?;
+        let uid = pod["metadata"]["uid"]
+            .as_str()
+            .ok_or("Pod UID unavailable; merged logs require captured identity")?;
+        if opts.follow {
+            let mut feed = gateway
+                .follow_merged_logs(
+                    namespace,
+                    &name,
+                    uid,
+                    FollowOptions {
+                        seconds: opts.log_seconds,
+                    },
+                    opts.log_read,
+                )
+                .await?;
+            while let Some(line) = feed.next().await? {
+                let record = if opts.json {
+                    serde_json::json!({"line":line,"container_scope":"all-ordinary","namespace":namespace,"pod":name,"uid":uid}).to_string()
+                } else {
+                    line
+                };
+                if let Err(error) = writeln!(io::stdout().lock(), "{record}") {
+                    if error.kind() == io::ErrorKind::BrokenPipe {
+                        return Ok(());
+                    }
+                    return Err("log output failed".into());
+                }
+            }
+        } else {
+            let logs = gateway
+                .merged_logs(namespace, &name, uid, opts.previous, opts.log_read)
+                .await?;
+            if opts.json {
+                print_json(
+                    &serde_json::json!({"logs":logs,"bounded":true,"container_scope":"all-ordinary","namespace":namespace,"pod":name,"uid":uid}),
+                )?;
+            } else {
+                outputln!("{logs}");
+            }
+        }
+    } else if opts.follow {
+        let mut feed = gateway
+            .follow_logs_with_read_options(
+                namespace,
+                &name,
+                container,
+                false,
+                FollowOptions {
+                    seconds: opts.log_seconds,
+                },
+                opts.log_read,
+            )
+            .await?;
+        while let Some(line) = feed.next().await? {
+            let line = if opts.json {
+                serde_json::json!({"line":line}).to_string()
+            } else {
+                line
+            };
+            if let Err(error) = writeln!(io::stdout().lock(), "{line}") {
+                if error.kind() == io::ErrorKind::BrokenPipe {
+                    return Ok(());
+                }
+                return Err("log output failed".into());
+            }
+        }
+    } else {
+        let logs = tokio::time::timeout(
+            Duration::from_secs(15),
+            gateway.logs_with_options(namespace, &name, container, opts.previous, opts.log_read),
+        )
+        .await
+        .map_err(|_| "logs timed out")??;
+        if opts.json {
+            print_json(&serde_json::json!({"logs":logs,"bounded":true}))?;
+        } else {
+            outputln!("{logs}");
+        }
+    }
+    Ok(())
+}
+async fn helm_mutation_command(
+    gateway: &Gateway,
+    command: HelmCommand,
+    opts: &Options,
+) -> Result<()> {
+    use crate::helm_lifecycle::{self, Request};
+    if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
+        return Err(
+            "Helm lifecycle actions require interactive terminal review and confirmation".into(),
+        );
+    }
+    let (release, request) = match command {
+        HelmCommand::Install(name, chart) => (
+            name,
+            Request::Install {
+                chart,
+                values: opts.helm_values.clone(),
+            },
+        ),
+        HelmCommand::Upgrade(name, chart) => (
+            name,
+            Request::Upgrade {
+                chart,
+                values: opts.helm_values.clone(),
+            },
+        ),
+        HelmCommand::Rollback(name, revision) => (name, Request::Rollback { revision }),
+        HelmCommand::Uninstall(name) => (name, Request::Uninstall),
+        _ => return Err("invalid Helm lifecycle action".into()),
+    };
+    let executable = opts
+        .helm_tool
+        .clone()
+        .ok_or("Helm lifecycle requires --helm-tool ABSOLUTE_PATH")?;
+    let preparation = helm_lifecycle::prepare(
+        gateway,
+        helm_lifecycle::Options {
+            executable,
+            namespace: gateway.namespace.clone(),
+            release,
+            storage: opts.helm_storage.unwrap_or(crate::helm::Storage::Secret),
+            seconds: opts.helm_timeout_seconds,
+        },
+        request,
+    );
+    let prepared = tokio::select! {
+        result = preparation => result?,
+        _ = tokio::signal::ctrl_c() => return Err("Helm preparation canceled; no lifecycle action was submitted".into()),
+    };
+    outputln!("{}", prepared.summary());
+    output!("> ");
+    io::stdout().flush().map_err(|_| "output failed")?;
+    let confirmation = helm_terminal_confirmation().await?;
+    let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
+    let operation = helm_lifecycle::run(gateway, prepared, &confirmation, Some(cancel_rx));
+    tokio::pin!(operation);
+    let outcome = tokio::select! {
+        result = &mut operation => result?,
+        _ = tokio::signal::ctrl_c() => {
+            let _ = cancel_tx.send(());
+            eprintln!("Canceling Helm; waiting for process cleanup and outcome...");
+            operation.await?
+        },
+    };
+    outputln!("{}", outcome.summary);
+    if !outcome.success {
+        return Err("Helm action did not complete successfully; inspect the reported release state before retrying".into());
+    }
+    Ok(())
+}
+async fn helm_terminal_confirmation() -> Result<String> {
+    use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
+    struct RawInput;
+    impl Drop for RawInput {
+        fn drop(&mut self) {
+            let _ = crossterm::terminal::disable_raw_mode();
+        }
+    }
+    crossterm::terminal::enable_raw_mode().map_err(|_| "cannot read terminal confirmation")?;
+    let raw = RawInput;
+    let mut input = String::new();
+    let deadline = std::time::Instant::now() + Duration::from_secs(15 * 60);
+    loop {
+        if std::time::Instant::now() >= deadline {
+            return Err("Helm confirmation expired; prepare again".into());
+        }
+        if event::poll(Duration::ZERO).map_err(|_| "terminal confirmation failed")?
+            && let Event::Key(key) = event::read().map_err(|_| "terminal confirmation failed")?
+            && key.kind == KeyEventKind::Press
+        {
+            match key.code {
+                KeyCode::Esc => return Err("Helm action canceled before submission".into()),
+                KeyCode::Char('c' | 'd') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    return Err("Helm action canceled before submission".into());
+                }
+                KeyCode::Enter => {
+                    drop(raw);
+                    outputln!("");
+                    return Ok(input);
+                }
+                KeyCode::Backspace => {
+                    if input.pop().is_some() {
+                        output!("\x08 \x08");
+                    }
+                }
+                KeyCode::Char(ch)
+                    if !key
+                        .modifiers
+                        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+                        && ch.is_ascii()
+                        && !ch.is_control()
+                        && input.len() < 253 =>
+                {
+                    input.push(ch);
+                    output!("{ch}");
+                }
+                _ => {}
+            }
+            io::stdout().flush().map_err(|_| "output failed")?;
+        }
+        tokio::select! {
+            _ = tokio::time::sleep(Duration::from_millis(20)) => {},
+            _ = tokio::signal::ctrl_c() => return Err("Helm action canceled before submission".into()),
+        }
+    }
+}
 fn write_args<'a>(
     args: &'a [String],
     count: usize,
@@ -608,10 +985,20 @@ enum HelmCommand {
     Detail(String, u32),
     Resources(String, u32),
     Values(String, u32),
+    Install(String, PathBuf),
+    Upgrade(String, PathBuf),
+    Rollback(String, u32),
+    Uninstall(String),
 }
 impl HelmCommand {
+    fn is_mutation(&self) -> bool {
+        matches!(
+            self,
+            Self::Install(..) | Self::Upgrade(..) | Self::Rollback(..) | Self::Uninstall(..)
+        )
+    }
     fn parse(command: &str, args: &[String]) -> Result<Self> {
-        let usage = "usage: helm [list] | helm history RELEASE | helm detail|resources|values RELEASE REVISION [-n NAMESPACE] [--helm-storage secret|configmap] --allow-helm";
+        let usage = "usage: helm [list] | helm history RELEASE | helm detail|resources|values RELEASE REVISION | helm install|upgrade RELEASE CHART.tgz | helm rollback RELEASE REVISION | helm uninstall RELEASE (lifecycle requires --write --allow-helm --allow-helm-write --helm-tool ABS)";
         let name = |name: &String| {
             if crate::helm::valid_release_name(name) {
                 Ok(name.clone())
@@ -636,6 +1023,19 @@ impl HelmCommand {
             [] => Ok(Self::List),
             [list] if list == "list" => Ok(Self::List),
             [history, release] if history == "history" => Ok(Self::History(name(release)?)),
+            [mode, release] if mode == "uninstall" => Ok(Self::Uninstall(name(release)?)),
+            [mode, release, chart] if mode == "install" || mode == "upgrade" => {
+                if chart.is_empty() || chart.contains("://") || !chart.ends_with(".tgz") {
+                    return Err("Helm install/upgrade requires a local packaged .tgz chart".into());
+                }
+                let release = name(release)?;
+                let chart = PathBuf::from(chart);
+                Ok(if mode == "install" {
+                    Self::Install(release, chart)
+                } else {
+                    Self::Upgrade(release, chart)
+                })
+            }
             [mode, release, rev] => {
                 let release = name(release)?;
                 let revision = revision(rev)?;
@@ -643,6 +1043,7 @@ impl HelmCommand {
                     "detail" => Ok(Self::Detail(release, revision)),
                     "resources" => Ok(Self::Resources(release, revision)),
                     "values" => Ok(Self::Values(release, revision)),
+                    "rollback" => Ok(Self::Rollback(release, revision)),
                     _ => Err(usage.into()),
                 }
             }
@@ -658,6 +1059,9 @@ async fn helm_command(
 ) -> Result<()> {
     use crate::helm;
     let request = HelmCommand::parse(command, args)?;
+    if request.is_mutation() {
+        return helm_mutation_command(gateway, request, opts).await;
+    }
     let latest = helm::list_with_storage(gateway, &gateway.namespace, opts.helm_storage).await?;
     let envelope = |kind: &str, data: serde_json::Value| serde_json::json!({"schema_version":1,"kind":kind,"bounded":true,"data":data});
     if request == HelmCommand::List {
@@ -676,7 +1080,7 @@ async fn helm_command(
         | HelmCommand::Detail(name, _)
         | HelmCommand::Resources(name, _)
         | HelmCommand::Values(name, _) => name,
-        HelmCommand::List => return Err("Invalid Helm request".into()),
+        _ => return Err("Invalid Helm read request".into()),
     };
     let release = helm::select_release(&latest, release_name, opts.helm_storage)?;
     let history = helm::history(gateway, &release).await?;
@@ -985,6 +1389,53 @@ fn theme_command(opts: &Options) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn lifecycle_and_workload_scopes_validate_before_connecting() -> Result<()> {
+        let words = |s: &str| parse(s.split_whitespace().map(str::to_owned).collect());
+        let options = words(
+            "--write --allow-helm --allow-helm-write --helm-tool /tmp/helm --helm-values /tmp/values.yaml helm install web ./web.tgz",
+        )?;
+        assert!(options.connection.allow_helm_write);
+        assert_eq!(options.helm_timeout_seconds, 300);
+        assert_eq!(options.helm_values, Some(PathBuf::from("/tmp/values.yaml")));
+        assert_eq!(
+            HelmCommand::parse("helm", &options.command[1..])?,
+            HelmCommand::Install("web".into(), PathBuf::from("./web.tgz"))
+        );
+        assert!(
+            matches!(LogCommand::parse(&["deploy/web".into()],"",false)?,LogCommand::Workload{resource,..} if resource == "deployments.apps")
+        );
+        assert_eq!(
+            LogCommand::parse(&[], "app=web", false)?,
+            LogCommand::Selector
+        );
+        assert!(matches!(
+            LogCommand::parse(&["pod/web".into(), "app".into()], "", false)?,
+            LogCommand::Pod { .. }
+        ));
+        for command in [
+            "helm rollback web 0",
+            "helm install web https://example.org/chart.tgz",
+            "helm install web ./chart",
+            "--json helm uninstall web",
+            "--helm-tool helm helm list",
+            "--helm-timeout 0 helm list",
+            "--helm-timeout 901 helm list",
+            "--helm-values values.yaml helm rollback web 1",
+            "--helm-tool /tmp/helm list pods",
+            "logs deploy/web app",
+            "logs web --selector app=web",
+            "logs nodes/node",
+            "logs deploy/a/b",
+            "logs --selector app=((bad))",
+        ] {
+            assert!(words(command).is_err(), "{command}");
+        }
+        assert!(words("logs --selector app=web --all-containers --follow").is_ok());
+        assert!(!words("helm list")?.connection.allow_helm_write);
+        assert!(words("logs pod/api.worker --all-containers").is_ok());
+        Ok(())
+    }
     #[test]
     fn helm_and_merged_log_flags_have_explicit_scopes() -> Result<()> {
         let options = parse(

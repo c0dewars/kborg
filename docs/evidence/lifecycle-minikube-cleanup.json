@@ -1,0 +1,10 @@
+{
+  "schema": 1,
+  "profile": "kborg-validation",
+  "isolated_home": ".local/minikube",
+  "isolated_kubeconfig": ".local/minikube.kubeconfig",
+  "profile_deleted": true,
+  "fixture_cleanup_verified": true,
+  "default_context_changed": false,
+  "default_context": "docker-desktop"
+}

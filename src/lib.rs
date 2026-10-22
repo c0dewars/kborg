@@ -37,3 +37,5 @@ pub mod transport;
 pub mod ui_logs;
 
 pub mod helm;
+
+pub mod helm_lifecycle;

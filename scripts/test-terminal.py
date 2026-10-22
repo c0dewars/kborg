@@ -96,6 +96,151 @@ class Screen:
         picture.save(path)
 
 
+def lifecycle_session(binary, args, captures):
+    """Exercise simulated writes; the demo backend never runs Helm or a cluster request."""
+    with tempfile.TemporaryDirectory(prefix="kborg-lifecycle-terminal-") as temporary:
+        master, slave = pty.openpty()
+        original_mode = termios.tcgetattr(slave)
+        fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 32, 120, 0, 0))
+        environment = os.environ.copy()
+        environment.update(TERM="xterm-256color", COLORTERM="truecolor", KBORG_CONFIG_DIR=str(Path(temporary).resolve()))
+        def child_setup():
+            os.setsid()
+            fcntl.ioctl(0, termios.TIOCSCTTY, 0)
+        launcher = ("import json,resource,subprocess,sys; "
+                    "status=subprocess.call(sys.argv[1:]); "
+                    "usage=resource.getrusage(resource.RUSAGE_CHILDREN); "
+                    "print('\\nKBORG_PTY_RESULT '+json.dumps({'status':status,'cpu':usage.ru_utime+usage.ru_stime,'rss':usage.ru_maxrss}),flush=True); "
+                    "sys.stdin.readline(); sys.exit(status)")
+        process = subprocess.Popen([sys.executable, "-c", launcher, str(binary), "--demo", "--theme", "catppuccin-mocha", "--write", "--allow-helm", "--allow-helm-write", "--helm-tool", "/demo/helm", "--allow-logs", "--no-splash", "--no-mouse", "--color=always"], stdin=slave, stdout=slave, stderr=slave, env=environment, preexec_fn=child_setup)
+        screen = Screen(120, 32)
+        output = bytearray()
+        def drain(seconds):
+            until = time.monotonic() + seconds
+            while time.monotonic() < until:
+                if select.select([master], [], [], min(.05, max(0, until-time.monotonic())))[0]:
+                    try:
+                        data = os.read(master, 65536)
+                    except OSError as error:
+                        if error.errno == errno.EIO:
+                            break
+                        raise
+                    if not data:
+                        break
+                    output.extend(data)
+                    assert len(output) <= 8*1024*1024, "lifecycle terminal output exceeded bound"
+                    screen.feed(data.decode("utf-8", errors="replace"))
+        def keys(value, expected=None):
+            idle_deadline=time.monotonic()+6
+            while ("LOADING" in screen.text().splitlines()[2] or "Request in progress" in screen.text().splitlines()[-1]) and time.monotonic()<idle_deadline:
+                drain(.1)
+            os.write(master, value)
+            deadline = time.monotonic()+6
+            while time.monotonic() < deadline:
+                drain(.12)
+                if expected is None or expected.casefold() in screen.text().casefold():
+                    return
+            raise AssertionError(f"missing {expected!r} after keys {value!r}\n{screen.text()}")
+        def capture(name, required):
+            deadline=time.monotonic()+6
+            while any(value.casefold() not in screen.text().casefold() for value in required) and time.monotonic()<deadline:
+                drain(.1)
+            text = screen.text()
+            for value in required:
+                assert value.casefold() in text.casefold(), f"{name}: missing {value!r}\n{text}"
+            captures.append({"name":name, "width":screen.width, "height":screen.height})
+            if args.screenshots:
+                screen.png(args.screenshots/f"{name}.png")
+        def resize(width, height):
+            nonlocal screen
+            fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", height, width, 0, 0))
+            screen = Screen(width,height)
+            os.killpg(process.pid,signal.SIGWINCH)
+            drain(.25)
+        def complete_review(target):
+            keys(target.encode())
+            keys(b"\x1b[H")
+            for _ in range(100):
+                if re.search(r"\b0 unread\b",screen.text()):
+                    break
+                keys(b"\x1b[6~")
+            else:
+                raise AssertionError(f"review did not reach complete painted coverage\n{screen.text()}")
+            keys(b"\r","HELM OPERATION SUCCEEDED")
+        try:
+            drain(1)
+            keys(b"","api-7d4f9")
+            keys(b":helm\r","HELM / releases")
+            keys(b"i","INSTALL HELM RELEASE")
+            keys(b"\tdemo-new")
+            capture("helm-install-form",["INSTALL HELM RELEASE","demo-new","/demo/chart.tgz"])
+            keys(b"\r","HELM REVIEW")
+            capture("helm-install-review",["SIMULATED HELM install","CONFIRM demo/demo-new"])
+            keys(b"\x1b","INSTALL HELM RELEASE")
+            capture("helm-review-cancelled",["INSTALL HELM RELEASE","demo-new"])
+            keys(b"\r","HELM REVIEW")
+            resize(48,12)
+            capture("helm-review-narrow",["HELM REVIEW","unread"])
+            keys(b"demo/demo-new\r","HELM REVIEW")
+            capture("helm-unread-review-denied",["Read every review line","unread"])
+            # End cannot acknowledge unseen middle pages.
+            keys(b"\x1b[F\r","HELM REVIEW")
+            assert not re.search(r"\b0 unread\b",screen.text()), "End incorrectly approved skipped review content"
+            keys(b"\x15")
+            complete_review("demo/demo-new")
+            capture("helm-install-simulated",["HELM OPERATION SUCCEEDED","SIMULATED"])
+            resize(120,32)
+            keys(b"\x1b","HELM / releases")
+            keys(b"u","UPGRADE HELM RELEASE")
+            capture("helm-upgrade-form",["UPGRADE HELM RELEASE","revision 2","/demo/chart.tgz"])
+            keys(b"\r","HELM REVIEW")
+            complete_review("demo/demo-api")
+            capture("helm-upgrade-simulated",["HELM OPERATION SUCCEEDED","SIMULATED"])
+            keys(b"\x1b","HELM / releases")
+            keys(b"\r","HELM HISTORY")
+            keys(b"\x1b[Br","ROLL BACK HELM RELEASE")
+            capture("helm-rollback-form",["ROLL BACK HELM RELEASE","Target revision 1"])
+            keys(b"\r","HELM REVIEW")
+            complete_review("demo/demo-api")
+            capture("helm-rollback-simulated",["HELM OPERATION SUCCEEDED","SIMULATED"])
+            keys(b"\x1b","HELM / releases")
+            keys(b"\x04","UNINSTALL HELM RELEASE")
+            capture("helm-uninstall-form",["UNINSTALL HELM RELEASE","DESTRUCTIVE"])
+            keys(b"\r","HELM REVIEW")
+            complete_review("demo/demo-api")
+            capture("helm-uninstall-simulated",["HELM OPERATION SUCCEEDED","SIMULATED"])
+            keys(b"\x1b","HELM / releases")
+            keys(b"\x1b")
+            drain(.3)
+            keys(b":deploy\r","deployments")
+            drain(.5)
+            keys(b"l","FIXED")
+            capture("workload-logs",["FIXED 1 Pods","[demo/api-7d4f9:app]","INFO"])
+            keys(b"\x1b")
+            keys(b":logs 'app in (api,worker)'\r","FIXED 2 Pods")
+            capture("multi-pod-logs",["FIXED 2 Pods","[demo/api-7d4f9:app]","[demo/worker-6a1bc:app]"])
+            keys(b"3","last 300s")
+            capture("multi-pod-log-range",["FIXED 2 Pods","last 300s","[demo/worker-6a1bc:app]"])
+            keys(b"\x1b")
+            keys(b":q\r")
+            drain(.5)
+            result = re.search(rb"KBORG_PTY_RESULT (\{[^\r\n]+\})",output)
+            assert result,"simulated lifecycle session did not exit"
+            usage = json.loads(result.group(1))
+            assert usage["status"] == 0
+            assert b"\x1b[?1049l" in output
+            assert termios.tcgetattr(slave) == original_mode,"lifecycle terminal mode was not restored"
+            keys(b"\n")
+            process.wait(timeout=3)
+            return usage
+        finally:
+            if process.poll() is None:
+                os.killpg(process.pid,signal.SIGKILL)
+                process.wait(timeout=3)
+            os.close(master)
+            os.close(slave)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--binary", required=True, type=Path)
@@ -147,6 +292,9 @@ def main():
                     screen.feed(data.decode("utf-8", errors="replace"))
 
         def capture(name, required):
+            deadline=time.monotonic()+6
+            while any(value.casefold() not in screen.text().casefold() for value in required) and time.monotonic()<deadline:
+                drain(.1)
             text = screen.text()
             for value in required:
                 assert value.casefold() in text.casefold(), f"{name}: missing {value!r} in actual terminal frame\n{text}"
@@ -155,6 +303,9 @@ def main():
                 screen.png(args.screenshots / f"{name}.png")
 
         def keys(value, wait=.5):
+            deadline=time.monotonic()+6
+            while ("LOADING" in screen.text().splitlines()[2] or "Request in progress" in screen.text().splitlines()[-1]) and time.monotonic()<deadline:
+                drain(.1)
             os.write(master, value)
             drain(wait)
 
@@ -209,6 +360,8 @@ def main():
             keys(b"\x1b")
             keys(b":helm\r", 1)
             capture("helm-releases", ["HELM", "demo-api", "deployed", "Secret"])
+            keys(b"u")
+            capture("helm-lifecycle-denied", ["--write", "--allow-helm-write"])
             keys(b"\r", 1)
             capture("helm-history", ["HELM HISTORY", "superseded", "1.1.0"])
             keys(b"\r", 1)
@@ -259,6 +412,9 @@ def main():
                 process.wait(timeout=3)
             os.close(master)
             os.close(slave)
+    lifecycle_usage = lifecycle_session(binary, args, captures)
+    native_usage["cpu"] += lifecycle_usage["cpu"]
+    native_usage["rss"] = max(native_usage["rss"], lifecycle_usage["rss"])
     report = {"schema": 1, "platform": os.uname().sysname, "architecture": os.uname().machine,
               "binary": str(binary), "binary_sha256": __import__("hashlib").sha256(binary.read_bytes()).hexdigest(),
               "elapsed_seconds": round(time.monotonic() - started, 3),
@@ -266,7 +422,7 @@ def main():
               "peak_rss_bytes": native_usage["rss"] if os.uname().sysname == "Darwin" else native_usage["rss"] * 1024,
               "idle_output_bytes_over_2_seconds": idle_bytes,
               "terminal_restored": True, "screens": captures,
-              "scope": "native PTY, offline samples, ASCII truecolor; not a real-terminal/platform matrix"}
+              "scope": "two native PTY sessions, offline samples and SIMULATED Helm lifecycle; no real tool/cluster writes; ASCII truecolor; not a real-terminal/platform matrix"}
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(report, indent=2) + "\n")
     print(json.dumps(report, indent=2))

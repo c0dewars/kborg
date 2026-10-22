@@ -102,6 +102,7 @@ enum Task {
     PrepareSession(String, String, Option<String>, crate::ops::Request),
     RunSession(Box<crate::ops::ReviewedOperation>, String),
     RunForward(Box<crate::ops::ReviewedOperation>, String, u64),
+    CaptureLogs(LogTarget, crate::logs::PodLogSelection, u64),
     Containers(LogTarget, u64),
     Logs(LogTarget, u64, crate::logs::ReadOptions),
     Follow(LogTarget, u64, u32, crate::logs::ReadOptions),
@@ -114,6 +115,13 @@ enum Task {
     Directory(std::path::PathBuf),
     Manifest(std::path::PathBuf),
     Helm(helm_ui::Request, u64),
+    HelmPrepare(Box<helm_ui::WriteDraft>, u64),
+    HelmExecute(
+        Box<crate::helm_lifecycle::Prepared>,
+        String,
+        u64,
+        tokio::sync::oneshot::Receiver<()>,
+    ),
     Prepare(String, String, String, Option<String>, Action),
     Execute(Box<Prepared>, Approval),
 }
@@ -125,9 +133,12 @@ enum Reply {
     Drill(Box<Value>),
     Directory(crate::navigation_views::Directory),
     Helm(u64, Result<helm_ui::Response>),
+    HelmPrepared(u64, Result<Box<crate::helm_lifecycle::Prepared>>),
+    HelmOutcome(u64, Result<crate::helm_lifecycle::Outcome>),
     Overview(crate::overview::OverviewFeed),
     SessionPrepared(Box<crate::ops::ReviewedOperation>),
     ForwardQueued,
+    Membership(LogTarget, u64),
     Containers(LogTarget, u64, Vec<String>),
     Logs(u64, String),
     LogFailure(u64, String),
@@ -386,6 +397,21 @@ fn worker() -> Worker {
                             }else{Reply::Failure("Forward canceled before start: context or scope changed; review again.".into())}
                         }else{Reply::Failure("Not connected; review again after reconnecting.".into())}
                     }
+                    Task::HelmPrepare(draft,generation)=>{
+                        let result=if epoch!=watch_results.epoch.load(std::sync::atomic::Ordering::SeqCst){Err("Helm preparation canceled: context/scope changed.".into())}
+                        else if let Some(gateway)=gateway.as_ref(){
+                            match crate::helm_lifecycle::prepare(gateway,draft.options.clone(),draft.request.clone()).await{
+                                Ok(prepared)=>helm_ui::validate_prepared(&prepared,&draft).map(|()|Box::new(prepared)),Err(error)=>Err(error)
+                            }
+                        }else{Err("Not connected; reconnect before preparing Helm.".into())};
+                        Reply::HelmPrepared(generation,result)
+                    }
+                    Task::HelmExecute(prepared,typed,generation,cancel)=>{
+                        let result=if epoch!=watch_results.epoch.load(std::sync::atomic::Ordering::SeqCst){Err("Helm execution rejected: reviewed context/scope is stale.".into())}
+                        else if let Some(gateway)=gateway.as_ref(){crate::helm_lifecycle::run(gateway,*prepared,&typed,Some(cancel)).await}
+                        else{Err("Helm execution unavailable: reconnect and review again.".into())};
+                        Reply::HelmOutcome(generation,result)
+                    }
                     Task::Helm(request,generation)=>{
                         let result=if let Some(gateway)=gateway.as_ref(){match tokio::time::timeout(Duration::from_secs(23),helm_ui::read(gateway,request)).await{Ok(result)=>result,Err(_)=>Err("Helm read deadline exceeded; metadata may be incomplete. Retry explicitly.".into())}}else{Err("Not connected; select a context before reading Helm releases.".into())};
                         Reply::Helm(generation,result)
@@ -394,7 +420,7 @@ fn worker() -> Worker {
                     Task::Manifest(path)=>match crate::navigation_views::preview_manifest(&path){Ok(text)=>Reply::Detail(text),Err(error)=>Reply::Failure(error)},
                     task => {
                         if let Some(g) = gateway.as_mut() {
-                            let log_generation=match &task{Task::Containers(_,generation)|Task::Logs(_,generation,_)|Task::Follow(_,generation,_,_)=>Some(*generation),_=>None};
+                            let log_generation=match &task{Task::CaptureLogs(_,_,generation)|Task::Containers(_,generation)|Task::Logs(_,generation,_)|Task::Follow(_,generation,_,_)=>Some(*generation),_=>None};
                             let future = async {
                                 Ok(match task {
                                     Task::List(k,n,selector,fields) => Reply::Items(g.list_fields(&k,&n,&selector,&fields).await?),
@@ -418,13 +444,18 @@ fn worker() -> Worker {
                                         if uid.as_deref().is_none_or(|uid| uid != prepared.uid()) { return Err("Selected pod was replaced; select and review again.".into()); }
                                         Reply::SessionPrepared(Box::new(prepared))
                                     },
+                                    Task::CaptureLogs(mut target,selection,generation)=>{
+                                        target.membership=Some(g.capture_log_membership(&target.namespace,selection).await?);
+                                        Reply::Membership(target,generation)
+                                    },
                                     Task::Containers(target,generation) => {
                                         let value=g.get("pods",&target.namespace,&target.pod).await?;
                                         if value["metadata"]["uid"].as_str()!=Some(&target.uid) {return Err("Selected pod was replaced; select it again.".into());}
                                         Reply::Containers(target,generation,std::iter::once("*".to_owned()).chain(pod_container_names(&value)).collect())
                                     },
                                     Task::Logs(target,generation,read) => {
-                                        let text=if target.all {g.merged_logs(&target.namespace,&target.pod,&target.uid,target.previous,read).await?}
+                                        let text=if let Some(membership)=&target.membership{g.membership_logs(membership,target.previous,read).await?}
+                                        else if target.all {g.merged_logs(&target.namespace,&target.pod,&target.uid,target.previous,read).await?}
                                         else {
                                             let before=g.get("pods",&target.namespace,&target.pod).await?;
                                             if before["metadata"]["uid"].as_str()!=Some(&target.uid) {return Err("Selected pod was replaced; select it again.".into());}
@@ -437,7 +468,7 @@ fn worker() -> Worker {
                                     },
                                     Task::Follow(target,generation,seconds,read) => {
                                         if log_results.generation.load(std::sync::atomic::Ordering::SeqCst) != generation {return Ok(Reply::Following);}
-                                        let mut feed=if target.all {ActiveLogFeed::Merged(g.follow_merged_logs(&target.namespace,&target.pod,&target.uid,crate::logs::FollowOptions{seconds},read).await?)}else{ActiveLogFeed::Single(Box::new(g.follow_logs_resumable(&target.namespace,&target.pod,target.container,&target.uid,crate::logs::FollowOptions{seconds},read).await?))};
+                                        let mut feed=if let Some(membership)=&target.membership{ActiveLogFeed::Merged(g.follow_membership_logs(membership,crate::logs::FollowOptions{seconds},read).await?)}else if target.all {ActiveLogFeed::Merged(g.follow_merged_logs(&target.namespace,&target.pod,&target.uid,crate::logs::FollowOptions{seconds},read).await?)}else{ActiveLogFeed::Single(Box::new(g.follow_logs_resumable(&target.namespace,&target.pod,target.container,&target.uid,crate::logs::FollowOptions{seconds},read).await?))};
                                         let mailbox = log_results.clone();
                                         let job = tokio::spawn(async move {
                                             let mut count = 0usize;
@@ -461,7 +492,7 @@ fn worker() -> Worker {
                                         Reply::Prepared(Box::new(prepared))
                                     },
                                     Task::Execute(p,a) => Reply::Notice(g.execute(*p,a).await?),
-                                    Task::Connect(_) | Task::Watch(..) | Task::Metrics(..) | Task::RunSession(..) | Task::RunForward(..) | Task::Directory(_) | Task::Manifest(_) | Task::Helm(..) => return Err("invalid worker task".into()),
+                                    Task::Connect(_) | Task::Watch(..) | Task::Metrics(..) | Task::RunSession(..) | Task::RunForward(..) | Task::Directory(_) | Task::Manifest(_) | Task::Helm(..) | Task::HelmPrepare(..) | Task::HelmExecute(..) => return Err("invalid worker task".into()),
                                 })
                             };
                             match tokio::time::timeout(Duration::from_secs(25), future).await {
@@ -541,6 +572,10 @@ enum Modal {
     Helm(Box<helm_ui::Table>),
     HelmLoading(&'static str),
     HelmDocument(String, String, usize),
+    HelmForm(Box<helm_ui::Form>),
+    HelmReview(Box<helm_ui::Review>),
+    HelmRunning(String, Instant, bool),
+    HelmOutcome(String, String, usize),
 }
 struct ContainerDraft {
     kind: String,
@@ -561,6 +596,7 @@ struct LogTarget {
     previous: bool,
     follow: bool,
     all: bool,
+    membership: Option<crate::logs::LogMembership>,
 }
 enum ActiveLogFeed {
     Single(Box<crate::logs::LogFeed>),
@@ -639,6 +675,9 @@ struct App {
     subviews: Vec<Modal>,
     log_target: Option<LogTarget>,
     helm_generation: u64,
+    helm_cancel: Option<tokio::sync::oneshot::Sender<()>>,
+    helm_return: Option<(String, crate::helm::Storage)>,
+    helm_elapsed: u64,
     last_forward: String,
     desired_resource: Option<String>,
     status: String,
@@ -1023,6 +1062,8 @@ impl App {
             ("cow",_)=>self.modal=Modal::Detail(format!(" {}\n < {} >\n  \\   ^__^\n   \\  (oo)\\_______\n      (__)\\       )\\\n          ||----w |\n          ||     ||", "_".repeat(args.join(" ").len().min(70)),safety::safe_text(&args.join(" "),70)),0),
             ("can",_)=>self.status="Use :can u:USER | g:GROUP | s:NAMESPACE:SERVICEACCOUNT".into(),
             ("rbacs"|"policies"|"users"|"groups",_)=>self.status="Use :can u:USER, g:GROUP or s:NAMESPACE:SERVICEACCOUNT to inspect native RBAC policy. Subject-list views are unavailable.".into(),
+            ("logs",[selector])=>self.request_log_group(self.namespace.clone(),crate::logs::PodLogSelection::Selector(selector.clone()),false,true),
+            ("helm-install",[])=>self.begin_helm_form(helm_ui::Intent::Install),
             ("helm",[])=>self.request_helm(helm_ui::Request::List(self.namespace.clone(),self.options.helm_storage),false),
             ("helm",[ns]) if ns=="all" || ns=="*" || safety::valid_id(ns)=>self.request_helm(helm_ui::Request::List(if ns=="all"{"*".into()}else{ns.clone()},self.options.helm_storage),false),
             ("history",[name]) if crate::helm::valid_release_name(name)=>self.request_helm(helm_ui::Request::NamedHistory(self.namespace.clone(),name.clone(),self.options.helm_storage),false),
@@ -1306,7 +1347,7 @@ impl App {
         }
         let writes = matches!(
             &task,
-            Task::Execute(..) | Task::RunSession(..) | Task::RunForward(..)
+            Task::Execute(..) | Task::RunSession(..) | Task::RunForward(..) | Task::HelmExecute(..)
         );
         match self.worker.tx.try_send((self.epoch, task)) {
             Ok(()) => {
@@ -1426,6 +1467,66 @@ impl App {
                         self.items.len()
                     );
                 }
+                Reply::HelmPrepared(generation, result) => {
+                    if generation != self.helm_generation
+                        || !matches!(self.modal, Modal::HelmLoading(_))
+                    {
+                        continue;
+                    }
+                    self.modal = match result {
+                        Ok(prepared) => {
+                            self.status = "Helm review ready; no execution requested.".into();
+                            self.sticky_status = false;
+                            Modal::HelmReview(Box::new(helm_ui::Review::new(prepared, self.epoch)))
+                        }
+                        Err(error) => {
+                            self.status = error.clone();
+                            Modal::HelmDocument(
+                                "HELM PREPARATION FAILED / no execution requested".into(),
+                                error,
+                                0,
+                            )
+                        }
+                    };
+                }
+                Reply::HelmOutcome(generation, result) => {
+                    if generation != self.helm_generation && !write_result {
+                        continue;
+                    }
+                    self.helm_cancel = None;
+                    self.subviews.retain(|modal| {
+                        !matches!(
+                            modal,
+                            Modal::Helm(..)
+                                | Modal::HelmForm(..)
+                                | Modal::HelmReview(..)
+                                | Modal::HelmLoading(..)
+                        )
+                    });
+                    let (title, text) = match result {
+                        Ok(outcome) => {
+                            let title = if outcome.uncertain {
+                                "HELM OUTCOME UNKNOWN"
+                            } else if outcome.success {
+                                "HELM OPERATION SUCCEEDED"
+                            } else {
+                                "HELM OPERATION FAILED"
+                            };
+                            (title.to_owned(), outcome.summary)
+                        }
+                        Err(error) => (
+                            "HELM OUTCOME UNKNOWN / reconcile before retrying".into(),
+                            error,
+                        ),
+                    };
+                    self.status = title.clone();
+                    self.sticky_status = true;
+                    self.refresh = true;
+                    self.stale = true;
+                    self.watching = false;
+                    self.worker.watch.invalidate(self.epoch);
+                    self.modal = Modal::HelmOutcome(title, text, 0);
+                }
                 Reply::Helm(generation, result) => {
                     if generation != self.helm_generation
                         || !matches!(self.modal, Modal::HelmLoading(_))
@@ -1472,6 +1573,25 @@ impl App {
                 Reply::ForwardQueued => {
                     self.modal = Modal::ForwardView;
                     self.status="Reviewed forward runs in this session; s stops it; context/scope changes cancel it.".into();
+                }
+                Reply::Membership(target, generation) => {
+                    if generation
+                        != self
+                            .worker
+                            .logs
+                            .generation
+                            .load(std::sync::atomic::Ordering::SeqCst)
+                        || !matches!(self.modal, Modal::Follow(_))
+                    {
+                        continue;
+                    }
+                    self.log_target = Some(target);
+                    if let Modal::Follow(mut view) = std::mem::replace(&mut self.modal, Modal::None)
+                    {
+                        view.enable_all_containers(false);
+                        let read = view.range;
+                        self.reload_logs(view, read);
+                    }
                 }
                 Reply::Containers(target, generation, names) => {
                     if self
@@ -1806,7 +1926,76 @@ impl App {
             );
         }
     }
+    fn request_log_group(
+        &mut self,
+        namespace: String,
+        selection: crate::logs::PodLogSelection,
+        previous: bool,
+        follow: bool,
+    ) {
+        if self.busy {
+            self.status = "Wait for the current request before capturing log membership.".into();
+            return;
+        }
+        if !self.options.connection.logs {
+            self.status = "Multi-Pod logs require --allow-logs.".into();
+            return;
+        }
+        if !safety::valid_id(&namespace) {
+            self.status = "Choose one explicit namespace for fixed-membership logs.".into();
+            return;
+        }
+        let (name, uid) = match &selection {
+            crate::logs::PodLogSelection::Workload { name, uid, .. } => (name.clone(), uid.clone()),
+            crate::logs::PodLogSelection::Selector(selector) => {
+                (format!("selector:{selector}"), String::new())
+            }
+        };
+        let target = LogTarget {
+            namespace,
+            pod: name,
+            uid,
+            container: None,
+            previous,
+            follow,
+            all: true,
+            membership: None,
+        };
+        self.subviews
+            .retain(|modal| !matches!(modal, Modal::Follow(_) | Modal::Containers(..)));
+        let generation = self.worker.logs.cancel();
+        let mut view = crate::ui_logs::LogView::new(
+            "Capturing complete fixed Pod membership; no new Pods will be added automatically..."
+                .into(),
+            self.options.log_read,
+        );
+        view.following = follow && !previous && !self.options.log_read.head;
+        view.previous = previous;
+        self.log_target = Some(target.clone());
+        self.modal = Modal::Follow(Box::new(view));
+        self.send(Task::CaptureLogs(target, selection, generation));
+    }
     fn request_logs(&mut self, previous: bool, follow: bool) {
+        if supports_group_logs(&self.kind()) {
+            if let Some((resource, namespace, name)) = self.selected_target() {
+                if let Some(uid) = self.selected_uid() {
+                    self.request_log_group(
+                        namespace,
+                        crate::logs::PodLogSelection::Workload {
+                            resource,
+                            name,
+                            uid,
+                        },
+                        previous,
+                        follow,
+                    );
+                } else {
+                    self.status =
+                        "Workload UID unavailable; refresh before capturing log membership.".into();
+                }
+            }
+            return;
+        }
         if !follow && !previous {
             self.request_log_picker(previous, follow);
             return;
@@ -1846,6 +2035,7 @@ impl App {
             pod: name(&object).into(),
             uid,
             all: preferred.is_none(),
+            membership: None,
             container: preferred.or_else(|| ordinary.first().cloned()),
             previous,
             follow,
@@ -1882,6 +2072,7 @@ impl App {
                 previous,
                 follow,
                 all: false,
+                membership: None,
             };
             self.subviews
                 .retain(|modal| !matches!(modal, Modal::Follow(_) | Modal::Containers(..)));
@@ -1902,7 +2093,7 @@ impl App {
         let mut view = crate::ui_logs::LogView::new("Connecting to logs...".into(), read);
         view.following = target.follow && !read.head && !target.previous;
         view.previous = target.previous;
-        view.enable_all_containers(true);
+        view.enable_all_containers(target.membership.is_none());
         self.log_target = Some(target.clone());
         self.modal = Modal::Follow(Box::new(view));
         if target.follow && !target.previous && !read.head {
@@ -1964,6 +2155,53 @@ impl App {
         self.modal = Modal::HelmLoading(request.label());
         self.send(Task::Helm(request, self.helm_generation));
     }
+    fn begin_helm_form(&mut self, intent: helm_ui::Intent) {
+        if self.busy {
+            self.status = "Wait for the current request before preparing Helm lifecycle.".into();
+            return;
+        }
+        if !self.options.connection.writable
+            || !self.options.connection.allow_helm
+            || !self.options.connection.allow_helm_write
+        {
+            self.status="Helm lifecycle requires --write --allow-helm --allow-helm-write and explicit --helm-tool for live execution.".into();
+            return;
+        }
+        if self.options.helm_tool.is_none() && !self.options.connection.demo {
+            self.status="Choose the trusted native Helm executable explicitly with --helm-tool ABSOLUTE_PATH.".into();
+            return;
+        }
+        let (namespace, storage) = match &self.modal {
+            Modal::Helm(table) => (
+                table.namespace.clone(),
+                table.storage.or(self.options.helm_storage),
+            ),
+            _ => (self.namespace.clone(), self.options.helm_storage),
+        };
+        let form = helm_ui::Form::new(
+            intent,
+            namespace,
+            storage.unwrap_or(crate::helm::Storage::Secret),
+            self.options.helm_values.as_deref(),
+            self.options.connection.demo,
+        );
+        self.status = "Helm draft; no execution requested.".into();
+        self.sticky_status = false;
+        let current = std::mem::replace(&mut self.modal, Modal::None);
+        if !matches!(current, Modal::None) {
+            self.push_subview(current);
+        }
+        self.modal = Modal::HelmForm(Box::new(form));
+    }
+    fn cancel_helm(&mut self) {
+        if let Some(cancel) = self.helm_cancel.take() {
+            let _ = cancel.send(());
+        }
+        if let Modal::HelmRunning(_, _, cancelled) = &mut self.modal {
+            *cancelled = true;
+        }
+        self.status="Cancellation requested; remote changes may have started. Waiting for reconciled outcome.".into();
+    }
     fn action_menu(&self) -> Vec<String> {
         let kind = self.kind();
         let has_selection = !self.visible().is_empty();
@@ -1993,8 +2231,8 @@ impl App {
                 Some("select an object")
             } else if (2..=4).contains(&index) && !self.options.connection.logs {
                 Some("requires --allow-logs")
-            } else if (2..=4).contains(&index) && kind != "pods" {
-                Some("Pods only")
+            } else if (2..=4).contains(&index) && kind != "pods" && !supports_group_logs(&kind) {
+                Some("Pods and supported workloads/services only")
             } else if ((7..=10).contains(&index) || index == 12 || index == 14)
                 && !self.options.connection.writable
             {
@@ -2064,6 +2302,10 @@ impl App {
         }
     }
     fn key(&mut self, code: KeyCode) -> Result<bool> {
+        if matches!(self.modal, Modal::HelmRunning(..)) {
+            self.status="Helm is running asynchronously. Ctrl-C requests cancellation; wait for the final outcome.".into();
+            return Ok(false);
+        }
         if self.write_inflight {
             self.status =
                 "Mutation in progress; wait for the result before navigating or quitting.".into();
@@ -2099,6 +2341,105 @@ impl App {
         self.sticky_status = false;
         let modal = std::mem::replace(&mut self.modal, Modal::None);
         match modal {
+            Modal::HelmForm(mut form) => match code {
+                KeyCode::Esc => self.close_subview(),
+                KeyCode::Enter => {
+                    let tool = self.options.helm_tool.clone().or_else(|| {
+                        self.options
+                            .connection
+                            .demo
+                            .then(|| std::path::PathBuf::from("/demo/helm"))
+                    });
+                    if self.busy {
+                        self.status = "Wait for the current request; Helm draft retained.".into();
+                        self.modal = Modal::HelmForm(form);
+                    } else if let Some(tool) = tool {
+                        match form.draft(tool, self.options.helm_timeout_seconds) {
+                            Ok(draft) => {
+                                self.helm_return =
+                                    Some((draft.options.namespace.clone(), draft.options.storage));
+                                self.push_subview(Modal::HelmForm(form));
+                                self.helm_generation = self.helm_generation.wrapping_add(1);
+                                self.modal = Modal::HelmLoading(
+                                    "Validating local files and preparing sealed Helm review...",
+                                );
+                                self.status =
+                                    "Preparing Helm review; no execution requested.".into();
+                                self.send(Task::HelmPrepare(Box::new(draft), self.helm_generation));
+                            }
+                            Err(error) => {
+                                self.status = error;
+                                self.modal = Modal::HelmForm(form);
+                            }
+                        }
+                    } else {
+                        self.status =
+                            "Helm tool path missing; restart with --helm-tool ABSOLUTE_PATH."
+                                .into();
+                        self.modal = Modal::HelmForm(form);
+                    }
+                }
+                _ => {
+                    form.key(code);
+                    self.modal = Modal::HelmForm(form);
+                }
+            },
+            Modal::HelmReview(mut review) => match code {
+                KeyCode::Esc => {
+                    self.helm_generation = self.helm_generation.wrapping_add(1);
+                    self.close_subview();
+                }
+                KeyCode::Enter => {
+                    let (width, height) = terminal::size().unwrap_or((80, 24));
+                    if self.busy || !review.can_execute(width, height, self.epoch) {
+                        self.status="Read every review line (PgUp/PgDown), keep this session, and type the exact namespace/release before execution.".into();
+                        self.modal = Modal::HelmReview(review);
+                    } else {
+                        let confirmation = review.prepared.confirmation();
+                        let (cancel, receiver) = tokio::sync::oneshot::channel();
+                        self.helm_cancel = Some(cancel);
+                        self.helm_elapsed = 0;
+                        self.modal = Modal::HelmRunning(confirmation, Instant::now(), false);
+                        self.send(Task::HelmExecute(
+                            review.prepared,
+                            review.typed,
+                            self.helm_generation,
+                            receiver,
+                        ));
+                        if !self.write_inflight {
+                            self.helm_cancel = None;
+                            self.modal=Modal::HelmOutcome("HELM NOT STARTED".into(),"The command queue is unavailable; no Helm execution was queued. Prepare and review again.".into(),0);
+                        } else {
+                            self.status =
+                                "Helm execution in progress; Ctrl-C requests cancellation.".into();
+                        }
+                    }
+                }
+                _ => {
+                    let (width, height) = terminal::size().unwrap_or((80, 24));
+                    review.key(
+                        code,
+                        usize::from(width.saturating_sub(2)),
+                        usize::from(height.saturating_sub(8)),
+                    );
+                    self.modal = Modal::HelmReview(review);
+                }
+            },
+            Modal::HelmRunning(target, started, cancelled) => {
+                self.modal = Modal::HelmRunning(target, started, cancelled)
+            }
+            Modal::HelmOutcome(title, text, offset) => {
+                if matches!(code, KeyCode::Esc | KeyCode::Char('q')) {
+                    if let Some((namespace, storage)) = self.helm_return.take() {
+                        self.request_helm(helm_ui::Request::List(namespace, Some(storage)), false);
+                    } else {
+                        self.close_subview();
+                    }
+                } else {
+                    let offset = scroll_offset(&text, offset, code);
+                    self.modal = Modal::HelmOutcome(title, text, offset);
+                }
+            }
             Modal::HelmLoading(label) => {
                 if matches!(code, KeyCode::Esc | KeyCode::Char('q')) {
                     self.helm_generation = self.helm_generation.wrapping_add(1);
@@ -2115,6 +2456,10 @@ impl App {
                 helm_ui::Action::Request(request) => {
                     self.modal = Modal::Helm(table);
                     self.request_helm(request, true);
+                }
+                helm_ui::Action::Lifecycle(intent) => {
+                    self.modal = Modal::Helm(table);
+                    self.begin_helm_form(*intent);
                 }
                 helm_ui::Action::Metadata(release) => {
                     let text = crate::inspect::yaml(
@@ -2325,6 +2670,7 @@ impl App {
                                         namespace: n,
                                         pod,
                                         all: container == "*",
+                                        membership: None,
                                         container: if container == "*" {
                                             self.subviews.last().and_then(|modal| {
                                                 if let Modal::PodContainers(object, _) = modal {
@@ -3363,14 +3709,37 @@ impl App {
         Ok(false)
     }
     fn key_event(&mut self, code: KeyCode, modifiers: KeyModifiers) -> Result<bool> {
+        if matches!(self.modal, Modal::HelmRunning(..))
+            && modifiers.contains(KeyModifiers::CONTROL)
+            && code == KeyCode::Char('c')
+        {
+            self.cancel_helm();
+            return Ok(false);
+        }
         if self.write_inflight {
             return self.key(code);
         }
         if modifiers.contains(KeyModifiers::CONTROL) {
+            if let Modal::HelmForm(form) = &mut self.modal {
+                if matches!(code, KeyCode::Char('u' | 'w')) {
+                    form.clear();
+                }
+                return Ok(false);
+            }
+            if let Modal::HelmReview(review) = &mut self.modal {
+                if matches!(code, KeyCode::Char('u' | 'w')) {
+                    review.typed.clear();
+                }
+                return Ok(false);
+            }
             if let Modal::Helm(table) = &self.modal {
                 if code == KeyCode::Char('r') {
                     let request = table.refresh();
                     self.request_helm(request, false);
+                } else if code == KeyCode::Char('d') {
+                    if let Some(current) = table.current() {
+                        self.begin_helm_form(helm_ui::Intent::Uninstall(current));
+                    }
                 } else if code == KeyCode::Char('s') {
                     self.status="Helm release export is unavailable; y shows safe selected revision metadata only.".into();
                 }
@@ -3454,6 +3823,19 @@ fn pod_container_names(object: &Value) -> Vec<String> {
         .filter_map(|container| container["name"].as_str().map(str::to_owned))
         .take(128)
         .collect()
+}
+fn supports_group_logs(resource: &str) -> bool {
+    [
+        "deployments.apps",
+        "statefulsets.apps",
+        "daemonsets.apps",
+        "replicasets.apps",
+        "jobs.batch",
+        "cronjobs.batch",
+        "services",
+        "replicationcontrollers",
+    ]
+    .contains(&resource)
 }
 fn ordinary_container_names(object: &Value) -> Vec<String> {
     object["spec"]["containers"]
@@ -3813,7 +4195,7 @@ fn resource_label(kind: &Kind) -> String {
         }
     }
 }
-const TUI_HELP: &str = "NAVIGATE LIKE K9S\n  :pod :pods :po           Singular, plural or discovered short name\n  :pod NAMESPACE          Resource in namespace; all means all namespaces\n  :pod /api|web           Resource plus regex filter\n  :pod app=api,tier=web    Server-side label selector\n  :pod @CONTEXT           Switch context; context names retain their case\n  :ctx / :ctx NAME        Context picker (Pod view) / direct switch (same view)\n  :ns / :ns NAME          Namespace picker / direct switch (Pod view)\n  Ctrl-A / :aliases       Resource alias picker; Enter navigates\n  :pulses / :pu           Read-only cluster health snapshot\n  :xray po|svc|dp [NS]    Ownership and service relationship snapshot\n  :screendump / :sd       Browse saved redacted resource snapshots\n  :can u:NAME             Read-only RBAC subject view\n  :dir PATH               Browse local YAML directory; no apply\n  :helm [NAMESPACE]       Native release metadata (--allow-helm)\n  :history RELEASE        Selected release revision history\n  :q :q! :qa :Q :quit     Quit (in-flight mutations must finish)\n\nCOMMAND PROMPT\n  : / Tab                 Open prompt; Tab completes; Shift-Tab reverses\n  Up / Down               Recall in-session command history\n  Left Right Home End     Edit at cursor; Ctrl-U clears\n  Enter / Esc             Run command / cancel without changing view\n  [ / ] / -               Previous / next / last view\n  Esc                     Close view or return to previous resource\n\nFILTER\n  /PATTERN                Case-insensitive regex over namespace/name/status\n  /!PATTERN               Inverse regex\n  /-f PATTERN             Fuzzy subsequence match\n  /-l LABEL_SELECTOR      Apply server-side label selector on Enter\n  Enter / Esc             Keep / restore previous filter and selected UID\n\nRESOURCE TABLE\n  j k / arrows            Move; PgUp PgDown Home End page\n  Enter                   Drill into containers, related Pods or namespace\n  d                       Describe selected object (redacted overview)\n  y / v                   View redacted YAML; J views JSON\n  c / n                   Copy name / namespace via terminal OSC52 clipboard\n  w / 0                   Warp to selected namespace / all namespaces\n  N / A / S / R           Sort by name / age / status / readiness\n  C / M                   Sort Pods/Nodes by CPU / memory, highest first\n  CPU/MEM snapshots refresh every 15s while the table is visible; - means\n  unknown, never zero. ~ indicates Metrics API omitted UID; creation checked.\n  Table CPU/MEM labels are rounded; d or m shows exact measured quantities.\n  Space / Ctrl-Space      Mark / mark range (visual only; no bulk mutations)\n  Ctrl-Backslash          Clear marks\n  Ctrl-S                  Save current visible redacted resource snapshot\n  Ctrl-R / :discover      Refresh / API discovery; r restarts workloads\n  l / p                   Follow logs / previous logs (--allow-logs)\n  Pod s / a / f / F       Shell / attach / forwards / new forward\n  Workload s / r          Scale Deployment-StatefulSet / reviewed restart\n  e                       Controlled workload container editor\n  Ctrl-D                  Reviewed deletion; Ctrl-K force kill disabled\n  o                       Show selected Pod's Node\n\nHELM AND LOGS\n  Helm Enter / r          Release revision history\n  History Enter / v       Explicit selected revision stored values\n  Helm d / m / y          Metadata / resource identities / metadata YAML\n  Helm Ctrl-R / /         Refresh / filter; Esc returns to previous view\n  Log a                   Toggle all ordinary containers / preferred container\n  Log 0..6                Tail / head / last 1m,5m,15m,30m,1h\n  Log s w t f             Autoscroll / wrap / timestamps / fullscreen\n  Pod l honors the default-container annotation, otherwise merges multiple\n  ordinary containers. Each merged line carries a namespace/Pod/container.\n\nKBORG COMMANDS\n  :actions                Discover actions with capability reasons\n  :scale :image :restart  Explicit reviewed workload operations\n  :metrics [resources]    Metrics / opt into requests-limit comparisons\n  :overview               Live overview of up to four explicit contexts\n  :themes                 Theme preview and custom palette creation\n\nLIMITS AND SAFETY\n  Context, namespace and mode remain visible; DEMO is sample data.\n  STALE and TRUNCATED indicate incomplete data. Regex uses bounded Rust regex\n  syntax; look-around and backreferences are unavailable. Secrets excluded.\n  e edits only ordinary-container image and optional CPU/memory budget on\n  Deployments, StatefulSets, DaemonSets and CronJobs, with captured UID, fresh\n  server dry-run and full review. Generic YAML editing/apply is unavailable.\n  Transfer and node cordon/uncordon/drain/shell,\n  benchmarks and external scans have explicit unavailable messages.\n  Helm release reads need --allow-helm. Values are stored overrides with\n  known fields redacted; custom keys can remain confidential. Rollback and\n  uninstall are unavailable. Raw storage, chart files and notes are excluded.\n  Visual marks never authorize bulk writes. Every mutation requires --write\n  plus one-use approval; shell/attach/forward need separate capabilities.";
+const TUI_HELP: &str = "NAVIGATE LIKE K9S\n  :pod :pods :po           Singular, plural or discovered short name\n  :pod NAMESPACE          Resource in namespace; all means all namespaces\n  :pod /api|web           Resource plus regex filter\n  :pod app=api,tier=web    Server-side label selector\n  :pod @CONTEXT           Switch context; context names retain their case\n  :ctx / :ctx NAME        Context picker (Pod view) / direct switch (same view)\n  :ns / :ns NAME          Namespace picker / direct switch (Pod view)\n  Ctrl-A / :aliases       Resource alias picker; Enter navigates\n  :pulses / :pu           Read-only cluster health snapshot\n  :xray po|svc|dp [NS]    Ownership and service relationship snapshot\n  :screendump / :sd       Browse saved redacted resource snapshots\n  :can u:NAME             Read-only RBAC subject view\n  :dir PATH               Browse local YAML directory; no apply\n  :helm [NAMESPACE]       Native release metadata (--allow-helm)\n  :history RELEASE        Selected release revision history\n  :q :q! :qa :Q :quit     Quit (in-flight mutations must finish)\n\nCOMMAND PROMPT\n  : / Tab                 Open prompt; Tab completes; Shift-Tab reverses\n  Up / Down               Recall in-session command history\n  Left Right Home End     Edit at cursor; Ctrl-U clears\n  Enter / Esc             Run command / cancel without changing view\n  [ / ] / -               Previous / next / last view\n  Esc                     Close view or return to previous resource\n\nFILTER\n  /PATTERN                Case-insensitive regex over namespace/name/status\n  /!PATTERN               Inverse regex\n  /-f PATTERN             Fuzzy subsequence match\n  /-l LABEL_SELECTOR      Apply server-side label selector on Enter\n  Enter / Esc             Keep / restore previous filter and selected UID\n\nRESOURCE TABLE\n  j k / arrows            Move; PgUp PgDown Home End page\n  Enter                   Drill into containers, related Pods or namespace\n  d                       Describe selected object (redacted overview)\n  y / v                   View redacted YAML; J views JSON\n  c / n                   Copy name / namespace via terminal OSC52 clipboard\n  w / 0                   Warp to selected namespace / all namespaces\n  N / A / S / R           Sort by name / age / status / readiness\n  C / M                   Sort Pods/Nodes by CPU / memory, highest first\n  CPU/MEM snapshots refresh every 15s while the table is visible; - means\n  unknown, never zero. ~ indicates Metrics API omitted UID; creation checked.\n  Table CPU/MEM labels are rounded; d or m shows exact measured quantities.\n  Space / Ctrl-Space      Mark / mark range (visual only; no bulk mutations)\n  Ctrl-Backslash          Clear marks\n  Ctrl-S                  Save current visible redacted resource snapshot\n  Ctrl-R / :discover      Refresh / API discovery; r restarts workloads\n  l / p                   Follow logs / previous logs (--allow-logs)\n  Pod s / a / f / F       Shell / attach / forwards / new forward\n  Workload s / r          Scale Deployment-StatefulSet / reviewed restart\n  e                       Controlled workload container editor\n  Ctrl-D                  Reviewed deletion; Ctrl-K force kill disabled\n  o                       Show selected Pod's Node\n\nHELM AND LOGS\n  Helm Enter / r          Release revision history\n  History Enter / v       Explicit selected revision stored values\n  Helm i / u              Install / upgrade from an explicit local packaged chart\n  History r / Ctrl-D      Rollback selected revision / uninstall current release\n  Helm lifecycle needs --write --allow-helm --allow-helm-write and --helm-tool.\n  Every review line must be painted before exact namespace/release approval.\n  Helm d / m / y          Metadata / resource identities / metadata YAML\n  Helm Ctrl-R / /         Refresh / filter; Esc returns to previous view\n  Log a                   Toggle all ordinary containers / preferred container\n  Workload l / p          Fixed captured Pod membership / previous logs\n  :logs LABEL_SELECTOR    Explicit namespace-scoped multi-Pod log capture\n  Group reloads keep the same Pod UIDs; close and reopen to capture new Pods.\n  Log 0..6                Tail / head / last 1m,5m,15m,30m,1h\n  Log s w t f             Autoscroll / wrap / timestamps / fullscreen\n  Pod l honors the default-container annotation, otherwise merges multiple\n  ordinary containers. Each merged line carries a namespace/Pod/container.\n\nKBORG COMMANDS\n  :actions                Discover actions with capability reasons\n  :scale :image :restart  Explicit reviewed workload operations\n  :metrics [resources]    Metrics / opt into requests-limit comparisons\n  :overview               Live overview of up to four explicit contexts\n  :themes                 Theme preview and custom palette creation\n\nLIMITS AND SAFETY\n  Context, namespace and mode remain visible; DEMO is sample data.\n  STALE and TRUNCATED indicate incomplete data. Regex uses bounded Rust regex\n  syntax; look-around and backreferences are unavailable. Secrets excluded.\n  e edits only ordinary-container image and optional CPU/memory budget on\n  Deployments, StatefulSets, DaemonSets and CronJobs, with captured UID, fresh\n  server dry-run and full review. Generic YAML editing/apply is unavailable.\n  Transfer and node cordon/uncordon/drain/shell,\n  benchmarks and external scans have explicit unavailable messages.\n  Helm release reads need --allow-helm. Values are stored overrides with\n  known fields redacted; custom keys can remain confidential. Complete\n  review is mandatory for lifecycle changes. Raw storage, chart files and notes are excluded.\n  Visual marks never authorize bulk writes. Every mutation requires --write\n  plus one-use approval; shell/attach/forward need separate capabilities.";
 
 #[derive(Clone, Copy, Debug)]
 struct Rect {
@@ -4067,14 +4449,21 @@ fn panel(
         bg,
     )
 }
-fn draw(app: &App) -> Result<()> {
+fn draw(app: &mut App) -> Result<()> {
     let (w, h) = terminal::size().map_err(|_| "cannot read terminal size")?;
     let mut frame = Vec::new();
     render(app, w, h, &mut frame)?;
     let mut out = io::stdout().lock();
     out.write_all(&frame)
         .and_then(|_| out.flush())
-        .map_err(|_| "draw failed".into())
+        .map_err(|_| "draw failed")?;
+    if w >= 28
+        && h >= 10
+        && let Modal::HelmReview(review) = &mut app.modal
+    {
+        review.mark_drawn(usize::from(w - 2), usize::from(h - 8));
+    }
+    Ok(())
 }
 fn modal_rect(modal: &Modal, width: u16, height: u16) -> Rect {
     let available = height.saturating_sub(6);
@@ -4091,6 +4480,7 @@ fn modal_rect(modal: &Modal, width: u16, height: u16) -> Rect {
             | Modal::EditContainers(..)
             | Modal::Editor(..)
             | Modal::ForwardForm(..)
+            | Modal::HelmForm(..)
     );
     let modal_width = if compact && width >= 80 {
         width.saturating_sub(10).min(84)
@@ -4103,6 +4493,7 @@ fn modal_rect(modal: &Modal, width: u16, height: u16) -> Rect {
         Modal::Resources(..) => 10,
         Modal::Editor(..) => 13,
         Modal::ForwardForm(..) => 9,
+        Modal::HelmForm(form) => (form.fields.len() as u16).saturating_add(6),
         Modal::EditContainers(_, _, _, _, values, _) => (values.len() as u16).saturating_add(3),
         Modal::Scale(..) => 6,
         Modal::Picker(_, items, _) | Modal::SessionContainers(_, _, _, items, _, _) => {
@@ -4167,31 +4558,40 @@ fn render_log_modal(
         width: w,
         height: h.saturating_sub(y + 2),
     };
-    let target = app
+    let title = app
         .log_target
         .as_ref()
         .map(|target| {
+            if let Some(membership) = &target.membership {
+                let details = view.title();
+                let details = if w < 80 {
+                    details.strip_prefix("Logs | ").unwrap_or(&details)
+                } else {
+                    &details
+                };
+                return format!(
+                    "FIXED {} Pods / {} containers | {} | {} | {}",
+                    membership.pods().len(),
+                    membership.source_count(),
+                    details,
+                    membership.namespace(),
+                    membership.description()
+                );
+            }
             format!(
-                "{}/{} / {} | ",
+                "LOGS {}/{} / {} | {}",
                 target.namespace,
                 target.pod,
                 if target.all {
                     "ALL ordinary containers"
                 } else {
                     target.container.as_deref().unwrap_or("default")
-                }
+                },
+                view.title()
             )
         })
-        .unwrap_or_default();
-    panel(
-        out,
-        rect,
-        &format!("LOGS {target}{}", view.title()),
-        true,
-        color("accent"),
-        bg,
-    )
-    .map_err(|_| "draw failed")?;
+        .unwrap_or_else(|| format!("LOGS {}", view.title()));
+    panel(out, rect, &title, true, color("accent"), bg).map_err(|_| "draw failed")?;
     for (index, line) in view
         .render(
             usize::from(w.saturating_sub(2)),
@@ -4618,6 +5018,12 @@ fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
                 Modal::Input(label, _) | Modal::Picker(label, ..) => *label,
                 Modal::Follow(view) => return render_log_modal(app, view, w, h, out),
                 Modal::Helm(table) => table.title(),
+                Modal::HelmForm(form) => form.intent.label(),
+                Modal::HelmReview(_) => {
+                    "HELM REVIEW / every line must be displayed before execution"
+                }
+                Modal::HelmRunning(..) => "HELM EXECUTION / asynchronous reviewed operation",
+                Modal::HelmOutcome(title, ..) => title.as_str(),
                 Modal::HelmLoading(_) => "HELM / bounded storage read",
                 Modal::HelmDocument(title, ..) => title.as_str(),
                 Modal::Containers(..) => "CHOOSE CONTAINER",
@@ -4654,7 +5060,10 @@ fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
                 rect,
                 title,
                 true,
-                if matches!(modal, Modal::Confirm(..) | Modal::SessionConfirm(..)) {
+                if matches!(
+                    modal,
+                    Modal::Confirm(..) | Modal::SessionConfirm(..) | Modal::HelmReview(..)
+                ) {
                     color("warning")
                 } else {
                     color("accent")
@@ -4664,6 +5073,10 @@ fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
             .map_err(|_| "draw failed")?;
             let height = usize::from(rect.height.saturating_sub(2));
             let lines = match modal {
+                Modal::HelmForm(form)=>form.lines(usize::from(rect.width.saturating_sub(2)),height),
+                Modal::HelmReview(review)=>review.lines(usize::from(rect.width.saturating_sub(2)),height),
+                Modal::HelmRunning(target,started,cancelled)=>wrap_text(&format!("Reviewed target {target}\n\n{} | elapsed {}s | Helm command budget {}s\nFinal validation has its own bounded 120-second deadline.\nThe UI remains responsive while native Helm runs.\nCtrl-C requests local cancellation; remote changes may already exist.\nWaiting for the final success, failure or UNKNOWN outcome.\nDo not launch another operation until this result is reconciled.",if *cancelled{"CANCELLATION REQUESTED"}else{"RUNNING"},started.elapsed().as_secs(),app.options.helm_timeout_seconds),usize::from(rect.width.saturating_sub(2))).lines().map(str::to_owned).collect(),
+                Modal::HelmOutcome(_,text,offset)=>wrap_text(text,usize::from(rect.width.saturating_sub(2))).lines().skip(*offset).map(str::to_owned).collect(),
                 Modal::Helm(table)=>table.lines(usize::from(rect.width.saturating_sub(2)),height),
                 Modal::HelmLoading(label)=>vec![(*label).into(),String::new(),"Esc cancels this view; late results cannot reopen it.".into()],
                 Modal::HelmDocument(_,text,offset)=>wrap_text(text,usize::from(rect.width.saturating_sub(2))).lines().skip(*offset).map(str::to_owned).collect(),
@@ -4832,7 +5245,10 @@ fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
                     rect.y + 1 + index as u16,
                     rect.width.saturating_sub(2),
                     line,
-                    if matches!(modal, Modal::Confirm(..) | Modal::SessionConfirm(..)) {
+                    if matches!(
+                        modal,
+                        Modal::Confirm(..) | Modal::SessionConfirm(..) | Modal::HelmReview(..)
+                    ) {
                         color("warning")
                     } else if selected {
                         color("selection_text")
@@ -4867,6 +5283,12 @@ fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
                 "Esc stops all context watches | PgUp/PgDown scroll"
             } else if matches!(modal, Modal::Overview(..)) {
                 "Esc close | J redacted JSON | y YAML | PgUp/PgDown scroll"
+            } else if matches!(modal, Modal::HelmForm(..)) {
+                "Tab field | Ctrl-U clear | Enter prepare review | Esc back"
+            } else if matches!(modal, Modal::HelmRunning(..)) {
+                "Ctrl-C request cancellation | wait for final outcome"
+            } else if matches!(modal, Modal::HelmOutcome(..)) {
+                "PgUp/PgDown scroll | Esc refreshes release inventory | never auto-retry UNKNOWN"
             } else if let Modal::Helm(table) = modal {
                 table.help()
             } else if matches!(modal, Modal::HelmDocument(..)) {
@@ -4893,6 +5315,34 @@ fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
                 bg,
             )
             .map_err(|_| "draw failed")?;
+            if let Modal::HelmReview(review) = modal {
+                let remaining = review.remaining(usize::from(w.saturating_sub(2)));
+                let text = format!(
+                    "CONFIRM {} > {}_",
+                    review.prepared.confirmation(),
+                    review.typed
+                );
+                let chars = text.chars().collect::<Vec<_>>();
+                let start = chars.len().saturating_sub(usize::from(w));
+                row(
+                    out,
+                    h - 2,
+                    w,
+                    &chars.into_iter().skip(start).collect::<String>(),
+                    color("warning"),
+                    bg,
+                )
+                .map_err(|_| "draw failed")?;
+                row(
+                    out,
+                    h - 1,
+                    w,
+                    &format!("{remaining} unread | PgUp/PgDn review | Enter execute | Esc cancel"),
+                    color("accent"),
+                    bg,
+                )
+                .map_err(|_| "draw failed")?;
+            }
         }
     }
     out.flush().map_err(|_| "draw failed".into())
@@ -4999,6 +5449,9 @@ pub fn run(options: Options) -> Result<()> {
         subviews: vec![],
         log_target: None,
         helm_generation: 0,
+        helm_cancel: None,
+        helm_return: None,
+        helm_elapsed: 0,
         last_forward: String::new(),
         desired_resource: None,
         status: "Starting...".into(),
@@ -5040,7 +5493,7 @@ pub fn run(options: Options) -> Result<()> {
         );
     }
     app.connect();
-    draw(&app)?;
+    draw(&mut app)?;
     let mut dirty = false;
     loop {
         if app.receive() {
@@ -5121,9 +5574,16 @@ pub fn run(options: Options) -> Result<()> {
             app.refresh_table_metrics();
             dirty = true;
         }
+        if let Modal::HelmRunning(_, started, _) = &app.modal {
+            let elapsed = started.elapsed().as_secs();
+            if elapsed != app.helm_elapsed {
+                app.helm_elapsed = elapsed;
+                dirty = true;
+            }
+        }
         // At most one redraw per event-loop tick; polling never blocks terminal input.
         if dirty {
-            draw(&app)?;
+            draw(&mut app)?;
             dirty = false;
         }
         if event::poll(Duration::from_millis(100)).map_err(|_| "input failed")? {
@@ -5132,6 +5592,11 @@ pub fn run(options: Options) -> Result<()> {
                     if key.modifiers.contains(KeyModifiers::CONTROL)
                         && key.code == KeyCode::Char('c')
                     {
+                        if matches!(app.modal, Modal::HelmRunning(..)) {
+                            app.cancel_helm();
+                            dirty = true;
+                            continue;
+                        }
                         if app.write_inflight {
                             app.status =
                                 "Mutation in progress; wait for the result before quitting.".into();
@@ -5302,6 +5767,9 @@ mod layout_tests {
                     previous: false,
                     all_containers: false,
                     helm_storage: None,
+                    helm_tool: None,
+                    helm_values: None,
+                    helm_timeout_seconds: 300,
                     allow_tools: false,
                     allow_extensions: false,
                     log_seconds: 3600,
@@ -5339,6 +5807,9 @@ mod layout_tests {
                 subviews: vec![],
                 log_target: None,
                 helm_generation: 0,
+                helm_cancel: None,
+                helm_return: None,
+                helm_elapsed: 0,
                 last_forward: String::new(),
                 desired_resource: None,
                 status: "waiting".into(),
@@ -5375,6 +5846,339 @@ mod layout_tests {
             replies,
             commands,
         )
+    }
+    fn demo_helm_prepared() -> Result<Box<crate::helm_lifecycle::Prepared>> {
+        crate::cli::runtime()?.block_on(async {
+            let gateway = Gateway::connect(Connection {
+                demo: true,
+                writable: true,
+                allow_helm: true,
+                allow_helm_write: true,
+                ..Default::default()
+            })
+            .await?;
+            crate::helm_lifecycle::prepare(
+                &gateway,
+                crate::helm_lifecycle::Options {
+                    executable: "/demo/helm".into(),
+                    namespace: "demo".into(),
+                    release: "demo-new".into(),
+                    storage: crate::helm::Storage::Secret,
+                    seconds: 300,
+                },
+                crate::helm_lifecycle::Request::Install {
+                    chart: "/demo/chart.tgz".into(),
+                    values: None,
+                },
+            )
+            .await
+            .map(Box::new)
+        })
+    }
+    #[test]
+    fn helm_install_inherits_visible_release_table_scope() -> Result<()> {
+        let (mut app, _, mut commands) = harness();
+        app.options.connection.demo = true;
+        app.options.connection.writable = true;
+        app.options.connection.allow_helm = true;
+        app.options.connection.allow_helm_write = true;
+        app.namespace = "default".into();
+        app.options.helm_storage = Some(crate::helm::Storage::Secret);
+        app.modal = Modal::Helm(Box::new(helm_ui::Table::new(
+            crate::helm::Snapshot {
+                releases: vec![],
+                truncated: false,
+                issues: vec![],
+                source: "test".into(),
+            },
+            None,
+            "staging".into(),
+            Some(crate::helm::Storage::ConfigMap),
+        )));
+        app.key(KeyCode::Char('i'))?;
+        let Modal::HelmForm(mut form) = std::mem::replace(&mut app.modal, Modal::None) else {
+            return Err("missing install form".into());
+        };
+        assert_eq!(form.fields[0].1, "staging");
+        form.fields[1].1 = "new-release".into();
+        let draft = form.draft("/demo/helm".into(), 300)?;
+        assert_eq!(draft.options.namespace, "staging");
+        assert_eq!(draft.options.storage, crate::helm::Storage::ConfigMap);
+        app.begin_helm_form(helm_ui::Intent::Install);
+        assert!(matches!(app.modal,Modal::HelmForm(ref form) if form.fields[0].1=="default"));
+        assert!(commands.try_recv().is_err());
+        Ok(())
+    }
+    #[test]
+    fn helm_status_tracks_current_draft_review_and_execution() -> Result<()> {
+        let (mut app, replies, mut commands) = harness();
+        app.options.connection.demo = true;
+        app.options.connection.writable = true;
+        app.options.connection.allow_helm = true;
+        app.options.connection.allow_helm_write = true;
+        app.status = "HELM OPERATION SUCCEEDED".into();
+        app.sticky_status = true;
+        app.begin_helm_form(helm_ui::Intent::Install);
+        assert_eq!(app.status, "Helm draft; no execution requested.");
+        assert!(!app.sticky_status);
+        let Modal::HelmForm(form) = &mut app.modal else {
+            return Err("missing Helm draft".into());
+        };
+        form.fields[0].1 = "demo".into();
+        form.fields[1].1 = "demo-new".into();
+        app.key(KeyCode::Enter)?;
+        assert_eq!(app.status, "Preparing Helm review; no execution requested.");
+        assert!(matches!(
+            commands.try_recv(),
+            Ok((_, Task::HelmPrepare(..)))
+        ));
+        replies
+            .send((
+                app.epoch,
+                Reply::HelmPrepared(app.helm_generation, Ok(demo_helm_prepared()?)),
+            ))
+            .map_err(|_| "reply closed")?;
+        app.receive();
+        assert_eq!(app.status, "Helm review ready; no execution requested.");
+        let Modal::HelmReview(review) = &mut app.modal else {
+            return Err("missing Helm review".into());
+        };
+        review.typed = review.prepared.confirmation();
+        review.mark_drawn(78, 500);
+        app.key(KeyCode::Enter)?;
+        assert!(app.write_inflight);
+        assert_eq!(
+            app.status,
+            "Helm execution in progress; Ctrl-C requests cancellation."
+        );
+        assert!(!screen(&app, 80, 24).join("\n").contains("SUCCEEDED"));
+        Ok(())
+    }
+    #[test]
+    fn helm_lifecycle_gates_cancel_review_stale_scope_and_unknown_outcome() -> Result<()> {
+        let (mut app, replies, mut commands) = harness();
+        app.begin_helm_form(helm_ui::Intent::Install);
+        assert!(matches!(app.modal, Modal::None));
+        assert!(app.status.contains("--allow-helm-write"));
+        assert!(commands.try_recv().is_err());
+        app.options.connection.demo = true;
+        app.options.connection.writable = true;
+        app.options.connection.allow_helm = true;
+        app.options.connection.allow_helm_write = true;
+        app.begin_helm_form(helm_ui::Intent::Install);
+        assert!(matches!(app.modal, Modal::HelmForm(_)));
+        app.key(KeyCode::Esc)?;
+        assert!(commands.try_recv().is_err());
+        app.modal = Modal::HelmReview(Box::new(helm_ui::Review::new(
+            demo_helm_prepared()?,
+            app.epoch,
+        )));
+        assert!(screen(&app, 28, 10).join("\n").contains("unread"));
+        app.key(KeyCode::Enter)?;
+        assert!(commands.try_recv().is_err());
+        if let Modal::HelmReview(review) = &mut app.modal {
+            review.typed = review.prepared.confirmation();
+            review.mark_drawn(78, 500);
+            review.epoch = app.epoch - 1;
+        }
+        app.key(KeyCode::Enter)?;
+        assert!(commands.try_recv().is_err());
+        if let Modal::HelmReview(review) = &mut app.modal {
+            review.epoch = app.epoch;
+        }
+        app.helm_return = Some(("demo".into(), crate::helm::Storage::Secret));
+        app.key(KeyCode::Enter)?;
+        assert!(app.write_inflight && matches!(app.modal, Modal::HelmRunning(..)));
+        let (generation, mut cancel) = match commands.try_recv() {
+            Ok((_, Task::HelmExecute(_, typed, generation, cancel))) => {
+                assert_eq!(typed, "demo/demo-new");
+                (generation, cancel)
+            }
+            _ => return Err("missing reviewed Helm execution".into()),
+        };
+        app.key_event(KeyCode::Char('c'), KeyModifiers::CONTROL)?;
+        assert!(cancel.try_recv().is_ok());
+        assert!(app.write_inflight);
+        replies
+            .send((
+                app.epoch,
+                Reply::HelmOutcome(
+                    generation,
+                    Ok(crate::helm_lifecycle::Outcome {
+                        success: false,
+                        summary: "UNKNOWN: verify release state before retrying".into(),
+                        uncertain: true,
+                    }),
+                ),
+            ))
+            .map_err(|_| "reply closed")?;
+        app.receive();
+        assert!(!app.write_inflight && !app.busy);
+        assert!(matches!(app.modal,Modal::HelmOutcome(ref title,..) if title.contains("UNKNOWN")));
+        assert!(screen(&app, 80, 24).join("\n").contains("UNKNOWN"));
+        app.key(KeyCode::Esc)?;
+        assert!(
+            matches!(commands.try_recv(),Ok((_,Task::Helm(helm_ui::Request::List(namespace,Some(crate::helm::Storage::Secret)),_))) if namespace=="demo")
+        );
+        Ok(())
+    }
+    #[test]
+    fn unavailable_helm_queue_never_leaves_a_running_operation_modal() -> Result<()> {
+        let (mut app, _, commands) = harness();
+        drop(commands);
+        let mut review = helm_ui::Review::new(demo_helm_prepared()?, app.epoch);
+        review.typed = review.prepared.confirmation();
+        review.mark_drawn(78, 500);
+        app.modal = Modal::HelmReview(Box::new(review));
+        app.key(KeyCode::Enter)?;
+        assert!(!app.write_inflight && !app.busy);
+        assert!(
+            matches!(app.modal,Modal::HelmOutcome(ref title,..) if title.contains("NOT STARTED"))
+        );
+        Ok(())
+    }
+    #[test]
+    fn queued_helm_execution_rejects_stale_epoch_before_running() -> Result<()> {
+        let worker = worker();
+        worker.watch.invalidate(99);
+        let (_, cancel) = tokio::sync::oneshot::channel();
+        worker
+            .tx
+            .blocking_send((
+                12,
+                Task::HelmExecute(demo_helm_prepared()?, "demo/demo-new".into(), 5, cancel),
+            ))
+            .map_err(|_| "queue closed")?;
+        let (_, reply) = worker
+            .rx
+            .recv_timeout(Duration::from_secs(2))
+            .map_err(|_| "worker timeout")?;
+        assert!(matches!(reply,Reply::HelmOutcome(5,Err(error)) if error.contains("stale")));
+        Ok(())
+    }
+    #[test]
+    fn group_log_title_keeps_range_visible_before_long_workload_identity() -> Result<()> {
+        let (mut app, _, _) = harness();
+        let namespace = format!("kborg-{}", "a".repeat(56));
+        let membership = crate::logs::LogMembership::new(
+            &namespace,
+            format!(
+                "workload deployments.apps / ui-lifecycle-worker UID {}; fixed membership",
+                "1".repeat(36)
+            ),
+            ["one", "two"]
+                .into_iter()
+                .map(|name| crate::logs::LogPod {
+                    name: name.into(),
+                    uid: format!("uid-{name}"),
+                    containers: vec!["worker".into()],
+                })
+                .collect(),
+            vec![],
+            "test-connection",
+        )?;
+        app.log_target = Some(LogTarget {
+            namespace,
+            pod: "ui-lifecycle-worker".into(),
+            container: None,
+            uid: "workload-uid".into(),
+            previous: false,
+            follow: true,
+            all: true,
+            membership: Some(membership),
+        });
+        let view = crate::ui_logs::LogView::new(
+            "[Log stream merge fixed membership]\nrecord".into(),
+            crate::logs::ReadOptions::for_key('3').ok_or("missing range")?,
+        );
+        app.modal = Modal::Follow(Box::new(view));
+        for width in [48, 80, 140] {
+            let frame = screen(&app, width, 12);
+            let title = &frame[3];
+            for expected in ["FIXED 2 Pods", "2 containers", "last 300s"] {
+                assert!(
+                    title.contains(expected),
+                    "{width}: missing {expected}: {title}"
+                );
+            }
+            assert!(!title.contains("111111111111111111111111111111111111"));
+        }
+        Ok(())
+    }
+    #[test]
+    fn workload_logs_capture_once_and_range_reload_retains_exact_pod_membership() -> Result<()> {
+        let (object, membership) = crate::cli::runtime()?.block_on(async {
+            let gateway = Gateway::connect(Connection {
+                demo: true,
+                logs: true,
+                ..Default::default()
+            })
+            .await?;
+            let object = gateway.get("deployments.apps", "demo", "api").await?;
+            let uid = object["metadata"]["uid"]
+                .as_str()
+                .ok_or("demo workload UID missing")?
+                .to_owned();
+            let membership = gateway
+                .capture_log_membership(
+                    "demo",
+                    crate::logs::PodLogSelection::Workload {
+                        resource: "deployments.apps".into(),
+                        name: "api".into(),
+                        uid,
+                    },
+                )
+                .await?;
+            Ok::<_, String>((object, membership))
+        })?;
+        let (mut app, replies, mut commands) = harness();
+        app.options.connection.logs = true;
+        app.kind_index = app.resolve_resource("deployments.apps")?;
+        app.items = vec![object];
+        app.request_logs(false, true);
+        let (target, generation) = match commands.try_recv() {
+            Ok((
+                _,
+                Task::CaptureLogs(
+                    target,
+                    crate::logs::PodLogSelection::Workload { resource, .. },
+                    generation,
+                ),
+            )) => {
+                assert_eq!(resource, "deployments.apps");
+                (target, generation)
+            }
+            _ => return Err("missing fixed membership capture".into()),
+        };
+        app.items[0]["metadata"]["uid"] = "replacement".into();
+        let mut target = target;
+        target.membership = Some(membership.clone());
+        replies
+            .send((app.epoch, Reply::Membership(target, generation)))
+            .map_err(|_| "reply closed")?;
+        app.receive();
+        let initial = match commands.try_recv() {
+            Ok((_, Task::Follow(target, _, _, _))) => target.membership.ok_or("membership lost")?,
+            _ => return Err("missing captured follow".into()),
+        };
+        assert_eq!(initial.pods()[0].uid, membership.pods()[0].uid);
+        app.busy = false;
+        app.key(KeyCode::Char('3'))?;
+        match commands.try_recv() {
+            Ok((_, Task::Follow(target, _, _, read))) => {
+                assert_eq!(
+                    read,
+                    crate::logs::ReadOptions::for_key('3').ok_or("range missing")?
+                );
+                assert_eq!(
+                    target.membership.ok_or("range lost membership")?.pods()[0].uid,
+                    initial.pods()[0].uid
+                );
+            }
+            _ => return Err("range recaptured membership unexpectedly".into()),
+        };
+        assert!(screen(&app, 120, 24).join("\n").contains("FIXED"));
+        Ok(())
     }
     #[test]
     fn helm_reads_require_capability_and_late_results_do_not_reopen_views() -> Result<()> {
@@ -5910,6 +6714,7 @@ mod layout_tests {
                 previous: false,
                 follow: false,
                 all: false,
+                membership: None,
             },
             (0..20).map(|index| format!("container-{index}")).collect(),
             19,

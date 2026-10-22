@@ -12,6 +12,26 @@ Helm storage access is separately opt-in with `--allow-helm`. General Secret
 browsing remains unavailable, but Helm metadata/history and selected values are
 read from Kubernetes Secret or ConfigMap storage. Kubernetes RBAC cannot restrict
 Secret list permission by label selector; the API identity must be scoped
-accordingly. Raw release payloads, notes, chart files and rendered manifest bodies
-are not exported. Known-key and private-key redaction cannot classify every
+accordingly. Browsing never exports raw release payloads, notes, chart files or
+rendered manifest bodies. Lifecycle review separately shows redacted affected
+objects. Known-key and private-key redaction cannot classify every
 confidential custom value. Logs and explicitly requested values remain sensitive.
+
+Helm lifecycle requires `--write --allow-helm --allow-helm-write` and an explicitly
+trusted native Helm executable at exactly version 4.3.1 on Unix. It accepts local deterministic packaged charts
+for allowlisted namespaced resources only; hooks, CRDs, cluster/system targets,
+recognized GitOps resources and foreign adoption are refused. The complete
+15-minute review includes redacted current/desired resource bodies, exact
+arguments and input hashes. Fresh plan, history and UID/resourceVersion checks
+precede execution, but Helm's requests do not carry those UID preconditions; a
+replacement after the final check remains a race. The supervised Helm process
+receives a private static credential and retains OS-user filesystem/network
+permissions. It is not sandboxed. Cancellation or failure may leave partial
+writes; never retry automatically. See [lifecycle limits](docs/HELM_LIFECYCLE.md).
+
+Workload/selector logs capture at most eight Pods and 32 ordinary-container
+streams in one namespace, with shared time/byte/rate/cache bounds. Membership is
+fixed and identity-checked, including quiet streams; newly matching or replacement
+Pods are not silently admitted. Init and ephemeral sources are excluded from
+merges. These controls do not classify confidential log content or guarantee
+lossless ordering, reconnection or rotation history.

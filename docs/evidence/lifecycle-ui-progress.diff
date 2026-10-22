@@ -1,0 +1,203 @@
+--- a/src/tui.rs
++++ b/src/tui.rs
+@@ -1475,6 +1475,8 @@
+                     }
+                     self.modal = match result {
+                         Ok(prepared) => {
++                            self.status = "Helm review ready; no execution requested.".into();
++                            self.sticky_status = false;
+                             Modal::HelmReview(Box::new(helm_ui::Review::new(prepared, self.epoch)))
+                         }
+                         Err(error) => {
+@@ -2183,6 +2185,8 @@
+             self.options.helm_values.as_deref(),
+             self.options.connection.demo,
+         );
++        self.status = "Helm draft; no execution requested.".into();
++        self.sticky_status = false;
+         let current = std::mem::replace(&mut self.modal, Modal::None);
+         if !matches!(current, Modal::None) {
+             self.push_subview(current);
+@@ -2359,6 +2363,8 @@
+                                 self.modal = Modal::HelmLoading(
+                                     "Validating local files and preparing sealed Helm review...",
+                                 );
++                                self.status =
++                                    "Preparing Helm review; no execution requested.".into();
+                                 self.send(Task::HelmPrepare(Box::new(draft), self.helm_generation));
+                             }
+                             Err(error) => {
+@@ -2403,6 +2409,9 @@
+                         if !self.write_inflight {
+                             self.helm_cancel = None;
+                             self.modal=Modal::HelmOutcome("HELM NOT STARTED".into(),"The command queue is unavailable; no Helm execution was queued. Prepare and review again.".into(),0);
++                        } else {
++                            self.status =
++                                "Helm execution in progress; Ctrl-C requests cancellation.".into();
+                         }
+                     }
+                 }
+@@ -4549,40 +4558,40 @@
+         width: w,
+         height: h.saturating_sub(y + 2),
+     };
+-    let target = app
++    let title = app
+         .log_target
+         .as_ref()
+         .map(|target| {
+             if let Some(membership) = &target.membership {
++                let details = view.title();
++                let details = if w < 80 {
++                    details.strip_prefix("Logs | ").unwrap_or(&details)
++                } else {
++                    &details
++                };
+                 return format!(
+-                    "{} / FIXED {} Pods / {} containers | {} | ",
+-                    membership.namespace(),
++                    "FIXED {} Pods / {} containers | {} | {} | {}",
+                     membership.pods().len(),
+                     membership.source_count(),
++                    details,
++                    membership.namespace(),
+                     membership.description()
+                 );
+             }
+             format!(
+-                "{}/{} / {} | ",
++                "LOGS {}/{} / {} | {}",
+                 target.namespace,
+                 target.pod,
+                 if target.all {
+                     "ALL ordinary containers"
+                 } else {
+                     target.container.as_deref().unwrap_or("default")
+-                }
++                },
++                view.title()
+             )
+         })
+-        .unwrap_or_default();
+-    panel(
+-        out,
+-        rect,
+-        &format!("LOGS {target}{}", view.title()),
+-        true,
+-        color("accent"),
+-        bg,
+-    )
+-    .map_err(|_| "draw failed")?;
++        .unwrap_or_else(|| format!("LOGS {}", view.title()));
++    panel(out, rect, &title, true, color("accent"), bg).map_err(|_| "draw failed")?;
+     for (index, line) in view
+         .render(
+             usize::from(w.saturating_sub(2)),
+@@ -5901,6 +5910,51 @@
+         Ok(())
+     }
+     #[test]
++    fn helm_status_tracks_current_draft_review_and_execution() -> Result<()> {
++        let (mut app, replies, mut commands) = harness();
++        app.options.connection.demo = true;
++        app.options.connection.writable = true;
++        app.options.connection.allow_helm = true;
++        app.options.connection.allow_helm_write = true;
++        app.status = "HELM OPERATION SUCCEEDED".into();
++        app.sticky_status = true;
++        app.begin_helm_form(helm_ui::Intent::Install);
++        assert_eq!(app.status, "Helm draft; no execution requested.");
++        assert!(!app.sticky_status);
++        let Modal::HelmForm(form) = &mut app.modal else {
++            return Err("missing Helm draft".into());
++        };
++        form.fields[0].1 = "demo".into();
++        form.fields[1].1 = "demo-new".into();
++        app.key(KeyCode::Enter)?;
++        assert_eq!(app.status, "Preparing Helm review; no execution requested.");
++        assert!(matches!(
++            commands.try_recv(),
++            Ok((_, Task::HelmPrepare(..)))
++        ));
++        replies
++            .send((
++                app.epoch,
++                Reply::HelmPrepared(app.helm_generation, Ok(demo_helm_prepared()?)),
++            ))
++            .map_err(|_| "reply closed")?;
++        app.receive();
++        assert_eq!(app.status, "Helm review ready; no execution requested.");
++        let Modal::HelmReview(review) = &mut app.modal else {
++            return Err("missing Helm review".into());
++        };
++        review.typed = review.prepared.confirmation();
++        review.mark_drawn(78, 500);
++        app.key(KeyCode::Enter)?;
++        assert!(app.write_inflight);
++        assert_eq!(
++            app.status,
++            "Helm execution in progress; Ctrl-C requests cancellation."
++        );
++        assert!(!screen(&app, 80, 24).join("\n").contains("SUCCEEDED"));
++        Ok(())
++    }
++    #[test]
+     fn helm_lifecycle_gates_cancel_review_stale_scope_and_unknown_outcome() -> Result<()> {
+         let (mut app, replies, mut commands) = harness();
+         app.begin_helm_form(helm_ui::Intent::Install);
+@@ -6000,6 +6054,55 @@
+             .recv_timeout(Duration::from_secs(2))
+             .map_err(|_| "worker timeout")?;
+         assert!(matches!(reply,Reply::HelmOutcome(5,Err(error)) if error.contains("stale")));
++        Ok(())
++    }
++    #[test]
++    fn group_log_title_keeps_range_visible_before_long_workload_identity() -> Result<()> {
++        let (mut app, _, _) = harness();
++        let namespace = format!("kborg-{}", "a".repeat(56));
++        let membership = crate::logs::LogMembership::new(
++            &namespace,
++            format!(
++                "workload deployments.apps / ui-lifecycle-worker UID {}; fixed membership",
++                "1".repeat(36)
++            ),
++            ["one", "two"]
++                .into_iter()
++                .map(|name| crate::logs::LogPod {
++                    name: name.into(),
++                    uid: format!("uid-{name}"),
++                    containers: vec!["worker".into()],
++                })
++                .collect(),
++            vec![],
++            "test-connection",
++        )?;
++        app.log_target = Some(LogTarget {
++            namespace,
++            pod: "ui-lifecycle-worker".into(),
++            container: None,
++            uid: "workload-uid".into(),
++            previous: false,
++            follow: true,
++            all: true,
++            membership: Some(membership),
++        });
++        let view = crate::ui_logs::LogView::new(
++            "[Log stream merge fixed membership]\nrecord".into(),
++            crate::logs::ReadOptions::for_key('3').ok_or("missing range")?,
++        );
++        app.modal = Modal::Follow(Box::new(view));
++        for width in [48, 80, 140] {
++            let frame = screen(&app, width, 12);
++            let title = &frame[3];
++            for expected in ["FIXED 2 Pods", "2 containers", "last 300s"] {
++                assert!(
++                    title.contains(expected),
++                    "{width}: missing {expected}: {title}"
++                );
++            }
++            assert!(!title.contains("111111111111111111111111111111111111"));
++        }
+         Ok(())
+     }
+     #[test]

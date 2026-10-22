@@ -31,6 +31,8 @@ pub struct Config {
     #[serde(default)]
     pub allow_helm: bool,
     #[serde(default)]
+    pub allow_helm_write: bool,
+    #[serde(default)]
     pub allow_exec: bool,
     #[serde(default)]
     pub allow_attach: bool,
@@ -55,6 +57,7 @@ impl Default for Config {
             poll: false,
             allow_logs: false,
             allow_helm: false,
+            allow_helm_write: false,
             allow_exec: false,
             allow_attach: false,
             allow_forward: false,
@@ -98,6 +101,9 @@ pub fn apply(config: Config, options: &mut Options) -> Result<()> {
     // constrain capabilities, but they never enable them without explicit flags.
     if options.connection.allow_helm && !config.allow_helm {
         return Err("configuration forbids Helm release storage access".into());
+    }
+    if options.connection.allow_helm_write && !config.allow_helm_write {
+        return Err("configuration forbids Helm lifecycle actions".into());
     }
     if options.connection.logs && !config.allow_logs {
         return Err("configuration forbids log access".into());
@@ -175,6 +181,9 @@ mod tests {
             previous: false,
             all_containers: false,
             helm_storage: None,
+            helm_tool: None,
+            helm_values: None,
+            helm_timeout_seconds: 300,
             log_seconds: crate::logs::DEFAULT_FOLLOW_SECONDS,
             log_read: crate::logs::ReadOptions::default(),
             selector: String::new(),
@@ -185,6 +194,45 @@ mod tests {
         }
     }
 
+    #[test]
+    fn helm_write_permission_requires_both_cli_opt_in_and_operator_config() -> Result<()> {
+        let mut selected = options();
+        selected.connection.allow_helm_write = true;
+        assert!(apply(Config::default(), &mut selected).is_err());
+        let mut selected = options();
+        selected.connection.allow_helm_write = true;
+        selected.connection.writable = true;
+        assert!(
+            apply(
+                Config {
+                    allow_helm_write: true,
+                    ..Config::default()
+                },
+                &mut selected
+            )
+            .is_err()
+        );
+        apply(
+            Config {
+                profile: Profile::Operator,
+                allow_helm_write: true,
+                ..Config::default()
+            },
+            &mut selected,
+        )?;
+        let mut disabled = options();
+        apply(
+            Config {
+                profile: Profile::Operator,
+                allow_helm_write: true,
+                ..Config::default()
+            },
+            &mut disabled,
+        )?;
+        assert!(!disabled.connection.allow_helm_write);
+        assert!(!disabled.connection.writable);
+        Ok(())
+    }
     #[test]
     fn files_constrain_capabilities_and_cli_scope_wins() -> Result<()> {
         let config = Config {

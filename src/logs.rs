@@ -5,7 +5,12 @@ use futures_util::{
     io::{AsyncBufRead, AsyncReadExt},
 };
 use k8s_openapi::api::core::v1::Pod;
-use kube::{Api, api::LogParams};
+use kube::{
+    Api,
+    api::{DynamicObject, ListParams, LogParams},
+};
+use serde::Serialize;
+use serde_json::Value;
 use std::{
     collections::VecDeque,
     future::Future,
@@ -27,7 +32,293 @@ const MAX_RECONNECTS: u32 = 5;
 const CONNECT_BUDGET: Duration = Duration::from_secs(15);
 /// Pod-wide logging deliberately excludes init and ephemeral containers.
 pub const MAX_MERGED_CONTAINERS: usize = 16;
+pub const MAX_LOG_PODS: usize = 8;
+pub const MAX_WORKLOAD_LOG_SOURCES: usize = 32;
+pub(crate) const MAX_LOG_JOBS: usize = 64;
 const MERGED_OPEN_CONCURRENCY: usize = 4;
+const MEMBERSHIP_CHECK_INTERVAL: Duration = Duration::from_secs(5);
+const MEMBERSHIP_CHECK_BUDGET: Duration = Duration::from_secs(3);
+const MEMBERSHIP_BYTES: usize = 8 * 1024 * 1024;
+
+#[derive(Clone, Debug)]
+pub enum PodLogSelection {
+    Selector(String),
+    Workload {
+        resource: String,
+        name: String,
+        uid: String,
+    },
+}
+#[derive(Clone, Debug, Serialize)]
+pub struct LogPod {
+    pub name: String,
+    pub uid: String,
+    pub containers: Vec<String>,
+}
+#[derive(Clone, Debug, Serialize)]
+pub(crate) struct LogParent {
+    pub resource: String,
+    pub name: String,
+    pub uid: String,
+}
+/// A complete, immutable source snapshot bound to the connection that captured
+/// it. Refresh is an explicit new capture, never an implicit Pod replacement.
+#[derive(Clone, Debug, Serialize)]
+pub struct LogMembership {
+    namespace: String,
+    description: String,
+    pods: Vec<LogPod>,
+    #[serde(skip)]
+    pub(crate) parents: Vec<LogParent>,
+    #[serde(skip)]
+    connection: String,
+}
+impl LogMembership {
+    pub fn namespace(&self) -> &str {
+        &self.namespace
+    }
+    pub fn description(&self) -> &str {
+        &self.description
+    }
+    pub fn pods(&self) -> &[LogPod] {
+        &self.pods
+    }
+    pub fn source_count(&self) -> usize {
+        self.pods.iter().map(|pod| pod.containers.len()).sum()
+    }
+    pub(crate) fn new(
+        namespace: &str,
+        description: String,
+        mut pods: Vec<LogPod>,
+        parents: Vec<LogParent>,
+        connection: &str,
+    ) -> Result<Self> {
+        if !safety::valid_id(namespace)
+            || pods.is_empty()
+            || pods.len() > MAX_LOG_PODS
+            || parents.len() > MAX_LOG_PODS + 1
+        {
+            return Err("log membership requires 1..8 Pods in one concrete namespace; narrow the selector or workload".into());
+        }
+        pods.sort_by(|a, b| a.name.cmp(&b.name));
+        let mut names = std::collections::BTreeSet::new();
+        let mut identities = std::collections::BTreeSet::new();
+        for pod in &pods {
+            validate_merge_target(namespace, &pod.name, &pod.uid)?;
+            if !identities.insert(&pod.uid)
+                || !names.insert(&pod.name)
+                || pod.containers.is_empty()
+                || pod.containers.len() > MAX_MERGED_CONTAINERS
+            {
+                return Err("log membership contains duplicate or invalid Pod sources".into());
+            }
+            let mut names = std::collections::BTreeSet::new();
+            if pod
+                .containers
+                .iter()
+                .any(|name| !safety::valid_id(name) || !names.insert(name))
+            {
+                return Err(
+                    "log membership contains invalid or duplicate ordinary containers".into(),
+                );
+            }
+        }
+        if pods.iter().map(|pod| pod.containers.len()).sum::<usize>() > MAX_WORKLOAD_LOG_SOURCES {
+            return Err("log membership exceeds 32 ordinary-container streams; narrow the selector or workload".into());
+        }
+        Ok(Self {
+            namespace: namespace.into(),
+            description: safety::safe_text(&description, 4096),
+            pods,
+            parents,
+            connection: connection.into(),
+        })
+    }
+    pub(crate) fn verify_connection(&self, connection: &str) -> Result<()> {
+        if self.connection != connection {
+            return Err("log membership belongs to another connection; capture sources again after reconnecting".into());
+        }
+        Ok(())
+    }
+}
+
+pub(crate) fn log_pod(pod: &Pod, namespace: &str) -> Result<LogPod> {
+    let name = pod.metadata.name.as_deref().ok_or("log Pod name missing")?;
+    let uid = pod.metadata.uid.as_deref().ok_or("log Pod UID missing")?;
+    Ok(LogPod {
+        name: name.into(),
+        uid: uid.into(),
+        containers: ordinary_container_names(pod, namespace, name, uid)?,
+    })
+}
+pub(crate) fn owned_by(value: &Value, api: &str, kind: &str, uid: &str) -> bool {
+    value["metadata"]["ownerReferences"]
+        .as_array()
+        .is_some_and(|owners| {
+            owners.iter().any(|owner| {
+                owner["apiVersion"] == api
+                    && owner["kind"] == kind
+                    && owner["uid"] == uid
+                    && owner["controller"] == true
+            })
+        })
+}
+pub(crate) fn membership_bytes(bytes: &mut usize, value: &impl Serialize) -> Result<()> {
+    // Bound the complete capture cumulatively, independent of per-response limits.
+    struct Counter<'a>(&'a mut usize);
+    impl std::io::Write for Counter<'_> {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            if bytes.len() > MEMBERSHIP_BYTES.saturating_sub(*self.0) {
+                return Err(std::io::ErrorKind::FileTooLarge.into());
+            }
+            *self.0 += bytes.len();
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    serde_json::to_writer(Counter(bytes), value)
+        .map_err(|_| "log membership capture exceeded its shared 8 MiB resource budget".into())
+}
+pub(crate) async fn selected_pods(
+    api: &Api<Pod>,
+    selector: &str,
+    owner: Option<&str>,
+    deadline: Instant,
+    bytes: &mut usize,
+) -> Result<Vec<LogPod>> {
+    crate::selectors::validate(selector)?;
+    if selector.trim().is_empty() {
+        return Err("an explicit nonempty Pod selector is required for workload logs".into());
+    }
+    let list = tokio::time::timeout_at(
+        deadline,
+        api.list(&ListParams {
+            limit: Some((MAX_LOG_PODS + 1) as u32),
+            label_selector: Some(selector.into()),
+            ..Default::default()
+        }),
+    )
+    .await
+    .map_err(|_| "log membership Pod listing timed out")?
+    .map_err(|error| open_failure(error, false))?;
+    membership_bytes(bytes, &list)?;
+    if list
+        .metadata
+        .resource_version
+        .as_deref()
+        .is_none_or(|version| {
+            version.is_empty() || version.len() > 253 || safety::safe_text(version, 253) != version
+        })
+    {
+        return Err("Pod log membership omitted a valid list resourceVersion; complete membership cannot be established".into());
+    }
+    if list
+        .metadata
+        .continue_
+        .as_ref()
+        .is_some_and(|token| !token.is_empty())
+        || list.items.len() > MAX_LOG_PODS
+    {
+        return Err(
+            "Pod selector exceeds the complete 8-Pod log membership limit; narrow the selector"
+                .into(),
+        );
+    }
+    let ns = api.namespace().ok_or("logs require a concrete namespace")?;
+    let mut pods = Vec::new();
+    for pod in list.items {
+        let member = log_pod(&pod, ns)?;
+        let labels =
+            serde_json::to_value(pod.metadata.labels.as_ref()).map_err(|_| "invalid Pod labels")?;
+        if !crate::selectors::matches(selector, &labels) {
+            return Err(
+                "Pod listing escaped the selected label scope; no log streams opened".into(),
+            );
+        }
+        if owner.is_some_and(|uid| {
+            !pod.metadata
+                .owner_references
+                .as_ref()
+                .is_some_and(|owners| {
+                    owners.iter().any(|owner| {
+                        owner.api_version == "batch/v1"
+                            && owner.kind == "Job"
+                            && owner.uid == uid
+                            && owner.controller == Some(true)
+                    })
+                })
+        }) {
+            continue;
+        }
+        pods.push(member);
+    }
+    Ok(pods)
+}
+
+#[derive(Clone)]
+pub(crate) enum IdentityGuard {
+    Pod {
+        api: Api<Pod>,
+        name: String,
+        uid: String,
+    },
+    Parent {
+        api: Api<DynamicObject>,
+        name: String,
+        uid: String,
+    },
+}
+impl IdentityGuard {
+    async fn verify(&self, deadline: Instant) -> std::result::Result<(), ReopenFailure> {
+        match self {
+            Self::Pod { api, name, uid } => {
+                check_uid(api, name, uid, deadline)
+                    .await
+                    .map_err(|error| match error {
+                        ReopenFailure::Stop(error) => ReopenFailure::Stop(format!(
+                            "captured Pod {}/{} UID {}: {error}",
+                            api.namespace().unwrap_or("?"),
+                            name,
+                            uid
+                        )),
+                        ReopenFailure::Retry => ReopenFailure::Retry,
+                    })
+            }
+            Self::Parent { api, name, uid } => {
+                let value = tokio::time::timeout_at(deadline, api.get_metadata(name))
+                    .await
+                    .map_err(|_| ReopenFailure::Retry)?
+                    .map_err(reopen_failure)?;
+                if value.metadata.name.as_deref() != Some(name)
+                    || value.metadata.namespace.as_deref() != api.namespace()
+                    || value.metadata.uid.as_deref() != Some(uid)
+                {
+                    return Err(ReopenFailure::Stop(format!(
+                        "captured workload or Job {}/{} UID {} identity changed; capture log membership again",
+                        api.namespace().unwrap_or("?"),
+                        name,
+                        uid
+                    )));
+                }
+                Ok(())
+            }
+        }
+    }
+}
+async fn verify_guards(
+    guards: &[IdentityGuard],
+    deadline: Instant,
+) -> std::result::Result<(), ReopenFailure> {
+    let mut checks = futures_util::stream::iter(guards.to_vec())
+        .map(|guard| async move { guard.verify(deadline).await })
+        .buffer_unordered(MERGED_OPEN_CONCURRENCY);
+    while let Some(result) = checks.next().await {
+        result?;
+    }
+    Ok(())
+}
 
 #[derive(Default)]
 struct MergeBudget {
@@ -345,6 +636,7 @@ struct ResumeSource {
     name: String,
     uid: String,
     params: LogParams,
+    guards: Arc<Vec<IdentityGuard>>,
 }
 
 enum ReopenFailure {
@@ -444,6 +736,7 @@ impl LogFeed {
                 name: name.into(),
                 uid: uid.into(),
                 params: read_options.params(container, false, true)?,
+                guards: Arc::new(Vec::new()),
             });
         }
         Ok(self)
@@ -555,6 +848,13 @@ impl LogFeed {
             }
             tokio::time::sleep(backoff).await;
             let deadline = self.deadline.min(Instant::now() + CONNECT_BUDGET);
+            match verify_guards(&source.guards, deadline).await {
+                Ok(()) => {}
+                Err(ReopenFailure::Retry) => continue,
+                Err(ReopenFailure::Stop(message)) => {
+                    return Err(self.stop_merge_for_identity(message));
+                }
+            }
             match check_uid(&source.api, &source.name, &source.uid, deadline).await {
                 Ok(()) => {}
                 Err(ReopenFailure::Retry) => continue,
@@ -789,11 +1089,171 @@ pub struct MergedLogFeed {
     cursor: usize,
     deadline: Instant,
     budget: SharedMergeBudget,
-    header: Option<String>,
+    header: VecDeque<String>,
     ended: bool,
     snapshot_mode: bool,
+    guards: Arc<Vec<IdentityGuard>>,
+    next_identity_check: Option<Instant>,
+    identity_failures: u8,
+    notice_reserve: usize,
 }
 impl MergedLogFeed {
+    pub(crate) async fn open_membership(
+        api: Api<Pod>,
+        membership: &LogMembership,
+        mut guards: Vec<IdentityGuard>,
+        previous: bool,
+        follow: Option<FollowOptions>,
+        read: ReadOptions,
+    ) -> Result<Self> {
+        if api.namespace() != Some(membership.namespace()) {
+            return Err("log membership API escaped its captured namespace".into());
+        }
+        let read = read.validate()?;
+        if previous && follow.is_some() {
+            return Err("previous container logs support snapshots only; omit follow".into());
+        }
+        let options = follow
+            .unwrap_or(FollowOptions {
+                seconds: CONNECT_BUDGET.as_secs() as u32,
+            })
+            .validate()?;
+        let deadline = Instant::now() + Duration::from_secs(u64::from(options.seconds));
+        let connect_deadline = deadline.min(Instant::now() + CONNECT_BUDGET);
+        let mut bytes = 0;
+        let mut captures=futures_util::stream::iter(membership.pods.iter().map(|member| {
+            let api=api.clone(); async move {
+                let pod=tokio::time::timeout_at(connect_deadline,api.get(&member.name)).await.map_err(|_|"captured log Pod verification timed out")?.map_err(|error|open_failure(error,false))?;
+                let current=log_pod(&pod,membership.namespace())?;
+                let mut actual=current.containers.clone(); actual.sort();
+                let mut expected=member.containers.clone(); expected.sort();
+                if current.name!=member.name||current.uid!=member.uid||actual!=expected {return Err("captured log Pod or ordinary-container membership changed; capture sources again".into());}
+                Ok::<Pod,String>(pod)
+            }
+        })).buffer_unordered(MERGED_OPEN_CONCURRENCY);
+        while let Some(pod) = captures.next().await {
+            membership_bytes(&mut bytes, &pod?)?;
+        }
+        for member in &membership.pods {
+            guards.push(IdentityGuard::Pod {
+                api: api.clone(),
+                name: member.name.clone(),
+                uid: member.uid.clone(),
+            });
+        }
+        match verify_guards(&guards, connect_deadline).await {
+            Ok(()) => {}
+            Err(ReopenFailure::Retry) => {
+                return Err(
+                    "captured workload log identities could not be verified; retry explicitly"
+                        .into(),
+                );
+            }
+            Err(ReopenFailure::Stop(error)) => return Err(error),
+        }
+        let requests = membership
+            .pods
+            .iter()
+            .flat_map(|pod| pod.containers.iter().map(move |container| (pod, container)));
+        let mut opens =
+            futures_util::stream::iter(requests.enumerate().map(|(index, (pod, container))| {
+                let api = api.clone();
+                async move {
+                    let result = async {
+                        let params =
+                            read.params(Some(container.clone()), previous, follow.is_some())?;
+                        let reader = tokio::time::timeout_at(
+                            connect_deadline,
+                            api.log_stream(&pod.name, &params),
+                        )
+                        .await
+                        .map_err(|_| "log source connection timed out".to_owned())?
+                        .map_err(|error| open_failure(error, previous))?;
+                        let mut feed = LogFeed::with_read_options(reader, options, read)?;
+                        feed.deadline = deadline;
+                        if follow.is_some() {
+                            feed = feed.with_resume(
+                                api,
+                                &pod.name,
+                                &pod.uid,
+                                Some(container.clone()),
+                                read,
+                            )?;
+                        }
+                        Ok(feed)
+                    }
+                    .await;
+                    (index, pod.name.clone(), container.clone(), result)
+                }
+            }))
+            .buffer_unordered(MERGED_OPEN_CONCURRENCY)
+            .collect::<Vec<_>>()
+            .await;
+        // Prevent replacement while any of the source requests were opening.
+        match verify_guards(&guards,connect_deadline).await {
+            Ok(())=>{}, Err(ReopenFailure::Retry)=>return Err("captured workload log identities could not be verified after opening; retry explicitly".into()), Err(ReopenFailure::Stop(error))=>return Err(error),
+        }
+        opens.sort_by_key(|(index, _, _, _)| *index);
+        if follow.is_none() || read.head {
+            guards.clear();
+        }
+        Self::from_membership_sources(
+            membership,
+            opens
+                .into_iter()
+                .map(|(_, pod, container, result)| (pod, container, result))
+                .collect(),
+            deadline,
+            guards,
+        )
+    }
+    pub(crate) fn from_membership_sources(
+        membership: &LogMembership,
+        sources: Vec<(String, String, Result<LogFeed>)>,
+        deadline: Instant,
+        guards: Vec<IdentityGuard>,
+    ) -> Result<Self> {
+        if sources.len() != membership.source_count() {
+            return Err("log streams do not cover the complete captured membership".into());
+        }
+        let mut seen = std::collections::BTreeSet::new();
+        for (pod, container, _) in &sources {
+            if !membership
+                .pods
+                .iter()
+                .any(|member| member.name == *pod && member.containers.contains(container))
+                || !seen.insert((pod, container))
+            {
+                return Err(
+                    "log stream escaped or duplicated the captured Pod/container membership".into(),
+                );
+            }
+        }
+        let mut headers = VecDeque::new();
+        headers.push_back(bounded_line(&format!("[Log stream merge: {}; {} Pods / {} ordinary containers; fixed membership, no new Pods or replacements admitted; delivery arrival order, timestamps preserved; init/ephemeral excluded]",membership.description,membership.pods.len(),sources.len())));
+        for pod in &membership.pods {
+            headers.push_back(source_notice(
+                &format!("{}/{}", membership.namespace, pod.name),
+                &format!(
+                    "captured UID {}; {} ordinary containers",
+                    pod.uid,
+                    pod.containers.len()
+                ),
+            ));
+        }
+        let sources = sources
+            .into_iter()
+            .map(|(pod, container, result)| {
+                (
+                    format!("{}/{pod}:{container}", membership.namespace),
+                    result,
+                )
+            })
+            .collect();
+        let mut feed = Self::build_sources(sources, headers, deadline, guards)?;
+        feed.notice_reserve = 64 * 1024;
+        Ok(feed)
+    }
     pub(crate) async fn open(
         api: Api<Pod>,
         name: &str,
@@ -913,19 +1373,46 @@ impl MergedLogFeed {
                 "merged log source count exceeded its bounded ordinary-container scope".into(),
             );
         }
-        let budget: SharedMergeBudget = Arc::new(Mutex::new(MergeBudget::default()));
         let mut names = Vec::with_capacity(sources.len());
-        let mut merged = Vec::with_capacity(sources.len());
+        let mut identified = Vec::with_capacity(sources.len());
         for (container, result) in sources {
             if !safety::valid_id(&container) || names.contains(&container) {
                 return Err("invalid or duplicate merged log source".into());
             }
             names.push(container.clone());
             let identity = format!("{ns}/{name}:{container}");
+            identified.push((identity, result));
+        }
+        Self::build_sources(
+            identified,
+            VecDeque::from([format!(
+                "[Log stream merge: {} ordinary containers; pod UID {uid}; delivery in arrival order, source timestamps preserved; init/ephemeral excluded]",
+                names.len()
+            )]),
+            deadline,
+            Vec::new(),
+        )
+    }
+    fn build_sources(
+        sources: Vec<(String, Result<LogFeed>)>,
+        header: VecDeque<String>,
+        deadline: Instant,
+        guards: Vec<IdentityGuard>,
+    ) -> Result<Self> {
+        if sources.is_empty() || sources.len() > MAX_WORKLOAD_LOG_SOURCES {
+            return Err("merged logs exceed the shared 32-source limit".into());
+        }
+        let budget: SharedMergeBudget = Arc::new(Mutex::new(MergeBudget::default()));
+        let guards = Arc::new(guards);
+        let mut merged = Vec::with_capacity(sources.len());
+        for (identity, result) in sources {
             let (pending, notice) = match result {
                 Ok(mut feed) => {
                     feed.deadline = deadline;
                     feed.merge_budget = Some(budget.clone());
+                    if let Some(resume) = &mut feed.resume {
+                        resume.guards = guards.clone();
+                    }
                     (Some(pending_source(feed)), None)
                 }
                 Err(error) => (
@@ -944,109 +1431,147 @@ impl MergedLogFeed {
             cursor: 0,
             deadline,
             budget,
-            header: Some(format!(
-                "[Log stream merge: {} ordinary containers; pod UID {uid}; delivery in arrival order, source timestamps preserved; init/ephemeral excluded]",
-                names.len()
-            )),
+            header,
             ended: false,
             snapshot_mode: false,
+            next_identity_check: (!guards.is_empty())
+                .then(|| Instant::now() + MEMBERSHIP_CHECK_INTERVAL),
+            guards,
+            identity_failures: 0,
+            notice_reserve: 16 * 1024,
         })
     }
     pub async fn next(&mut self) -> Result<Option<String>> {
-        if self.ended {
-            return Ok(None);
-        }
-        let shared_error = self
-            .budget
-            .lock()
-            .map_err(|_| "merged log budget unavailable")?
-            .stopped
-            .clone();
-        if let Some(error) = shared_error {
-            self.stop();
-            return Err(error);
-        }
-        if Instant::now() >= self.deadline {
-            self.stop();
-            return Err("merged log session deadline reached; all streams stopped; start a new session to continue".into());
-        }
-        if let Some(header) = self.header.take() {
-            return Ok(Some(header));
-        }
-        let count = self.sources.len();
-        for distance in 0..count {
-            let index = (self.cursor + distance) % count;
-            if let Some(notice) = self.sources[index].notice.take() {
-                self.cursor = (index + 1) % count;
-                return Ok(Some(notice));
+        loop {
+            if self.ended {
+                return Ok(None);
             }
-        }
-        let ready = std::future::poll_fn(|cx| {
-            let mut active = false;
-            for distance in 0..count {
-                let index = (self.cursor + distance) % count;
-                if let Some(pending) = self.sources[index].pending.as_mut() {
-                    active = true;
-                    if let Poll::Ready(result) = pending.as_mut().poll(cx) {
-                        return Poll::Ready(Some((index, result)));
-                    }
-                }
+            let shared_error = self
+                .budget
+                .lock()
+                .map_err(|_| "merged log budget unavailable")?
+                .stopped
+                .clone();
+            if let Some(error) = shared_error {
+                self.stop();
+                return Err(error);
             }
-            if active {
-                Poll::Pending
-            } else {
-                Poll::Ready(None)
-            }
-        });
-        let ready = match tokio::time::timeout_at(self.deadline, ready).await {
-            Ok(ready) => ready,
-            Err(_) => {
+            if Instant::now() >= self.deadline {
                 self.stop();
                 return Err("merged log session deadline reached; all streams stopped; start a new session to continue".into());
             }
-        };
-        let Some((index, (feed, result))) = ready else {
-            self.stop();
-            return Ok(None);
-        };
-        self.sources[index].pending = None;
-        self.cursor = (index + 1) % count;
-        // A shared budget violation is fatal to every source, not a recoverable
-        // per-container failure. No remaining buffered data is delivered.
-        let shared_error = self
-            .budget
-            .lock()
-            .map_err(|_| "merged log budget unavailable")?
-            .stopped
-            .clone();
-        if let Some(error) = shared_error {
-            self.stop();
-            return Err(error);
-        }
-        match result {
-            Ok(Some(line)) => {
-                let output = source_line(&self.sources[index].identity, &line, feed.last_control);
-                if let Err(error) =
-                    charge_merge(&self.budget, output.len().saturating_sub(line.len()), 0)
-                {
+            if self
+                .next_identity_check
+                .is_some_and(|next| Instant::now() >= next)
+            {
+                let deadline = self.deadline.min(Instant::now() + MEMBERSHIP_CHECK_BUDGET);
+                let result = verify_guards(&self.guards, deadline).await;
+                if Instant::now() >= self.deadline {
                     self.stop();
-                    return Err(error);
+                    return Err("merged log session deadline reached during identity verification; all streams stopped".into());
                 }
-                self.sources[index].pending = Some(pending_source(feed));
-                Ok(Some(output))
+                self.next_identity_check = Some(Instant::now() + MEMBERSHIP_CHECK_INTERVAL);
+                match result {
+                    Ok(()) => self.identity_failures = 0,
+                    Err(ReopenFailure::Stop(error)) => {
+                        self.stop();
+                        return Err(format!("{error}; all fixed-membership log streams stopped"));
+                    }
+                    Err(ReopenFailure::Retry) => {
+                        self.identity_failures += 1;
+                        if self.identity_failures >= 3 {
+                            self.stop();
+                            return Err("fixed log membership could not be verified three times; all streams stopped; capture sources again".into());
+                        }
+                        return Ok(Some("[Log stream membership verification temporarily unavailable; captured sources retained; no new Pods admitted]".into()));
+                    }
+                }
             }
-            Ok(None) => Ok(Some(source_notice(
-                &self.sources[index].identity,
-                if self.snapshot_mode && feed.total_bytes >= MAX_LOG_BYTES {
-                    "ended at the requested server byte limit; the final record may be incomplete; other container streams continue"
+            if let Some(header) = self.header.pop_front() {
+                return Ok(Some(header));
+            }
+            let count = self.sources.len();
+            for distance in 0..count {
+                let index = (self.cursor + distance) % count;
+                if let Some(notice) = self.sources[index].notice.take() {
+                    self.cursor = (index + 1) % count;
+                    return Ok(Some(notice));
+                }
+            }
+            let ready = std::future::poll_fn(|cx| {
+                let mut active = false;
+                for distance in 0..count {
+                    let index = (self.cursor + distance) % count;
+                    if let Some(pending) = self.sources[index].pending.as_mut() {
+                        active = true;
+                        if let Poll::Ready(result) = pending.as_mut().poll(cx) {
+                            return Poll::Ready(Some((index, result)));
+                        }
+                    }
+                }
+                if active {
+                    Poll::Pending
                 } else {
-                    "ended; other container streams continue"
-                },
-            ))),
-            Err(error) => Ok(Some(source_notice(
-                &self.sources[index].identity,
-                &safety::safe_text(&error, 512),
-            ))),
+                    Poll::Ready(None)
+                }
+            });
+            let wait_deadline = self
+                .next_identity_check
+                .map_or(self.deadline, |check| check.min(self.deadline));
+            let ready = match tokio::time::timeout_at(wait_deadline, ready).await {
+                Ok(ready) => ready,
+                Err(_) => {
+                    if Instant::now() < self.deadline {
+                        continue;
+                    }
+                    self.stop();
+                    return Err("merged log session deadline reached; all streams stopped; start a new session to continue".into());
+                }
+            };
+            let Some((index, (feed, result))) = ready else {
+                self.stop();
+                return Ok(None);
+            };
+            self.sources[index].pending = None;
+            self.cursor = (index + 1) % count;
+            // A shared budget violation is fatal to every source, not a recoverable
+            // per-container failure. No remaining buffered data is delivered.
+            let shared_error = self
+                .budget
+                .lock()
+                .map_err(|_| "merged log budget unavailable")?
+                .stopped
+                .clone();
+            if let Some(error) = shared_error {
+                self.stop();
+                return Err(error);
+            }
+            return match result {
+                Ok(Some(line)) => {
+                    let output =
+                        source_line(&self.sources[index].identity, &line, feed.last_control);
+                    if let Err(error) =
+                        charge_merge(&self.budget, output.len().saturating_sub(line.len()), 0)
+                    {
+                        self.stop();
+                        return Err(error);
+                    }
+                    self.sources[index].pending = Some(pending_source(feed));
+                    Ok(Some(output))
+                }
+                Ok(None) => Ok(Some(source_notice(
+                    &self.sources[index].identity,
+                    if self.snapshot_mode && feed.total_bytes >= MAX_LOG_BYTES {
+                        "ended at the requested server byte limit; the final record may be incomplete; other container streams continue"
+                    } else {
+                        "ended; other container streams continue"
+                    },
+                ))),
+                Err(error) => Ok(Some(source_notice(
+                    &self.sources[index].identity,
+                    &safety::safe_text(&error, 512),
+                ))),
+            };
         }
     }
     fn stop(&mut self) {
@@ -1058,7 +1583,7 @@ impl MergedLogFeed {
     pub(crate) async fn snapshot(mut self, options: ReadOptions) -> Result<String> {
         let options = options.validate()?;
         self.snapshot_mode = true;
-        const NOTICE_BYTES: usize = 16 * 1024;
+        let notice_bytes = self.notice_reserve;
         let mut notices = String::new();
         let mut lines = Vec::new();
         let mut bytes = 0usize;
@@ -1074,7 +1599,7 @@ impl MergedLogFeed {
                 }
             };
             if line.starts_with("[Log stream ") {
-                if notices.len() + line.len() < NOTICE_BYTES - 1024 {
+                if notices.len() + line.len() < notice_bytes - 1024 {
                     notices.push_str(&line);
                     notices.push('\n');
                 }
@@ -1090,7 +1615,7 @@ impl MergedLogFeed {
             });
             bytes += entry.2.len() + 1;
             lines.insert(index, entry);
-            while lines.len() > options.tail_lines as usize || bytes > MAX_LOG_BYTES - NOTICE_BYTES
+            while lines.len() > options.tail_lines as usize || bytes > MAX_LOG_BYTES - notice_bytes
             {
                 let removed = if options.head {
                     lines.pop().ok_or("empty merged snapshot")?
@@ -1115,6 +1640,324 @@ impl MergedLogFeed {
 
 #[cfg(test)]
 mod tests {
+    fn workload_membership(containers: usize) -> Result<LogMembership> {
+        LogMembership::new(
+            "default",
+            "selector app=web; fixed membership".into(),
+            ["one", "two"]
+                .into_iter()
+                .map(|name| LogPod {
+                    name: name.into(),
+                    uid: format!("uid-{name}"),
+                    containers: (0..containers).map(|index| format!("c{index}")).collect(),
+                })
+                .collect(),
+            Vec::new(),
+            "connection",
+        )
+    }
+    #[test]
+    fn workload_membership_is_complete_connection_bound_and_caps_pods_and_sources() -> Result<()> {
+        let membership = workload_membership(2)?;
+        assert_eq!(membership.pods().len(), 2);
+        assert_eq!(membership.source_count(), 4);
+        assert!(membership.verify_connection("connection").is_ok());
+        assert!(membership.verify_connection("other").is_err());
+        let json = serde_json::to_string(&membership).map_err(|_| "membership JSON")?;
+        assert!(!json.contains("connection"));
+        assert!(json.contains("uid-one"));
+        let pod = LogPod {
+            name: "one".into(),
+            uid: "uid".into(),
+            containers: vec!["main".into()],
+        };
+        assert!(
+            LogMembership::new(
+                "*",
+                "scope".into(),
+                vec![pod.clone()],
+                Vec::new(),
+                "connection"
+            )
+            .is_err()
+        );
+        assert!(
+            LogMembership::new(
+                "default",
+                "scope".into(),
+                vec![pod.clone(), pod],
+                Vec::new(),
+                "connection"
+            )
+            .is_err()
+        );
+        for (count, containers, valid) in
+            [(8, 4, true), (9, 1, false), (8, 5, false), (1, 17, false)]
+        {
+            let pods = (0..count)
+                .map(|n| LogPod {
+                    name: format!("pod-{n}"),
+                    uid: format!("uid-{n}"),
+                    containers: (0..containers).map(|n| format!("c{n}")).collect(),
+                })
+                .collect();
+            assert_eq!(
+                LogMembership::new("default", "scope".into(), pods, Vec::new(), "connection")
+                    .is_ok(),
+                valid
+            );
+        }
+        let mut bytes = MEMBERSHIP_BYTES - 2;
+        assert!(membership_bytes(&mut bytes, &"data").is_err());
+        assert!(bytes <= MEMBERSHIP_BYTES);
+        Ok(())
+    }
+    #[test]
+    fn multi_pod_streams_are_attributed_fair_and_have_one_global_tail() -> Result<()> {
+        runtime()?.block_on(async {
+            let membership = workload_membership(1)?;
+            let sources = vec![
+                (
+                    "one".into(),
+                    "c0".into(),
+                    Ok(LogFeed::new(Cursor::new(
+                        b"2026-10-22T12:00:01Z one-first\n2026-10-22T12:00:03Z one-last\n".to_vec(),
+                    ))),
+                ),
+                (
+                    "two".into(),
+                    "c0".into(),
+                    Ok(LogFeed::new(Cursor::new(
+                        b"2026-10-22T12:00:02Z two-first\n2026-10-22T12:00:04Z two-last\n".to_vec(),
+                    ))),
+                ),
+            ];
+            let mut feed = MergedLogFeed::from_membership_sources(
+                &membership,
+                sources,
+                Instant::now() + Duration::from_secs(10),
+                Vec::new(),
+            )?;
+            for expected in ["fixed membership", "uid-one", "uid-two"] {
+                assert!(
+                    feed.next()
+                        .await?
+                        .is_some_and(|line| line.contains(expected))
+                );
+            }
+            assert!(
+                feed.next()
+                    .await?
+                    .is_some_and(|line| line.contains("[default/one:c0] one-first"))
+            );
+            assert!(
+                feed.next()
+                    .await?
+                    .is_some_and(|line| line.contains("[default/two:c0] two-first"))
+            );
+            let text = feed
+                .snapshot(ReadOptions {
+                    tail_lines: 2,
+                    ..Default::default()
+                })
+                .await?;
+            let data = text
+                .lines()
+                .filter(|line| line.starts_with("2026-"))
+                .collect::<Vec<_>>();
+            assert_eq!(data.len(), 2);
+            assert!(data[0].ends_with("one-last"));
+            assert!(data[1].ends_with("two-last"));
+            assert!(text.len() <= MAX_LOG_BYTES);
+            Ok(())
+        })
+    }
+    #[test]
+    fn multi_pod_partial_source_errors_survive_without_hiding_other_pod_data() -> Result<()> {
+        runtime()?.block_on(async {
+            let membership = workload_membership(1)?;
+            let sources = vec![
+                (
+                    "one".into(),
+                    "c0".into(),
+                    Err("previous logs unavailable (Kubernetes API 400)".into()),
+                ),
+                (
+                    "two".into(),
+                    "c0".into(),
+                    Ok(LogFeed::new(Cursor::new(
+                        b"2026-10-22T12:00:00Z survivor\n".to_vec(),
+                    ))),
+                ),
+            ];
+            let text = MergedLogFeed::from_membership_sources(
+                &membership,
+                sources,
+                Instant::now() + Duration::from_secs(10),
+                Vec::new(),
+            )?
+            .snapshot(ReadOptions::default())
+            .await?;
+            assert!(text.contains("[Log stream default/one:c0: previous logs unavailable"));
+            assert!(text.contains("[default/two:c0] survivor"));
+            assert!(
+                MergedLogFeed::from_membership_sources(
+                    &membership,
+                    Vec::new(),
+                    Instant::now(),
+                    Vec::new()
+                )
+                .is_err()
+            );
+            Ok(())
+        })
+    }
+    #[test]
+    fn multi_pod_global_flood_guard_and_drop_cancel_all_sources() -> Result<()> {
+        runtime()?.block_on(async {
+            let membership = workload_membership(1)?;
+            let data = "line\n".repeat(3000);
+            let sources = membership
+                .pods()
+                .iter()
+                .map(|pod| {
+                    (
+                        pod.name.clone(),
+                        "c0".into(),
+                        Ok(LogFeed::new(Cursor::new(data.as_bytes().to_vec()))),
+                    )
+                })
+                .collect();
+            let mut feed = MergedLogFeed::from_membership_sources(
+                &membership,
+                sources,
+                Instant::now() + Duration::from_secs(10),
+                Vec::new(),
+            )?;
+            loop {
+                match feed.next().await {
+                    Ok(Some(_)) => {}
+                    Ok(None) => return Err("multi-Pod flood guard missing".into()),
+                    Err(error) => {
+                        assert!(error.contains("shared 5000 lines"));
+                        break;
+                    }
+                }
+            }
+            assert_eq!(feed.next().await?, None);
+            let dropped = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let sources = membership
+                .pods()
+                .iter()
+                .map(|pod| {
+                    (
+                        pod.name.clone(),
+                        "c0".into(),
+                        LogFeed::with_options(
+                            futures_util::io::BufReader::new(QuietDrop(dropped.clone())),
+                            FollowOptions::default(),
+                        ),
+                    )
+                })
+                .collect();
+            let mut feed = MergedLogFeed::from_membership_sources(
+                &membership,
+                sources,
+                Instant::now() + Duration::from_secs(10),
+                Vec::new(),
+            )?;
+            for _ in 0..3 {
+                feed.next().await?;
+            }
+            assert!(
+                tokio::time::timeout(Duration::from_millis(5), feed.next())
+                    .await
+                    .is_err()
+            );
+            drop(feed);
+            assert_eq!(dropped.load(std::sync::atomic::Ordering::SeqCst), 2);
+            Ok(())
+        })
+    }
+    #[test]
+    fn quiet_multi_pod_follow_verifies_pod_and_workload_uids_without_stream_activity() -> Result<()>
+    {
+        runtime()?.block_on(async {
+            for parent in [false,true] {
+                let membership=workload_membership(1)?;
+                let (api,requests)=resume_api(vec![(200,serde_json::json!({"apiVersion":"v1","kind":"Pod","metadata":{"namespace":"default","name":"one","uid":"replacement"}}).to_string())]);
+                let guard=if parent {IdentityGuard::Parent{api:Api::namespaced_with(api.into_client(),"default",&kube::api::ApiResource::erase::<k8s_openapi::api::apps::v1::Deployment>(&())),name:"one".into(),uid:"uid-one".into()}}else{IdentityGuard::Pod{api,name:"one".into(),uid:"uid-one".into()}};
+                let dropped=Arc::new(std::sync::atomic::AtomicUsize::new(0));
+                let sources=membership.pods().iter().map(|pod|(pod.name.clone(),"c0".into(),LogFeed::with_options(futures_util::io::BufReader::new(QuietDrop(dropped.clone())),FollowOptions::default()))).collect();
+                let mut feed=MergedLogFeed::from_membership_sources(&membership,sources,Instant::now()+Duration::from_secs(10),vec![guard])?;
+                if !parent {for _ in 0..3 {feed.next().await?;}}
+                feed.next_identity_check=Some(Instant::now()+if parent{Duration::ZERO}else{Duration::from_millis(5)});
+                let error=feed.next().await.err().ok_or("quiet membership replacement was ignored")?;
+                assert!(error.contains("changed")||error.contains("replaced"));assert!(error.contains("all fixed-membership"));
+                assert_eq!(dropped.load(std::sync::atomic::Ordering::SeqCst),2);
+                assert_eq!(requests.lock().map_err(|_|"requests")?.len(),1);
+                assert_eq!(feed.next().await?,None);
+            }
+            Ok(())
+        })
+    }
+    #[test]
+    fn workload_guard_deletion_is_fatal_and_transient_verification_is_bounded() -> Result<()> {
+        runtime()?.block_on(async {
+            for code in [404,503] {
+                let membership=workload_membership(1)?;
+                let status=serde_json::json!({"apiVersion":"v1","kind":"Status","status":"Failure","code":code,"reason":"Unavailable","message":"CANARY private server error"}).to_string();
+                let (api,requests)=resume_api(vec![(code,status.clone()),(code,status.clone()),(code,status)]);
+                let guard=IdentityGuard::Pod{api,name:"one".into(),uid:"uid-one".into()};
+                let dropped=Arc::new(std::sync::atomic::AtomicUsize::new(0));
+                let sources=membership.pods().iter().map(|pod|(pod.name.clone(),"c0".into(),LogFeed::with_options(futures_util::io::BufReader::new(QuietDrop(dropped.clone())),FollowOptions::default()))).collect();
+                let mut feed=MergedLogFeed::from_membership_sources(&membership,sources,Instant::now()+Duration::from_secs(30),vec![guard])?;
+                if code==503 {
+                    for _ in 0..2 {feed.next_identity_check=Some(Instant::now());let notice=feed.next().await?.ok_or("transient guard ended early")?;assert!(notice.contains("temporarily unavailable")&&!notice.contains("CANARY"));assert_eq!(dropped.load(std::sync::atomic::Ordering::SeqCst),0);}
+                }
+                feed.next_identity_check=Some(Instant::now());
+                let error=feed.next().await.err().ok_or("guard failure did not stop")?;
+                assert!(!error.contains("CANARY"));assert!(error.contains("404")||error.contains("three times"));
+                assert_eq!(dropped.load(std::sync::atomic::Ordering::SeqCst),2);
+                assert_eq!(requests.lock().map_err(|_|"requests")?.len(),if code==503{3}else{1});
+            }
+            Ok(())
+        })
+    }
+    #[test]
+    fn multi_pod_open_checks_every_uid_after_open_before_delivering_any_source() -> Result<()> {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        runtime()?.block_on(async {
+            for replace in [false,true] {
+                let membership=workload_membership(1)?;
+                let opens=Arc::new(AtomicUsize::new(0));let calls=opens.clone();
+                let requests:Requests=Default::default();let recorded=requests.clone();
+                let service=tower::service_fn(move|request:http::Request<kube::client::Body>|{
+                    let path=request.uri().path();recorded.lock().unwrap_or_else(|e|panic!("{e}")).push(request.uri().to_string());
+                    let text=if path.ends_with("/log") {
+                        calls.fetch_add(1,Ordering::SeqCst);
+                        format!("2026-10-22T12:00:00Z {}\n",if path.contains("/one/"){ "source-one" }else{"source-two"})
+                    }else{
+                        let name=path.rsplit('/').next().unwrap_or("invalid");
+                        serde_json::json!({"apiVersion":"v1","kind":"Pod","metadata":{"namespace":"default","name":name,"uid":if replace&&name=="one"&&calls.load(Ordering::SeqCst)==2{"replaced".into()}else{format!("uid-{name}")}},"spec":{"containers":[{"name":"c0","image":"fixture"}]}}).to_string()
+                    };
+                    async move{Ok::<_,std::convert::Infallible>(http::Response::new(http_body_util::Full::new(bytes::Bytes::from(text))))}
+                });
+                let api=Api::namespaced(kube::Client::new(service,"default"),"default");
+                let result=MergedLogFeed::open_membership(api,&membership,Vec::new(),false,Some(FollowOptions{seconds:10}),ReadOptions::default()).await;
+                assert_eq!(opens.load(Ordering::SeqCst),2);
+                if replace {assert!(result.is_err_and(|error|error.contains("replaced")));}
+                else {
+                    let mut feed=result?;let mut data=Vec::new();
+                    while let Some(line)=feed.next().await?{if line.starts_with("2026-"){data.push(line);}}
+                    assert_eq!(data.len(),2);assert!(data[0].contains("[default/one:c0] source-one"));assert!(data[1].contains("[default/two:c0] source-two"));
+                }
+                let requests=requests.lock().map_err(|_|"requests")?;
+                assert!(requests.iter().all(|uri|uri.starts_with("/api/v1/namespaces/default/pods/")));
+            }
+            Ok(())
+        })
+    }
     fn merge_sources(sources: Vec<(&str, &str)>) -> Result<MergedLogFeed> {
         MergedLogFeed::from_sources(
             "default",
