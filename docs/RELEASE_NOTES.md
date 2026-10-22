@@ -1,14 +1,30 @@
 # Local development update — 2026-10-22
 
-The current iteration adds full-width k9s command navigation, native Helm release
+The latest iteration adds reviewed Helm install, upgrade, rollback and uninstall
+from the CLI and Helm view, plus fixed-membership workload/selector logs across
+up to eight Pods and 32 ordinary-container streams. Lifecycle requires all three
+flags `--write --allow-helm --allow-helm-write`, exact trusted Unix Helm 4.3.1 and
+local deterministic packaged charts. A complete 15-minute review and fresh
+plan/history/UID/resourceVersion checks precede execution. Hooks, CRDs,
+cluster/system/cross-namespace targets, recognized GitOps resources and foreign
+adoption are rejected. SQL storage, repository/OCI fetching and Windows lifecycle
+remain unsupported. Source membership and shared log limits remain fixed across
+range changes/reconnects; init and ephemeral sources are excluded from merges.
+See [workflow guide](HELM_LIFECYCLE.md),
+[current acceptance](HELM_LIFECYCLE_ACCEPTANCE.md),
+[exact command compatibility](K9S_COMPATIBILITY.md) and
+[remaining work](REMAINING_WORK.md). Full k9s parity and external production gates
+remain open. No new release is published by this local session.
+
+## Earlier Helm, Pod-log and metrics iteration — 2026-10-22
+
+This earlier iteration added full-width k9s command navigation, native Helm release
 and revision browsing, redacted selected values, merged ordinary-container Pod
 logs, and CPU/memory tables with numeric sorting and session history. Docker
 Desktop now has an explicitly installed Metrics Server with verified TLS on both
 hops. Helm/log workflows also run against an isolated minikube cluster. See
-[current acceptance](HELM_LOGS_METRICS_ACCEPTANCE.md),
-[exact command compatibility](K9S_COMPATIBILITY.md) and
-[remaining work](REMAINING_WORK.md). Helm lifecycle mutations and external
-production gates remain open. No new release is published by this local session.
+[historical acceptance](HELM_LOGS_METRICS_ACCEPTANCE.md). Helm lifecycle was still
+open in that source and is superseded by the latest iteration above.
 The dated reports below preserve their original artifact scope.
 
 # Local development update — 2026-10-10

@@ -1,0 +1,11 @@
+{
+  "schema": 1,
+  "timestamp_utc": "2026-10-22T13:58:40.409304+00:00",
+  "default_context": "docker-desktop",
+  "recorded_desktop_fixture_namespaces_absent": true,
+  "minikube_profile_container_absent": true,
+  "linux_validation_container_absent": true,
+  "owned_linux_build_volumes_absent": true,
+  "temporary_credentials_removed": true,
+  "desktop_metrics_provider_retained_and_verified": true
+}

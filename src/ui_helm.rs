@@ -114,7 +114,369 @@ pub enum Action {
     Close,
     Request(Request),
     Metadata(Release),
+    Lifecycle(Box<Intent>),
     Unavailable(&'static str),
+}
+#[derive(Clone)]
+pub enum Intent {
+    Install,
+    Upgrade(Release),
+    Rollback {
+        current: Release,
+        target: Box<Release>,
+    },
+    Uninstall(Release),
+}
+impl Intent {
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Install => "INSTALL HELM RELEASE",
+            Self::Upgrade(_) => "UPGRADE HELM RELEASE",
+            Self::Rollback { .. } => "ROLL BACK HELM RELEASE",
+            Self::Uninstall(_) => "UNINSTALL HELM RELEASE",
+        }
+    }
+    fn current(&self) -> Option<&Release> {
+        match self {
+            Self::Install => None,
+            Self::Upgrade(release) | Self::Uninstall(release) => Some(release),
+            Self::Rollback { current, .. } => Some(current),
+        }
+    }
+}
+pub struct Form {
+    pub intent: Intent,
+    pub fields: Vec<(&'static str, String)>,
+    pub active: usize,
+    namespace: String,
+    storage: Storage,
+}
+pub struct WriteDraft {
+    pub options: crate::helm_lifecycle::Options,
+    pub request: crate::helm_lifecycle::Request,
+    pub expected: Option<Release>,
+    pub rollback_target: Option<Release>,
+}
+impl Form {
+    pub fn new(
+        intent: Intent,
+        namespace: String,
+        storage: Storage,
+        values: Option<&std::path::Path>,
+        demo: bool,
+    ) -> Self {
+        let chart = if demo {
+            "/demo/chart.tgz".into()
+        } else {
+            String::new()
+        };
+        let values = values
+            .map(|path| path.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let fields = match &intent {
+            Intent::Install => vec![
+                (
+                    "Namespace",
+                    if namespace == "*" {
+                        String::new()
+                    } else {
+                        namespace.clone()
+                    },
+                ),
+                ("Release", String::new()),
+                ("Packaged chart (.tgz)", chart),
+                ("Values file (optional)", values),
+            ],
+            Intent::Upgrade(_) => vec![
+                ("Packaged chart (.tgz)", chart),
+                ("Values file (optional)", values),
+            ],
+            _ => vec![],
+        };
+        Self {
+            intent,
+            fields,
+            active: 0,
+            namespace,
+            storage,
+        }
+    }
+    pub fn key(&mut self, key: KeyCode) {
+        let count = self.fields.len();
+        if count == 0 {
+            return;
+        }
+        match key {
+            KeyCode::Tab | KeyCode::Down => self.active = (self.active + 1) % count,
+            KeyCode::BackTab | KeyCode::Up => {
+                self.active = if self.active == 0 {
+                    count - 1
+                } else {
+                    self.active - 1
+                }
+            }
+            KeyCode::Backspace => {
+                self.fields[self.active].1.pop();
+            }
+            KeyCode::Char(c)
+                if !c.is_control() && self.fields[self.active].1.len() + c.len_utf8() <= 4096 =>
+            {
+                self.fields[self.active].1.push(c)
+            }
+            _ => {}
+        }
+    }
+    pub fn clear(&mut self) {
+        if let Some((_, value)) = self.fields.get_mut(self.active) {
+            value.clear();
+        }
+    }
+    pub fn draft(&self, executable: std::path::PathBuf, seconds: u16) -> Result<WriteDraft> {
+        use crate::helm_lifecycle::{Options, Request};
+        let path = |value: &str, optional: bool| -> Result<Option<std::path::PathBuf>> {
+            if value.is_empty() {
+                return if optional {
+                    Ok(None)
+                } else {
+                    Err("Choose an absolute local packaged chart .tgz path.".into())
+                };
+            }
+            let path = std::path::PathBuf::from(value);
+            if !path.is_absolute() {
+                return Err("Chart and values paths must be absolute local paths; no shell expansion is performed.".into());
+            }
+            Ok(Some(path))
+        };
+        let (namespace, release, storage, request) = match &self.intent {
+            Intent::Install => {
+                let namespace = self.fields[0].1.trim();
+                let release = self.fields[1].1.trim();
+                if !safety::valid_id(namespace) {
+                    return Err("Choose one explicit namespace before installation.".into());
+                }
+                if !helm::valid_release_name(release) {
+                    return Err("Release name must be a DNS name of at most 53 bytes.".into());
+                }
+                let chart = path(&self.fields[2].1, false)?.ok_or("Missing packaged chart")?;
+                (
+                    namespace.into(),
+                    release.into(),
+                    self.storage,
+                    Request::Install {
+                        chart,
+                        values: path(&self.fields[3].1, true)?,
+                    },
+                )
+            }
+            Intent::Upgrade(current) => (
+                current.namespace.clone(),
+                current.name.clone(),
+                current.storage,
+                Request::Upgrade {
+                    chart: path(&self.fields[0].1, false)?.ok_or("Missing packaged chart")?,
+                    values: path(&self.fields[1].1, true)?,
+                },
+            ),
+            Intent::Rollback { current, target } => (
+                current.namespace.clone(),
+                current.name.clone(),
+                current.storage,
+                Request::Rollback {
+                    revision: target.revision,
+                },
+            ),
+            Intent::Uninstall(current) => (
+                current.namespace.clone(),
+                current.name.clone(),
+                current.storage,
+                Request::Uninstall,
+            ),
+        };
+        Ok(WriteDraft {
+            options: Options {
+                executable,
+                namespace,
+                release,
+                storage,
+                seconds,
+            },
+            request,
+            expected: self.intent.current().cloned(),
+            rollback_target: if let Intent::Rollback { target, .. } = &self.intent {
+                Some((**target).clone())
+            } else {
+                None
+            },
+        })
+    }
+    pub fn lines(&self, width: usize, height: usize) -> Vec<String> {
+        let mut lines = vec![if let Some(current) = self.intent.current() {
+            format!(
+                "{}/{} | current revision {} | {} storage",
+                current.namespace,
+                current.name,
+                current.revision,
+                current.storage.name()
+            )
+        } else {
+            format!(
+                "Namespace {} | {} storage",
+                self.fields
+                    .first()
+                    .map(|(_, value)| value.as_str())
+                    .unwrap_or(&self.namespace),
+                self.storage.name()
+            )
+        }];
+        if let Intent::Rollback { target, .. } = &self.intent {
+            lines.push(format!(
+                "Target revision {} | {} {} | captured UID {}",
+                target.revision, target.chart_name, target.chart_version, target.uid
+            ));
+        }
+        if height >= 5 {
+            lines.push("Local packaged charts only. Preparation validates files and renders a complete review.".into());
+        }
+        if height >= 3 && matches!(self.intent, Intent::Uninstall(_)) {
+            lines.push("DESTRUCTIVE: release-managed resources will be removed. Review before confirmation.".into());
+        }
+        if self.fields.is_empty() && height > lines.len() {
+            lines.push("Enter prepares the review; this does not execute Helm.".into());
+        }
+        let capacity = height.saturating_sub(lines.len()).max(1);
+        let start = self.active.saturating_sub(capacity.saturating_sub(1));
+        for (index, (label, value)) in self.fields.iter().enumerate().skip(start).take(capacity) {
+            let label = if width < 40 {
+                match *label {
+                    "Packaged chart (.tgz)" => "Chart",
+                    "Values file (optional)" => "Values",
+                    "Namespace" => "NS",
+                    label => label,
+                }
+            } else {
+                label
+            };
+            let prefix = format!("{} {label}: ", if index == self.active { ">" } else { " " });
+            lines.push(format!(
+                "{prefix}{}{}",
+                tail(value, width.saturating_sub(prefix.len() + 1)),
+                if index == self.active { "_" } else { "" }
+            ));
+        }
+        lines
+    }
+}
+
+pub fn same_release(a: &Release, b: &Release) -> bool {
+    a.namespace == b.namespace
+        && a.name == b.name
+        && a.storage == b.storage
+        && a.revision == b.revision
+        && a.uid == b.uid
+        && a.resource_version == b.resource_version
+}
+pub fn validate_prepared(
+    prepared: &crate::helm_lifecycle::Prepared,
+    draft: &WriteDraft,
+) -> Result<()> {
+    if draft.expected.as_ref().is_some_and(|expected| {
+        prepared
+            .selected()
+            .is_none_or(|selected| !same_release(expected, selected))
+    }) {
+        return Err(
+            "Selected Helm release changed before preparation; refresh and select it again.".into(),
+        );
+    }
+    if draft.rollback_target.as_ref().is_some_and(|expected| {
+        prepared
+            .rollback_target()
+            .is_none_or(|selected| !same_release(expected, selected))
+    }) {
+        return Err(
+            "Selected rollback revision was replaced; refresh history before review.".into(),
+        );
+    }
+    Ok(())
+}
+
+/// Coverage is recorded only after a frame is successfully written to the terminal.
+/// Jumping to the end never marks skipped review lines as seen.
+pub struct Review {
+    pub prepared: Box<crate::helm_lifecycle::Prepared>,
+    pub typed: String,
+    pub offset: usize,
+    pub epoch: u64,
+    width: usize,
+    viewed: std::collections::BTreeSet<usize>,
+}
+impl Review {
+    pub fn new(prepared: Box<crate::helm_lifecycle::Prepared>, epoch: u64) -> Self {
+        Self {
+            prepared,
+            typed: String::new(),
+            offset: 0,
+            epoch,
+            width: 0,
+            viewed: Default::default(),
+        }
+    }
+    fn wrapped(&self, width: usize) -> Vec<String> {
+        super::wrap_text(self.prepared.summary(), width.max(1))
+            .lines()
+            .map(str::to_owned)
+            .collect()
+    }
+    pub fn mark_drawn(&mut self, width: usize, height: usize) {
+        if width != self.width {
+            self.width = width;
+            self.viewed.clear();
+        }
+        let count = self.wrapped(width).len();
+        self.offset = self.offset.min(count.saturating_sub(1));
+        self.viewed
+            .extend(self.offset.min(count)..self.offset.saturating_add(height).min(count));
+    }
+    pub fn remaining(&self, width: usize) -> usize {
+        let count = self.wrapped(width).len();
+        if self.width != width {
+            count
+        } else {
+            count.saturating_sub(self.viewed.len())
+        }
+    }
+    pub fn lines(&self, width: usize, height: usize) -> Vec<String> {
+        let lines = self.wrapped(width);
+        let start = self.offset.min(lines.len().saturating_sub(1));
+        lines.into_iter().skip(start).take(height).collect()
+    }
+    pub fn key(&mut self, key: KeyCode, width: usize, height: usize) {
+        let count = self.wrapped(width).len();
+        let page = height.saturating_sub(1).max(1);
+        match key {
+            KeyCode::Up => self.offset = self.offset.saturating_sub(1),
+            KeyCode::Down => self.offset = self.offset.saturating_add(1),
+            KeyCode::PageUp => self.offset = self.offset.saturating_sub(page),
+            KeyCode::PageDown => self.offset = self.offset.saturating_add(page),
+            KeyCode::Home => self.offset = 0,
+            KeyCode::End => self.offset = count.saturating_sub(height.max(1)),
+            KeyCode::Backspace => {
+                self.typed.pop();
+            }
+            KeyCode::Char(c) if !c.is_control() && self.typed.len() + c.len_utf8() <= 320 => {
+                self.typed.push(c)
+            }
+            _ => {}
+        }
+        self.offset = self.offset.min(count.saturating_sub(1));
+    }
+    pub fn can_execute(&self, width: u16, height: u16, epoch: u64) -> bool {
+        width >= 28
+            && height >= 10
+            && self.epoch == epoch
+            && self.remaining(usize::from(width.saturating_sub(2))) == 0
+            && self.typed == self.prepared.confirmation()
+    }
 }
 pub struct Table {
     pub snapshot: Snapshot,
@@ -156,6 +518,9 @@ impl Table {
     }
     pub fn selected(&self) -> Option<&Release> {
         self.rows().get(self.selected).copied()
+    }
+    pub fn current(&self) -> Option<Release> {
+        self.parent.clone().or_else(|| self.selected().cloned())
     }
     pub fn refresh(&self) -> Request {
         self.parent
@@ -243,10 +608,21 @@ impl Table {
                 self.revision_sort = !self.revision_sort;
                 self.selected = 0;
             }
+            KeyCode::Char('i') => return Action::Lifecycle(Box::new(Intent::Install)),
+            KeyCode::Char('u') => {
+                if let Some(current) = self.current() {
+                    return Action::Lifecycle(Box::new(Intent::Upgrade(current)));
+                }
+            }
             KeyCode::Char('r') if self.parent.is_some() => {
-                return Action::Unavailable(
-                    "Helm rollback is unavailable; revision history and stored values are read-only.",
-                );
+                if let (Some(current), Some(target)) =
+                    (self.parent.clone(), self.selected().cloned())
+                {
+                    return Action::Lifecycle(Box::new(Intent::Rollback {
+                        current,
+                        target: Box::new(target),
+                    }));
+                }
             }
             KeyCode::Enter | KeyCode::Char('r' | 'v' | 'd' | 'm' | 'y') => {
                 if let Some(release) = self.selected().cloned() {
@@ -265,9 +641,9 @@ impl Table {
                 }
             }
             KeyCode::Delete => {
-                return Action::Unavailable(
-                    "Helm uninstall is unavailable; no release mutation was requested.",
-                );
+                if let Some(current) = self.current() {
+                    return Action::Lifecycle(Box::new(Intent::Uninstall(current)));
+                }
             }
             _ => {}
         }
@@ -380,9 +756,9 @@ impl Table {
     }
     pub fn help(&self) -> &'static str {
         if self.parent.is_some() {
-            "Enter/v stored values | d metadata | m resources | y YAML | / filter | Esc back"
+            "Enter/v values | r rollback | u upgrade | Ctrl-D uninstall | d metadata | Esc back"
         } else {
-            "Enter/r history | v stored values | d metadata | m resources | / filter | Esc back"
+            "Enter/r history | i install | u upgrade | Ctrl-D uninstall | v values | m resources | Esc back"
         }
     }
 }
@@ -425,6 +801,88 @@ mod tests {
             source: "test".into(),
         }
     }
+    fn demo_review() -> Result<Review> {
+        let prepared = crate::cli::runtime()?.block_on(async {
+            let gateway = Gateway::connect(crate::gateway::Connection {
+                demo: true,
+                writable: true,
+                allow_helm: true,
+                allow_helm_write: true,
+                ..Default::default()
+            })
+            .await?;
+            crate::helm_lifecycle::prepare(
+                &gateway,
+                crate::helm_lifecycle::Options {
+                    executable: "/demo/helm".into(),
+                    namespace: "demo".into(),
+                    release: "demo-new".into(),
+                    storage: Storage::Secret,
+                    seconds: 300,
+                },
+                crate::helm_lifecycle::Request::Install {
+                    chart: "/demo/chart.tgz".into(),
+                    values: None,
+                },
+            )
+            .await
+        })?;
+        Ok(Review::new(Box::new(prepared), 7))
+    }
+    #[test]
+    fn review_requires_every_painted_line_and_resets_for_resize_and_epoch() -> Result<()> {
+        let mut review = demo_review()?;
+        review.typed = review.prepared.confirmation();
+        assert!(!review.can_execute(28, 10, 7));
+        review.mark_drawn(26, 2);
+        assert!(review.remaining(26) > 0);
+        review.key(KeyCode::End, 26, 2);
+        review.mark_drawn(26, 2);
+        assert!(
+            review.remaining(26) > 0,
+            "jumping to the last page cannot acknowledge skipped lines"
+        );
+        let count = review.wrapped(26).len();
+        for offset in (0..count).step_by(2) {
+            review.offset = offset;
+            review.mark_drawn(26, 2);
+        }
+        assert!(review.can_execute(28, 10, 7));
+        assert!(!review.can_execute(28, 10, 8));
+        assert!(!review.can_execute(27, 10, 7));
+        assert!(!review.can_execute(80, 24, 7));
+        review.mark_drawn(78, 1);
+        assert!(
+            review.remaining(78) > 0,
+            "new wrapping starts a fresh coverage record"
+        );
+        Ok(())
+    }
+    #[test]
+    fn forms_validate_explicit_targets_and_keep_active_path_tail_visible() -> Result<()> {
+        let mut form = Form::new(Intent::Install, "*".into(), Storage::Secret, None, true);
+        assert!(form.draft("/demo/helm".into(), 300).is_err());
+        form.fields[0].1 = "demo".into();
+        form.fields[1].1 = "my.api".into();
+        let draft = form.draft("/demo/helm".into(), 300)?;
+        assert_eq!(draft.options.release, "my.api");
+        assert!(matches!(
+            draft.request,
+            crate::helm_lifecycle::Request::Install { .. }
+        ));
+        form.fields[2].1 = "relative.tgz".into();
+        assert!(form.draft("/demo/helm".into(), 300).is_err());
+        form.fields[2].1 = format!("/{}-VISIBLE.tgz", "x".repeat(300));
+        form.active = 2;
+        assert!(form.lines(46, 5).join("\n").contains("VISIBLE.tgz_"));
+        assert!(
+            form.lines(26, 2).join("\n").contains("VISIBLE.tgz_"),
+            "active input stays visible at minimum dialog height"
+        );
+        form.clear();
+        assert!(form.fields[2].1.is_empty());
+        Ok(())
+    }
     #[test]
     fn familiar_list_and_history_keys_capture_selected_revision() {
         let r = release("web", 3, Storage::Secret);
@@ -454,7 +912,7 @@ mod tests {
         );
         assert!(matches!(
             history.key(KeyCode::Char('r')),
-            Action::Unavailable(_)
+            Action::Lifecycle(intent) if matches!(*intent,Intent::Rollback { .. })
         ));
     }
     #[test]

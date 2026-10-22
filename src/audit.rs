@@ -46,6 +46,11 @@ fn parse(id: String, bytes: &[u8]) -> Result<Option<Pending>> {
         "set-image"
     } else if action == "set-resources" {
         "set-resources"
+    } else if matches!(
+        action,
+        "helm-install" | "helm-upgrade" | "helm-rollback" | "helm-uninstall"
+    ) {
+        action
     } else {
         "operation"
     };
@@ -108,6 +113,29 @@ mod tests {
                 .unwrap_or_else(|e| panic!("{e}"))
                 .is_some()
         );
+    }
+    #[test]
+    fn pending_helm_operations_keep_the_action_without_echoing_untrusted_fields() -> Result<()> {
+        for action in [
+            "helm-install",
+            "helm-upgrade",
+            "helm-rollback",
+            "helm-uninstall",
+        ] {
+            let record = serde_json::json!({"schema_version":1,"stage":"intent","action":action});
+            let pending = parse("1.jsonl".into(), record.to_string().as_bytes())?
+                .ok_or("missing pending intent")?;
+            assert_eq!(pending.operation, action);
+            assert!(pending.state.contains("UNKNOWN"));
+        }
+        let record = br#"{"schema_version":1,"stage":"intent","action":"helm-install SECRET"}"#;
+        assert_eq!(
+            parse("1.jsonl".into(), record)?
+                .ok_or("missing pending intent")?
+                .operation,
+            "operation"
+        );
+        Ok(())
     }
     #[test]
     fn durable_success_is_not_pending() {

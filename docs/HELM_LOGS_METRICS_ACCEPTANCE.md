@@ -1,5 +1,11 @@
 # Helm, merged logs and Desktop metrics acceptance
 
+Historical report for the earlier Helm browsing/Pod-log/metrics source. Its
+counts, binaries, screenshots and limitations are retained as recorded. The later
+[Helm lifecycle and workload-log report](HELM_LIFECYCLE_ACCEPTANCE.md) supplies
+current source-specific evidence; the [remaining-work register](REMAINING_WORK.md)
+defines current scope.
+
 Date: 2026-10-22. KBorg 0.3 development iteration, branch
 `codex/helm-logs-metrics`. This report supersedes the missing Helm/merged-log/
 Desktop-provider statements in the earlier [navigation report](K9S_ACCEPTANCE.md).

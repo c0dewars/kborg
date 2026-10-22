@@ -23,6 +23,8 @@ animations and ANSI styling never enter machine output.
 | `overview CONTEXT... --json` | Array of independent context summaries: `demo`, `context`, `namespace`, `pods`, `unhealthy`, `truncated`, `error` |
 | `logs POD [CONTAINER] --json` | Object with `logs` (sanitized string) and `bounded: true` |
 | `logs POD CONTAINER --follow --json` | JSONL objects containing `line` (sanitized string); follow remains opt-in and time/byte bounded |
+| `logs RESOURCE/NAME --json` or `logs --selector LABELS --json` | Object with `logs`, `bounded: true`, `container_scope: all-ordinary`, `pod_scope: fixed-membership`, and `membership` described below |
+| Workload/selector logs with `--follow --json` | JSONL objects containing `line`, `container_scope: all-ordinary`, `pod_scope: fixed-membership`, and the same captured `membership` on every record |
 | `helm list\|history RELEASE --json` | Envelope: `schema_version: 1`, `kind: helm-list` or `helm-history`, `bounded: true`, and `data` containing `releases`, `truncated`, `issues`, `source` |
 | `helm detail\|resources RELEASE REVISION --json` | Same envelope with `kind: helm-detail` or `helm-resources`; `data` contains selected `release`, safe `resources` identities, `resources_truncated`, `issues` |
 | `helm values RELEASE REVISION --json` | Same envelope with `kind: helm-values`; `data` contains selected `release`, redacted stored override `values`, and sensitivity `notice` |
@@ -73,5 +75,21 @@ contain partial-data notices, so inspect them rather than assuming every source
 succeeded. `truncated` and `issues` in Helm list/history similarly identify partial
 storage reads. Duplicate Secret/ConfigMap release names require an explicit
 `--helm-storage`; duplicate namespaces require narrowing `-n`. Detail/values bind
-to the selected storage UID and reject replacement. Helm SQL storage and release
-install/upgrade/rollback/uninstall are not application commands.
+to the selected storage UID and reject replacement. Helm SQL storage remains
+unsupported.
+
+Workload/selector `membership` contains `namespace`, `description`, and `pods`;
+each Pod has `name`, captured `uid`, and complete ordinary `containers`. Internal
+connection and parent identity guards are not serialized. Capture is bounded to
+eight Pods/32 total streams in one namespace and rejects incomplete lists.
+Explicit container arguments are invalid for group logs; init/ephemeral sources
+are excluded. Range changes and reconnects retain this membership, and newly
+matching Pods are not silently added. Identity/deletion failures stop the group;
+per-source endpoint failures remain attributed notices within sanitized text.
+Snapshot head/tail applies once across all sources, not once per Pod.
+
+Helm install/upgrade/rollback/uninstall are human-reviewed commands, separately
+requiring `--write --allow-helm --allow-helm-write` and trusted Unix Helm 4.3.1.
+They reject `--json` and piped confirmations. Their review, fresh validation,
+uncertain outcomes and supported chart subset are documented in
+[HELM_LIFECYCLE.md](HELM_LIFECYCLE.md); they do not change the read envelopes above.

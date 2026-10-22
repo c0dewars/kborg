@@ -12,7 +12,7 @@ For rollback, stop KBorg and select the previous versioned binary. This does not
 
 `kborg config init settings.json` creates a new strict JSON file. Pass it explicitly with `--config`; no project-local executable configuration is auto-loaded. `config validate` validates without connecting. CLI context/namespace/theme values override file defaults. Files can constrain capabilities but never enable writes or log/subresource access without their CLI flags. Profile `read-only` refuses `--write`; profile `operator` still requires `--write`, separate capability opt-ins, and target confirmation. These are local client controls, not a substitute for RBAC/admission or a policy against a user running another binary.
 
-Supported fields: `schema_version` (1), `profile` (`read-only` or `operator`), optional `context`, `namespace`, `theme`, and booleans `no_splash`, `poll`, `allow_logs`, `allow_helm`, `allow_exec`, `allow_attach`, `allow_forward`, `allow_tools`, `allow_extensions`, `allow_auth_helper`. Unknown/duplicate fields fail. Default generated config prohibits sensitive capabilities. Config never stores credentials.
+Supported fields: `schema_version` (1), `profile` (`read-only` or `operator`), optional `context`, `namespace`, `theme`, and booleans `no_splash`, `poll`, `allow_logs`, `allow_helm`, `allow_helm_write`, `allow_exec`, `allow_attach`, `allow_forward`, `allow_tools`, `allow_extensions`, `allow_auth_helper`. Unknown/duplicate fields fail. Default generated config prohibits sensitive capabilities. Config never stores credentials. Helm lifecycle requires an `operator` profile permitting both Helm capabilities when a config file is supplied, plus all three explicit CLI flags.
 
 `kborg completions bash|zsh|fish|powershell` emits a static script; review and load it through your shell's normal configuration. It makes no cluster calls.
 
@@ -116,7 +116,7 @@ its credentials/cache/error and one cancellable watch; summaries coalesce in one
 mailbox and close/scope changes abort all feeds. No object data or credentials are
 shared. Broader independent-cluster soak tests remain open.
 
-## Helm, merged logs and Desktop metrics
+## Helm lifecycle, workload logs and Desktop metrics
 
 Launch `./scripts/start-local.sh --context docker-desktop --allow-helm --allow-logs --no-splash`.
 `:helm` lists Helm release storage in the current namespace; Enter/r opens history,
@@ -130,6 +130,27 @@ label selector as a Secret permission boundary. Use a dedicated namespace and
 least-privilege identity. Generic Secret browsing remains disabled. Known-key
 redaction cannot identify every confidential custom chart value.
 
+Helm install, upgrade, rollback and uninstall are separately available on Unix
+with `--write --allow-helm --allow-helm-write --helm-tool ABSOLUTE_PATH`.
+The trusted executable must be exactly Helm 4.3.1. Install/upgrade accept local
+deterministic `.tgz` charts with bundled dependencies and an optional explicit
+values file. They do not fetch repositories/OCI or create namespaces.
+`:helm` uses `i` to install, `u` to upgrade and Ctrl-D to uninstall; history `r`
+prepares rollback to the selected revision.
+
+Review the complete context/endpoint, exact arguments and hashes, current and
+desired resources, and release history. Type the exact `namespace/release`.
+Reviews expire after 15 minutes and final checks reject changed input, history,
+UID or resourceVersion. Lifecycle commands require a terminal and reject JSON or
+piped approval. Hooks, CRDs, cluster/system/cross-namespace resources, recognized
+GitOps targets and foreign-resource adoption are refused. The allowlisted chart
+subset, private static credential transfer and remaining post-check race are
+documented in [HELM_LIFECYCLE.md](HELM_LIFECYCLE.md). Trusted Helm retains OS-user
+permissions; it is not sandboxed. Timeouts, cancellation or partial failure
+require inspecting release state and `audit pending` before another action;
+there is no automatic retry or rollback. SQL storage and Windows lifecycle
+supervision remain unsupported.
+
 `logs POD --all-containers` reads ordinary containers with namespace/Pod/container
 labels. Add `--follow --log-seconds 60` for a finite live merge. Init and ephemeral
 containers are excluded; at most 16 ordinary containers and four simultaneous
@@ -140,8 +161,23 @@ visible while other sources continue. Every session shares deadline, rate and
 The visible cache remains 256 KiB/2,000 lines. This does not guarantee lossless
 ordering across containers, rotation, restarts or reconnects.
 
+`logs deploy/NAME`, `logs service/NAME` and `logs --selector LABELS` merge a
+captured group in one explicit namespace. Supported workload families also
+include StatefulSet, DaemonSet, ReplicaSet, ReplicationController, Job and
+CronJob; CronJobs follow exact controller UIDs through Jobs. Workload `l`/`p`
+and `:logs LABELS` provide the same UI workflow. Capture rejects partial or
+oversized membership: at most eight Pods, 16 ordinary containers per Pod and
+32 streams in total. An explicit container argument is reserved for single-Pod
+logs. Source membership stays fixed across range changes and reconnects;
+reopen explicitly to include new rollout Pods. Pod/workload deletion,
+replacement or authorization loss stops the group. Periodic checks cover quiet
+streams, and transient verification failures are visible and bounded. The
+group shares the existing time, byte, rate, cache and global head/tail limits.
+
 Desktop metrics installation and certificate renewal are documented in
 [DESKTOP_METRICS.md](DESKTOP_METRICS.md). KBorg itself never installs a provider.
 The explicit setup helper installs one Helm-owned Metrics Server release; the
 ordinary application only reads the Metrics API. Current-session acceptance and
-remaining gaps are in [HELM_LOGS_METRICS_ACCEPTANCE.md](HELM_LOGS_METRICS_ACCEPTANCE.md).
+remaining gaps are in [HELM_LIFECYCLE_ACCEPTANCE.md](HELM_LIFECYCLE_ACCEPTANCE.md).
+The earlier [Helm/Pod-log/metrics report](HELM_LOGS_METRICS_ACCEPTANCE.md)
+preserves its original source and screenshots as historical evidence.

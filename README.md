@@ -22,7 +22,7 @@ The native launcher uses the release binary under `target/release`; the live
 session defaults to read-only. `--demo` explores all 35 built-in resource types
 without cluster credentials.
 
-Requirements: Rust 1.99 (pinned), the platform linker (Visual Studio C++ tools on Windows), and a terminal. Docker Desktop with Kubernetes and kubectl are needed only for local integration tests. Cargo downloads the pinned dependencies on first build. Git is useful for development. No Node/Python runtime, AI account, Helm, or kubectl runtime backend is required.
+Requirements: Rust 1.99 (pinned), the platform linker (Visual Studio C++ tools on Windows), and a terminal. Docker Desktop with Kubernetes and kubectl are needed only for local integration tests. Cargo downloads the pinned dependencies on first build. Git is useful for development. Browsing needs no Node/Python runtime, AI account, Helm, or kubectl backend. Optional Helm lifecycle actions require an explicitly trusted native Helm 4.3.1 executable on Unix.
 
 ```powershell
 cd C:\Users\Garcia\Desktop\projects\k8borg
@@ -75,14 +75,26 @@ Navigation follows the k9s command grammar, including `:pod /REGEX`, `:pod app=w
 
 Live tables use bounded LIST/WATCH with reconnect/backoff, expired-version relisting and scope cancellation. Reads retain at most 1,000 objects/8 MiB; narrow the namespace when TRUNCATED appears. Logs require `--allow-logs`. The log view supports the k9s tail/head/time-range keys, search, wrapping, timestamps and autoscroll. Follow retains a rolling 2,000-line/256 KiB window, has a configurable deadline and flood limits, and checks the Pod UID before transport reconnection. Logs can contain sensitive application data.
 
-Mutations require `--write`, server dry-run and exact `namespace/name` confirmation within 60 seconds. `e` opens a prefilled container image/resource editor for Deployments, StatefulSets, DaemonSets and CronJobs. Scale supports Deployments and StatefulSets (0..20); restart supports Deployments, StatefulSets and DaemonSets. Pod `s` opens a reviewed shell, `a` attaches, and `F` prepares loopback forwarding with separate capability flags. Ctrl-D reviews an allowed individual deletion. UID/resourceVersion checks reject stale targets; there are no automatic mutation retries. Generic YAML apply, force deletion, node administration and remote full-screen programs remain unsupported.
+Native resource mutations require `--write`, server dry-run and exact `namespace/name` confirmation within 60 seconds. `e` opens a prefilled container image/resource editor for Deployments, StatefulSets, DaemonSets and CronJobs. Scale supports Deployments and StatefulSets (0..20); restart supports Deployments, StatefulSets and DaemonSets. Pod `s` opens a reviewed shell, `a` attaches, and `F` prepares loopback forwarding with separate capability flags. Ctrl-D reviews an allowed individual deletion. UID/resourceVersion checks reject stale targets; there are no automatic mutation retries. Generic YAML apply, force deletion, node administration and remote full-screen programs remain unsupported.
 
 Helm releases are available through `:helm` with `--allow-helm`; Enter opens revision
-history and selected values. `logs POD --all-containers` and the log-view `a` key
-merge ordinary containers with source labels. Docker Desktop can supply real CPU
-and memory data through the explicitly installed provider described in
-[Desktop metrics setup](docs/DESKTOP_METRICS.md). See
-[current acceptance](docs/HELM_LOGS_METRICS_ACCEPTANCE.md) for validated behavior.
+history and selected values. Reviewed install, upgrade, rollback and uninstall
+require all three flags `--write --allow-helm --allow-helm-write`, an explicitly
+trusted Helm 4.3.1 executable and local deterministic packaged charts. The
+15-minute review binds inputs, release history and live resource identities;
+fresh final checks precede execution. Hooks, CRDs, cluster/system targets,
+recognized GitOps resources and foreign adoption are rejected. Read the
+[Helm lifecycle guide](docs/HELM_LIFECYCLE.md) before enabling writes.
+
+`logs POD --all-containers` and the log-view `a` key merge ordinary containers.
+Workload `l`/`p`, `logs deploy/NAME` and `logs --selector app=web` capture a fixed
+membership of at most eight Pods and 32 ordinary-container streams in one namespace.
+Source labels, per-source failures and shared limits remain visible; new rollout
+Pods are not added automatically. Init and ephemeral sources are excluded from
+merges. Docker Desktop supplies real CPU and memory data through the explicitly
+installed provider described in [Desktop metrics setup](docs/DESKTOP_METRICS.md).
+See [current acceptance](docs/HELM_LIFECYCLE_ACCEPTANCE.md) for source-specific
+validation and remaining limits.
 
 ## Themes
 
@@ -214,4 +226,8 @@ minimized bundle. Automated diagnosis remains disabled until independent
 hostname-bound egress, dedicated credential authority and publisher provenance
 are validated.
 
-Current local acceptance and screenshots: [Helm, merged logs and Desktop metrics](docs/HELM_LOGS_METRICS_ACCEPTANCE.md). Earlier implementation evidence remains in the [k9s navigation session](docs/K9S_ACCEPTANCE.md) and [priority session](docs/PRIORITIES_ACCEPTANCE.md).
+Current local acceptance: [Helm lifecycle and workload logs](docs/HELM_LIFECYCLE_ACCEPTANCE.md).
+Earlier implementation evidence and screenshots remain in the historical
+[Helm, Pod logs and Desktop metrics report](docs/HELM_LOGS_METRICS_ACCEPTANCE.md),
+[k9s navigation session](docs/K9S_ACCEPTANCE.md) and
+[priority session](docs/PRIORITIES_ACCEPTANCE.md).

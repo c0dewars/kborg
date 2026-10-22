@@ -27,10 +27,20 @@ References: [command guide](https://k9scli.io/topics/commands/), [command interp
 | `:dir`, `:dirs`, `:d`, `:ls [PATH]` | Bounded local manifest browser and redacted YAML/JSON preview. No arbitrary manifest apply/delete or external editor. |
 | `:pf`, `:portforward`, `:portforwards` | View/cancel this session's reviewed loopback forward. One active forward; four simultaneous clients; bounded duration. |
 | `:container`, `:containers` | Container drilldown for a selected Pod. |
-| `:helm`; `:history` | Native Helm v3/v4 Secret/ConfigMap storage browsing with `--allow-helm`. List Enter/r → history; revision Enter → redacted stored overrides; d metadata, m resource identities, y safe YAML. No Helm lifecycle mutations or SQL storage. |
+| `:helm`; `:history`; `:helm-install` | Native Helm v3/v4 Secret/ConfigMap browsing with `--allow-helm`. List Enter/r → history; revision Enter → redacted stored overrides; d metadata, m resource identities, y safe YAML. Reviewed list i/u/Ctrl-D install/upgrade/uninstall and history r rollback require all three write/Helm flags and trusted Unix Helm 4.3.1. Local deterministic chart subset only; no SQL storage. |
+| `:logs LABELS`; workload/Service `l`/`p` | Fixed membership of up to eight Pods/32 ordinary-container streams in one namespace, using actual selectors and CronJob→Job controller UIDs. Range/reconnect retains captured identities; reopen to include new rollout Pods. |
 | `:cow` | Local novelty view; never a process invocation. |
 
-Helm lifecycle mutations, benchmarks (`:be`), scans/Popeye, RBAC subject-list pseudo-resources and references do not have full native equivalents. They must not be presented as implemented integrations. Ordinary Kubernetes Roles/Bindings are browsable, and `:can` supplies explicit-subject evidence. Secret reads, force kill, node cordon/drain/shell, Pod file transfer/sanitization, arbitrary manifest editing, plugins and benchmark execution remain unsupported. These are material parity gaps, not alternate meanings for the same commands.
+Helm lifecycle supports an explicitly reviewed subset, not arbitrary chart or
+storage parity: exact Helm 4.3.1 on Unix, local deterministic `.tgz`, no hooks,
+CRDs, cluster/system/cross-namespace targets, recognized GitOps resources or
+foreign adoption. Benchmarks (`:be`), scans/Popeye, RBAC subject-list
+pseudo-resources and references do not have full native equivalents. Ordinary
+Kubernetes Roles/Bindings are browsable, and `:can` supplies explicit-subject
+evidence. Generic Secret reads, force kill, node cordon/drain/shell, Pod file
+transfer/sanitization, arbitrary manifest editing, k9s plugins and benchmark
+execution remain unsupported. These are material parity gaps, not alternate
+meanings for the same commands.
 
 ## Navigation and contextual keys
 
@@ -40,7 +50,13 @@ Enter drills from Pods to containers, from supported workloads/Services to selec
 
 Context matters: Pod/container `s` is shell and `a` is attach; scalable workload `s` opens scale and supported workload `r` prepares restart. `F` prepares port forwarding and `f` shows it. Node administration keys do not invoke unrelated actions. Reviewed operations retain KBorg's separate opt-ins, captured UID, dry-run and full target confirmation.
 
-The log view supports `0` tail, `1` head, `2` one minute, `3` five minutes, `4` fifteen minutes, `5` thirty minutes and `6` one hour. `s` toggles autoscroll, `w` wrapping, `t` timestamps, `f` fullscreen, Enter filtering, Shift-C clearing and `m` a local mark. Range changes are separate bounded server reads. Pod logs select the valid default-container annotation when present, otherwise merge multiple ordinary containers. The picker has an All containers entry and log `a` toggles the merged view. Merges preserve per-source labels, share bounds, and exclude init/ephemeral containers. Multi-Pod workload merges and k9s plugin-specific log behavior remain incomplete. Reconnection is UID-checked, bounded and explicitly warns that overlap/restarts/rotation may duplicate or omit records.
+The log view supports `0` tail, `1` head, `2` one minute, `3` five minutes, `4` fifteen minutes, `5` thirty minutes and `6` one hour. `s` toggles autoscroll, `w` wrapping, `t` timestamps, `f` fullscreen, Enter filtering, Shift-C clearing and `m` a local mark. Range changes are separate bounded server reads. Pod logs select the valid default-container annotation when present, otherwise merge multiple ordinary containers. The picker has an All containers entry and log `a` toggles the Pod merged view. Workload/Service logs and `:logs LABELS` merge complete captured Pod memberships; group source toggling is disabled. All merges preserve source labels, share time/byte/rate/cache and global head/tail bounds, and exclude init/ephemeral containers. New rollout Pods require an explicit new capture. Reconnection and periodic group checks verify UIDs; bounded retries explicitly warn that overlap/restarts/rotation may duplicate or omit records. k9s plugin-specific log behavior remains unsupported.
+
+Helm reviews expire after 15 minutes, require every wrapped review line to be
+displayed and exact `namespace/release` confirmation, and revalidate the plan,
+history and live UID/resourceVersion before execution. This differs from an
+unrestricted Helm terminal. See [HELM_LIFECYCLE.md](HELM_LIFECYCLE.md) for the
+supported subset and post-check race/partial-write limits.
 
 Additional KBorg views use explicit commands such as `:themes`, `:metrics`, `:metrics resources`, `:overview`, `:actions` and `:discover` so they do not take over contextual k9s keys.
 
@@ -57,4 +73,4 @@ aliases:
 
 Aliases return to the command parser and never execute a shell. Bounds are 64 KiB, 256 aliases, 2,048 expanded command bytes and 16 expansion steps. Cycles, duplicate keys, YAML anchors and replacement of identity/exit commands are rejected. Context-specific k9s alias files, hotkeys and plugin files are not imported automatically.
 
-The broader release gates, platform coverage and external integrations remain in [REMAINING_WORK.md](REMAINING_WORK.md). Current Helm/log/metrics validation is in [HELM_LOGS_METRICS_ACCEPTANCE.md](HELM_LOGS_METRICS_ACCEPTANCE.md); prior navigation evidence remains in [K9S_ACCEPTANCE.md](K9S_ACCEPTANCE.md).
+The broader release gates, platform coverage and external integrations remain in [REMAINING_WORK.md](REMAINING_WORK.md). Current validation is in [HELM_LIFECYCLE_ACCEPTANCE.md](HELM_LIFECYCLE_ACCEPTANCE.md); historical [Helm/Pod-log/metrics](HELM_LOGS_METRICS_ACCEPTANCE.md) and [navigation](K9S_ACCEPTANCE.md) reports preserve their original scope.

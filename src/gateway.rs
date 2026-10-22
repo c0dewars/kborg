@@ -34,6 +34,7 @@ pub struct Connection {
     pub writable: bool,
     pub logs: bool,
     pub allow_helm: bool,
+    pub allow_helm_write: bool,
     pub allow_exec: bool,
     pub allow_attach: bool,
     pub allow_port_forward: bool,
@@ -420,6 +421,8 @@ pub struct Gateway {
     policy: Policy,
     logs: bool,
     allow_helm: bool,
+    allow_helm_write: bool,
+    lifecycle_connection: Option<crate::helm_lifecycle::StaticConnection>,
     operation_capabilities: [bool; 3],
     demo: Vec<Value>,
     pub kinds: Vec<Kind>,
@@ -459,6 +462,8 @@ impl Gateway {
                 },
                 logs: true,
                 allow_helm: true,
+                allow_helm_write: options.allow_helm_write,
+                lifecycle_connection: None,
                 operation_capabilities: [
                     options.allow_exec,
                     options.allow_attach,
@@ -582,6 +587,14 @@ impl Gateway {
         // sessions use their own explicit lifetime rather than an idle cutoff.
         config.read_timeout = None;
         config.write_timeout = Some(Duration::from_secs(10));
+        let lifecycle_connection = if options.allow_helm_write {
+            Some(crate::helm_lifecycle::StaticConnection::from_config(
+                &mut config,
+                auth_gate.clone(),
+            )?)
+        } else {
+            None
+        };
         let server = config.cluster_url.to_string();
         let namespace = if options.namespace.is_empty() {
             config.default_namespace.clone()
@@ -609,6 +622,8 @@ impl Gateway {
             },
             logs: options.logs,
             allow_helm: options.allow_helm,
+            allow_helm_write: options.allow_helm_write,
+            lifecycle_connection,
             operation_capabilities: [
                 options.allow_exec,
                 options.allow_attach,
@@ -632,6 +647,26 @@ impl Gateway {
             namespace,
         )
     }
+    pub(crate) fn helm_lifecycle_access(
+        &self,
+    ) -> Result<(Client, crate::helm_lifecycle::StaticConnection, String)> {
+        self.helm_lifecycle_session()?;
+        Ok((
+            self.client
+                .clone()
+                .ok_or("Helm lifecycle needs a real selected cluster")?,
+            self.lifecycle_connection
+                .clone()
+                .ok_or("Helm lifecycle has no static validated connection; reconnect explicitly")?,
+            self.session.clone(),
+        ))
+    }
+    pub(crate) fn helm_lifecycle_session(&self) -> Result<&str> {
+        if !self.policy.writable || !self.allow_helm_write || !self.allow_helm {
+            return Err("Helm lifecycle requires --write --allow-helm --allow-helm-write".into());
+        }
+        Ok(&self.session)
+    }
     #[cfg(test)]
     pub(crate) fn for_test_client(client: Client, namespace: &str) -> Self {
         Self {
@@ -643,6 +678,8 @@ impl Gateway {
             policy: Policy { writable: false },
             logs: false,
             allow_helm: false,
+            allow_helm_write: false,
+            lifecycle_connection: None,
             operation_capabilities: [false; 3],
             demo: Vec::new(),
             kinds: kinds(),
@@ -652,6 +689,18 @@ impl Gateway {
     pub(crate) fn for_helm_test_client(client: Client, namespace: &str) -> Self {
         let mut gateway = Self::for_test_client(client, namespace);
         gateway.allow_helm = true;
+        gateway
+    }
+    #[cfg(test)]
+    pub(crate) fn for_helm_lifecycle_test_client(
+        client: Client,
+        namespace: &str,
+        connection: crate::helm_lifecycle::StaticConnection,
+    ) -> Self {
+        let mut gateway = Self::for_helm_test_client(client, namespace);
+        gateway.policy.writable = true;
+        gateway.allow_helm_write = true;
+        gateway.lifecycle_connection = Some(connection);
         gateway
     }
     pub fn watch(&self, key: &str, ns: &str) -> Result<crate::watch::WatchFeed> {
@@ -1145,6 +1194,320 @@ impl Gateway {
             sources.push((container, feed));
         }
         crate::logs::MergedLogFeed::from_sources(ns, name, uid, sources, options)
+    }
+    /// Capture one complete, connection-bound Pod membership snapshot. A reload
+    /// reuses these sources; discovering new Pods is an explicit new capture.
+    pub async fn capture_log_membership(
+        &self,
+        namespace: &str,
+        selection: crate::logs::PodLogSelection,
+    ) -> Result<crate::logs::LogMembership> {
+        use crate::logs::{LogMembership, LogParent, PodLogSelection};
+        if !self.logs {
+            return Err("logs may contain sensitive data; opt in with --allow-logs".into());
+        }
+        if !safety::valid_id(namespace) {
+            return Err("workload logs require one concrete namespace".into());
+        }
+        let deadline = tokio::time::Instant::now() + OPERATION_BUDGET;
+        let mut bytes = 0;
+        let mut parents = Vec::new();
+        let (description, selectors) = match selection {
+            PodLogSelection::Selector(selector) => {
+                crate::selectors::validate(&selector)?;
+                if selector.trim().is_empty() {
+                    return Err("workload logs require an explicit nonempty Pod selector".into());
+                }
+                (
+                    format!("selector {selector}; fixed membership"),
+                    vec![(selector, None)],
+                )
+            }
+            PodLogSelection::Workload {
+                resource,
+                name,
+                uid,
+            } => {
+                crate::logs::validate_merge_target(namespace, &name, &uid)?;
+                let kind = self.find(&resource)?.clone();
+                if !matches!(
+                    (
+                        kind.group.as_str(),
+                        kind.version.as_str(),
+                        kind.kind.as_str()
+                    ),
+                    (
+                        "apps",
+                        "v1",
+                        "Deployment" | "StatefulSet" | "DaemonSet" | "ReplicaSet"
+                    ) | ("batch", "v1", "Job" | "CronJob")
+                        | ("", "v1", "Service" | "ReplicationController")
+                ) {
+                    return Err("workload logs support native Deployments, StatefulSets, DaemonSets, ReplicaSets, Jobs, CronJobs, Services and ReplicationControllers".into());
+                }
+                let object =
+                    tokio::time::timeout_at(deadline, self.raw_get(&kind.key(), namespace, &name))
+                        .await
+                        .map_err(|_| "workload log membership lookup timed out")??;
+                crate::logs::membership_bytes(&mut bytes, &object)?;
+                if object["metadata"]["namespace"] != namespace
+                    || object["metadata"]["name"] != name
+                    || object["metadata"]["uid"] != uid
+                {
+                    return Err(
+                        "selected workload identity changed or escaped namespace; select it again"
+                            .into(),
+                    );
+                }
+                parents.push(LogParent {
+                    resource: kind.key(),
+                    name: name.clone(),
+                    uid: uid.clone(),
+                });
+                let selectors = if kind.kind == "CronJob" {
+                    let jobs = if self.is_demo() {
+                        self.demo
+                            .iter()
+                            .filter(|job| {
+                                job["apiVersion"] == "batch/v1"
+                                    && job["kind"] == "Job"
+                                    && job["metadata"]["namespace"] == namespace
+                            })
+                            .cloned()
+                            .collect::<Vec<_>>()
+                    } else {
+                        let api: Api<k8s_openapi::api::batch::v1::Job> =
+                            Api::namespaced(self.client.clone().ok_or("no client")?, namespace);
+                        let list = tokio::time::timeout_at(
+                            deadline,
+                            api.list(&ListParams {
+                                limit: Some((crate::logs::MAX_LOG_JOBS + 1) as u32),
+                                ..Default::default()
+                            }),
+                        )
+                        .await
+                        .map_err(|_| "CronJob child inventory timed out")?
+                        .map_err(api_error)?;
+                        if list
+                            .metadata
+                            .resource_version
+                            .as_deref()
+                            .is_none_or(|version| {
+                                version.is_empty()
+                                    || version.len() > 253
+                                    || safety::safe_text(version, 253) != version
+                            })
+                        {
+                            return Err("CronJob child inventory omitted a valid resourceVersion; complete membership cannot be established".into());
+                        }
+                        if list
+                            .metadata
+                            .continue_
+                            .as_ref()
+                            .is_some_and(|token| !token.is_empty())
+                            || list.items.len() > crate::logs::MAX_LOG_JOBS
+                        {
+                            return Err("CronJob logs require a complete child Job inventory of at most 64 Jobs; use an explicit Pod selector".into());
+                        }
+                        list.items
+                            .into_iter()
+                            .map(|job| {
+                                serde_json::to_value(job)
+                                    .map_err(|_| "invalid CronJob child Job".to_owned())
+                            })
+                            .collect::<Result<Vec<_>>>()?
+                    };
+                    let mut selectors = Vec::new();
+                    for mut job in jobs {
+                        crate::logs::membership_bytes(&mut bytes, &job)?;
+                        if job["metadata"]["namespace"] != namespace {
+                            return Err("CronJob child inventory escaped namespace".into());
+                        }
+                        if !crate::logs::owned_by(&job, "batch/v1", "CronJob", &uid) {
+                            continue;
+                        }
+                        job["apiVersion"] = json!("batch/v1");
+                        job["kind"] = json!("Job");
+                        let name = job["metadata"]["name"]
+                            .as_str()
+                            .ok_or("child Job name missing")?
+                            .to_owned();
+                        let uid = job["metadata"]["uid"]
+                            .as_str()
+                            .ok_or("child Job UID missing")?
+                            .to_owned();
+                        crate::logs::validate_merge_target(namespace, &name, &uid)?;
+                        selectors.push((
+                            crate::insights::pod_selector(&job)?,
+                            Some(LogParent {
+                                resource: "jobs.batch".into(),
+                                name,
+                                uid,
+                            }),
+                        ));
+                    }
+                    selectors
+                } else {
+                    vec![(crate::insights::pod_selector(&object)?, None)]
+                };
+                (
+                    format!("{}/{name}; UID {uid}; fixed membership", kind.key()),
+                    selectors,
+                )
+            }
+        };
+        let mut members = Vec::new();
+        for (selector, owner) in selectors {
+            let selected = if self.is_demo() {
+                let mut selected = Vec::new();
+                for value in self.demo.iter().filter(|pod| {
+                    pod["apiVersion"] == "v1"
+                        && pod["kind"] == "Pod"
+                        && pod["metadata"]["namespace"] == namespace
+                        && crate::selectors::matches(&selector, &pod["metadata"]["labels"])
+                }) {
+                    crate::logs::membership_bytes(&mut bytes, value)?;
+                    if owner.as_ref().is_some_and(|owner| {
+                        !crate::logs::owned_by(value, "batch/v1", "Job", &owner.uid)
+                    }) {
+                        continue;
+                    }
+                    let pod: Pod = serde_json::from_value(value.clone())
+                        .map_err(|_| "invalid demo Pod membership")?;
+                    selected.push(crate::logs::log_pod(&pod, namespace)?);
+                }
+                selected
+            } else {
+                let api = Api::namespaced(self.client.clone().ok_or("no client")?, namespace);
+                crate::logs::selected_pods(
+                    &api,
+                    &selector,
+                    owner.as_ref().map(|owner| owner.uid.as_str()),
+                    deadline,
+                    &mut bytes,
+                )
+                .await?
+            };
+            if !selected.is_empty()
+                && let Some(owner) = owner
+            {
+                parents.push(owner);
+            }
+            members.extend(selected);
+            if members.len() > crate::logs::MAX_LOG_PODS {
+                return Err("workload log membership exceeds 8 Pods; narrow the selector".into());
+            }
+        }
+        LogMembership::new(namespace, description, members, parents, &self.session)
+    }
+    fn log_membership_guards(
+        &self,
+        membership: &crate::logs::LogMembership,
+    ) -> Result<Vec<crate::logs::IdentityGuard>> {
+        membership.verify_connection(&self.session)?;
+        let mut guards = Vec::new();
+        for parent in &membership.parents {
+            guards.push(crate::logs::IdentityGuard::Parent {
+                api: self.api(self.find(&parent.resource)?, membership.namespace())?,
+                name: parent.name.clone(),
+                uid: parent.uid.clone(),
+            });
+        }
+        Ok(guards)
+    }
+    pub async fn membership_logs(
+        &self,
+        membership: &crate::logs::LogMembership,
+        previous: bool,
+        read: crate::logs::ReadOptions,
+    ) -> Result<String> {
+        let feed = self
+            .open_membership_logs(membership, previous, None, read)
+            .await?;
+        feed.snapshot(read).await
+    }
+    pub async fn follow_membership_logs(
+        &self,
+        membership: &crate::logs::LogMembership,
+        follow: crate::logs::FollowOptions,
+        read: crate::logs::ReadOptions,
+    ) -> Result<crate::logs::MergedLogFeed> {
+        self.open_membership_logs(membership, false, Some(follow), read)
+            .await
+    }
+    async fn open_membership_logs(
+        &self,
+        membership: &crate::logs::LogMembership,
+        previous: bool,
+        follow: Option<crate::logs::FollowOptions>,
+        read: crate::logs::ReadOptions,
+    ) -> Result<crate::logs::MergedLogFeed> {
+        if !self.logs {
+            return Err("logs may contain sensitive data; opt in with --allow-logs".into());
+        }
+        membership.verify_connection(&self.session)?;
+        if self.is_demo() {
+            let read = read.validate()?;
+            let options = follow
+                .unwrap_or(crate::logs::FollowOptions { seconds: 15 })
+                .validate()?;
+            if previous && follow.is_some() {
+                return Err("previous container logs support snapshots only; omit follow".into());
+            }
+            let mut sources = Vec::new();
+            for member in membership.pods() {
+                let pod: Pod = serde_json::from_value(
+                    self.raw_get("v1/pods", membership.namespace(), &member.name)
+                        .await?,
+                )
+                .map_err(|_| "invalid demo Pod membership")?;
+                let current = crate::logs::log_pod(&pod, membership.namespace())?;
+                if current.uid != member.uid || current.containers != member.containers {
+                    return Err(
+                        "captured demo Pod membership changed; capture sources again".into(),
+                    );
+                }
+                for container in &member.containers {
+                    let text = self
+                        .logs_with_options(
+                            membership.namespace(),
+                            &member.name,
+                            Some(container.clone()),
+                            previous,
+                            read,
+                        )
+                        .await?;
+                    sources.push((
+                        member.name.clone(),
+                        container.clone(),
+                        crate::logs::LogFeed::with_read_options(
+                            futures_util::io::Cursor::new(text.into_bytes()),
+                            options,
+                            read,
+                        ),
+                    ));
+                }
+            }
+            return crate::logs::MergedLogFeed::from_membership_sources(
+                membership,
+                sources,
+                tokio::time::Instant::now() + Duration::from_secs(u64::from(options.seconds)),
+                Vec::new(),
+            );
+        }
+        let api = Api::namespaced(
+            self.client.clone().ok_or("no client")?,
+            membership.namespace(),
+        );
+        crate::logs::MergedLogFeed::open_membership(
+            api,
+            membership,
+            self.log_membership_guards(membership)?,
+            previous,
+            follow,
+            read,
+        )
+        .await
     }
     pub(crate) fn operation_api(&self, namespace: &str, capability: usize) -> Result<Api<Pod>> {
         if !self.policy.writable {
@@ -1869,6 +2232,105 @@ pub fn summary(object: &Value) -> String {
 mod tests {
     use super::*;
     use crate::cli::runtime;
+    type LogRequests = std::sync::Arc<std::sync::Mutex<Vec<String>>>;
+    fn log_capture_gateway(replies: Vec<(u16, Value)>) -> (Gateway, LogRequests) {
+        let replies = std::sync::Arc::new(std::sync::Mutex::new(std::collections::VecDeque::from(
+            replies,
+        )));
+        let requests: LogRequests = Default::default();
+        let recorded = requests.clone();
+        let service = tower::service_fn(move |request: http::Request<kube::client::Body>| {
+            recorded
+                .lock()
+                .unwrap_or_else(|e| panic!("{e}"))
+                .push(request.uri().to_string());
+            let (status, value) = replies
+                .lock()
+                .unwrap_or_else(|e| panic!("{e}"))
+                .pop_front()
+                .unwrap_or_else(|| panic!("unexpected workload log request"));
+            async move {
+                Ok::<_, std::convert::Infallible>(
+                    http::Response::builder()
+                        .status(status)
+                        .body(http_body_util::Full::new(bytes::Bytes::from(
+                            value.to_string(),
+                        )))
+                        .unwrap_or_else(|e| panic!("{e}")),
+                )
+            }
+        });
+        let mut gateway = Gateway::for_test_client(Client::new(service, "default"), "default");
+        gateway.logs = true;
+        (gateway, requests)
+    }
+    fn log_capture_pod(name: &str, uid: &str) -> Value {
+        json!({"apiVersion":"v1","kind":"Pod","metadata":{"namespace":"default","name":name,"uid":uid,"labels":{"app":"web","team":"prod"}},"spec":{"containers":[{"name":"main","image":"fixture"},{"name":"sidecar","image":"fixture"}],"initContainers":[{"name":"init","image":"fixture"}]}})
+    }
+    #[test]
+    fn workload_logs_capture_real_selector_complete_membership_and_connection_identity()
+    -> Result<()> {
+        runtime()?.block_on(async {
+            let owner=json!({"apiVersion":"apps/v1","kind":"Deployment","metadata":{"namespace":"default","name":"different-than-label","uid":"deployment-uid"},"spec":{"selector":{"matchLabels":{"app":"web"},"matchExpressions":[{"key":"team","operator":"In","values":["prod"]}]}}});
+            let pods=json!({"apiVersion":"v1","kind":"PodList","metadata":{"resourceVersion":"10"},"items":[log_capture_pod("one","uid-one"),log_capture_pod("two","uid-two")]});
+            let (mut gateway,requests)=log_capture_gateway(vec![(200,owner),(200,pods)]);
+            let membership=gateway.capture_log_membership("default",crate::logs::PodLogSelection::Workload{resource:"deployments.apps".into(),name:"different-than-label".into(),uid:"deployment-uid".into()}).await?;
+            assert_eq!(membership.pods().len(),2);assert_eq!(membership.source_count(),4);
+            assert!(membership.pods().iter().all(|pod|pod.containers==["main","sidecar"]));
+            {let requests=requests.lock().map_err(|_|"requests")?;assert_eq!(requests.len(),2);assert!(requests[1].contains("labelSelector="));assert!(requests[1].contains("web")&&requests[1].contains("team")&&requests[1].contains("prod"));assert!(!requests[1].contains("different-than-label"));}
+            gateway.session="reconnected".into();
+            assert!(gateway.membership_logs(&membership,false,Default::default()).await.is_err_and(|error|error.contains("another connection")));
+            assert_eq!(requests.lock().map_err(|_|"requests")?.len(),2);
+            Ok(())
+        })
+    }
+    #[test]
+    fn workload_logs_reject_partial_foreign_namespace_selector_escapes_and_stale_workload()
+    -> Result<()> {
+        runtime()?.block_on(async {
+            for variant in 0..4 {
+                let mut pod=log_capture_pod("one","uid-one");
+                if variant==0{pod["metadata"]["namespace"]=json!("foreign");}
+                if variant==1{pod["metadata"]["labels"]["app"]=json!("other");}
+                let mut list=json!({"apiVersion":"v1","kind":"PodList","metadata":{"resourceVersion":"10"},"items":[pod]});
+                if variant==2{list["metadata"]["continue"]=json!("more");}
+                let response=if variant==3{(403,json!({"apiVersion":"v1","kind":"Status","status":"Failure","code":403,"reason":"Forbidden","message":"CANARY private diagnostic"}))}else{(200,list)};
+                let (gateway,requests)=log_capture_gateway(vec![response]);
+                let error=gateway.capture_log_membership("default",crate::logs::PodLogSelection::Selector("app=web".into())).await.err().ok_or("invalid or partial log scope accepted")?;
+                assert!(!error.contains("CANARY"));assert_eq!(requests.lock().map_err(|_|"requests")?.len(),1);
+            }
+            let owner=json!({"apiVersion":"apps/v1","kind":"Deployment","metadata":{"namespace":"default","name":"web","uid":"replaced"},"spec":{"selector":{"matchLabels":{"app":"web"}}}});
+            let (gateway,requests)=log_capture_gateway(vec![(200,owner)]);
+            assert!(gateway.capture_log_membership("default",crate::logs::PodLogSelection::Workload{resource:"deployments.apps".into(),name:"web".into(),uid:"captured".into()}).await.is_err());
+            assert_eq!(requests.lock().map_err(|_|"requests")?.len(),1);
+            let (mut gateway,requests)=log_capture_gateway(Vec::new());gateway.logs=false;
+            assert!(gateway.capture_log_membership("default",crate::logs::PodLogSelection::Selector("app=web".into())).await.is_err_and(|error|error.contains("--allow-logs")));
+            gateway.logs=true;
+            assert!(gateway.capture_log_membership("*",crate::logs::PodLogSelection::Selector("app=web".into())).await.is_err());
+            assert!(gateway.capture_log_membership("default",crate::logs::PodLogSelection::Selector(String::new())).await.is_err());
+            gateway.kinds.push(Kind{plural:"deployments".into(),kind:"Deployment".into(),group:"example.io".into(),version:"v1".into(),namespaced:true,short_names:Vec::new()});
+            assert!(gateway.capture_log_membership("default",crate::logs::PodLogSelection::Workload{resource:"deployments.example.io".into(),name:"web".into(),uid:"uid".into()}).await.is_err());
+            assert!(requests.lock().map_err(|_|"requests")?.is_empty());
+            Ok(())
+        })
+    }
+    #[test]
+    fn cronjob_logs_follow_controller_uid_chain_and_exclude_unrelated_matching_pods() -> Result<()>
+    {
+        runtime()?.block_on(async {
+            let owner=json!({"apiVersion":"batch/v1","kind":"CronJob","metadata":{"namespace":"default","name":"nightly","uid":"cron-uid"},"spec":{}});
+            let job=|name:&str,uid:&str,cron:&str|json!({"apiVersion":"batch/v1","kind":"Job","metadata":{"namespace":"default","name":name,"uid":uid,"ownerReferences":[{"apiVersion":"batch/v1","kind":"CronJob","name":"nightly","uid":cron,"controller":true}]},"spec":{"selector":{"matchLabels":{"app":"web"}},"template":{"spec":{"containers":[{"name":"main","image":"fixture"}],"restartPolicy":"Never"}}}});
+            let jobs=json!({"apiVersion":"batch/v1","kind":"JobList","metadata":{"resourceVersion":"10"},"items":[job("owned","job-uid","cron-uid"),job("other","other-job","different-cron")]});
+            let mut related=log_capture_pod("owned-pod","owned-pod-uid");related["metadata"]["ownerReferences"]=json!([{"apiVersion":"batch/v1","kind":"Job","name":"owned","uid":"job-uid","controller":true}]);
+            let mut unrelated=log_capture_pod("unrelated","other-pod-uid");unrelated["metadata"]["ownerReferences"]=json!([{"apiVersion":"batch/v1","kind":"Job","name":"other","uid":"other-job","controller":true}]);
+            let pods=json!({"apiVersion":"v1","kind":"PodList","metadata":{"resourceVersion":"11"},"items":[related,unrelated]});
+            let (gateway,requests)=log_capture_gateway(vec![(200,owner),(200,jobs),(200,pods)]);
+            let membership=gateway.capture_log_membership("default",crate::logs::PodLogSelection::Workload{resource:"cronjobs.batch".into(),name:"nightly".into(),uid:"cron-uid".into()}).await?;
+            assert_eq!(membership.pods().len(),1);assert_eq!(membership.pods()[0].name,"owned-pod");assert_eq!(membership.parents.len(),2);
+            assert_eq!(membership.parents[1].uid,"job-uid");assert_eq!(requests.lock().map_err(|_|"requests")?.len(),3);
+            Ok(())
+        })
+    }
     #[test]
     fn merged_logs_gate_before_pod_reads_and_reject_unbound_identity() -> Result<()> {
         runtime()?.block_on(async {

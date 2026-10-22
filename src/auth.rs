@@ -667,6 +667,27 @@ struct GateState {
     bearer: Option<http::HeaderValue>,
 }
 impl AuthGate {
+    pub(crate) fn check_live(&self) -> Result<()> {
+        self.authorize(&mut http::Request::new(()))
+    }
+    pub(crate) fn static_bearer(&self) -> Result<Option<String>> {
+        let mut request = http::Request::new(());
+        self.authorize(&mut request)?;
+        request
+            .headers()
+            .get(http::header::AUTHORIZATION)
+            .map(|header| {
+                header
+                    .to_str()
+                    .ok()
+                    .and_then(|value| value.strip_prefix("Bearer "))
+                    .map(str::to_owned)
+                    .ok_or_else(|| {
+                        "validated bearer cannot be projected; credentials suppressed".to_owned()
+                    })
+            })
+            .transpose()
+    }
     fn new(until: Timestamp, token: Option<String>) -> Result<Self> {
         let duration = remaining_lifetime(until)?;
         let mut bearer = token
