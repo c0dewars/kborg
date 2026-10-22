@@ -1,5 +1,8 @@
 # OCI charts, Helm hooks and CRD acceptance
 
+Historical report. The newer [completion acceptance](HELM_COMPLETION_ACCEPTANCE.md)
+covers tags, provenance, tests, CRD upgrade/deletion and the refined UI.
+
 Date: 2026-10-22. Continuation of `df62183` on
 `codex/helm-oci-hooks-crds`. Exact source, executable and test evidence hashes are
 recorded in [validation evidence](evidence/extensions-validation-summary.json).

@@ -37,6 +37,13 @@ pub enum Request {
     InstallCrds {
         chart: PathBuf,
     },
+    UpgradeCrds {
+        chart: PathBuf,
+    },
+    DeleteCrds {
+        chart: PathBuf,
+    },
+    Test,
     Install {
         chart: PathBuf,
         values: Option<PathBuf>,
@@ -54,6 +61,9 @@ impl Request {
     fn name(&self) -> &'static str {
         match self {
             Self::InstallCrds { .. } => "crds",
+            Self::UpgradeCrds { .. } => "crds-upgrade",
+            Self::DeleteCrds { .. } => "crds-delete",
+            Self::Test => "test",
             Self::Install { .. } => "install",
             Self::Upgrade { .. } => "upgrade",
             Self::Rollback { .. } => "rollback",
@@ -71,6 +81,7 @@ pub struct Options {
     pub allow_hooks: bool,
     pub allow_crds: bool,
     pub registry: crate::helm_oci::Options,
+    pub keyring: Option<PathBuf>,
 }
 #[derive(Debug, Serialize)]
 pub struct Outcome {
@@ -399,6 +410,10 @@ struct Seal {
     uid: Option<String>,
     version: Option<String>,
 }
+struct SignatureReview {
+    inputs: crate::helm_provenance::Prepared,
+    fingerprint: String,
+}
 pub struct Prepared {
     options: Options,
     request: Request,
@@ -423,13 +438,87 @@ pub struct Prepared {
     crds: crate::helm_extensions::CrdPlan,
     crd_seals: Vec<Option<crate::helm_crds::Binding>>,
     bindings: Vec<crate::helm_crds::Binding>,
+    impact: Vec<crate::helm_crds::Inventory>,
+    review_context: String,
+    test_runs: Vec<helm::TestRun>,
+    signature: Option<SignatureReview>,
+}
+#[derive(Clone, Debug)]
+pub struct ReviewOverview {
+    pub operation: String,
+    pub context: String,
+    pub endpoint: String,
+    pub target: String,
+    pub source: Option<String>,
+    pub resources: usize,
+    pub hooks: usize,
+    pub crds: usize,
+    pub destructive: bool,
 }
 impl Prepared {
+    pub fn overview(&self) -> ReviewOverview {
+        ReviewOverview {
+            operation: self.request.name().into(),
+            context: safety::safe_text(&self.review_context, 1024),
+            endpoint: self
+                .connection
+                .as_ref()
+                .and_then(|connection| {
+                    connection.config["clusters"][0]["cluster"]["server"].as_str()
+                })
+                .map(|server| safety::safe_text(server, 1024))
+                .unwrap_or_else(|| "demo".into()),
+            target: format!("{}/{}", self.options.namespace, self.options.release),
+            source: self.chart_source.clone().or_else(|| match &self.request {
+                Request::Install { chart, .. }
+                | Request::Upgrade { chart, .. }
+                | Request::InstallCrds { chart }
+                | Request::UpgradeCrds { chart }
+                | Request::DeleteCrds { chart } => {
+                    Some(safety::safe_text(&chart.to_string_lossy(), 4096))
+                }
+                _ => None,
+            }),
+            resources: self.resources.len()
+                + if matches!(self.request, Request::DeleteCrds { .. }) {
+                    self.impact
+                        .iter()
+                        .map(|inventory| inventory.instances.len())
+                        .sum::<usize>()
+                } else {
+                    0
+                },
+            hooks: self
+                .hooks
+                .active()
+                .iter()
+                .map(|hook| &hook.identity)
+                .collect::<BTreeSet<_>>()
+                .len(),
+            crds: self.crds.definitions.len(),
+            destructive: matches!(
+                self.request,
+                Request::Uninstall | Request::DeleteCrds { .. } | Request::UpgradeCrds { .. }
+            ),
+        }
+    }
+    pub fn is_demo(&self) -> bool {
+        self.demo
+    }
     pub fn summary(&self) -> &str {
         &self.summary
     }
     pub fn confirmation(&self) -> String {
-        format!("{}/{}", self.options.namespace, self.options.release)
+        format!(
+            "{}{}/{}",
+            if matches!(self.request, Request::DeleteCrds { .. }) {
+                "DELETE CRDS "
+            } else {
+                ""
+            },
+            self.options.namespace,
+            self.options.release
+        )
     }
     pub fn selected(&self) -> Option<&Release> {
         self.selected.as_ref()
@@ -439,6 +528,27 @@ impl Prepared {
     }
 }
 
+fn unverified_archive_notice(request: &Request, keyring_supplied: bool) -> &'static str {
+    if matches!(
+        request,
+        Request::Test | Request::Rollback { .. } | Request::Uninstall
+    ) {
+        if keyring_supplied {
+            "Stored release operation: no chart archive is acquired and archive provenance is not reverified. The supplied --helm-keyring is not applied to this stored release operation.\n"
+        } else {
+            "Stored release operation: no chart archive is acquired and archive provenance is not reverified.\n"
+        }
+    } else {
+        "No OpenPGP signature verified: no explicit --helm-keyring supplied; content digest is integrity, not publisher identity.\n"
+    }
+}
+
+fn schema_request(request: &Request) -> bool {
+    matches!(
+        request,
+        Request::InstallCrds { .. } | Request::UpgradeCrds { .. } | Request::DeleteCrds { .. }
+    )
+}
 fn namespace_allowed(namespace: &str) -> Result<()> {
     if !safety::valid_id(namespace)
         || namespace == "*"
@@ -1271,11 +1381,14 @@ fn lifecycle_args(options: &Options, request: &Request, root: &Path, dry: bool) 
                 ]);
             }
         }
-        Request::InstallCrds { .. } => return vec![],
+        Request::InstallCrds { .. } | Request::UpgradeCrds { .. } | Request::DeleteCrds { .. } => {
+            return vec![];
+        }
+        Request::Test => {}
         Request::Rollback { revision } => args.push(revision.to_string()),
         Request::Uninstall => args.extend(["--cascade=foreground".into()]),
     }
-    if !options.allow_hooks {
+    if !options.allow_hooks && !matches!(request, Request::Test) {
         args.push("--no-hooks".into());
     }
     args.push(format!("--timeout={}s", options.seconds));
@@ -1288,7 +1401,7 @@ fn lifecycle_args(options: &Options, request: &Request, root: &Path, dry: bool) 
             }
             .into(),
         );
-    } else {
+    } else if !matches!(request, Request::Test) {
         args.push("--wait=watcher".into());
     }
     args.extend(common(options, root));
@@ -1314,7 +1427,9 @@ fn operation(request: &Request) -> crate::helm_extensions::Operation {
     use crate::helm_extensions::Operation;
     match request {
         Request::Install { .. } | Request::InstallCrds { .. } => Operation::Install,
-        Request::Upgrade { .. } => Operation::Upgrade,
+        Request::Upgrade { .. } | Request::UpgradeCrds { .. } => Operation::Upgrade,
+        Request::DeleteCrds { .. } => Operation::Uninstall,
+        Request::Test => Operation::Test,
         Request::Rollback { .. } => Operation::Rollback,
         Request::Uninstall => Operation::Uninstall,
     }
@@ -1377,6 +1492,19 @@ async fn dry_plan(
     bindings: &mut Vec<crate::helm_crds::Binding>,
     selected_hooks: Option<&Release>,
 ) -> Result<(Vec<Resource>, crate::helm_extensions::HookPlan)> {
+    if matches!(request, Request::Test) {
+        let hooks = stored_hooks(
+            gateway,
+            options,
+            selected_hooks.ok_or("test release selection missing")?,
+            request,
+        )
+        .await?;
+        if hooks.active().is_empty() {
+            return Err("selected release has no stored test/test-success hooks".into());
+        }
+        return Ok((vec![], hooks));
+    }
     let capture = command(
         context,
         lifecycle_args(options, request, &context.root, true),
@@ -1432,9 +1560,10 @@ async fn dry_plan(
             )
             .await?,
         )),
-        Request::InstallCrds { .. } => {
-            Err("CRD bootstrap does not render release resources".into())
-        }
+        Request::InstallCrds { .. }
+        | Request::UpgradeCrds { .. }
+        | Request::DeleteCrds { .. }
+        | Request::Test => Err("native schema/test plan does not render release resources".into()),
     }
 }
 fn canonical_plan(
@@ -1671,14 +1800,20 @@ async fn prepare_inner(gateway: &Gateway, options: Options, request: Request) ->
         return Err("rollback needs an explicit positive revision".into());
     }
     gateway.helm_extension_access(options.allow_hooks, options.allow_crds)?;
-    if matches!(request, Request::InstallCrds { .. }) && !options.allow_crds {
+    if schema_request(&request) && !options.allow_crds {
         return Err("CRD bootstrap requires --allow-helm-crds".into());
+    }
+    if matches!(request, Request::Test) && !options.allow_hooks {
+        return Err("Helm tests require --allow-helm-hooks".into());
     }
     let session = gateway.helm_lifecycle_session()?.to_owned();
     if gateway.is_demo() {
         let selected = if matches!(
             request,
-            Request::Install { .. } | Request::InstallCrds { .. }
+            Request::Install { .. }
+                | Request::InstallCrds { .. }
+                | Request::UpgradeCrds { .. }
+                | Request::DeleteCrds { .. }
         ) {
             None
         } else {
@@ -1703,13 +1838,18 @@ async fn prepare_inner(gateway: &Gateway, options: Options, request: Request) ->
             None
         };
         let summary = format!(
-            "DEMO / SIMULATED HELM {}\nContext: demo\nRelease: {}/{} | {} storage\nNo tool, chart, credentials or cluster requests are used.\nSIMULATED reviewed resource: v1 ConfigMap {}/{}-settings\nHooks disabled; no real operation will occur.\nType {}/{} to simulate.\n",
+            "DEMO / SIMULATED HELM {}\nContext: demo\nRelease: {}/{} | {} storage\nNo tool, chart, credentials or cluster requests are used.\nSIMULATED plan only; no real operation will occur.\nConfirmation label: {}/{}\nType {}{}/{} to simulate.\n",
             request.name(),
             options.namespace,
             options.release,
             options.storage.name(),
             options.namespace,
             options.release,
+            if matches!(request, Request::DeleteCrds { .. }) {
+                "DELETE CRDS "
+            } else {
+                ""
+            },
             options.namespace,
             options.release
         );
@@ -1737,6 +1877,10 @@ async fn prepare_inner(gateway: &Gateway, options: Options, request: Request) ->
             crds: Default::default(),
             crd_seals: vec![],
             bindings: vec![],
+            impact: vec![],
+            review_context: gateway.context.clone(),
+            test_runs: vec![],
+            signature: None,
         });
     }
     let (client, connection, _) = gateway.helm_lifecycle_access()?;
@@ -1767,16 +1911,20 @@ async fn prepare_inner(gateway: &Gateway, options: Options, request: Request) ->
     let mut chart_hash = None;
     let mut chart_source = None;
     let mut values_hash = None;
+    let mut signature = None;
     let input = match &request {
         Request::Install { chart, values } | Request::Upgrade { chart, values } => {
             Some((chart, values.as_ref()))
         }
-        Request::InstallCrds { chart } => Some((chart, None)),
+        Request::InstallCrds { chart }
+        | Request::UpgradeCrds { chart }
+        | Request::DeleteCrds { chart } => Some((chart, None)),
         _ => None,
     };
     let mut crds = crate::helm_extensions::CrdPlan::default();
     if let Some((chart, values)) = input {
         let source = chart.to_str().ok_or("chart source must be UTF-8")?;
+        let mut signed_inputs = None;
         if source.starts_with("oci://") {
             let reference = crate::helm_oci::Reference::parse(source)?;
             let acquired = crate::helm_oci::acquire(
@@ -1786,20 +1934,49 @@ async fn prepare_inner(gateway: &Gateway, options: Options, request: Request) ->
             )
             .await?;
             chart_source = Some(format!(
-                "OCI source: {}\nManifest digest: {}\nChart layer digest: {}\nConfig digest: {}\nDownloaded and sealed before review; no registry access during execution.",
+                "OCI source: {}\nResolved immutable reference: {}\nManifest digest: {}\nChart layer digest: {}\nConfig digest: {}\nDownloaded and sealed before review; no registry access during execution.",
                 acquired.reference,
+                acquired.resolved_reference,
                 acquired.manifest_digest,
                 acquired.chart_digest,
                 acquired.config_digest
             ));
+            if options.keyring.is_some() {
+                signed_inputs=Some((acquired.chart_filename,acquired.provenance_path.ok_or("signature verification requested but OCI artifact has no Helm provenance layer")?));
+            }
             chart_hash = Some(file_hash(&workspace.0.join("chart.tgz"), MAX_CHART)?);
         } else {
             if chart.extension().is_none_or(|extension| extension != "tgz") {
                 return Err(
-                    "Helm lifecycle requires a local .tgz or digest-pinned oci:// chart".into(),
+                    "Helm lifecycle requires a local .tgz or oci:// chart with explicit tag or sha256 digest".into(),
                 );
             }
             chart_hash = Some(snapshot(chart, &workspace.0.join("chart.tgz"), MAX_CHART)?);
+            if options.keyring.is_some() {
+                signed_inputs = Some((
+                    chart
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .ok_or("signed chart basename must be UTF-8")?
+                        .to_owned(),
+                    crate::helm_provenance::local_provenance_path(chart),
+                ));
+            }
+        }
+        if let (Some(keyring), Some((filename, provenance))) = (&options.keyring, signed_inputs) {
+            let inputs = crate::helm_provenance::prepare(
+                &workspace.0.join("chart.tgz"),
+                &filename,
+                &provenance,
+                keyring,
+                &workspace.0.join("signature"),
+            )?;
+            let verified = command(&context, inputs.argv(), 15, None).await?;
+            let fingerprint = crate::helm_provenance::verified_fingerprint(&verified.stdout)?;
+            signature = Some(SignatureReview {
+                inputs,
+                fingerprint,
+            });
         }
         crds = inspect_chart(
             &safety::read_small(&workspace.0.join("chart.tgz"), MAX_CHART)?,
@@ -1813,7 +1990,7 @@ async fn prepare_inner(gateway: &Gateway, options: Options, request: Request) ->
             )?);
         }
     }
-    if matches!(request, Request::InstallCrds { .. }) {
+    if schema_request(&request) {
         return prepare_crds(
             gateway,
             options,
@@ -1824,6 +2001,7 @@ async fn prepare_inner(gateway: &Gateway, options: Options, request: Request) ->
             session,
             chart_hash,
             chart_source,
+            signature,
             crds,
         )
         .await;
@@ -1852,7 +2030,7 @@ async fn prepare_inner(gateway: &Gateway, options: Options, request: Request) ->
     if !matches!(request, Request::Install { .. }) && selected.is_none() {
         return Err("release not found in the selected namespace/storage".into());
     }
-    if !matches!(request, Request::Uninstall)
+    if !matches!(request, Request::Uninstall | Request::Test)
         && selected
             .as_ref()
             .is_some_and(|release| release.revision.checked_add(1).is_none())
@@ -1885,7 +2063,15 @@ async fn prepare_inner(gateway: &Gateway, options: Options, request: Request) ->
     } else {
         vec![]
     };
-    let old = if let Some(selected) = &selected {
+    let test_runs = if matches!(request, Request::Test) {
+        helm::lifecycle_test_results(gateway, selected.as_ref().ok_or("test release missing")?)
+            .await?
+    } else {
+        vec![]
+    };
+    let old = if matches!(request, Request::Test) {
+        vec![]
+    } else if let Some(selected) = &selected {
         parse_resolved(
             &get_manifest(&context, &options, selected.revision).await?,
             &options,
@@ -1986,6 +2172,18 @@ async fn prepare_inner(gateway: &Gateway, options: Options, request: Request) ->
             }
         ));
     }
+    if let Some(signature) = &signature {
+        summary.push_str(&signature.inputs.summary());
+        summary.push_str(&format!(
+            "Verified OpenPGP signer fingerprint: {}\n",
+            signature.fingerprint
+        ));
+    } else {
+        summary.push_str(unverified_archive_notice(
+            &request,
+            options.keyring.is_some(),
+        ));
+    }
     if let Some(source) = &chart_source {
         summary.push_str(&format!("\n{source}\n"));
     }
@@ -1999,6 +2197,8 @@ async fn prepare_inner(gateway: &Gateway, options: Options, request: Request) ->
     summary.push_str("\nHelm storage writes are also authorized for this selected release: ");
     if matches!(request, Request::Uninstall) {
         summary.push_str("delete all captured revision records.\n");
+    } else if matches!(request, Request::Test) {
+        summary.push_str("update stored hook LastRun/test-suite results on the captured current revision; NO new release revision and NO automatic logs. Failed tests remain failed even though the release revision is unchanged.\n");
     } else {
         let next = match selected.as_ref() {
             Some(release) => release
@@ -2011,6 +2211,9 @@ async fn prepare_inner(gateway: &Gateway, options: Options, request: Request) ->
             "create sh.helm.release.v1.{}.v{} and update current revision status when present.\n",
             options.release, next
         ));
+    }
+    if matches!(request, Request::Test) {
+        summary=summary.replace("Native Helm server-connected simulation and per-resource API dry-run passed.","Test has no Helm dry-run: exact stored test/test-success hooks and their create/delete API admission were reviewed; no ordinary release resources are written.");
     }
     for (revision, uid, rv, status) in &history {
         summary.push_str(&format!(
@@ -2096,6 +2299,10 @@ async fn prepare_inner(gateway: &Gateway, options: Options, request: Request) ->
         crds,
         crd_seals,
         bindings,
+        impact: vec![],
+        review_context: gateway.context.clone(),
+        test_runs,
+        signature,
     })
 }
 fn crd_api() -> ApiResource {
@@ -2194,15 +2401,17 @@ async fn prepare_crds(
     session: String,
     chart_hash: Option<String>,
     chart_source: Option<String>,
+    signature: Option<SignatureReview>,
     crds: crate::helm_extensions::CrdPlan,
 ) -> Result<Prepared> {
     if crds.definitions.is_empty() {
         return Err("packaged chart has no supported crds/ definitions to bootstrap".into());
     }
     let (client, _, _) = gateway.helm_lifecycle_access()?;
-    let crd_seals = crd_preflight(&client, &crds, true).await?;
+    let (crd_seals, impact) = schema_preflight(&client, &crds, &request, &options, true).await?;
     let mut summary = format!(
-        "REVIEW CREATE-ONLY CLUSTER CRDs\nContext: {}\nVerified endpoint: {}\nConfirmation label: {}/{} (not a namespace restriction on CRDs)\nChart SHA-256: {}\nCRDs extend the API for ALL namespaces. Only Namespaced custom-resource definitions without conversion webhooks are accepted.\nOnly missing CRDs are created; matching Established CRDs are retained with UID/resourceVersion seals. No CRD update/delete, Helm release record or ordinary chart resource is created.\nCRDs and their data remain after release uninstall. No automatic rollback/retry; cancellation may leave partially created cluster APIs.\nAfter this bootstrap is Established, prepare and approve the ordinary Helm release separately.\nBudget: {} seconds; review expires in15 minutes.\n",
+        "REVIEW CLUSTER CRD {}\nContext: {}\nVerified endpoint: {}\nConfirmation label: {}/{} (NOT a namespace restriction)\nChart SHA-256: {}\nCRDs and this review affect ALL namespaces, including instances outside the confirmation namespace.\nNo Helm release revision is created or deleted by these native API operations. Exact schema UID/resourceVersion and complete instance membership are rechecked before writes.\nKnown-sensitive fields are redacted; the exact private chart/specification is hash-bound. Custom schema/instance data may still be confidential.\nNo automatic migration, rollback or retry. Cancellation or failure can leave partial changes. Budget {}seconds; review expires in15minutes.\n",
+        request.name(),
         safety::safe_text(&gateway.context, 253),
         safety::safe_text(&gateway.server, 1024),
         options.namespace,
@@ -2210,32 +2419,82 @@ async fn prepare_crds(
         chart_hash.as_deref().unwrap_or("missing"),
         options.seconds
     );
+    match request {
+        Request::InstallCrds{..}=>summary.push_str("CREATE-ONLY: create missing definitions, retain exactly matching Established schemas. CRDs/data persist after ordinary release uninstall; approve the release separately.\n"),
+        Request::UpgradeCrds{..}=>summary.push_str("SCHEMA UPDATE: only proven compatible validation relaxations or optional fields absent in captured data; preserve group/names/scope, served/storage versions, defaults, subresources and existing metadata. No conversion webhook or storage migration. Cluster-wide instances are read and sealed, not written by upgrade.\n"),
+        Request::DeleteCrds{..}=>summary.push_str("DESTRUCTIVE: permanently delete every listed owned custom instance across ALL namespaces, then delete these cluster API definitions. All instances need exact Helm release ownership and no GitOps/ownerReferences/finalizers; foreign instances refuse deletion. Instance and schema deletes carry exact UID/resourceVersion preconditions. A complete empty re-list is required before deleting the CRD. This is NOT atomic: concurrent creation after the final list can be deleted by Kubernetes CRD cleanup; stop writers/controllers before approval. Data loss is irreversible; backups are your responsibility.\n"),
+        _=>return Err("invalid schema workflow".into()),
+    }
+    if let Some(signature) = &signature {
+        summary.push_str(&signature.inputs.summary());
+        summary.push_str(&format!(
+            "Verified OpenPGP signer fingerprint: {}\n",
+            signature.fingerprint
+        ));
+    } else {
+        summary
+            .push_str("No OpenPGP signature verified; content digest is not publisher identity.\n");
+    }
     if let Some(source) = &chart_source {
         summary.push_str(source);
         summary.push('\n');
     }
-    for (definition, seal) in crds.definitions.iter().zip(&crd_seals) {
+    for (index, (definition, seal)) in crds.definitions.iter().zip(&crd_seals).enumerate() {
         summary.push_str(&format!(
-            "\n{} {}\n",
+            "\nCRD {} {}\nDESIRED PACKAGED SCHEMA\n",
+            definition.name,
             if seal.is_some() {
-                "RETAIN EXISTING"
+                "EXISTING"
             } else {
-                "CREATE MISSING"
-            },
-            definition.name
+                "MISSING"
+            }
         ));
         summary.push_str(&review_object(definition.object.clone())?);
         if let Some(binding) = seal {
             summary.push_str(&format!(
-                "\nLive UID {} RV {}\n",
+                "\nCURRENT SCHEMA UID {} RV {}\n",
                 binding.uid, binding.resource_version
             ));
             summary.push_str(&review_object(binding.definition.object.clone())?);
         }
+        if let Some(inventory) = impact.get(index) {
+            summary.push_str(&format!(
+                "\nCOMPLETE ALL-NAMESPACE IMPACT: {} instances\n",
+                inventory.instances.len()
+            ));
+            for instance in &inventory.instances {
+                summary.push_str(&format!(
+                    "{} {}/{} UID {} RV {}\n",
+                    inventory.api.api_version,
+                    instance.namespace,
+                    instance.name,
+                    instance.uid,
+                    instance.resource_version
+                ));
+                summary.push_str(&review_object(instance.object.clone())?);
+            }
+        }
     }
-    summary.push_str(&format!("\nExact CRD plan SHA-256: {}\nType {}/{} to execute the cluster-scoped create-only plan.\n",hash(crds.canonical.as_bytes()),options.namespace,options.release));
+    let confirmation = format!(
+        "{}{}/{}",
+        if matches!(request, Request::DeleteCrds { .. }) {
+            "DELETE CRDS "
+        } else {
+            ""
+        },
+        options.namespace,
+        options.release
+    );
+    summary.push_str(&format!(
+        "\nExact CRD plan SHA-256: {}\nType {} to execute this cluster-scoped plan.\n",
+        hash(crds.canonical.as_bytes()),
+        confirmation
+    ));
     if summary.len() > MAX_REVIEW {
-        return Err("complete CRD review exceeds512 KiB; split the bootstrap".into());
+        return Err(
+            "complete schema/instance impact review exceeds512KiB; split the schema operation"
+                .into(),
+        );
     }
     let canonical = crds.canonical.clone();
     Ok(Prepared {
@@ -2262,9 +2521,16 @@ async fn prepare_crds(
         crds,
         crd_seals,
         bindings: vec![],
+        impact,
+        review_context: gateway.context.clone(),
+        test_runs: vec![],
+        signature,
     })
 }
 async fn execute_crds(gateway: &Gateway, prepared: &Prepared) -> Result<()> {
+    if !matches!(prepared.request, Request::InstallCrds { .. }) {
+        return execute_schema_mutation(gateway, prepared).await;
+    }
     use kube::api::PostParams;
     gateway.helm_extension_access(false, true)?;
     let (client, _, _) = gateway.helm_lifecycle_access()?;
@@ -2345,10 +2611,13 @@ fn start_audit(prepared: &Prepared, context: &str) -> Result<PathBuf> {
         .map_err(|_| "invalid audit clock")?
         .as_nanos();
     let path = dir.join(format!("{stamp}-helm-{}.jsonl", std::process::id()));
-    let bootstrap = matches!(prepared.request, Request::InstallCrds { .. });
+    let bootstrap = schema_request(&prepared.request);
     let mut value = json!({"schema_version":1,"stage":"intent","context":context,"namespace":if bootstrap {"[cluster]"} else {&prepared.options.namespace},"resource":if bootstrap {"customresourcedefinitions"} else {"helm-releases"},"name":prepared.options.release,"uid":prepared.selected.as_ref().map(|r|r.uid.as_str()).unwrap_or("absent"),"action":format!("helm-{}",prepared.request.name()),"plan_sha256":hash(prepared.canonical.as_bytes()),"timestamp_unix_ns":stamp.to_string()});
     if bootstrap {
-        value["crd_targets"] = json!(prepared.crds.definitions.iter().zip(&prepared.crd_seals).map(|(definition, seal)| json!({"name":definition.name,"action":if seal.is_some(){"retain"}else{"create"},"uid":seal.as_ref().map(|binding|binding.uid.as_str())})).collect::<Vec<_>>());
+        value["crd_targets"] = json!(prepared.crds.definitions.iter().zip(&prepared.crd_seals).map(|(definition, seal)| json!({"name":definition.name,"action":match prepared.request {Request::UpgradeCrds{..}=>"update",Request::DeleteCrds{..}=>"delete",_=>if seal.is_some(){"retain"}else{"create"}},"uid":seal.as_ref().map(|binding|binding.uid.as_str())})).collect::<Vec<_>>());
+    }
+    if bootstrap {
+        value["custom_instance_targets"]=json!(prepared.impact.iter().flat_map(|inventory|inventory.instances.iter().map(|instance|json!({"schema":inventory.schema,"namespace":instance.namespace,"name":instance.name,"uid":instance.uid,"resource_version":instance.resource_version,"action":if matches!(prepared.request,Request::DeleteCrds{..}){"delete"}else{"inspect-only"}}))).collect::<Vec<_>>());
     }
     safety::write_new(&path, format!("{value}\n").as_bytes())?;
     Ok(path)
@@ -2418,7 +2687,9 @@ async fn validate_final(gateway: &Gateway, prepared: &Prepared) -> Result<Proces
         Request::Install { chart, values } | Request::Upgrade { chart, values } => {
             Some((chart, values.as_ref()))
         }
-        Request::InstallCrds { chart } => Some((chart, None)),
+        Request::InstallCrds { chart }
+        | Request::UpgradeCrds { chart }
+        | Request::DeleteCrds { chart } => Some((chart, None)),
         _ => None,
     };
     if let Some((chart, values)) = input {
@@ -2442,6 +2713,48 @@ async fn validate_final(gateway: &Gateway, prepared: &Prepared) -> Result<Proces
         {
             return Err("private reviewed input changed; prepare again".into());
         }
+    }
+    if let Some(signature) = &prepared.signature {
+        signature.inputs.check()?;
+        let verified = command(&context, signature.inputs.argv(), 15, None).await?;
+        if crate::helm_provenance::verified_fingerprint(&verified.stdout)? != signature.fingerprint
+        {
+            return Err("verified chart signer changed after review; no write sent".into());
+        }
+    }
+    if schema_request(&prepared.request) {
+        let observed = inspect_chart(
+            &safety::read_small(&context.root.join("chart.tgz"), MAX_CHART)?,
+            true,
+        )?;
+        if observed.canonical != prepared.canonical {
+            return Err("packaged schema plan changed after review".into());
+        }
+        let (seals, impact) = schema_preflight(
+            &client,
+            &prepared.crds,
+            &prepared.request,
+            &prepared.options,
+            true,
+        )
+        .await?;
+        if !same_crd_seals(&seals, &prepared.crd_seals)
+            || impact.len() != prepared.impact.len()
+            || !impact
+                .iter()
+                .zip(&prepared.impact)
+                .all(|(a, b)| a.same_membership(b))
+        {
+            return Err(
+                "CRD or complete instance membership changed after review; prepare again".into(),
+            );
+        }
+        let bindings = seals.into_iter().flatten().collect::<Vec<_>>();
+        crate::helm_crds::recheck(&client, &bindings).await?;
+        if prepared.created.elapsed() > REVIEW_LIFETIME {
+            return Err("schema review expired during validation".into());
+        }
+        return Ok(context);
     }
     let current_crds = crd_preflight(
         &client,
@@ -2644,7 +2957,7 @@ pub async fn run(
     };
     let audit = start_audit(&prepared, &gateway.context)?;
     let operation_started = Instant::now();
-    if matches!(prepared.request, Request::InstallCrds { .. }) {
+    if schema_request(&prepared.request) {
         let result = tokio::select! {result=tokio::time::timeout(Duration::from_secs(u64::from(prepared.options.seconds)),execute_crds(gateway,&prepared))=>result.map_err(|_|"CRD bootstrap deadline exceeded; definitions may already exist".to_owned()).and_then(|result|result),_=canceled(&mut cancel)=>Err("CRD bootstrap canceled; definitions may already exist".into())};
         let success = result.is_ok();
         finish_audit(
@@ -2660,11 +2973,12 @@ pub async fn run(
             uncertain: !success,
             summary: match result {
                 Ok(()) => format!(
-                    "CRD bootstrap completed: {} reviewed definitions Established or retained. No Helm release record was created. Prepare the ordinary release separately; CRDs persist through uninstall.",
+                    "CRD {} completed for {} reviewed definitions. No Helm release revision changed; inspect schemas and reviewed instance identities before further operations.",
+                    prepared.request.name(),
                     prepared.crds.definitions.len()
                 ),
                 Err(error) => format!(
-                    "CRD bootstrap outcome UNKNOWN: {}. Inspect exact reviewed CRD names and audit pending; do not retry automatically.",
+                    "CRD operation outcome UNKNOWN: {}. Earlier reviewed instances/schemas may already have changed or been deleted. Inspect exact reviewed names and audit pending; do not retry automatically.",
                     safety::safe_text(&error, 1024)
                 ),
             },
@@ -2687,6 +3001,45 @@ pub async fn run(
         if let Err(error) = deletion {
             result = Err(error);
         }
+    }
+    if matches!(prepared.request, Request::Test) {
+        let verified = tokio::time::timeout(
+            Duration::from_secs(15),
+            test_outcome(gateway, &prepared, result.is_ok()),
+        )
+        .await
+        .map_err(|_| "test-result verification timed out".to_owned())
+        .and_then(|value| value);
+        let normal_exit = result.is_ok()
+            || result
+                .as_ref()
+                .err()
+                .is_some_and(|error| error.starts_with("Helm reported"));
+        return match verified {
+            Ok((success, summary)) if normal_exit => {
+                finish_audit(&audit, if success { "succeeded" } else { "failed" })?;
+                Ok(Outcome {
+                    success,
+                    uncertain: false,
+                    summary,
+                })
+            }
+            other => {
+                finish_audit(&audit, "failed-or-unknown")?;
+                let detail = match other {
+                    Err(error) => error,
+                    Ok((_, summary)) => summary,
+                };
+                Ok(Outcome {
+                    success: false,
+                    uncertain: true,
+                    summary: format!(
+                        "Helm test outcome UNKNOWN: {}. Test resources/results may already have changed. Inspect exact release/test identities; no automatic retry or logs.",
+                        safety::safe_text(&detail, 1024)
+                    ),
+                })
+            }
+        };
     }
     let observed = observed_release(gateway, &prepared.options).await;
     match result {
@@ -2721,6 +3074,411 @@ pub async fn run(
             })
         }
     }
+}
+
+/// Schema mutations deliberately use the live object's metadata and only the
+/// reviewed spec. This never adopts chart labels or discards existing labels.
+fn schema_update_object(
+    binding: &crate::helm_crds::Binding,
+    desired: &crate::helm_extensions::CrdDefinition,
+) -> Result<DynamicObject> {
+    let mut object = binding.definition.object.clone();
+    object["spec"] = desired.object["spec"].clone();
+    object["metadata"] = binding.live_metadata.clone();
+    if let Some(metadata) = object["metadata"].as_object_mut() {
+        metadata.remove("managedFields");
+    }
+    object["metadata"]["uid"] = json!(binding.uid);
+    object["metadata"]["resourceVersion"] = json!(binding.resource_version);
+    serde_json::from_value(object).map_err(|_| "invalid reviewed schema update".into())
+}
+fn deletion_instance(instance: &crate::helm_crds::Instance, options: &Options) -> Result<()> {
+    namespace_allowed(&instance.namespace)?;
+    ownership(&instance.object, options)?;
+    for key in ["ownerReferences", "finalizers"] {
+        if instance.object["metadata"]
+            .get(key)
+            .is_some_and(|value| value.as_array().is_none_or(|values| !values.is_empty()))
+        {
+            return Err("schema deletion refuses instances with ownerReferences or finalizers; reconcile independently".into());
+        }
+    }
+    if !instance.object["metadata"]["deletionTimestamp"].is_null() {
+        return Err(
+            "custom instance is already terminating; reconcile before schema deletion".into(),
+        );
+    }
+    Ok(())
+}
+fn delete_params(uid: &str, version: &str, dry_run: bool) -> kube::api::DeleteParams {
+    kube::api::DeleteParams {
+        dry_run,
+        preconditions: Some(kube::api::Preconditions {
+            uid: Some(uid.into()),
+            resource_version: Some(version.into()),
+        }),
+        propagation_policy: Some(kube::api::PropagationPolicy::Foreground),
+        ..Default::default()
+    }
+}
+async fn schema_preflight(
+    client: &Client,
+    plan: &crate::helm_extensions::CrdPlan,
+    request: &Request,
+    options: &Options,
+    dry: bool,
+) -> Result<(
+    Vec<Option<crate::helm_crds::Binding>>,
+    Vec<crate::helm_crds::Inventory>,
+)> {
+    if matches!(request, Request::InstallCrds { .. }) {
+        return Ok((crd_preflight(client, plan, true).await?, vec![]));
+    }
+    let api: Api<DynamicObject> = Api::all_with(client.clone(), &crd_api());
+    let mut bindings = Vec::new();
+    let mut impact = Vec::new();
+    let mut count = 0;
+    let mut bytes = 0;
+    for desired in &plan.definitions {
+        let binding = crate::helm_crds::read(client, &desired.name).await?;
+        // Explicit foreign Helm ownership is never overridden, even for schemas
+        // originally installed by a different release's standalone bootstrap.
+        let metadata = &binding.definition.object["metadata"];
+        if metadata["annotations"]
+            .get("meta.helm.sh/release-name")
+            .is_some()
+            || metadata["annotations"]
+                .get("meta.helm.sh/release-namespace")
+                .is_some()
+            || metadata["labels"]
+                .get("app.kubernetes.io/managed-by")
+                .is_some()
+        {
+            ownership(&binding.definition.object, options)?;
+        }
+        let inventory =
+            crate::helm_crds::inventory(client, &binding, &mut count, &mut bytes).await?;
+        match request {
+            Request::UpgradeCrds { .. } => {
+                let instances = inventory
+                    .instances
+                    .iter()
+                    .map(|instance| instance.object.clone())
+                    .collect::<Vec<_>>();
+                crate::helm_extensions::compatible_upgrade(
+                    &binding.definition,
+                    desired,
+                    &instances,
+                )?;
+                if dry {
+                    let admitted = api
+                        .replace(
+                            &desired.name,
+                            &kube::api::PostParams {
+                                dry_run: true,
+                                ..Default::default()
+                            },
+                            &schema_update_object(&binding, desired)?,
+                        )
+                        .await
+                        .map_err(|error| api_failure(error, "CRD schema update dry-run"))?;
+                    let admitted = serde_json::to_value(admitted)
+                        .map_err(|_| "invalid admitted schema update")?;
+                    if !desired.matches_existing(&admitted)
+                        || !schema_metadata_matches(&binding, &admitted)
+                    {
+                        return Err("admission changed the reviewed updated schema/identity".into());
+                    }
+                }
+            }
+            Request::DeleteCrds { .. } => {
+                if !desired.matches_existing(&binding.definition.object) {
+                    return Err("delete chart does not exactly match the live schema; supply the current packaged definition".into());
+                }
+                for instance in &inventory.instances {
+                    deletion_instance(instance, options)?;
+                    if dry {
+                        let instances: Api<DynamicObject> = Api::namespaced_with(
+                            client.clone(),
+                            &instance.namespace,
+                            &inventory.api,
+                        );
+                        instances
+                            .delete(
+                                &instance.name,
+                                &delete_params(&instance.uid, &instance.resource_version, true),
+                            )
+                            .await
+                            .map_err(|error| {
+                                api_failure(error, "reviewed custom instance deletion dry-run")
+                            })?;
+                    }
+                }
+                if dry {
+                    api.delete(
+                        &desired.name,
+                        &delete_params(&binding.uid, &binding.resource_version, true),
+                    )
+                    .await
+                    .map_err(|error| api_failure(error, "cluster CRD deletion dry-run"))?;
+                }
+            }
+            _ => return Err("invalid schema mutation workflow".into()),
+        }
+        bindings.push(Some(binding));
+        impact.push(inventory);
+    }
+    Ok((bindings, impact))
+}
+async fn execute_schema_mutation(gateway: &Gateway, prepared: &Prepared) -> Result<()> {
+    gateway.helm_extension_access(false, true)?;
+    let (client, _, _) = gateway.helm_lifecycle_access()?;
+    let api: Api<DynamicObject> = Api::all_with(client.clone(), &crd_api());
+    let mut total = 0;
+    let mut bytes = 0;
+    // Check all inventories immediately before the first write. This is still
+    // not a transaction; every later instance write also carries preconditions.
+    for (expected, binding) in prepared
+        .impact
+        .iter()
+        .zip(prepared.crd_seals.iter().flatten())
+    {
+        let current = crate::helm_crds::inventory(&client, binding, &mut total, &mut bytes).await?;
+        if !expected.same_membership(&current) {
+            return Err("cluster-wide instance membership changed before schema writes; no schema mutation started".into());
+        }
+    }
+    for (index, (desired, binding)) in prepared
+        .crds
+        .definitions
+        .iter()
+        .zip(&prepared.crd_seals)
+        .enumerate()
+    {
+        let binding = binding
+            .as_ref()
+            .ok_or("schema mutation lacks existing UID/RV")?;
+        crate::helm_crds::recheck(&client, std::slice::from_ref(binding)).await?;
+        if matches!(prepared.request, Request::UpgradeCrds { .. }) {
+            let result = api
+                .replace(
+                    &desired.name,
+                    &kube::api::PostParams::default(),
+                    &schema_update_object(binding, desired)?,
+                )
+                .await
+                .map_err(|error| {
+                    api_failure(
+                        error,
+                        "reviewed CRD schema update; earlier updates may already exist",
+                    )
+                })?;
+            let value = serde_json::to_value(result).map_err(|_| "invalid updated CRD response")?;
+            if !schema_metadata_matches(binding, &value) || !desired.matches_existing(&value) {
+                return Err(
+                    "updated schema differs from exact review; outcome unknown; stop and reconcile"
+                        .into(),
+                );
+            }
+            let _ = crate::helm_crds::validate_live(value)?;
+        } else {
+            let inventory = prepared
+                .impact
+                .get(index)
+                .ok_or("schema deletion impact missing")?;
+            for instance in &inventory.instances {
+                let instances: Api<DynamicObject> =
+                    Api::namespaced_with(client.clone(), &instance.namespace, &inventory.api);
+                instances
+                    .delete(
+                        &instance.name,
+                        &delete_params(&instance.uid, &instance.resource_version, false),
+                    )
+                    .await
+                    .map_err(|error| {
+                        api_failure(
+                            error,
+                            "reviewed instance deletion; earlier instances may already be deleted",
+                        )
+                    })?;
+            }
+            loop {
+                let mut count = 0;
+                let mut bytes = 0;
+                let current =
+                    crate::helm_crds::inventory(&client, binding, &mut count, &mut bytes).await?;
+                if current.instances.is_empty() {
+                    break;
+                }
+                for instance in &current.instances {
+                    if !inventory.instances.iter().any(|old| {
+                        old.namespace == instance.namespace
+                            && old.name == instance.name
+                            && old.uid == instance.uid
+                    }) {
+                        return Err("new/replaced custom instance appeared during deletion; CRD retained; earlier instances may already be deleted".into());
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(200)).await;
+            }
+            crate::helm_crds::recheck(&client, std::slice::from_ref(binding)).await?;
+            api.delete(
+                &desired.name,
+                &delete_params(&binding.uid, &binding.resource_version, false),
+            )
+            .await
+            .map_err(|error| {
+                api_failure(
+                    error,
+                    "reviewed CRD deletion; instance deletions may already be complete",
+                )
+            })?;
+            loop {
+                let remaining = api
+                    .get_opt(&desired.name)
+                    .await
+                    .map_err(|error| api_failure(error, "CRD deletion completion"))?;
+                let Some(remaining) = remaining else {
+                    break;
+                };
+                if remaining.metadata.uid.as_deref() != Some(binding.uid.as_str()) {
+                    return Err(
+                        "CRD was replaced after deletion; replacement was not reviewed".into(),
+                    );
+                }
+                tokio::time::sleep(Duration::from_millis(200)).await;
+            }
+        }
+    }
+    Ok(())
+}
+
+async fn test_outcome(
+    gateway: &Gateway,
+    prepared: &Prepared,
+    command_succeeded: bool,
+) -> Result<(bool, String)> {
+    let expected = prepared
+        .selected
+        .as_ref()
+        .ok_or("test release selection missing")?;
+    let inventory = helm::list(gateway, &prepared.options.namespace).await?;
+    if inventory.truncated || !inventory.issues.is_empty() {
+        return Err("test result inventory incomplete".into());
+    }
+    let releases = inventory
+        .releases
+        .iter()
+        .filter(|release| release.name == prepared.options.release)
+        .collect::<Vec<_>>();
+    let current = releases
+        .first()
+        .filter(|_| releases.len() == 1)
+        .ok_or("test release disappeared or storage became ambiguous")?;
+    if current.uid != expected.uid
+        || current.revision != expected.revision
+        || current.storage != expected.storage
+        || current.status != expected.status
+    {
+        return Err("release UID/revision/status changed during test; outcome cannot be attributed to the captured release".into());
+    }
+    let history = history_seal(&helm::history(gateway, current).await?)?;
+    if history.len() != prepared.history.len()
+        || history
+            .iter()
+            .zip(&prepared.history)
+            .any(|(after, before)| {
+                after.0 != before.0
+                    || after.1 != before.1
+                    || after.3 != before.3
+                    || (after.0 != expected.revision && after.2 != before.2)
+            })
+    {
+        return Err("release history changed outside the reviewed test-result update".into());
+    }
+    let hooks = stored_hooks(gateway, &prepared.options, current, &prepared.request).await?;
+    if hooks.canonical != prepared.hooks.canonical {
+        return Err("stored hook plan changed during test; cannot attribute result".into());
+    }
+    let results = helm::lifecycle_test_results(gateway, current).await?;
+    let (succeeded, failed) = fresh_test_counts(&prepared.hooks, &prepared.test_runs, &results)?;
+    if failed > 0 {
+        return Ok((
+            false,
+            format!(
+                "Helm tests FAILED: {failed} newly failed stored results, {succeeded} newly succeeded. Release remains revision {} (same storage UID); no new revision was created. No test logs were read.",
+                current.revision
+            ),
+        ));
+    }
+    if !command_succeeded {
+        return Err("Helm process did not complete successfully; no newly failed stored test result proves completion".into());
+    }
+    if succeeded != prepared.hooks.for_event("test").len() {
+        return Err("not every reviewed test has a fresh succeeded stored result".into());
+    }
+    Ok((
+        true,
+        format!(
+            "Helm tests PASSED: {succeeded} freshly succeeded stored results. Release remains revision {} (same storage UID); only hook execution results were updated. No test logs were read.",
+            current.revision
+        ),
+    ))
+}
+fn fresh_test_counts(
+    plan: &crate::helm_extensions::HookPlan,
+    before: &[helm::TestRun],
+    after: &[helm::TestRun],
+) -> Result<(usize, usize)> {
+    let mut succeeded = 0;
+    let mut failed = 0;
+    for hook in plan.for_event("test") {
+        let current = after
+            .iter()
+            .find(|run| run.name == hook.identity.name && run.kind == hook.identity.kind)
+            .ok_or("stored result missing reviewed test identity")?;
+        let previous = before
+            .iter()
+            .find(|run| run.name == current.name && run.kind == current.kind);
+        let times = current
+            .started
+            .parse::<k8s_openapi::jiff::Timestamp>()
+            .ok()
+            .zip(
+                current
+                    .completed
+                    .parse::<k8s_openapi::jiff::Timestamp>()
+                    .ok(),
+            );
+        let fresh = times.is_some_and(|(started, completed)| completed >= started)
+            && !current.started.starts_with("0001-")
+            && previous.is_none_or(|old| old.started != current.started);
+        if fresh {
+            match current.phase.as_str() {
+                "Succeeded" => succeeded += 1,
+                "Failed" => failed += 1,
+                _ => {}
+            }
+        }
+    }
+    Ok((succeeded, failed))
+}
+
+fn schema_metadata_matches(binding: &crate::helm_crds::Binding, object: &Value) -> bool {
+    object["metadata"]["uid"] == binding.uid
+        && [
+            "name",
+            "labels",
+            "annotations",
+            "finalizers",
+            "ownerReferences",
+        ]
+        .iter()
+        .all(|key| {
+            let before = &binding.live_metadata[*key];
+            let after = &object["metadata"][*key];
+            before == after || (before.is_null() && after.as_array().is_some_and(Vec::is_empty))
+        })
 }
 
 #[cfg(test)]
@@ -2904,6 +3662,7 @@ mod tests {
             allow_hooks: false,
             allow_crds: false,
             registry: Default::default(),
+            keyring: None,
         }
     }
     #[test]
@@ -3418,5 +4177,213 @@ mod tests {
                 break;
             }
         }
+    }
+    fn live_schema() -> Value {
+        let mut object = test_crd();
+        object["metadata"]["uid"] = json!("schema-uid");
+        object["metadata"]["resourceVersion"] = json!("7");
+        object["metadata"]["labels"]["kborg.dev/run-id"] = json!("owned-fixture");
+        object["metadata"]["finalizers"] = json!(["customresourcecleanup.apiextensions.k8s.io"]);
+        object["status"]["conditions"] = json!([{"type":"Established","status":"True"}]);
+        object
+    }
+    fn custom_instance(namespace: &str, name: &str) -> Value {
+        let mut object = owned(name, &format!("uid-{name}"));
+        object["apiVersion"] = json!("example.com/v1");
+        object["kind"] = json!("Widget");
+        object["metadata"]["namespace"] = json!(namespace);
+        object["spec"] = json!({"value":"existing"});
+        object
+    }
+    #[test]
+    fn schema_update_preserves_live_metadata_and_rejects_admission_metadata_drift() -> Result<()> {
+        let binding = crate::helm_crds::validate_live(live_schema())?;
+        let mut next = test_crd();
+        next["metadata"]["labels"]["do-not-adopt"] = json!("chart");
+        next["spec"]["versions"][0]["schema"]["openAPIV3Schema"]["properties"]["spec"]["properties"]
+            ["optional"] = json!({"type":"string"});
+        let desired = crate::helm_extensions::crd_definition(next)?;
+        let update = serde_json::to_value(schema_update_object(&binding, &desired)?)
+            .map_err(|_| "fixture update")?;
+        assert_eq!(update["metadata"]["uid"], "schema-uid");
+        assert_eq!(update["metadata"]["resourceVersion"], "7");
+        assert_eq!(
+            update["metadata"]["labels"]["kborg.dev/run-id"],
+            "owned-fixture"
+        );
+        assert!(update["metadata"]["labels"]["do-not-adopt"].is_null());
+        assert_eq!(
+            update["metadata"]["finalizers"],
+            binding.live_metadata["finalizers"]
+        );
+        assert!(schema_metadata_matches(&binding, &update));
+        let mut changed = update;
+        changed["metadata"]["labels"]["admission"] = json!("new");
+        assert!(!schema_metadata_matches(&binding, &changed));
+        Ok(())
+    }
+    #[test]
+    fn schema_mutation_preflight_uses_complete_cluster_scope_and_sealed_dry_runs() -> Result<()> {
+        crate::cli::runtime()?.block_on(async{
+            let schema=live_schema();let first=custom_instance("demo","a");let second=custom_instance("other-owned","b");
+            let client=mock_client(move|method,uri,body|{
+                if uri.contains("?limit=") {assert_eq!(uri,"/apis/example.com/v1/widgets?limit=1001");return (200,json!({"apiVersion":"example.com/v1","kind":"WidgetList","metadata":{},"items":[first,second]}));}
+                if method==http::Method::GET {return(200,schema.clone());}
+                assert_eq!(method,http::Method::DELETE);assert_eq!(body["dryRun"],json!(["All"]));assert!(body["preconditions"]["uid"].as_str().is_some());assert!(body["preconditions"]["resourceVersion"].as_str().is_some());
+                (200,json!({"apiVersion":"v1","kind":"Status","status":"Success"}))
+            });
+            let plan=crate::helm_extensions::crds(&test_crd().to_string(),true)?;
+            let (seals,impact)=schema_preflight(&client,&plan,&Request::DeleteCrds{chart:"/unused.tgz".into()},&options(),true).await?;assert_eq!(seals.len(),1);assert_eq!(impact[0].instances.len(),2);assert_eq!(impact[0].instances[1].namespace,"other-owned");Ok(())
+        })
+    }
+    #[test]
+    fn destructive_instance_policy_rejects_foreign_system_gitops_and_finalizers() -> Result<()> {
+        let object = custom_instance("other-owned", "a");
+        let instance = crate::helm_crds::Instance {
+            namespace: "other-owned".into(),
+            name: "a".into(),
+            uid: "uid-a".into(),
+            resource_version: "1".into(),
+            object,
+        };
+        assert!(deletion_instance(&instance, &options()).is_ok());
+        for variant in 0..5 {
+            let mut changed = instance.clone();
+            match variant {
+                0 => {
+                    changed.object["metadata"]["annotations"]["meta.helm.sh/release-name"] =
+                        json!("foreign")
+                }
+                1 => changed.object["metadata"]["finalizers"] = json!(["example/finalizer"]),
+                2 => {
+                    changed.object["metadata"]["labels"]["argocd.argoproj.io/instance"] =
+                        json!("managed")
+                }
+                3 => changed.namespace = "kube-system".into(),
+                _ => changed.object["metadata"]["ownerReferences"] = json!([{"uid":"controller"}]),
+            };
+            assert!(deletion_instance(&changed, &options()).is_err());
+        }
+        Ok(())
+    }
+    #[test]
+    fn test_event_has_no_automatic_logs_and_stored_results_must_be_fresh() -> Result<()> {
+        let mut object = owned("test", "unused");
+        object["metadata"]["annotations"]["helm.sh/hook"] = json!("test-success");
+        let plan = crate::helm_extensions::hooks_from_manifests(
+            &object.to_string(),
+            "demo",
+            "demo-api",
+            crate::helm_extensions::Operation::Test,
+            true,
+        )?;
+        assert_eq!(plan.events(), &["test"]);
+        assert_eq!(plan.active().len(), 1);
+        let args = lifecycle_args(
+            &options(),
+            &Request::Test,
+            Path::new("/private/review"),
+            false,
+        );
+        assert_eq!(&args[..2], &["test", "demo-api"]);
+        assert!(!args.iter().any(|arg| arg == "--logs"
+            || arg.starts_with("--wait")
+            || arg.starts_with("--dry-run")
+            || arg == "--no-hooks"));
+        let old = helm::TestRun {
+            name: "test".into(),
+            kind: "ConfigMap".into(),
+            started: "2026-10-22T08:00:00Z".into(),
+            completed: "2026-10-22T08:00:01Z".into(),
+            phase: "Failed".into(),
+        };
+        assert_eq!(
+            fresh_test_counts(
+                &plan,
+                std::slice::from_ref(&old),
+                std::slice::from_ref(&old)
+            )?,
+            (0, 0)
+        );
+        let mut new = old.clone();
+        new.started = "2026-10-22T09:00:00Z".into();
+        new.completed = "2026-10-22T09:00:01Z".into();
+        assert_eq!(
+            fresh_test_counts(
+                &plan,
+                std::slice::from_ref(&old),
+                std::slice::from_ref(&new)
+            )?,
+            (0, 1)
+        );
+        new.phase = "Succeeded".into();
+        assert_eq!(
+            fresh_test_counts(
+                &plan,
+                std::slice::from_ref(&old),
+                std::slice::from_ref(&new)
+            )?,
+            (1, 0)
+        );
+        new.completed = "bad timestamp".into();
+        assert_eq!(fresh_test_counts(&plan, &[old], &[new])?, (0, 0));
+        Ok(())
+    }
+    #[test]
+    fn native_schema_delete_rechecks_membership_and_deletes_instances_before_schema() -> Result<()>
+    {
+        crate::cli::runtime()?.block_on(async {
+            let demo=Gateway::connect(crate::gateway::Connection{demo:true,writable:true,allow_helm_write:true,allow_helm_crds:true,..Default::default()}).await?;
+            let mut config=options();config.allow_crds=true;
+            for mode in 0..3 {
+                let mut prepared=prepare(&demo,config.clone(),Request::DeleteCrds{chart:"/demo/schema.tgz".into()}).await?;
+                assert_eq!(prepared.confirmation(),"DELETE CRDS demo/demo-api");
+                let schema=live_schema();let binding=crate::helm_crds::validate_live(schema.clone())?;
+                let api=binding.definition.resource_api("example.com/v1","Widget").ok_or("fixture API")?;
+                let object=custom_instance("other-owned","a");
+                let instance=crate::helm_crds::Instance{namespace:"other-owned".into(),name:"a".into(),uid:"uid-a".into(),resource_version:"7".into(),object:object.clone()};
+                prepared.crds=crate::helm_extensions::crds(&test_crd().to_string(),true)?;prepared.crd_seals=vec![Some(binding)];prepared.impact=vec![crate::helm_crds::Inventory{schema:"widgets.example.com".into(),api,instances:vec![instance]}];
+                let writes=Arc::new(AtomicU64::new(0));let observed=writes.clone();let instance_deleted=Arc::new(AtomicBool::new(false));let gone=instance_deleted.clone();let schema_deleted=Arc::new(AtomicBool::new(false));let schema_gone=schema_deleted.clone();
+                let client=mock_client(move|method,uri,body| {
+                    if method==http::Method::GET && uri.contains("?limit=") {let mut items=vec![];if !gone.load(Ordering::SeqCst){let mut current=object.clone();if mode==1{current["metadata"]["uid"]=json!("replacement");}items.push(current);}return(200,json!({"apiVersion":"example.com/v1","kind":"WidgetList","metadata":{},"items":items}));}
+                    if method==http::Method::GET {if schema_gone.load(Ordering::SeqCst){return(404,json!({"apiVersion":"v1","kind":"Status","code":404,"reason":"NotFound"}));}return(200,schema.clone());}
+                    assert_eq!(method,http::Method::DELETE);assert!(body["dryRun"].is_null());assert_eq!(body["preconditions"]["resourceVersion"],"7");observed.fetch_add(1,Ordering::SeqCst);
+                    if uri.contains("/namespaces/other-owned/") {assert_eq!(body["preconditions"]["uid"],"uid-a");if mode==2{return(409,json!({"apiVersion":"v1","kind":"Status","code":409,"reason":"Conflict","message":"PRIVATE_CANARY"}));}gone.store(true,Ordering::SeqCst);}
+                    else {assert!(gone.load(Ordering::SeqCst));assert_eq!(body["preconditions"]["uid"],"schema-uid");schema_gone.store(true,Ordering::SeqCst);}
+                    (200,json!({"apiVersion":"v1","kind":"Status","status":"Success"}))
+                });
+                let gateway=Gateway::for_helm_extension_test_client(client,"demo",static_connection()?,false,true);
+                let result=execute_schema_mutation(&gateway,&prepared).await;
+                match mode {0=>{result?;assert!(schema_deleted.load(Ordering::SeqCst));assert_eq!(writes.load(Ordering::SeqCst),2);},1=>{assert!(result.is_err_and(|error|error.contains("membership")));assert_eq!(writes.load(Ordering::SeqCst),0);},_=>{assert!(result.is_err_and(|error|error.contains("conflict")&&!error.contains("CANARY")));assert!(!schema_deleted.load(Ordering::SeqCst));}}
+            }
+            Ok(())
+        })
+    }
+    #[test]
+    fn stored_release_review_never_implies_supplied_keyring_enforcement() {
+        let mut config = options();
+        config.keyring = Some(PathBuf::from("/explicit/trusted-public.gpg"));
+        for request in [
+            Request::Test,
+            Request::Rollback { revision: 1 },
+            Request::Uninstall,
+        ] {
+            let notice = unverified_archive_notice(&request, config.keyring.is_some());
+            assert!(notice.contains("no chart archive is acquired"));
+            assert!(notice.contains("archive provenance is not reverified"));
+            assert!(notice.contains("supplied --helm-keyring is not applied"));
+            assert!(!notice.contains("no explicit --helm-keyring supplied"));
+        }
+        let unsigned = unverified_archive_notice(
+            &Request::Install {
+                chart: PathBuf::from("/local/chart.tgz"),
+                values: None,
+            },
+            false,
+        );
+        assert_eq!(
+            unsigned,
+            "No OpenPGP signature verified: no explicit --helm-keyring supplied; content digest is integrity, not publisher identity.\n"
+        );
     }
 }

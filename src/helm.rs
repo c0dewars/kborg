@@ -716,6 +716,73 @@ pub(crate) async fn lifecycle_hooks(gateway: &Gateway, release: &Release) -> Res
     }
     hook_projection(&bytes)
 }
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) struct TestRun {
+    pub name: String,
+    pub kind: String,
+    pub started: String,
+    pub completed: String,
+    pub phase: String,
+}
+pub(crate) async fn lifecycle_test_results(
+    gateway: &Gateway,
+    release: &Release,
+) -> Result<Vec<TestRun>> {
+    let (current, bytes) = selected(gateway, release).await?;
+    if current.resource_version != release.resource_version {
+        return Err("stored test results changed during read".into());
+    }
+    let _ = hook_projection(&bytes)?;
+    let raw: Value = serde_json::from_slice(&bytes).map_err(|_| "invalid stored test results")?;
+    let mut results = Vec::new();
+    for hook in raw["hooks"].as_array().into_iter().flatten() {
+        if !hook["events"]
+            .as_array()
+            .is_some_and(|events| events.iter().any(|event| event == "test"))
+        {
+            continue;
+        }
+        let field = |key: &str| -> Result<String> {
+            hook[key]
+                .as_str()
+                .filter(|value| !value.is_empty() && value.len() <= 253)
+                .map(str::to_owned)
+                .ok_or_else(|| "invalid stored test identity".into())
+        };
+        let run = &hook["last_run"];
+        if !run.is_null() && !run.is_object() {
+            return Err("invalid stored hook execution result".into());
+        }
+        if run.as_object().is_some_and(|map| {
+            map.keys()
+                .any(|key| !["started_at", "completed_at", "phase"].contains(&key.as_str()))
+        }) {
+            return Err("noncanonical stored test execution result".into());
+        }
+        let started = run["started_at"]
+            .as_str()
+            .filter(|value| value.len() <= 80)
+            .unwrap_or("")
+            .to_owned();
+        let completed = run["completed_at"]
+            .as_str()
+            .filter(|value| value.len() <= 80)
+            .unwrap_or("")
+            .to_owned();
+        let phase = run["phase"].as_str().unwrap_or("");
+        if !["", "Unknown", "Running", "Succeeded", "Failed"].contains(&phase) {
+            return Err("unknown stored test phase".into());
+        }
+        results.push(TestRun {
+            name: field("name")?,
+            kind: field("kind")?,
+            started,
+            completed,
+            phase: phase.into(),
+        });
+    }
+    Ok(results)
+}
 fn hook_projection(bytes: &[u8]) -> Result<Value> {
     let release: Value = serde_json::from_slice(bytes)
         .map_err(|_| "invalid stored Helm hook envelope; contents suppressed")?;

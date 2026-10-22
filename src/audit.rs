@@ -48,7 +48,14 @@ fn parse(id: String, bytes: &[u8]) -> Result<Option<Pending>> {
         "set-resources"
     } else if matches!(
         action,
-        "helm-install" | "helm-upgrade" | "helm-rollback" | "helm-uninstall" | "helm-crds"
+        "helm-install"
+            | "helm-upgrade"
+            | "helm-rollback"
+            | "helm-uninstall"
+            | "helm-crds"
+            | "helm-test"
+            | "helm-crds-upgrade"
+            | "helm-crds-delete"
     ) {
         action
     } else {
@@ -122,6 +129,9 @@ mod tests {
             "helm-rollback",
             "helm-uninstall",
             "helm-crds",
+            "helm-test",
+            "helm-crds-upgrade",
+            "helm-crds-delete",
         ] {
             let record = serde_json::json!({"schema_version":1,"stage":"intent","action":action});
             let pending = parse("1.jsonl".into(), record.to_string().as_bytes())?

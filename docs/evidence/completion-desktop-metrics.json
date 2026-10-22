@@ -1,0 +1,45 @@
+{
+  "timestamp_utc": "2026-10-22T20:03:40.192917+00:00",
+  "context": "docker-desktop",
+  "namespace": "kborg-system",
+  "binary_sha256": "fc846bd3bac99709ee7fc400d3de02e4585b419e6c60ba7af39b7073ff2d01ef",
+  "binary_version": "KBorg 0.3.0",
+  "passed": true,
+  "provider": {
+    "deployment": "kborg-system/kborg-metrics-server",
+    "deployment_available": true,
+    "api_service": "v1beta1.metrics.k8s.io",
+    "api_service_available": true
+  },
+  "reads": {
+    "pods": {
+      "items": 1,
+      "truncated": false,
+      "response_keys": [
+        "allocation_status",
+        "api_version",
+        "items",
+        "namespace",
+        "scope",
+        "source",
+        "truncated"
+      ],
+      "resource_comparisons_requested": true
+    },
+    "nodes": {
+      "items": 1,
+      "truncated": false,
+      "response_keys": [
+        "allocation_status",
+        "api_version",
+        "items",
+        "namespace",
+        "scope",
+        "source",
+        "truncated"
+      ],
+      "resource_comparisons_requested": true
+    }
+  },
+  "scope": "Read-only existing verified-TLS Docker Desktop metrics provider and native Pod/Node metrics with resource comparisons; no provider, workload, context or credential changes; no resource payload or measured values retained."
+}

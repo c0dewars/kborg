@@ -19,14 +19,16 @@ pub enum Operation {
     Upgrade,
     Rollback,
     Uninstall,
+    Test,
 }
 impl Operation {
-    fn events(self) -> [&'static str; 2] {
+    fn events(self) -> &'static [&'static str] {
         match self {
-            Self::Install => ["pre-install", "post-install"],
-            Self::Upgrade => ["pre-upgrade", "post-upgrade"],
-            Self::Rollback => ["pre-rollback", "post-rollback"],
-            Self::Uninstall => ["pre-delete", "post-delete"],
+            Self::Install => &["pre-install", "post-install"],
+            Self::Upgrade => &["pre-upgrade", "post-upgrade"],
+            Self::Rollback => &["pre-rollback", "post-rollback"],
+            Self::Uninstall => &["pre-delete", "post-delete"],
+            Self::Test => &["test"],
         }
     }
 }
@@ -227,7 +229,11 @@ fn hook_plan(all: Vec<Hook>, operation: Operation, allow: bool) -> Result<HookPl
     Ok(HookPlan {
         all,
         canonical,
-        selected_events: operation.events().into_iter().map(str::to_owned).collect(),
+        selected_events: operation
+            .events()
+            .iter()
+            .map(|value| (*value).to_owned())
+            .collect(),
     })
 }
 fn hook_object(mut object: Value, namespace: &str, release: &str) -> Result<Hook> {
@@ -716,6 +722,211 @@ pub fn native_api(api: &str, kind: &str) -> Result<ApiResource> {
     })
 }
 
+/// Prove a bounded, backwards-compatible update without performing storage
+/// migration. Only validation relaxations and optional fields absent from all
+/// captured instances are accepted; unsupported changes fail closed.
+pub fn compatible_upgrade(
+    previous: &CrdDefinition,
+    next: &CrdDefinition,
+    instances: &[Value],
+) -> Result<()> {
+    if previous.name != next.name || previous.kind != next.kind {
+        return Err("CRD API identity changes require an explicit migration".into());
+    }
+    let mut old =
+        normalized_crd_spec(&previous.object["spec"]).ok_or("invalid previous CRD spec")?;
+    let mut new = normalized_crd_spec(&next.object["spec"]).ok_or("invalid next CRD spec")?;
+    let old_versions = old["versions"]
+        .as_array_mut()
+        .ok_or("invalid previous versions")?;
+    let new_versions = new["versions"]
+        .as_array_mut()
+        .ok_or("invalid next versions")?;
+    if old_versions.len() != new_versions.len() {
+        return Err(
+            "adding/removing served or storage versions requires migration; schema update refused"
+                .into(),
+        );
+    }
+    for (old, new) in old_versions.iter_mut().zip(new_versions) {
+        let old_schema = old
+            .as_object_mut()
+            .ok_or("invalid version")?
+            .remove("schema")
+            .ok_or("old schema missing")?;
+        let new_schema = new
+            .as_object_mut()
+            .ok_or("invalid version")?
+            .remove("schema")
+            .ok_or("new schema missing")?;
+        if old != new {
+            return Err("CRD versions, served/storage flags, subresources and printer settings must remain unchanged; migrate separately".into());
+        }
+        let values = instances.iter().collect::<Vec<_>>();
+        widening(
+            &old_schema["openAPIV3Schema"],
+            &new_schema["openAPIV3Schema"],
+            &values,
+            0,
+        )?;
+    }
+    if old != new {
+        return Err(
+            "CRD group, names, scope, conversion or non-schema spec changed; migration required"
+                .into(),
+        );
+    }
+    Ok(())
+}
+fn widening(old: &Value, new: &Value, values: &[&Value], depth: usize) -> Result<()> {
+    if depth > 64 {
+        return Err("schema compatibility depth exceeded".into());
+    }
+    if old == new {
+        return Ok(());
+    }
+    let old = old
+        .as_object()
+        .ok_or("unsupported schema compatibility form")?;
+    let new = new
+        .as_object()
+        .ok_or("unsupported schema compatibility form")?;
+    for (key, previous) in old {
+        let next = new.get(key);
+        match key.as_str() {
+            "description" | "title" => {}
+            "properties" => {
+                let before = previous.as_object().ok_or("invalid schema properties")?;
+                let after = next
+                    .and_then(Value::as_object)
+                    .ok_or("removing schema properties can prune stored data; refused")?;
+                for (name, previous) in before {
+                    let next = after
+                        .get(name)
+                        .ok_or("removing schema properties can prune stored data; refused")?;
+                    let children = values
+                        .iter()
+                        .filter_map(|value| value.get(name))
+                        .collect::<Vec<_>>();
+                    widening(previous, next, &children, depth + 1)?;
+                }
+                for name in after.keys().filter(|name| !before.contains_key(*name)) {
+                    if old.get("additionalProperties").is_some()
+                        || old.get("x-kubernetes-preserve-unknown-fields") == Some(&json!(true))
+                    {
+                        return Err("new properties could constrain/prune previously preserved unknown data; refused".into());
+                    }
+                    no_new_defaults(&after[name], depth + 1)?;
+                    if values.iter().any(|value| value.get(name).is_some()) {
+                        return Err("new property already exists in captured data; independent data migration/validation required".into());
+                    }
+                }
+            }
+            "items" => {
+                let next = next.ok_or("removing array item schema can alter pruning; refused")?;
+                let children = values
+                    .iter()
+                    .filter_map(|value| value.as_array())
+                    .flatten()
+                    .collect::<Vec<_>>();
+                widening(previous, next, &children, depth + 1)?;
+            }
+            "required" => {
+                let before = previous.as_array().ok_or("invalid required schema")?;
+                if let Some(next) = next {
+                    let after = next.as_array().ok_or("invalid required schema")?;
+                    if after.iter().any(|value| !before.contains(value)) {
+                        return Err("new required fields can invalidate instances; refused".into());
+                    }
+                }
+            }
+            "enum" => {
+                if let Some(next) = next {
+                    let before = previous.as_array().ok_or("invalid enum")?;
+                    let after = next.as_array().ok_or("invalid enum")?;
+                    if before.iter().any(|value| !after.contains(value)) {
+                        return Err("narrower enum can invalidate instances; refused".into());
+                    }
+                }
+            }
+            "minimum" | "maximum" | "exclusiveMinimum" | "exclusiveMaximum" | "minLength"
+            | "maxLength" | "minItems" | "maxItems" | "minProperties" | "maxProperties"
+            | "pattern" | "multipleOf" => {
+                if next.is_some_and(|next| next != previous) {
+                    return Err("changed validation constraint requires independent migration review; only removal is supported".into());
+                }
+            }
+            "nullable" if previous == false && next == Some(&Value::Bool(true)) => {}
+            _ => {
+                if next != Some(previous) {
+                    return Err(format!(
+                        "schema field {} changed outside the proven compatible subset",
+                        safety::safe_text(key, 80)
+                    ));
+                }
+            }
+        }
+    }
+    for (key, value) in new.iter().filter(|(key, _)| !old.contains_key(*key)) {
+        match key.as_str() {
+            "description" | "title" => {}
+            "nullable" if value == true => {}
+            "properties" => {
+                if old.get("type") != Some(&json!("object"))
+                    || old.get("additionalProperties").is_some()
+                    || old.get("x-kubernetes-preserve-unknown-fields") == Some(&json!(true))
+                {
+                    return Err(
+                        "new object properties may change unknown-field pruning; refused".into(),
+                    );
+                }
+                let props = value.as_object().ok_or("invalid new properties")?;
+                for property in props.values() {
+                    no_new_defaults(property, depth + 1)?;
+                }
+                if props
+                    .keys()
+                    .any(|name| values.iter().any(|value| value.get(name).is_some()))
+                {
+                    return Err(
+                        "new field already exists in captured data; migration required".into(),
+                    );
+                }
+            }
+            _ => {
+                return Err(format!(
+                    "new validation field {} can narrow schema; refused",
+                    safety::safe_text(key, 80)
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn no_new_defaults(value: &Value, depth: usize) -> Result<()> {
+    if depth > 64 {
+        return Err("new schema subtree depth exceeded".into());
+    }
+    match value {
+        Value::Object(map) => {
+            if map.contains_key("default") {
+                return Err("new optional fields with defaults can mutate existing reads; explicit migration required".into());
+            }
+            for child in map.values() {
+                no_new_defaults(child, depth + 1)?;
+            }
+        }
+        Value::Array(values) => {
+            for child in values {
+                no_new_defaults(child, depth + 1)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1019,5 +1230,74 @@ mod tests {
             assert!(crds(&object.to_string(), true).is_err());
         }
         assert!(crds(&manifests(&vec![definition(); MAX_CRDS + 1]), true).is_err());
+    }
+    #[test]
+    fn schema_upgrade_proves_optional_expansion_and_relaxation_but_refuses_migration() -> Result<()>
+    {
+        let old = crd_definition(definition())?;
+        let instance = json!({"spec":{"value":"known"}});
+        let mut optional = definition();
+        optional["spec"]["versions"][0]["schema"]["openAPIV3Schema"]["properties"]["spec"]["properties"]
+            ["extra"] = json!({"type":"string"});
+        let next = crd_definition(optional.clone())?;
+        compatible_upgrade(&old, &next, std::slice::from_ref(&instance))?;
+        let mut with_extra = instance;
+        with_extra["spec"]["extra"] = json!(17);
+        assert!(compatible_upgrade(&old, &next, &[with_extra]).is_err());
+        for variant in 0..7 {
+            let mut changed = optional.clone();
+            match variant {
+                0 => {
+                    changed["spec"]["versions"][0]["schema"]["openAPIV3Schema"]["properties"]["spec"]
+                        ["properties"]["extra"]["default"] = json!("mutates reads")
+                }
+                1 => {
+                    changed["spec"]["versions"][0]["schema"]["openAPIV3Schema"]["properties"]["spec"]
+                        ["required"] = json!(["extra"])
+                }
+                2 => changed["spec"]["versions"][0]["name"] = json!("v2"),
+                3 => {
+                    changed["spec"]["versions"][0]["schema"]["openAPIV3Schema"]["properties"]["spec"]
+                        ["properties"]["value"]["type"] = json!("integer")
+                }
+                4 => {
+                    changed["spec"]["versions"][0]["schema"]["openAPIV3Schema"]["properties"]["spec"]
+                        ["properties"]["value"]["maxLength"] = json!(5)
+                }
+                5 => {
+                    changed["spec"]["versions"][0]["schema"]["openAPIV3Schema"]["properties"]["spec"]["properties"].as_object_mut().ok_or("properties")?.remove("value");
+                }
+                _ => {
+                    changed["spec"]["versions"][0]["schema"]["openAPIV3Schema"]["properties"]["spec"]
+                        ["properties"]["extra"] = json!({"type":"object","properties":{"nested":{"type":"string","default":"hidden"}}})
+                }
+            };
+            assert!(
+                compatible_upgrade(&old, &crd_definition(changed)?, &[]).is_err(),
+                "unsafe variant {variant}"
+            );
+        }
+        let mut limited = definition();
+        limited["spec"]["versions"][0]["schema"]["openAPIV3Schema"]["properties"]["spec"]["properties"]
+            ["value"]["maxLength"] = json!(5);
+        limited["spec"]["versions"][0]["schema"]["openAPIV3Schema"]["properties"]["spec"]["required"] =
+            json!(["value"]);
+        compatible_upgrade(&crd_definition(limited)?, &old, &[])?;
+        for field in [
+            "additionalProperties",
+            "x-kubernetes-preserve-unknown-fields",
+        ] {
+            let mut previous = definition();
+            previous["spec"]["versions"][0]["schema"]["openAPIV3Schema"]["properties"]["spec"]
+                [field] = json!(true);
+            let mut after = previous.clone();
+            after["spec"]["versions"][0]["schema"]["openAPIV3Schema"]["properties"]["spec"]["properties"]
+                ["extra"] = json!({"type":"string"});
+            assert!(
+                compatible_upgrade(&crd_definition(previous)?, &crd_definition(after)?, &[])
+                    .is_err()
+            );
+        }
+        Ok(())
     }
 }

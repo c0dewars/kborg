@@ -159,7 +159,7 @@ def run(binary, helm, kubeconfig, context, namespace, chart_source,
                 drain(.1)
             keys(b":helm-crds\r", "INSTALL CHART CRDS")
             keys(b"\t"+release.encode()+b"\t\x15"+chart_source.encode())
-            capture("live-ui-existing-crds-form", ["INSTALL CHART CRDS", "Cluster-wide schema creation", "retained on uninstall"])
+            capture("live-ui-existing-crds-form", ["INSTALL CHART CRDS", "Cluster-wide schemas", "retained on uninstall"])
             review("existing-crds")
             keys(b"\x1b", "HELM / releases", timeout=30)
             keys(b"i", "INSTALL HELM RELEASE")

@@ -133,7 +133,7 @@ redaction cannot identify every confidential custom chart value.
 Helm install, upgrade, rollback and uninstall are separately available on Unix
 with `--write --allow-helm --allow-helm-write --helm-tool ABSOLUTE_PATH`.
 The trusted executable must be exactly Helm 4.3.1. Install/upgrade accept local
-deterministic `.tgz` charts or digest-pinned OCI sources, with bundled dependencies and an optional explicit values file. They do not fetch chart repositories/dependencies or create namespaces.
+deterministic `.tgz` charts or OCI tag/digest sources, with bundled dependencies and an optional explicit values file. They do not fetch chart repositories/dependencies or create namespaces.
 `:helm` uses `i` to install, `u` to upgrade and Ctrl-D to uninstall; history `r`
 prepares rollback to the selected revision.
 
@@ -176,8 +176,8 @@ Desktop metrics installation and certificate renewal are documented in
 [DESKTOP_METRICS.md](DESKTOP_METRICS.md). KBorg itself never installs a provider.
 The explicit setup helper installs one Helm-owned Metrics Server release; the
 ordinary application only reads the Metrics API. Current-session acceptance and
-remaining gaps are in [HELM_EXTENSIONS_ACCEPTANCE.md](HELM_EXTENSIONS_ACCEPTANCE.md).
+remaining gaps are in [HELM_COMPLETION_ACCEPTANCE.md](HELM_COMPLETION_ACCEPTANCE.md).
 The earlier [Helm/Pod-log/metrics report](HELM_LOGS_METRICS_ACCEPTANCE.md)
 preserves its original source and screenshots as historical evidence.
 
-OCI sources, private registry authentication, lifecycle hooks and the separate create-only CRD stage are documented in [HELM_EXTENSIONS.md](HELM_EXTENSIONS.md). In the Helm view, `c` or `:helm-crds` reviews schema creation; `i` installs a release after its schemas are Established. Each extension requires its explicit CLI flag and matching configuration permission.
+OCI tags/digests, required OpenPGP provenance, private registry authentication, lifecycle/test hooks and separate CRD create/update/delete stages are documented in [HELM_EXTENSIONS.md](HELM_EXTENSIONS.md). In the Helm view, `c` or `:helm-crds` reviews schema creation; `i` installs a release after its schemas are Established. Each extension requires its explicit CLI flag and matching configuration permission.

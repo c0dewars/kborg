@@ -42,3 +42,4 @@ pub mod helm_crds;
 pub mod helm_extensions;
 pub mod helm_lifecycle;
 pub mod helm_oci;
+pub mod helm_provenance;

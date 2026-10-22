@@ -1,6 +1,10 @@
-# OCI charts, reviewed hooks and CRDs — 2026-10-22
+# Helm completion and terminal UI — 2026-10-22
 
-The latest iteration adds digest-pinned OCI chart acquisition with verified HTTPS and explicit registry credentials, reviewed pre/post lifecycle hooks, and a separate create-only CRD bootstrap followed by schema-bound custom-resource lifecycle. The full-width Helm UI adds `:helm-crds` and `c`, source fields accept OCI digests, and capability states remain visible. See [extension guide](HELM_EXTENSIONS.md) for supported scope and limits.
+## Helm completion and terminal refinement (2026-10-22)
+
+Adds one-time OCI tag resolution, explicitly required trusted OpenPGP chart provenance, reviewed stored release tests, compatible CRD schema upgrades and separately confirmed schema deletion. Refines app surfaces, table headers, operation forms and review hierarchy. See [workflow guide](HELM_EXTENSIONS.md) and [source-specific acceptance](HELM_COMPLETION_ACCEPTANCE.md) for supported bounds, tests and screenshots.
+
+The preceding extension iteration added digest-pinned OCI chart acquisition with verified HTTPS and explicit registry credentials, reviewed pre/post lifecycle hooks, and a separate create-only CRD bootstrap followed by schema-bound custom-resource lifecycle. The full-width Helm UI adds `:helm-crds` and `c`, source fields accept OCI digests, and capability states remain visible. See [extension guide](HELM_EXTENSIONS.md) for supported scope and limits.
 
 # Local development update — 2026-10-22
 
