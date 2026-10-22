@@ -33,6 +33,7 @@ pub struct Connection {
     pub demo: bool,
     pub writable: bool,
     pub logs: bool,
+    pub allow_helm: bool,
     pub allow_exec: bool,
     pub allow_attach: bool,
     pub allow_port_forward: bool,
@@ -418,6 +419,7 @@ pub struct Gateway {
     session: String,
     policy: Policy,
     logs: bool,
+    allow_helm: bool,
     operation_capabilities: [bool; 3],
     demo: Vec<Value>,
     pub kinds: Vec<Kind>,
@@ -456,6 +458,7 @@ impl Gateway {
                     writable: options.writable,
                 },
                 logs: true,
+                allow_helm: true,
                 operation_capabilities: [
                     options.allow_exec,
                     options.allow_attach,
@@ -605,6 +608,7 @@ impl Gateway {
                 writable: options.writable,
             },
             logs: options.logs,
+            allow_helm: options.allow_helm,
             operation_capabilities: [
                 options.allow_exec,
                 options.allow_attach,
@@ -617,6 +621,17 @@ impl Gateway {
     pub fn is_demo(&self) -> bool {
         self.client.is_none()
     }
+    pub(crate) fn helm_reader(&self, namespace: &str) -> Result<crate::helm::Reader> {
+        if !self.allow_helm {
+            return Err("Helm release storage access requires --allow-helm".into());
+        }
+        crate::helm::Reader::new(
+            self.client
+                .clone()
+                .ok_or("offline Helm data uses the demo reader")?,
+            namespace,
+        )
+    }
     #[cfg(test)]
     pub(crate) fn for_test_client(client: Client, namespace: &str) -> Self {
         Self {
@@ -627,10 +642,17 @@ impl Gateway {
             session: "test".into(),
             policy: Policy { writable: false },
             logs: false,
+            allow_helm: false,
             operation_capabilities: [false; 3],
             demo: Vec::new(),
             kinds: kinds(),
         }
+    }
+    #[cfg(test)]
+    pub(crate) fn for_helm_test_client(client: Client, namespace: &str) -> Self {
+        let mut gateway = Self::for_test_client(client, namespace);
+        gateway.allow_helm = true;
+        gateway
     }
     pub fn watch(&self, key: &str, ns: &str) -> Result<crate::watch::WatchFeed> {
         self.watch_selector(key, ns, "")
@@ -1047,6 +1069,82 @@ impl Gateway {
             .await
             .map_err(api_error)?;
         Ok(crate::logs::snapshot_text(&output, options))
+    }
+    /// Explicit Pod-wide read: ordinary containers only, one captured Pod UID,
+    /// bounded source count and a shared session/display budget.
+    pub async fn merged_logs(
+        &self,
+        ns: &str,
+        name: &str,
+        uid: &str,
+        previous: bool,
+        read_options: crate::logs::ReadOptions,
+    ) -> Result<String> {
+        let read_options = read_options.validate()?;
+        if !self.logs {
+            return Err("logs may contain sensitive data; opt in with --allow-logs".into());
+        }
+        crate::logs::validate_merge_target(ns, name, uid)?;
+        let feed = if self.is_demo() {
+            self.demo_merged_logs(
+                (ns, name, uid),
+                previous,
+                crate::logs::FollowOptions { seconds: 15 },
+                read_options,
+            )
+            .await?
+        } else {
+            let api = Api::namespaced(self.client.clone().ok_or("no client")?, ns);
+            crate::logs::MergedLogFeed::open(api, name, uid, previous, None, read_options).await?
+        };
+        feed.snapshot(read_options).await
+    }
+    pub async fn follow_merged_logs(
+        &self,
+        ns: &str,
+        name: &str,
+        uid: &str,
+        options: crate::logs::FollowOptions,
+        read_options: crate::logs::ReadOptions,
+    ) -> Result<crate::logs::MergedLogFeed> {
+        let options = options.validate()?;
+        let read_options = read_options.validate()?;
+        if !self.logs {
+            return Err("logs may contain sensitive data; opt in with --allow-logs".into());
+        }
+        crate::logs::validate_merge_target(ns, name, uid)?;
+        if self.is_demo() {
+            return self
+                .demo_merged_logs((ns, name, uid), false, options, read_options)
+                .await;
+        }
+        let api = Api::namespaced(self.client.clone().ok_or("no client")?, ns);
+        crate::logs::MergedLogFeed::open(api, name, uid, false, Some(options), read_options).await
+    }
+    async fn demo_merged_logs(
+        &self,
+        target: (&str, &str, &str),
+        previous: bool,
+        options: crate::logs::FollowOptions,
+        read_options: crate::logs::ReadOptions,
+    ) -> Result<crate::logs::MergedLogFeed> {
+        let (ns, name, uid) = target;
+        let pod: Pod = serde_json::from_value(self.raw_get("pods", ns, name).await?)
+            .map_err(|_| "invalid demo Pod for merged logs")?;
+        let names = crate::logs::ordinary_container_names(&pod, ns, name, uid)?;
+        let mut sources = Vec::with_capacity(names.len());
+        for container in names {
+            let text = self
+                .logs_with_options(ns, name, Some(container.clone()), previous, read_options)
+                .await?;
+            let feed = crate::logs::LogFeed::with_read_options(
+                futures_util::io::Cursor::new(text.into_bytes()),
+                options,
+                read_options,
+            );
+            sources.push((container, feed));
+        }
+        crate::logs::MergedLogFeed::from_sources(ns, name, uid, sources, options)
     }
     pub(crate) fn operation_api(&self, namespace: &str, capability: usize) -> Result<Api<Pod>> {
         if !self.policy.writable {
@@ -1771,6 +1869,55 @@ pub fn summary(object: &Value) -> String {
 mod tests {
     use super::*;
     use crate::cli::runtime;
+    #[test]
+    fn merged_logs_gate_before_pod_reads_and_reject_unbound_identity() -> Result<()> {
+        runtime()?.block_on(async {
+            let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let recorded = calls.clone();
+            let service = tower::service_fn(move |_: http::Request<kube::client::Body>| {
+                recorded.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                async {
+                    Ok::<_, std::convert::Infallible>(http::Response::new(
+                        http_body_util::Full::new(bytes::Bytes::new()),
+                    ))
+                }
+            });
+            let mut gateway = Gateway::for_test_client(Client::new(service, "default"), "default");
+            assert!(
+                gateway
+                    .merged_logs("default", "app", "uid", false, Default::default())
+                    .await
+                    .is_err_and(|error| error.contains("--allow-logs"))
+            );
+            assert!(
+                gateway
+                    .follow_merged_logs(
+                        "default",
+                        "app",
+                        "uid",
+                        Default::default(),
+                        Default::default()
+                    )
+                    .await
+                    .is_err_and(|error| error.contains("--allow-logs"))
+            );
+            gateway.logs = true;
+            assert!(
+                gateway
+                    .merged_logs("default", "app", "", false, Default::default())
+                    .await
+                    .is_err()
+            );
+            assert!(
+                gateway
+                    .follow_merged_logs("*", "app", "uid", Default::default(), Default::default())
+                    .await
+                    .is_err()
+            );
+            assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+            Ok(())
+        })
+    }
     #[test]
     fn log_ranges_reach_the_api_and_unbound_reads_keep_log_only_permissions() -> Result<()> {
         runtime()?.block_on(async {

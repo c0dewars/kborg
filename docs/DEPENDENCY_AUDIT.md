@@ -44,3 +44,20 @@ The current lockfile was checked with cargo-audit 0.22.2 against the official Ru
 - Evidence: [k9s-dependency-audit.json](evidence/k9s-dependency-audit.json).
 
 `regex` and `serde-saphyr` are now direct dependencies, both already present transitively at the same versions. The former implements bounded k9s-compatible regex filtering; the latter parses local manifest/alias YAML using explicit depth, input, node, alias and document budgets. Deserialize-only features are selected for local YAML; no process execution or file inclusion is enabled. These direct references introduce no new transitive package names.
+
+## Helm storage iteration (2026-10-22)
+
+Helm's published release storage encoding requires gzip. Added `flate2 1.1.10`
+with default features disabled and its pure Rust backend; no native zlib linking.
+New transitive packages are `adler2 2.0.1`, `crc32fast 1.5.3`,
+`miniz_oxide 0.9.1`, and `simd-adler32 0.3.10`. The decoder enforces a 1 MiB
+encoded record limit, 8 MiB decompressed record limit, and bounded per-driver
+aggregate decode budgets before safe typed projections. CRC and gzip size/error
+regressions accompany the change; this does not substitute for independent fuzzing.
+
+- Lockfile SHA-256: `6707a4b7efbb1f53c2d78595de335675a5b451758b8fa3b76ba6d84e18493a8e`.
+- Locked packages examined: 203.
+- cargo-audit 0.22.2; official RustSec database revision
+  `640bf5a9f06e66d8721e8772766531fe77c8630d`, 1,349 advisories.
+- Exit 0; zero known vulnerabilities or informational warnings; no ignored IDs.
+- [Machine report](evidence/helm-dependency-audit.json).

@@ -35,3 +35,5 @@ pub mod selectors;
 pub mod session;
 pub mod transport;
 pub mod ui_logs;
+
+pub mod helm;

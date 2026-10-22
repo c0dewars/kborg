@@ -41,6 +41,8 @@ pub struct Options {
     pub yaml: bool,
     pub follow: bool,
     pub previous: bool,
+    pub all_containers: bool,
+    pub helm_storage: Option<crate::helm::Storage>,
     pub log_seconds: u32,
     pub log_read: crate::logs::ReadOptions,
     pub selector: String,
@@ -65,6 +67,8 @@ fn parse(args: Vec<String>) -> Result<Options> {
         yaml: false,
         follow: false,
         previous: false,
+        all_containers: false,
+        helm_storage: None,
         log_seconds: crate::logs::DEFAULT_FOLLOW_SECONDS,
         log_read: crate::logs::ReadOptions::default(),
         selector: String::new(),
@@ -83,6 +87,15 @@ fn parse(args: Vec<String>) -> Result<Options> {
             "--yaml" => opts.yaml = true,
             "--follow" => opts.follow = true,
             "--previous" => opts.previous = true,
+            "--all-containers" => opts.all_containers = true,
+            "--allow-helm" => opts.connection.allow_helm = true,
+            "--helm-storage" => {
+                opts.helm_storage = Some(match args.next().as_deref() {
+                    Some("secret" | "secrets") => crate::helm::Storage::Secret,
+                    Some("configmap" | "configmaps") => crate::helm::Storage::ConfigMap,
+                    _ => return Err("--helm-storage requires secret|configmap".into()),
+                })
+            }
             "--head" => opts.log_read.head = true,
             "--tail" => {
                 opts.log_read.tail_lines = args
@@ -202,6 +215,25 @@ fn parse(args: Vec<String>) -> Result<Options> {
     if opts.previous && opts.command.first().is_none_or(|v| v != "logs") {
         return Err("--previous requires logs".into());
     }
+    if matches!(
+        opts.command.first().map(String::as_str),
+        Some("helm" | "history")
+    ) {
+        HelmCommand::parse(opts.command[0].as_str(), &opts.command[1..])?;
+    }
+    if opts.all_containers
+        && (opts.command.first().is_none_or(|command| command != "logs") || opts.command.len() != 2)
+    {
+        return Err("--all-containers requires logs POD without an explicit container".into());
+    }
+    if opts.helm_storage.is_some()
+        && opts
+            .command
+            .first()
+            .is_some_and(|command| !matches!(command.as_str(), "ui" | "helm" | "history"))
+    {
+        return Err("--helm-storage requires ui, helm or history".into());
+    }
     opts.log_read.validate()?;
     if opts.log_read != crate::logs::ReadOptions::default()
         && opts.command.first().is_none_or(|v| v != "logs")
@@ -253,6 +285,8 @@ fn parse(args: Vec<String>) -> Result<Options> {
                     | "watch"
                     | "metrics"
                     | "logs"
+                    | "helm"
+                    | "history"
             )
         })
     {
@@ -396,9 +430,10 @@ pub fn run_args(args: Vec<String>) -> Result<()> {
             return Ok(());
         }
         "ui" => return tui::run(opts),
-        "list" | "watch" | "metrics" | "get" | "view" | "logs" | "resources" | "doctor"
-        | "scale" | "restart" | "delete" | "set-image" | "set-resources" | "exec" | "attach"
-        | "forward" | "pulses" | "xray" | "workloads" | "can" => {}
+        "helm" | "history" | "list" | "watch" | "metrics" | "get" | "view" | "logs"
+        | "resources" | "doctor" | "scale" | "restart" | "delete" | "set-image"
+        | "set-resources" | "exec" | "attach" | "forward" | "pulses" | "xray" | "workloads"
+        | "can" => {}
         _ => return Err("unknown command; see --help".into()),
     }
     if cmd == "view"
@@ -417,6 +452,7 @@ pub fn run_args(args: Vec<String>) -> Result<()> {
             discover_if_needed(&mut gateway, resource).await?;
         }
         match cmd {
+            "helm"|"history"=>helm_command(&gateway,cmd,args,&opts).await?,
             "can" => {
                 if args.len() != 1 { return Err("usage: can u:NAME|g:NAME|s:NAME [-n NAMESPACE]".into()); }
                 outputln!("{}", crate::navigation_views::can(&gateway, &ns, &args[0]).await?);
@@ -510,8 +546,21 @@ if value["truncated"]==true {eprintln!("TRUNCATED: limit reached; narrow namespa
                 if !outcome.success { return Err("external tool exited unsuccessfully".into()); }
             },
             "logs"=>{
-                if args.is_empty() || args.len()>2{return Err("usage: logs <pod> [container] [--follow|--previous] (requires --allow-logs)".into());}
-                if opts.follow {
+                if args.is_empty() || args.len()>2{return Err("usage: logs POD [CONTAINER] [--all-containers] [--follow|--previous] --allow-logs".into());}
+                if opts.all_containers {
+                    let pod=gateway.get("pods",&ns,&args[0]).await?;
+                    let uid=pod["metadata"]["uid"].as_str().ok_or("Pod UID unavailable; merged logs require captured identity")?;
+                    if opts.follow {
+                        let mut feed=gateway.follow_merged_logs(&ns,&args[0],uid,crate::logs::FollowOptions{seconds:opts.log_seconds},opts.log_read).await?;
+                        while let Some(line)=feed.next().await? {
+                            let record=if opts.json {serde_json::json!({"line":line,"container_scope":"all-ordinary","namespace":ns,"pod":args[0],"uid":uid}).to_string()}else{line};
+                            if let Err(error)=writeln!(io::stdout().lock(),"{record}"){if error.kind()==io::ErrorKind::BrokenPipe{return Ok(());}return Err("log output failed".into());}
+                        }
+                    }else {
+                        let logs=gateway.merged_logs(&ns,&args[0],uid,opts.previous,opts.log_read).await?;
+                        if opts.json {print_json(&serde_json::json!({"logs":logs,"bounded":true,"container_scope":"all-ordinary","namespace":ns,"pod":args[0],"uid":uid}))?;}else{outputln!("{logs}");}
+                    }
+                }else if opts.follow {
                     let mut feed=gateway.follow_logs_with_read_options(&ns,&args[0],args.get(1).cloned(),false,crate::logs::FollowOptions{seconds:opts.log_seconds},opts.log_read).await?;
                     while let Some(line)=feed.next().await? {
                         let line=if opts.json {serde_json::json!({"line":line}).to_string()}else{line};
@@ -551,6 +600,144 @@ fn write_args<'a>(
         n if n == count + 1 => Ok((&args[0], &args[1..])),
         _ => Err(format!("usage: {usage}")),
     }
+}
+#[derive(Debug, PartialEq, Eq)]
+enum HelmCommand {
+    List,
+    History(String),
+    Detail(String, u32),
+    Resources(String, u32),
+    Values(String, u32),
+}
+impl HelmCommand {
+    fn parse(command: &str, args: &[String]) -> Result<Self> {
+        let usage = "usage: helm [list] | helm history RELEASE | helm detail|resources|values RELEASE REVISION [-n NAMESPACE] [--helm-storage secret|configmap] --allow-helm";
+        let name = |name: &String| {
+            if crate::helm::valid_release_name(name) {
+                Ok(name.clone())
+            } else {
+                Err("Invalid Helm release name.".to_owned())
+            }
+        };
+        let revision = |value: &String| {
+            value
+                .parse::<u32>()
+                .ok()
+                .filter(|revision| *revision > 0)
+                .ok_or_else(|| "Helm revision must be a positive integer.".to_owned())
+        };
+        if command == "history" {
+            return match args {
+                [release] => Ok(Self::History(name(release)?)),
+                _ => Err(usage.into()),
+            };
+        }
+        match args {
+            [] => Ok(Self::List),
+            [list] if list == "list" => Ok(Self::List),
+            [history, release] if history == "history" => Ok(Self::History(name(release)?)),
+            [mode, release, rev] => {
+                let release = name(release)?;
+                let revision = revision(rev)?;
+                match mode.as_str() {
+                    "detail" => Ok(Self::Detail(release, revision)),
+                    "resources" => Ok(Self::Resources(release, revision)),
+                    "values" => Ok(Self::Values(release, revision)),
+                    _ => Err(usage.into()),
+                }
+            }
+            _ => Err(usage.into()),
+        }
+    }
+}
+async fn helm_command(
+    gateway: &Gateway,
+    command: &str,
+    args: &[String],
+    opts: &Options,
+) -> Result<()> {
+    use crate::helm;
+    let request = HelmCommand::parse(command, args)?;
+    let latest = helm::list_with_storage(gateway, &gateway.namespace, opts.helm_storage).await?;
+    let envelope = |kind: &str, data: serde_json::Value| serde_json::json!({"schema_version":1,"kind":kind,"bounded":true,"data":data});
+    if request == HelmCommand::List {
+        if opts.json {
+            print_json(&envelope(
+                "helm-list",
+                serde_json::to_value(&latest).map_err(|_| "Helm list encoding failed")?,
+            ))?;
+        } else {
+            outputln!("{}", latest.text());
+        }
+        return Ok(());
+    }
+    let release_name = match &request {
+        HelmCommand::History(name)
+        | HelmCommand::Detail(name, _)
+        | HelmCommand::Resources(name, _)
+        | HelmCommand::Values(name, _) => name,
+        HelmCommand::List => return Err("Invalid Helm request".into()),
+    };
+    let release = helm::select_release(&latest, release_name, opts.helm_storage)?;
+    let history = helm::history(gateway, &release).await?;
+    if matches!(request, HelmCommand::History(_)) {
+        if opts.json {
+            print_json(&envelope(
+                "helm-history",
+                serde_json::to_value(&history).map_err(|_| "Helm history encoding failed")?,
+            ))?;
+        } else {
+            outputln!(
+                "HELM HISTORY {}/{} | {} storage\n{}",
+                release.namespace,
+                release.name,
+                release.storage.name(),
+                history.text()
+            );
+        }
+        return Ok(());
+    }
+    let revision = match request {
+        HelmCommand::Detail(_, revision)
+        | HelmCommand::Resources(_, revision)
+        | HelmCommand::Values(_, revision) => revision,
+        _ => return Err("Invalid Helm revision request".into()),
+    };
+    if history.truncated || !history.issues.is_empty() {
+        return Err("Helm revision history is incomplete; narrow the namespace/storage and retry before selecting values.".into());
+    }
+    let selected = history
+        .releases
+        .iter()
+        .find(|release| release.revision == revision)
+        .ok_or("Requested Helm revision not found in the selected namespace and storage driver.")?;
+    if matches!(request, HelmCommand::Values(..)) {
+        let values = helm::values(gateway, selected).await?;
+        if opts.json {
+            print_json(&envelope(
+                "helm-values",
+                serde_json::to_value(&values).map_err(|_| "Helm values encoding failed")?,
+            ))?;
+        } else {
+            outputln!("{}", values.text()?);
+        }
+    } else {
+        let detail = helm::detail(gateway, selected).await?;
+        let kind = if matches!(request, HelmCommand::Resources(..)) {
+            "helm-resources"
+        } else {
+            "helm-detail"
+        };
+        if opts.json {
+            print_json(&envelope(
+                kind,
+                serde_json::to_value(&detail).map_err(|_| "Helm revision encoding failed")?,
+            ))?;
+        } else {
+            outputln!("{}", detail.text());
+        }
+    }
+    Ok(())
 }
 fn print_json(value: &serde_json::Value) -> Result<()> {
     let encoded = serde_json::to_string_pretty(value).map_err(|_| "JSON serialization failed")?;
@@ -798,6 +985,64 @@ fn theme_command(opts: &Options) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn helm_and_merged_log_flags_have_explicit_scopes() -> Result<()> {
+        let options = parse(
+            [
+                "--allow-helm",
+                "--helm-storage",
+                "configmap",
+                "--json",
+                "helm",
+                "values",
+                "my.api",
+                "2",
+            ]
+            .map(String::from)
+            .to_vec(),
+        )?;
+        assert!(options.connection.allow_helm);
+        assert_eq!(options.helm_storage, Some(crate::helm::Storage::ConfigMap));
+        assert_eq!(
+            HelmCommand::parse("helm", &options.command[1..])?,
+            HelmCommand::Values("my.api".into(), 2)
+        );
+        assert!(
+            parse(
+                ["--helm-storage", "invalid", "helm"]
+                    .map(String::from)
+                    .to_vec()
+            )
+            .is_err()
+        );
+        assert!(parse(["helm", "values", "web", "0"].map(String::from).to_vec()).is_err());
+        assert!(
+            parse(
+                ["--all-containers", "logs", "web", "app"]
+                    .map(String::from)
+                    .to_vec()
+            )
+            .is_err()
+        );
+        assert!(
+            parse(
+                ["--all-containers", "list", "pods"]
+                    .map(String::from)
+                    .to_vec()
+            )
+            .is_err()
+        );
+        assert!(
+            parse(
+                ["--all-containers", "--allow-logs", "logs", "web"]
+                    .map(String::from)
+                    .to_vec()
+            )?
+            .all_containers
+        );
+        assert!(!parse(vec![])?.connection.allow_helm);
+        Ok(())
+    }
     #[test]
     fn downstream_close_is_normal_but_other_write_failures_are_errors() {
         struct Failing(io::ErrorKind);

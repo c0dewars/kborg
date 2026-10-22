@@ -23,6 +23,9 @@ animations and ANSI styling never enter machine output.
 | `overview CONTEXT... --json` | Array of independent context summaries: `demo`, `context`, `namespace`, `pods`, `unhealthy`, `truncated`, `error` |
 | `logs POD [CONTAINER] --json` | Object with `logs` (sanitized string) and `bounded: true` |
 | `logs POD CONTAINER --follow --json` | JSONL objects containing `line` (sanitized string); follow remains opt-in and time/byte bounded |
+| `helm list\|history RELEASE --json` | Envelope: `schema_version: 1`, `kind: helm-list` or `helm-history`, `bounded: true`, and `data` containing `releases`, `truncated`, `issues`, `source` |
+| `helm detail\|resources RELEASE REVISION --json` | Same envelope with `kind: helm-detail` or `helm-resources`; `data` contains selected `release`, safe `resources` identities, `resources_truncated`, `issues` |
+| `helm values RELEASE REVISION --json` | Same envelope with `kind: helm-values`; `data` contains selected `release`, redacted stored override `values`, and sensitivity `notice` |
 | `audit pending --json` | Array of local pending/uncertain operation records; this is not proof of server outcome |
 
 Metrics rows contain `name`, `namespace`, `container`, `timestamp`, `window`,
@@ -44,8 +47,9 @@ before returning 1. Watch/follow stop reading immediately on a broken pipe.
 Other finite read commands tolerate broken pipes without a panic. Real-process regression coverage includes the five new human-only navigation reads.
 
 Redaction covers known fields, not every kind of confidential application data.
-Logs remain sensitive and require `--allow-logs`. No machine projection bypasses
-Secret exclusion or read/write capability checks.
+Logs remain sensitive and require `--allow-logs`. General resource projections exclude Secrets. The separate `--allow-helm`
+capability permits narrowly projected Helm storage reads; it never emits raw
+storage, chart files, notes, rendered Secret contents or credentials intentionally.
 
 Opt-in `--metrics-resources` adds `allocation_status` and per-row `allocations`;
 base output omits both. Comparisons contain current snapshot bases, exact amounts,
@@ -60,3 +64,14 @@ contents. Human local preview remains text-only.
 Human-only navigation snapshots `pulses`, `xray RESOURCE`, `workloads`, `can SUBJECT` and `dir [PATH]` reject `--json`. `dir` is local and does not connect to Kubernetes. Their text is bounded and may evolve.
 
 `list`/`watch` accept `--selector` (or `-l`) for Kubernetes label selection; the same selector is sent on each LIST page and WATCH/relist. Existing output shapes are unchanged. Log reads accept `--tail 1..2000`, `--head`, and `--since-seconds 1..86400`; head cannot combine with follow. Timestamped log text remains a sanitized string. Follow reconnects are bounded, retain the original session budget, and recheck Pod UID; duplicates or gaps are possible and explicitly reported.
+
+`--all-containers` retains the existing logs JSON/string and JSONL shapes, adding
+source labels within each sanitized line and `container_scope: all-ordinary`,
+`namespace`, `pod`, and captured `uid` fields. It conflicts with an explicit container.
+Per-source notices are included in the stream; a successful finite snapshot may
+contain partial-data notices, so inspect them rather than assuming every source
+succeeded. `truncated` and `issues` in Helm list/history similarly identify partial
+storage reads. Duplicate Secret/ConfigMap release names require an explicit
+`--helm-storage`; duplicate namespaces require narrowing `-n`. Detail/values bind
+to the selected storage UID and reject replacement. Helm SQL storage and release
+install/upgrade/rollback/uninstall are not application commands.

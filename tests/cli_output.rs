@@ -36,6 +36,14 @@ fn closed_downstream_exits_cleanly_for_every_read_output_family() -> std::io::Re
         &["--demo", "can", "u:demo"],
         &["dir", "."],
         &["--demo", "--allow-logs", "logs", "api-7d4f9"],
+        &["--demo", "--all-containers", "logs", "api-7d4f9"],
+        &["--demo", "helm", "list"],
+        &["--demo", "helm", "list", "--json"],
+        &["--demo", "helm", "history", "demo-api"],
+        &["--demo", "helm", "detail", "demo-api", "1"],
+        &["--demo", "helm", "resources", "demo-api", "1", "--json"],
+        &["--demo", "helm", "values", "demo-api", "1"],
+        &["--demo", "helm", "values", "demo-api", "1", "--json"],
     ];
     for argv in commands {
         let (sender, receiver) = UnixStream::pair()?;

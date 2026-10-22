@@ -29,6 +29,8 @@ pub struct Config {
     #[serde(default)]
     pub allow_logs: bool,
     #[serde(default)]
+    pub allow_helm: bool,
+    #[serde(default)]
     pub allow_exec: bool,
     #[serde(default)]
     pub allow_attach: bool,
@@ -52,6 +54,7 @@ impl Default for Config {
             no_splash: false,
             poll: false,
             allow_logs: false,
+            allow_helm: false,
             allow_exec: false,
             allow_attach: false,
             allow_forward: false,
@@ -93,6 +96,9 @@ pub fn apply(config: Config, options: &mut Options) -> Result<()> {
     }
     // Validate every constraint before changing the caller's options. Files may
     // constrain capabilities, but they never enable them without explicit flags.
+    if options.connection.allow_helm && !config.allow_helm {
+        return Err("configuration forbids Helm release storage access".into());
+    }
     if options.connection.logs && !config.allow_logs {
         return Err("configuration forbids log access".into());
     }
@@ -167,6 +173,8 @@ mod tests {
             yaml: false,
             follow: false,
             previous: false,
+            all_containers: false,
+            helm_storage: None,
             log_seconds: crate::logs::DEFAULT_FOLLOW_SECONDS,
             log_read: crate::logs::ReadOptions::default(),
             selector: String::new(),
@@ -218,6 +226,19 @@ mod tests {
             .is_err()
         );
         assert!(denied.connection.context.is_none());
+        let mut helm = options();
+        helm.connection.allow_helm = true;
+        assert!(apply(Config::default(), &mut helm).is_err());
+        let mut allowed_helm = options();
+        allowed_helm.connection.allow_helm = true;
+        apply(
+            Config {
+                allow_helm: true,
+                ..Config::default()
+            },
+            &mut allowed_helm,
+        )?;
+        assert!(allowed_helm.connection.allow_helm);
         let mut writable = options();
         writable.connection.writable = true;
         assert!(apply(Config::default(), &mut writable).is_err());

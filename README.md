@@ -65,17 +65,24 @@ Omit `-KeepFixtures` for automatic cleanup. Failed runs clean up even when reten
 
 ## Interface
 
-![Native KBorg resource browser](docs/evidence/ui-k9s/demo-pods.png)
+![Native KBorg resource browser](docs/evidence/ui-helm-logs-metrics/metrics-table.png)
 
 The browser uses a full-width table with a compact context, namespace and status header. There is no persistent sidebar. Type `:pods`, `:po`, `:deploy`, `:dp`, `:svc`, `:nodes`, or any discovered resource name/short name. `:ctx` opens contexts; `:ctx NAME` switches context. `:ns` opens namespaces; `:pods NAMESPACE` selects a namespace directly. `0` selects all namespaces. `?` shows the available keys, and `:q` quits.
 
-Navigation follows the k9s command grammar, including `:pod /REGEX`, `:pod app=web`, `:pod 'app in (api,web)'`, and `:pod @CONTEXT`. `/` filters with regex; `/!REGEX` inverts, `/-f TEXT` uses fuzzy matching, and `/-l LABELS` sends a real Kubernetes selector. Commands offer completion and history. Enter drills into containers or related pods; Esc returns. `d` describes, `y` shows redacted YAML, `l` opens logs, and Ctrl-R refreshes. Shift-N/A/S sort name/age/status. See the exact [k9s compatibility register](docs/K9S_COMPATIBILITY.md), including remaining differences.
+Navigation follows the k9s command grammar, including `:pod /REGEX`, `:pod app=web`, `:pod 'app in (api,web)'`, and `:pod @CONTEXT`. `/` filters with regex; `/!REGEX` inverts, `/-f TEXT` uses fuzzy matching, and `/-l LABELS` sends a real Kubernetes selector. Commands offer completion and history. Enter drills into containers or related pods; Esc returns. `d` describes, `y` shows redacted YAML, `l` opens logs, and Ctrl-R refreshes. Shift-N/A/S sort name/age/status; C/M sort exact CPU/memory usage. Table values use compact rounded units; d/m retain exact measurements. See the exact [k9s compatibility register](docs/K9S_COMPATIBILITY.md), including remaining differences.
 
 `:pulses` shows health, `:xray RESOURCE` shows UID ownership and Service/Node relationships, and `:workloads` shows a mixed workload snapshot. `:can u:NAME`, `g:NAME`, or `s:NAME` shows declared RBAC binding evidence; it cannot infer external group memberships or prove effective authorization. `:dir PATH` browses local manifests with redacted YAML previews. Ctrl-S explicitly saves the visible resource snapshot; `:screendump` opens saved snapshots. `:themes` selects a palette. Custom command aliases use `aliases.yaml` in the KBorg configuration directory.
 
 Live tables use bounded LIST/WATCH with reconnect/backoff, expired-version relisting and scope cancellation. Reads retain at most 1,000 objects/8 MiB; narrow the namespace when TRUNCATED appears. Logs require `--allow-logs`. The log view supports the k9s tail/head/time-range keys, search, wrapping, timestamps and autoscroll. Follow retains a rolling 2,000-line/256 KiB window, has a configurable deadline and flood limits, and checks the Pod UID before transport reconnection. Logs can contain sensitive application data.
 
 Mutations require `--write`, server dry-run and exact `namespace/name` confirmation within 60 seconds. `e` opens a prefilled container image/resource editor for Deployments, StatefulSets, DaemonSets and CronJobs. Scale supports Deployments and StatefulSets (0..20); restart supports Deployments, StatefulSets and DaemonSets. Pod `s` opens a reviewed shell, `a` attaches, and `F` prepares loopback forwarding with separate capability flags. Ctrl-D reviews an allowed individual deletion. UID/resourceVersion checks reject stale targets; there are no automatic mutation retries. Generic YAML apply, force deletion, node administration and remote full-screen programs remain unsupported.
+
+Helm releases are available through `:helm` with `--allow-helm`; Enter opens revision
+history and selected values. `logs POD --all-containers` and the log-view `a` key
+merge ordinary containers with source labels. Docker Desktop can supply real CPU
+and memory data through the explicitly installed provider described in
+[Desktop metrics setup](docs/DESKTOP_METRICS.md). See
+[current acceptance](docs/HELM_LOGS_METRICS_ACCEPTANCE.md) for validated behavior.
 
 ## Themes
 
@@ -207,4 +214,4 @@ minimized bundle. Automated diagnosis remains disabled until independent
 hostname-bound egress, dedicated credential authority and publisher provenance
 are validated.
 
-Current local acceptance and screenshots: [k9s navigation session](docs/K9S_ACCEPTANCE.md). Earlier implementation evidence remains in the [priority session](docs/PRIORITIES_ACCEPTANCE.md).
+Current local acceptance and screenshots: [Helm, merged logs and Desktop metrics](docs/HELM_LOGS_METRICS_ACCEPTANCE.md). Earlier implementation evidence remains in the [k9s navigation session](docs/K9S_ACCEPTANCE.md) and [priority session](docs/PRIORITIES_ACCEPTANCE.md).

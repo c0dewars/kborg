@@ -16,6 +16,8 @@ serde_json = "1"
 # Already used by kube; local manifest previews need bounded YAML decoding.
 serde-saphyr = { version = "0.0.29", default-features = false, features = ["deserialize"] }
 regex = "1"
+# Helm release storage uses gzip; maintained bounded decoder, no native zlib.
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 tokio = { version = "1", features = ["rt", "time", "net", "sync", "io-util"] }
 http = "1"
 # ExecCredential policy fingerprints and credential encoding (already transitive).

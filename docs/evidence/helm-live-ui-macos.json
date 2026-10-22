@@ -1,0 +1,82 @@
+{
+  "schema": 1,
+  "context": "docker-desktop",
+  "namespace": "kborg-system",
+  "binary_sha256": "1540c74d251c6dedbd361d7ca06cb7e518004ce9c2a18f43ffe6cc99755a02b2",
+  "read_only": true,
+  "terminal_restored": true,
+  "screens": [
+    {
+      "name": "live-metrics-pod",
+      "required": [
+        "PRODUCTION",
+        "docker-desktop",
+        "kborg-system",
+        "pods [",
+        "kborg-metrics-server"
+      ]
+    },
+    {
+      "name": "live-nodes",
+      "required": [
+        "nodes [",
+        "desktop-control-plane",
+        "CPU(m)",
+        "METRICS 1 measured"
+      ]
+    },
+    {
+      "name": "live-node-metrics",
+      "required": [
+        "SESSION HISTORY",
+        "desktop-control-plane",
+        "CPU",
+        "MEM",
+        "latest",
+        "min"
+      ]
+    },
+    {
+      "name": "live-node-metrics-history",
+      "required": [
+        "SESSION HISTORY",
+        "CPU",
+        "MEM"
+      ]
+    },
+    {
+      "name": "live-helm-releases",
+      "required": [
+        "HELM / releases",
+        "kborg-metrics-server",
+        "deployed"
+      ]
+    },
+    {
+      "name": "live-helm-history",
+      "required": [
+        "HELM HISTORY",
+        "kborg-metrics-server",
+        "revision"
+      ]
+    },
+    {
+      "name": "live-helm-resources",
+      "required": [
+        "HELM RELEASE RESOURCES",
+        "Deployment",
+        "APIService",
+        "Resource identities only"
+      ]
+    },
+    {
+      "name": "live-helm-values",
+      "required": [
+        "HELM STORED VALUES",
+        "revision",
+        "Stored release overrides only"
+      ]
+    }
+  ],
+  "scope": "Native macOS PTY against real Desktop metrics and Helm release; two distinct provider timestamps in session history; no cluster mutations."
+}
