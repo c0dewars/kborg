@@ -34,6 +34,10 @@ def execute(argv, *, data=None, environment=None, timeout=180):
 
 def resource(kind, name, namespace=None, **fields):
     group = "rbac.authorization.k8s.io/v1" if kind in ("Role", "RoleBinding") else "v1"
+    if kind in ("Deployment", "StatefulSet", "DaemonSet"):
+        group = "apps/v1"
+    elif kind == "CronJob":
+        group = "batch/v1"
     metadata = {"name": name}
     if namespace:
         metadata["namespace"] = namespace
@@ -146,11 +150,13 @@ def main():
                     else:
                         reader = [rule("", ["pods", "services", "events", "configmaps"], ["get", "list", "watch"]),
                                   rule("", ["pods/log"], ["get"]),
-                                  rule("apps", ["deployments"], ["get", "list", "watch"])]
+                                  rule("apps", ["deployments", "statefulsets", "daemonsets"], ["get", "list", "watch"]),
+                                  rule("batch", ["cronjobs"], ["get", "list", "watch"])]
                         operator = [rule("", ["pods", "services", "events", "configmaps"], ["get", "list", "watch", "delete"]),
                                     rule("", ["pods/log"], ["get"]),
-                                    rule("apps", ["deployments"], ["get", "list", "watch", "patch", "delete"]),
-                                    rule("apps", ["deployments/scale"], ["get", "patch"])]
+                                    rule("apps", ["deployments", "statefulsets", "daemonsets"], ["get", "list", "watch", "patch", "delete"]),
+                                    rule("apps", ["deployments/scale", "statefulsets/scale"], ["get", "patch"]),
+                                    rule("batch", ["cronjobs"], ["get", "list", "watch", "patch", "delete"])]
                         resources = role("reader", ns, reader) + role("operator", ns, operator)
                         if suite == "desktop":
                             resources += role("fixture", ns, [rule("", ["pods"], ["get", "create", "delete"])])
@@ -160,7 +166,26 @@ def main():
                                 "selector": {"matchLabels": {"app": "kborg-sample"}},
                                 "template": {"metadata": {"labels": {"app": "kborg-sample"}}, "spec": pod_spec(image)}})
                             deployment["apiVersion"] = "apps/v1"
+                            stateful_spec = pod_spec(image)
+                            daemon_spec = pod_spec(image)
+                            daemon_spec["nodeSelector"] = {"kborg.io/isolated-edit-fixture": ns}
+                            cron_spec = pod_spec(image)
+                            cron_spec["restartPolicy"] = "Never"
+                            for edit_spec in (stateful_spec, daemon_spec, cron_spec):
+                                edit_spec["containers"][0]["env"] = [{"name": "UNCHANGED", "value": "KBORG_EDIT_CANARY"}]
+                                edit_spec["containers"][0]["resources"]["requests"]["ephemeral-storage"] = "1Mi"
+                                edit_spec["containers"][0]["resources"]["limits"]["ephemeral-storage"] = "2Mi"
+                                edit_spec["containers"].append(pod_spec(image, container="sidecar")["containers"][0])
                             resources += [deployment,
+                                resource("StatefulSet", "edit-stateful", ns, spec={"replicas": 0, "serviceName": "edit-stateful",
+                                    "selector": {"matchLabels": {"app": "kborg-edit-stateful"}},
+                                    "template": {"metadata": {"labels": {"app": "kborg-edit-stateful"}}, "spec": stateful_spec}}),
+                                resource("DaemonSet", "edit-daemon", ns, spec={
+                                    "selector": {"matchLabels": {"app": "kborg-edit-daemon"}},
+                                    "template": {"metadata": {"labels": {"app": "kborg-edit-daemon"}}, "spec": daemon_spec}}),
+                                resource("CronJob", "edit-cron", ns, spec={"schedule": "0 2 * * *", "suspend": True,
+                                    "jobTemplate": {"spec": {"backoffLimit": 1,
+                                        "template": {"metadata": {"labels": {"app": "kborg-edit-cron"}}, "spec": cron_spec}}}}),
                                 resource("ConfigMap", "canary", ns, data={"sample": "KBORG_TEST_CANARY"}),
                                 resource("Secret", "fake-canary", ns, stringData={"sample": "KBORG_TEST_CANARY"}),
                                 resource("Service", "delete-me", ns, spec={"selector": {"app": "kborg-sample"}, "ports": [{"port": 8080}]})]

@@ -7,6 +7,11 @@ KBorg 0.3 — Kubernetes operations, under your control
   kborg overview CONTEXT...       Snapshots 1..100; --follow watches up to 4 contexts
   kborg doctor                   Verify selected context and pod access
   kborg resources                Bounded API discovery (Secrets excluded)
+  kborg pulses                   Resource health snapshot
+  kborg workloads                Mixed workload snapshot
+  kborg xray RESOURCE             UID/selector resource relationship tree
+  kborg can u:NAME|g:NAME|s:NAME   Declared RBAC binding evidence
+  kborg dir [PATH]                Local directory / redacted manifest preview
   kborg watch RESOURCE            Bounded live snapshots; --json emits JSONL
   kborg metrics pods|nodes        CPU/memory/history; --metrics-resources comparisons
   kborg list RESOURCE             Bounded resource table; --json for pipelines
@@ -14,10 +19,10 @@ KBorg 0.3 — Kubernetes operations, under your control
   kborg view RESOURCE NAME --interactive  Native searchable JSON/YAML pager
   kborg view RESOURCE NAME --tool ABS [--tool-arg ARG]  Reviewed tool view
   kborg logs POD [CONTAINER]      --allow-logs; optional --follow or --previous
-  kborg scale NAME REPLICAS       Deployment scale with terminal approval
-  kborg restart NAME              Guarded deployment rollout
-  kborg set-image NAME CONTAINER IMAGE   Reviewed deployment image change
-  kborg set-resources NAME CONTAINER CPU_REQ MEM_REQ CPU_LIMIT MEM_LIMIT
+  kborg scale [RESOURCE] NAME REPLICAS   Deployment/StatefulSet scale (0..20)
+  kborg restart [RESOURCE] NAME    Guarded Deployment/StatefulSet/DaemonSet restart
+  kborg set-image [RESOURCE] NAME CONTAINER IMAGE   Reviewed image change
+  kborg set-resources [RESOURCE] NAME CONTAINER CPU_REQ MEM_REQ CPU_LIMIT MEM_LIMIT
   kborg delete RESOURCE NAME      Guarded deletion; no force
   kborg exec POD CONTAINER -- COMMAND [ARG...]   Reviewed exec; --interactive enables stdin/TTY
   kborg attach POD CONTAINER      Output-only; --interactive enables stdin/TTY
@@ -39,7 +44,8 @@ Options (put KBorg flags before exec's -- separator):
   --allow-tools      --tool ABS     --tool-arg ARG    --allow-extensions
   --allow-auth-helper --auth-helper-policy FILE
   --interactive     --session-seconds 1..3600    --log-seconds 1..86400
-  --metrics-resources
+  --metrics-resources  --selector LABELS / -l LABELS (ui/list/watch)
+  --tail 1..2000      --since-seconds 1..86400   --head (logs only)
   --allow-logs       --allow-exec   --allow-attach   --allow-forward
   --poll            --theme ID     --color=never    --json       --yaml
   --no-mouse        --follow          --previous     --no-splash      --demo       --help
@@ -63,16 +69,31 @@ Themes:
   theme export ID --output FILE | remove ID
 Replacement preserves an original .json.bak and refuses to overwrite it.
 
-TUI keys:
-  Up/Down, j/k: select   Tab: resources/table   Enter/d: overview   J: JSON   y: YAML
-  :: resource commands (:pods, :deploy, :svc, :nodes, :ns NAME, :all, :ctx)
-  S: cycle sort (:sort name|namespace|status|restarts|age)
-  /: cache filter   r: refresh   c: contexts   n: namespace   o: overview
-  m: metrics/history   M: read request/limit bases (refresh5s)   w: watch/poll   R: discovery   l/L: logs/previous   f: follow
-  a: actions   E: reviewed shell   V: reviewed resource budgets   e: image edit   s: scale   x: restart   Delete: guarded delete
-  t: themes    ?: help        Esc: close/cancel       q: quit
+TUI navigation (k9s command grammar; full compatibility register in docs/K9S_COMPATIBILITY.md):
+  :pods :po :dp :svc :nodes        Resource plural/singular/short names and GVRs
+  :pod NAMESPACE /REGEX @CONTEXT   Namespace, filter and context arguments
+  :pod 'app in (api,web)'          Server-side label selection
+  :ctx [NAME]  :ns [NAME]          Context/namespace picker or direct switch
+  :aliases / Ctrl-A               Resource and custom alias picker
+  :pulses :workloads :xray RESOURCE  Health and relationships
+  :can u:NAME|g:NAME|s:NAME         Declared RBAC evidence
+  :dir PATH  :screendump           Local manifests / explicitly saved snapshots
+  :themes :metrics :overview :actions  Additional KBorg views
+  :q :quit / Ctrl-C               Quit
+
+  j/k / arrows: rows   Enter: drill down   Esc: back   ?: help
+  /REGEX: filter   /!REGEX: inverse   /-f TEXT: fuzzy   /-l LABELS: server selector
+  Tab: command completion   Up/Down: command history   [ / ]: back/forward
+  d: describe   y: redacted YAML   l: logs   p: previous logs   Ctrl-R: refresh
+  Shift-N/A/S: sort name/age/status   0: all namespaces   Space: mark
+  Ctrl-S: explicitly save redacted resource snapshot   c: copy name (OSC52)
+  e: reviewed container editor   Ctrl-D: reviewed deletion
+  Pod s: shell   a: attach   F: prepare forwarding   f: show forward
+  Workload s: scale (supported families)   r: restart (supported families)
+  Logs: 0 tail,1 head,2 1m,3 5m,4 15m,5 30m,6 1h; s autoscroll,w wrap,t timestamps,f fullscreen
   Themes: arrows preview, Enter saves, N creates from preview, Esc cancels
-  PgUp/PgDown/Home/End: navigate tables and details/logs     Mouse: click rows / scroll
+  Writes require --write and full exact target review; sessions need --allow-*.
+  Unimplemented upstream operations show their limitation and never run another action.
 
 TLS verification is mandatory. Secret reads, unreviewed auth helpers,
 impersonation, generic patches and automatic AI requests remain disabled.

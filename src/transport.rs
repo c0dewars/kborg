@@ -49,6 +49,7 @@ where
     S::Future: Send + 'static,
     S::Error: Into<Error> + 'static,
     B: Body + 'static,
+    B::Data: From<Vec<u8>>,
     B::Error: Into<Error>,
 {
     type Response = Response<Limited<IdleBody<B>>>;
@@ -58,6 +59,11 @@ where
         self.inner.poll_ready(cx).map_err(Into::into)
     }
     fn call(&mut self, request: Request<RequestBody>) -> Self::Future {
+        let watch = request.method() == http::Method::GET
+            && request
+                .uri()
+                .query()
+                .is_some_and(|query| query.split('&').any(|entry| entry == "watch=true"));
         let stream = request.uri().path().contains("/pods/")
             && request.uri().path().ends_with("/log")
             && request
@@ -73,8 +79,29 @@ where
         let response = self.inner.call(request);
         Box::pin(async move {
             match tokio::time::timeout(HEADER_BUDGET, response).await {
-                Ok(Ok(response)) => {
-                    Ok(response.map(|body| Limited::new(IdleBody::new(body, idle), limit)))
+                Ok(Ok(mut response)) => {
+                    // kube-client request_events decodes stream lines without
+                    // checking HTTP status. Never let a blank/hostile error body
+                    // masquerade as a successful empty watch or change its code.
+                    if watch && !response.status().is_success() {
+                        let bytes = format!(
+                            "{{\"apiVersion\":\"v1\",\"kind\":\"Status\",\"status\":\"Failure\",\"reason\":\"WatchHttpError\",\"message\":\"watch HTTP response rejected; server body withheld\",\"code\":{}}}\n",
+                            response.status().as_u16()
+                        ).into_bytes();
+                        let headers = response.headers_mut();
+                        headers.remove(http::header::CONTENT_ENCODING);
+                        headers.remove(http::header::TRANSFER_ENCODING);
+                        headers.remove(http::header::CONTENT_LENGTH);
+                        headers.insert(
+                            http::header::CONTENT_TYPE,
+                            http::HeaderValue::from_static("application/json"),
+                        );
+                        // map retains the original HTTP status and extensions,
+                        // including those inspected by the outer auth gate.
+                        Ok(response.map(|_body| Limited::new(IdleBody::<B>::owned(bytes), limit)))
+                    } else {
+                        Ok(response.map(|body| Limited::new(IdleBody::new(body, idle), limit)))
+                    }
                 }
                 Ok(Err(error)) => Err(error.into()),
                 Err(_) => Err(std::io::Error::new(
@@ -89,7 +116,8 @@ where
 
 /// Uses the maintained HTTP Body trait; no protocol or wire-format parsing.
 pub struct IdleBody<B> {
-    inner: Pin<Box<B>>,
+    inner: Option<Pin<Box<B>>>,
+    owned: Option<Vec<u8>>,
     budget: Option<Duration>,
     timer: Option<Pin<Box<tokio::time::Sleep>>>,
     ended: bool,
@@ -97,9 +125,19 @@ pub struct IdleBody<B> {
 impl<B> IdleBody<B> {
     fn new(body: B, budget: Option<Duration>) -> Self {
         Self {
-            inner: Box::pin(body),
+            inner: Some(Box::pin(body)),
+            owned: None,
             budget,
             timer: budget.map(|budget| Box::pin(tokio::time::sleep(budget))),
+            ended: false,
+        }
+    }
+    fn owned(bytes: Vec<u8>) -> Self {
+        Self {
+            inner: None,
+            owned: Some(bytes),
+            budget: None,
+            timer: None,
             ended: false,
         }
     }
@@ -107,6 +145,7 @@ impl<B> IdleBody<B> {
 impl<B> Body for IdleBody<B>
 where
     B: Body,
+    B::Data: From<Vec<u8>>,
     B::Error: Into<Error>,
 {
     type Data = B::Data;
@@ -119,7 +158,15 @@ where
         if this.ended {
             return Poll::Ready(None);
         }
-        match this.inner.as_mut().poll_frame(cx) {
+        if let Some(bytes) = this.owned.take() {
+            this.ended = true;
+            return Poll::Ready(Some(Ok(Frame::data(bytes.into()))));
+        }
+        let Some(inner) = &mut this.inner else {
+            this.ended = true;
+            return Poll::Ready(None);
+        };
+        match inner.as_mut().poll_frame(cx) {
             Poll::Ready(Some(Ok(frame))) => {
                 if let (Some(timer), Some(budget)) = (&mut this.timer, this.budget) {
                     timer.as_mut().reset(tokio::time::Instant::now() + budget);
@@ -152,10 +199,17 @@ where
         }
     }
     fn is_end_stream(&self) -> bool {
-        self.ended || self.inner.is_end_stream()
+        self.ended
+            || (self.owned.is_none() && self.inner.as_ref().is_none_or(|body| body.is_end_stream()))
     }
     fn size_hint(&self) -> SizeHint {
-        self.inner.size_hint()
+        if let Some(bytes) = &self.owned {
+            SizeHint::with_exact(bytes.len() as u64)
+        } else {
+            self.inner
+                .as_ref()
+                .map_or_else(SizeHint::new, |body| body.size_hint())
+        }
     }
 }
 
@@ -165,6 +219,120 @@ mod tests {
     use bytes::Bytes;
     use http_body_util::{BodyExt, Full};
     use tower::ServiceExt;
+    #[test]
+    fn rejected_watch_uses_http_status_without_polling_remote_body() -> crate::Result<()> {
+        struct Unread(std::sync::Arc<std::sync::atomic::AtomicBool>);
+        impl Drop for Unread {
+            fn drop(&mut self) {
+                self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+            }
+        }
+        impl Body for Unread {
+            type Data = Bytes;
+            type Error = std::convert::Infallible;
+            fn poll_frame(
+                self: Pin<&mut Self>,
+                _: &mut Context<'_>,
+            ) -> Poll<Option<Result<Frame<Bytes>, Self::Error>>> {
+                panic!("rejected watch response body must never be polled");
+            }
+        }
+        crate::cli::runtime()?.block_on(async {
+            let dropped = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let original = dropped.clone();
+            let inner = tower::service_fn(move |_: Request<()>| {
+                let original = original.clone();
+                async move {
+                    let mut response = Response::builder()
+                        .status(403)
+                        .header(http::header::CONTENT_TYPE, "text/html")
+                        .header(http::header::CONTENT_ENCODING, "gzip")
+                        .header(http::header::CONTENT_LENGTH, "999999999")
+                        .header(http::header::TRANSFER_ENCODING, "chunked")
+                        .body(Unread(original))
+                        .map_err(|_| "invalid fixture response")?;
+                    response.extensions_mut().insert(7u32);
+                    Ok::<_, String>(response)
+                }
+            });
+            let request = Request::builder()
+                .uri("/api/v1/pods?watch=true&resourceVersion=1")
+                .body(())
+                .map_err(|_| "invalid fixture request")?;
+            let response = BodyBudgetLayer::default()
+                .layer(inner)
+                .oneshot(request)
+                .await
+                .map_err(|_| "fixture transport failed")?;
+            assert_eq!(response.status(), http::StatusCode::FORBIDDEN);
+            assert_eq!(response.extensions().get::<u32>(), Some(&7));
+            assert_eq!(
+                response.headers()[http::header::CONTENT_TYPE],
+                "application/json"
+            );
+            for header in [
+                http::header::CONTENT_ENCODING,
+                http::header::CONTENT_LENGTH,
+                http::header::TRANSFER_ENCODING,
+            ] {
+                assert!(!response.headers().contains_key(header));
+            }
+            assert!(dropped.load(std::sync::atomic::Ordering::SeqCst));
+            let bytes = response
+                .into_body()
+                .collect()
+                .await
+                .map_err(|_| "synthetic status read failed")?
+                .to_bytes();
+            assert!(bytes.len() < 512);
+            let status: serde_json::Value =
+                serde_json::from_slice(&bytes).map_err(|_| "synthetic status is invalid JSON")?;
+            assert_eq!(status["kind"], "Status");
+            assert_eq!(status["code"], 403);
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn ordinary_and_successful_watch_responses_are_unchanged() -> crate::Result<()> {
+        crate::cli::runtime()?.block_on(async {
+            for (method, uri, status) in [
+                (http::Method::GET, "/api/v1/pods?watch=false", 403),
+                (http::Method::GET, "/api/v1/pods?unwatch=true", 403),
+                (http::Method::GET, "/api/v1/pods?watch=true%26other", 403),
+                (http::Method::POST, "/api/v1/pods?watch=true", 403),
+                (http::Method::GET, "/api/v1/pods?watch=true", 200),
+            ] {
+                let inner = tower::service_fn(move |_: Request<()>| async move {
+                    Ok::<_, std::convert::Infallible>(
+                        Response::builder()
+                            .status(status)
+                            .body(Full::new(Bytes::from_static(b"ORIGINAL BODY")))
+                            .unwrap_or_else(|error| panic!("{error}")),
+                    )
+                });
+                let request = Request::builder()
+                    .method(method)
+                    .uri(uri)
+                    .body(())
+                    .map_err(|_| "invalid fixture request")?;
+                let response = BodyBudgetLayer::default()
+                    .layer(inner)
+                    .oneshot(request)
+                    .await
+                    .map_err(|_| "fixture transport failed")?;
+                assert_eq!(response.status().as_u16(), status);
+                let bytes = response
+                    .into_body()
+                    .collect()
+                    .await
+                    .map_err(|_| "fixture body read failed")?
+                    .to_bytes();
+                assert_eq!(bytes.as_ref(), b"ORIGINAL BODY", "{uri}");
+            }
+            Ok(())
+        })
+    }
     #[test]
     fn only_explicit_pod_log_follow_receives_stream_budget() -> crate::Result<()> {
         crate::cli::runtime()?.block_on(async {

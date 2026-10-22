@@ -99,7 +99,7 @@ impl MetricsSnapshot {
             }
         }
         if self.items.is_empty() {
-            output.push_str("No metrics samples returned.\n");
+            output.push_str("No metrics samples returned; missing samples do not mean zero usage.\nNew containers may need a collection window. Inspect pod/node status and events while waiting.\n");
         }
         if self.truncated {
             output.push_str(
@@ -644,9 +644,11 @@ fn metrics_error(error: kube::Error) -> String {
 }
 fn status_error(code: u16) -> String {
     match code {
-        404 => "Metrics API unavailable: metrics.k8s.io/v1beta1 is not served; no metrics server is installed automatically".into(),
-        403 => "Metrics API read forbidden: RBAC does not permit listing the selected pod or node metrics".into(),
-        401 => "Metrics API authentication failed".into(),
+        404 => "Metrics API unavailable: metrics.k8s.io/v1beta1 is not served. An administrator must configure a working metrics provider; none is installed automatically. Pod/node status and events remain available without metrics.".into(),
+        403 => "Metrics API read forbidden: request narrowly scoped RBAC list permission on pods.metrics.k8s.io in the selected namespace or nodes.metrics.k8s.io for node metrics. Core pod/node read permission alone does not grant metrics access.".into(),
+        401 => "Metrics API authentication failed; reconnect with valid credentials before retrying.".into(),
+        429 => "Metrics API is rate limited (HTTP 429); wait before refreshing. No zero-usage samples were recorded.".into(),
+        503 => "Metrics API unavailable: its registered provider is not ready (HTTP 503). Check provider/APIService health and wait for a collection window; no zero-usage samples were recorded.".into(),
         _ => format!("Metrics API read failed (HTTP {code}; details suppressed)"),
     }
 }

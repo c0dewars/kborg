@@ -12,6 +12,10 @@ pub enum Action {
         container: String,
         resources: crate::edit::ResourceEdit,
     },
+    SetContainer {
+        container: String,
+        edit: crate::edit::ContainerEdit,
+    },
     Restart,
     Delete,
 }
@@ -24,6 +28,7 @@ impl Action {
             Self::Delete => "delete",
             Self::SetImage { .. } => "set-image",
             Self::SetResources { .. } => "set-resources",
+            Self::SetContainer { .. } => "edit-container",
         }
     }
 }
@@ -71,18 +76,43 @@ impl Policy {
             return Err("target has no UID/resourceVersion".into());
         }
         match action {
-            Action::Scale(n) if target.resource == "deployments" && (0..=20).contains(n) => Ok(()),
-            Action::SetImage { container, image } if target.resource == "deployments" => {
+            Action::Scale(n)
+                if ["deployments", "statefulsets"].contains(&target.resource.as_str())
+                    && (0..=20).contains(n) =>
+            {
+                Ok(())
+            }
+            Action::SetImage { container, image }
+                if crate::edit::supports_resource(&target.resource) =>
+            {
                 crate::edit::validate(container, image)
             }
             Action::SetResources {
                 container,
                 resources,
-            } if target.resource == "deployments" => resources.validate(container),
-            Action::Restart if target.resource == "deployments" => Ok(()),
-            Action::Delete
-                if ["pods", "deployments", "services", "jobs"]
+            } if crate::edit::supports_resource(&target.resource) => resources.validate(container),
+            Action::SetContainer { container, edit }
+                if crate::edit::supports_resource(&target.resource) =>
+            {
+                edit.validate(container)
+            }
+            Action::Restart
+                if ["deployments", "statefulsets", "daemonsets"]
                     .contains(&target.resource.as_str()) =>
+            {
+                Ok(())
+            }
+            Action::Delete
+                if [
+                    "pods",
+                    "deployments",
+                    "statefulsets",
+                    "daemonsets",
+                    "cronjobs",
+                    "services",
+                    "jobs",
+                ]
+                .contains(&target.resource.as_str()) =>
             {
                 Ok(())
             }
@@ -121,6 +151,62 @@ impl Approval {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn workload_operations_respect_family_write_and_namespace_boundaries() {
+        let mut target = target();
+        let mut policy = Policy { writable: true };
+        target.resource = "statefulsets".into();
+        assert!(policy.check(&target, &Action::Scale(0)).is_ok());
+        assert!(policy.check(&target, &Action::Scale(21)).is_err());
+        for resource in ["deployments", "statefulsets", "daemonsets"] {
+            target.resource = resource.into();
+            assert!(policy.check(&target, &Action::Restart).is_ok());
+            assert!(policy.check(&target, &Action::Delete).is_ok());
+        }
+        target.resource = "daemonsets".into();
+        assert!(policy.check(&target, &Action::Scale(2)).is_err());
+        target.resource = "cronjobs".into();
+        assert!(policy.check(&target, &Action::Delete).is_ok());
+        assert!(policy.check(&target, &Action::Restart).is_err());
+        target.namespace = "kube-system".into();
+        assert!(policy.check(&target, &Action::Delete).is_err());
+        target.namespace = "test".into();
+        policy.writable = false;
+        assert!(policy.check(&target, &Action::Delete).is_err());
+    }
+    #[test]
+    fn atomic_container_edit_is_scoped_and_binds_every_reviewed_field() -> Result<()> {
+        let action = Action::SetContainer {
+            container: "app".into(),
+            edit: crate::edit::ContainerEdit {
+                image: "example/app:2".into(),
+                resources: None,
+            },
+        };
+        let policy = Policy { writable: true };
+        for resource in ["deployments", "statefulsets", "daemonsets", "cronjobs"] {
+            let mut target = target();
+            target.resource = resource.into();
+            policy.check(&target, &action)?;
+            let mut approval = Approval::confirm(target.clone(), action.clone(), "test/app")?;
+            let mut changed = action.clone();
+            if let Action::SetContainer { edit, .. } = &mut changed {
+                edit.resources = Some(crate::edit::ResourceEdit {
+                    cpu_request: "100m".into(),
+                    memory_request: "64Mi".into(),
+                    cpu_limit: "200m".into(),
+                    memory_limit: "128Mi".into(),
+                });
+            }
+            assert!(approval.consume(&target, &changed).is_err());
+        }
+        for resource in ["pods", "jobs", "replicasets", "customworkloads"] {
+            let mut target = target();
+            target.resource = resource.into();
+            assert!(policy.check(&target, &action).is_err());
+        }
+        Ok(())
+    }
     fn target() -> Target {
         Target {
             session: "a".into(),

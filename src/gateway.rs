@@ -9,8 +9,7 @@ use k8s_openapi::api::core::v1::Pod;
 use kube::{
     Api, Client, Config,
     api::{
-        ApiResource, DeleteParams, DynamicObject, ListParams, LogParams, Patch, PatchParams,
-        Preconditions,
+        ApiResource, DeleteParams, DynamicObject, ListParams, Patch, PatchParams, Preconditions,
     },
     config::{KubeConfigOptions, Kubeconfig},
 };
@@ -48,6 +47,8 @@ pub struct Kind {
     pub group: String,
     pub version: String,
     pub namespaced: bool,
+    #[serde(default)]
+    pub short_names: Vec<String>,
 }
 impl Kind {
     fn ar(&self) -> ApiResource {
@@ -69,6 +70,43 @@ impl Kind {
         } else {
             format!("{}.{}", self.plural, self.group)
         }
+    }
+}
+fn builtin_aliases(kind: &str) -> &'static [&'static str] {
+    match kind {
+        "Pod" => &["po"],
+        "Deployment" => &["deploy", "dp"],
+        "Service" => &["svc"],
+        "Job" => &["jo"],
+        "Role" => &["ro"],
+        "RoleBinding" => &["rb"],
+        "ClusterRole" => &["cr"],
+        "ClusterRoleBinding" => &["crb"],
+        "Event" => &["ev"],
+        "StatefulSet" => &["sts"],
+        "DaemonSet" => &["ds"],
+        "ReplicaSet" => &["rs"],
+        "CronJob" => &["cj"],
+        "Ingress" => &["ing"],
+        "ConfigMap" => &["cm"],
+        "PersistentVolumeClaim" => &["pvc"],
+        "Node" => &["no"],
+        "Namespace" => &["ns"],
+        "StorageClass" => &["sc"],
+        "ServiceAccount" => &["sa"],
+        "PersistentVolume" => &["pv"],
+        "Endpoints" => &["ep"],
+        "ReplicationController" => &["rc"],
+        "HorizontalPodAutoscaler" => &["hpa"],
+        "PodDisruptionBudget" => &["pdb"],
+        "NetworkPolicy" => &["netpol", "np"],
+        "ResourceQuota" => &["quota"],
+        "LimitRange" => &["limits"],
+        "CustomResourceDefinition" => &["crd", "crds"],
+        "PriorityClass" => &["pc"],
+        "CertificateSigningRequest" => &["csr"],
+        "VolumeAttachment" => &["va"],
+        _ => &[],
     }
 }
 pub fn kinds() -> Vec<Kind> {
@@ -101,6 +139,96 @@ pub fn kinds() -> Vec<Kind> {
             false,
         ),
         ("roles", "Role", "rbac.authorization.k8s.io", "v1", true),
+        ("serviceaccounts", "ServiceAccount", "", "v1", true),
+        ("persistentvolumes", "PersistentVolume", "", "v1", false),
+        ("endpoints", "Endpoints", "", "v1", true),
+        (
+            "replicationcontrollers",
+            "ReplicationController",
+            "",
+            "v1",
+            true,
+        ),
+        ("resourcequotas", "ResourceQuota", "", "v1", true),
+        ("limitranges", "LimitRange", "", "v1", true),
+        (
+            "endpointslices",
+            "EndpointSlice",
+            "discovery.k8s.io",
+            "v1",
+            true,
+        ),
+        (
+            "horizontalpodautoscalers",
+            "HorizontalPodAutoscaler",
+            "autoscaling",
+            "v2",
+            true,
+        ),
+        (
+            "poddisruptionbudgets",
+            "PodDisruptionBudget",
+            "policy",
+            "v1",
+            true,
+        ),
+        (
+            "networkpolicies",
+            "NetworkPolicy",
+            "networking.k8s.io",
+            "v1",
+            true,
+        ),
+        (
+            "customresourcedefinitions",
+            "CustomResourceDefinition",
+            "apiextensions.k8s.io",
+            "v1",
+            false,
+        ),
+        (
+            "clusterroles",
+            "ClusterRole",
+            "rbac.authorization.k8s.io",
+            "v1",
+            false,
+        ),
+        (
+            "clusterrolebindings",
+            "ClusterRoleBinding",
+            "rbac.authorization.k8s.io",
+            "v1",
+            false,
+        ),
+        (
+            "priorityclasses",
+            "PriorityClass",
+            "scheduling.k8s.io",
+            "v1",
+            false,
+        ),
+        ("runtimeclasses", "RuntimeClass", "node.k8s.io", "v1", false),
+        (
+            "certificatesigningrequests",
+            "CertificateSigningRequest",
+            "certificates.k8s.io",
+            "v1",
+            false,
+        ),
+        (
+            "volumeattachments",
+            "VolumeAttachment",
+            "storage.k8s.io",
+            "v1",
+            false,
+        ),
+        (
+            "apiservices",
+            "APIService",
+            "apiregistration.k8s.io",
+            "v1",
+            false,
+        ),
         (
             "rolebindings",
             "RoleBinding",
@@ -116,6 +244,7 @@ pub fn kinds() -> Vec<Kind> {
         group: g.into(),
         version: v.into(),
         namespaced: n,
+        short_names: builtin_aliases(k).iter().map(|s| (*s).into()).collect(),
     })
     .collect()
 }
@@ -280,6 +409,7 @@ fn validate_helper_user(user: &kube::config::AuthInfo) -> Result<()> {
     Ok(())
 }
 
+#[derive(Clone)]
 pub struct Gateway {
     client: Option<Client>,
     pub context: String,
@@ -503,8 +633,35 @@ impl Gateway {
         }
     }
     pub fn watch(&self, key: &str, ns: &str) -> Result<crate::watch::WatchFeed> {
+        self.watch_selector(key, ns, "")
+    }
+    pub fn watch_selector(
+        &self,
+        key: &str,
+        ns: &str,
+        selector: &str,
+    ) -> Result<crate::watch::WatchFeed> {
+        self.watch_fields(key, ns, selector, "")
+    }
+    pub fn watch_fields(
+        &self,
+        key: &str,
+        ns: &str,
+        selector: &str,
+        fields: &str,
+    ) -> Result<crate::watch::WatchFeed> {
+        crate::selectors::validate(selector)?;
+        crate::selectors::node_field(fields)?;
         let kind = self.find(key)?.clone();
-        Ok(crate::watch::WatchFeed::new(self.api(&kind, ns)?, kind))
+        if !fields.is_empty() && (kind.kind != "Pod" || !kind.group.is_empty()) {
+            return Err("node field selector requires Pods".into());
+        }
+        Ok(crate::watch::WatchFeed::with_filters(
+            self.api(&kind, ns)?,
+            kind,
+            selector.into(),
+            fields.into(),
+        ))
     }
     pub(crate) fn metrics_api(
         &self,
@@ -527,14 +684,33 @@ impl Gateway {
             group: "metrics.k8s.io".into(),
             version: "v1beta1".into(),
             namespaced: matches!(scope, crate::metrics::MetricsScope::Pods),
+            short_names: Vec::new(),
         };
         self.api(&kind, ns)
     }
-    fn find(&self, key: &str) -> Result<&Kind> {
-        self.kinds
-            .iter()
-            .find(|k| k.key() == key || k.plural == key)
-            .ok_or_else(|| "resource kind not available; Secrets are never exposed".into())
+    pub(crate) fn find(&self, key: &str) -> Result<&Kind> {
+        if let Some(kind) = self.kinds.iter().find(|k| {
+            k.key() == key
+                || (if k.group.is_empty() {
+                    format!("{}/{}", k.version, k.plural)
+                } else {
+                    format!("{}/{}/{}", k.group, k.version, k.plural)
+                }) == key
+        }) {
+            return Ok(kind);
+        }
+        let mut matches = self.kinds.iter().filter(|k| {
+            k.plural == key
+                || k.kind.eq_ignore_ascii_case(key)
+                || k.short_names.iter().any(|name| name == key)
+        });
+        let first = matches
+            .next()
+            .ok_or("resource kind not available; Secrets are never exposed")?;
+        if matches.next().is_some() {
+            return Err("resource alias is ambiguous; use resource.group".into());
+        }
+        Ok(first)
     }
     fn api(&self, k: &Kind, ns: &str) -> Result<Api<DynamicObject>> {
         if ns != "*" && !safety::valid_id(ns) {
@@ -557,7 +733,24 @@ impl Gateway {
         Ok(self.kinds.clone())
     }
     pub async fn list(&self, key: &str, ns: &str) -> Result<Value> {
+        self.list_selector(key, ns, "").await
+    }
+    pub async fn list_selector(&self, key: &str, ns: &str, selector: &str) -> Result<Value> {
+        self.list_fields(key, ns, selector, "").await
+    }
+    pub async fn list_fields(
+        &self,
+        key: &str,
+        ns: &str,
+        selector: &str,
+        fields: &str,
+    ) -> Result<Value> {
+        crate::selectors::validate(selector)?;
+        let node = crate::selectors::node_field(fields)?;
         let kind = self.find(key)?;
+        if node.is_some() && (kind.kind != "Pod" || !kind.group.is_empty()) {
+            return Err("node field selector requires Pods".into());
+        }
         if self.is_demo() {
             let mut items: Vec<Value> = self
                 .demo
@@ -565,6 +758,8 @@ impl Gateway {
                 .filter(|v| {
                     v["kind"] == kind.kind
                         && (ns == "*" || v["metadata"]["namespace"] == ns || !kind.namespaced)
+                        && crate::selectors::matches(selector, &v["metadata"]["labels"])
+                        && node.is_none_or(|node| v["spec"]["nodeName"].as_str() == Some(node))
                 })
                 .cloned()
                 .collect();
@@ -581,6 +776,8 @@ impl Gateway {
         loop {
             let params = ListParams {
                 limit: Some(200),
+                label_selector: (!selector.is_empty()).then(|| selector.to_owned()),
+                field_selector: (!fields.is_empty()).then(|| fields.to_owned()),
                 continue_token: continuation,
                 ..Default::default()
             };
@@ -706,7 +903,27 @@ impl Gateway {
         previous: bool,
         options: crate::logs::FollowOptions,
     ) -> Result<crate::logs::LogFeed> {
+        self.follow_logs_with_read_options(
+            ns,
+            name,
+            container,
+            previous,
+            options,
+            crate::logs::ReadOptions::default(),
+        )
+        .await
+    }
+    pub async fn follow_logs_with_read_options(
+        &self,
+        ns: &str,
+        name: &str,
+        container: Option<String>,
+        previous: bool,
+        options: crate::logs::FollowOptions,
+        read_options: crate::logs::ReadOptions,
+    ) -> Result<crate::logs::LogFeed> {
         let options = options.validate()?;
+        let read_options = read_options.validate()?;
         if !self.logs {
             return Err("logs may contain sensitive data; opt in with --allow-logs".into());
         }
@@ -724,7 +941,9 @@ impl Gateway {
             return Err("previous container logs support snapshots only; omit --follow".into());
         }
         if self.is_demo() {
-            let text = self.logs(ns, name, container, false).await?;
+            let text = self
+                .logs_with_options(ns, name, container, false, read_options)
+                .await?;
             return crate::logs::LogFeed::with_options(
                 futures_util::io::Cursor::new(text.into_bytes()),
                 options,
@@ -733,24 +952,41 @@ impl Gateway {
         let pods: Api<Pod> = Api::namespaced(self.client.clone().ok_or("no client")?, ns);
         let stream = tokio::time::timeout(
             OPERATION_BUDGET,
-            pods.log_stream(
-                name,
-                &LogParams {
-                    container,
-                    follow: true,
-                    tail_lines: Some(200),
-                    // No lifetime byte cap: the consumer and rolling cache are bounded.
-                    // A response body still has the transport's finite MAX_BODY cap.
-                    limit_bytes: None,
-                    timestamps: true,
-                    ..Default::default()
-                },
-            ),
+            pods.log_stream(name, &read_options.params(container, false, true)?),
         )
         .await
         .map_err(|_| "log connection timeout")?
         .map_err(api_error)?;
-        crate::logs::LogFeed::with_options(stream, options)
+        crate::logs::LogFeed::with_read_options(stream, options, read_options)
+    }
+    /// Explicitly bind reconnection to a pod selected by UID. Extra pod metadata
+    /// reads occur only in this workflow; ordinary log-only RBAC remains usable.
+    pub async fn follow_logs_resumable(
+        &self,
+        ns: &str,
+        name: &str,
+        container: Option<String>,
+        uid: &str,
+        options: crate::logs::FollowOptions,
+        read_options: crate::logs::ReadOptions,
+    ) -> Result<crate::logs::LogFeed> {
+        let feed = self
+            .follow_logs_with_read_options(
+                ns,
+                name,
+                container.clone(),
+                false,
+                options,
+                read_options,
+            )
+            .await?;
+        if self.is_demo() || read_options.head {
+            return Ok(feed);
+        }
+        let api = Api::namespaced(self.client.clone().ok_or("no client")?, ns);
+        // Validate after opening, before any body data is delivered to callers.
+        crate::logs::verify_uid(&api, name, uid).await?;
+        feed.with_resume(api, name, uid, container, read_options)
     }
     pub async fn logs(
         &self,
@@ -759,6 +995,24 @@ impl Gateway {
         container: Option<String>,
         previous: bool,
     ) -> Result<String> {
+        self.logs_with_options(
+            ns,
+            name,
+            container,
+            previous,
+            crate::logs::ReadOptions::default(),
+        )
+        .await
+    }
+    pub async fn logs_with_options(
+        &self,
+        ns: &str,
+        name: &str,
+        container: Option<String>,
+        previous: bool,
+        options: crate::logs::ReadOptions,
+    ) -> Result<String> {
+        let options = options.validate()?;
         if !safety::valid_id(ns)
             || name.is_empty()
             || name.len() > 253
@@ -782,24 +1036,17 @@ impl Gateway {
             }) {
                 return Err("demo pod not found in selected namespace".into());
             }
-            return Ok("2026-10-09T20:00:00Z INFO KBorg demo started\n2026-10-09T20:00:01Z WARN connection retry\n2026-10-09T20:00:02Z INFO request served".into());
+            return Ok(crate::logs::snapshot_text(
+                "2026-10-09T20:00:00Z INFO KBorg demo started\n2026-10-09T20:00:01Z WARN connection retry\n2026-10-09T20:00:02Z INFO request served",
+                options,
+            ));
         }
         let pods: Api<Pod> = Api::namespaced(self.client.clone().ok_or("no client")?, ns);
         let output = pods
-            .logs(
-                name,
-                &LogParams {
-                    container,
-                    previous,
-                    tail_lines: Some(200),
-                    limit_bytes: Some(256 * 1024),
-                    timestamps: true,
-                    ..Default::default()
-                },
-            )
+            .logs(name, &options.params(container, previous, false)?)
             .await
             .map_err(api_error)?;
-        Ok(safety::safe_lines(&output, 256 * 1024))
+        Ok(crate::logs::snapshot_text(&output, options))
     }
     pub(crate) fn operation_api(&self, namespace: &str, capability: usize) -> Result<Api<Pod>> {
         if !self.policy.writable {
@@ -841,7 +1088,10 @@ impl Gateway {
         let kind = self.find(key)?;
         if !matches!(
             (kind.plural.as_str(), kind.group.as_str()),
-            ("pods", "") | ("deployments", "apps") | ("services", "") | ("jobs", "batch")
+            ("pods", "")
+                | ("deployments" | "statefulsets" | "daemonsets", "apps")
+                | ("services", "")
+                | ("jobs" | "cronjobs", "batch")
         ) {
             return Err("mutations on this API group/resource are disabled".into());
         }
@@ -872,26 +1122,29 @@ impl Gateway {
                 json!({"metadata":{"uid":target.uid,"resourceVersion":target.version},"spec":{"replicas":replicas}})
             }
             Action::Restart => {
+                crate::edit::expected_restart(&object, &timestamp)?;
                 json!({"metadata":{"uid":target.uid,"resourceVersion":target.version},"spec":{"template":{"metadata":{"annotations":{"kborg.dev/restartedAt":timestamp}}}}})
             }
             Action::SetImage { container, image } => {
                 crate::edit::expected_spec(&object, container, image)?;
-                json!({"metadata":{"uid":target.uid,"resourceVersion":target.version},"spec":{"template":{"spec":{"containers":[{"name":container,"image":image}]}}}})
+                json!({"metadata":{"uid":target.uid,"resourceVersion":target.version},"spec":crate::edit::container_patch_spec(&object, container, Some(image), None)?})
             }
             Action::SetResources {
                 container,
                 resources,
             } => {
                 crate::edit::expected_resources(&object, container, resources)?;
-                json!({"metadata":{"uid":target.uid,"resourceVersion":target.version},"spec":{"template":{"spec":{"containers":[{"name":container,"resources":resources.value()}]}}}})
+                json!({"metadata":{"uid":target.uid,"resourceVersion":target.version},"spec":crate::edit::container_patch_spec(&object, container, None, Some(resources))?})
+            }
+            Action::SetContainer { container, edit } => {
+                crate::edit::expected_container(&object, container, edit)?;
+                json!({"metadata":{"uid":target.uid,"resourceVersion":target.version},"spec":crate::edit::container_patch_spec(&object, container, Some(&edit.image), edit.resources.as_ref())?})
             }
             Action::Delete => Value::Null,
         };
         let effect = match &action {
             Action::Scale(n) => format!("scale replicas {} -> {n}", object["spec"]["replicas"]),
-            Action::Restart => format!(
-                "set pod-template annotation kborg.dev/restartedAt={timestamp}; triggers rollout"
-            ),
+            Action::Restart => crate::edit::expected_restart(&object, &timestamp)?.1,
             Action::SetImage { container, image } => {
                 crate::edit::expected_spec(&object, container, image)?.1
             }
@@ -899,6 +1152,9 @@ impl Gateway {
                 container,
                 resources,
             } => crate::edit::expected_resources(&object, container, resources)?.1,
+            Action::SetContainer { container, edit } => {
+                crate::edit::expected_container(&object, container, edit)?.1
+            }
             Action::Delete => {
                 "delete object; background cascading; server default grace period; no force".into()
             }
@@ -950,6 +1206,16 @@ impl Gateway {
                         &response, &expected, &object, container,
                     )?;
                 }
+                Action::SetContainer { container, edit } => {
+                    let (expected, _) = crate::edit::expected_container(&object, container, edit)?;
+                    if edit.resources.is_some() {
+                        crate::edit::check_resource_admission(
+                            &response, &expected, &object, container,
+                        )?;
+                    } else {
+                        crate::edit::check_admission(&response, &expected, &object)?;
+                    }
+                }
                 Action::Scale(n) if response["spec"]["replicas"] != *n => {
                     return Err(
                         "admission changed the requested replica count; operation blocked".into(),
@@ -957,10 +1223,9 @@ impl Gateway {
                 }
                 Action::Restart => {
                     crate::edit::check_metadata(&response, &object)?;
-                    let mut expected = object["spec"].clone();
-                    expected["template"]["metadata"]["annotations"]["kborg.dev/restartedAt"]=prepared.patch["spec"]["template"]["metadata"]["annotations"]["kborg.dev/restartedAt"].clone();
+                    let (expected, _) = crate::edit::expected_restart(&object, &timestamp)?;
                     if response["spec"] != expected {
-                        return Err("admission changed additional deployment fields during dry-run; operation blocked for review".into());
+                        return Err("admission changed additional workload fields during dry-run; operation blocked for review".into());
                     }
                 }
                 _ => {}
@@ -1004,7 +1269,7 @@ impl Gateway {
                     .map_err(api_error)?;
                 serde_json::to_value(response).map_err(|_| "cannot decode scale response".into())
             }
-            Action::SetImage { .. } | Action::SetResources { .. } => {
+            Action::SetImage { .. } | Action::SetResources { .. } | Action::SetContainer { .. } => {
                 let response = api
                     .patch(
                         &prepared.target.name,
@@ -1016,8 +1281,7 @@ impl Gateway {
                     )
                     .await
                     .map_err(api_error)?;
-                serde_json::to_value(response)
-                    .map_err(|_| "cannot decode deployment response".into())
+                serde_json::to_value(response).map_err(|_| "cannot decode workload response".into())
             }
             Action::Restart => {
                 let response = api
@@ -1084,7 +1348,26 @@ impl Gateway {
                         }
                     }
                 }
-                Action::Restart => {}
+                Action::SetContainer { container, edit } => {
+                    for object in &mut self.demo {
+                        if object["metadata"]["uid"] == prepared.target.uid {
+                            object["spec"] =
+                                crate::edit::expected_container(object, &container, &edit)?.0;
+                            object["metadata"]["resourceVersion"] =
+                                json!(format!("{}e", prepared.target.version));
+                        }
+                    }
+                }
+                Action::Restart => {
+                    for object in &mut self.demo {
+                        if object["metadata"]["uid"] == prepared.target.uid {
+                            let timestamp = prepared.patch["spec"]["template"]["metadata"]["annotations"]["kborg.dev/restartedAt"].as_str().ok_or("restart review timestamp missing")?;
+                            object["spec"] = crate::edit::expected_restart(object, timestamp)?.0;
+                            object["metadata"]["resourceVersion"] =
+                                json!(format!("{}r", prepared.target.version));
+                        }
+                    }
+                }
             }
             return Ok("Demo operation completed (no cluster contacted)".into());
         }
@@ -1177,7 +1460,7 @@ fn demo_objects() -> Vec<Value> {
         object(
             "Deployment",
             "api",
-            json!({"readyReplicas":2,"availableReplicas":2}),
+            json!({"readyReplicas":2,"availableReplicas":2,"updatedReplicas":2}),
             json!({"replicas":2,"template":{"spec":{"containers":[{"name":"app","image":"example/demo:v1"}]}}}),
         ),
         object(
@@ -1191,13 +1474,13 @@ fn demo_objects() -> Vec<Value> {
             "StatefulSet",
             "redis",
             json!({"readyReplicas":1}),
-            json!({"replicas":1,"serviceName":"redis"}),
+            json!({"replicas":1,"serviceName":"redis","updateStrategy":{"type":"RollingUpdate"},"template":{"spec":{"containers":[{"name":"redis","image":"redis:7","resources":{"requests":{"cpu":"100m","memory":"64Mi"},"limits":{"cpu":"500m","memory":"256Mi"}}}]}}}),
         ),
         object(
             "DaemonSet",
             "collector",
             json!({"numberReady":1,"desiredNumberScheduled":1}),
-            json!({}),
+            json!({"updateStrategy":{"type":"RollingUpdate"},"template":{"spec":{"containers":[{"name":"collector","image":"example/collector:v1","resources":{"requests":{"cpu":"25m","memory":"32Mi"},"limits":{"cpu":"100m","memory":"128Mi"}}}]}}}),
         ),
         object(
             "ReplicaSet",
@@ -1215,7 +1498,7 @@ fn demo_objects() -> Vec<Value> {
             "CronJob",
             "nightly-backup",
             json!({"active":[]}),
-            json!({"schedule":"0 2 * * *","suspend":false}),
+            json!({"schedule":"0 2 * * *","suspend":false,"jobTemplate":{"spec":{"template":{"spec":{"restartPolicy":"Never","containers":[{"name":"backup","image":"example/backup:v1","resources":{"requests":{"cpu":"100m","memory":"64Mi"},"limits":{"cpu":"500m","memory":"256Mi"}}}]}}}}}),
         ),
         object(
             "Ingress",
@@ -1240,6 +1523,26 @@ fn demo_objects() -> Vec<Value> {
         object("RoleBinding", "viewer", json!({}), json!({})),
         object("StorageClass", "standard", json!({}), json!({})),
     ];
+    objects.extend([
+        object("ServiceAccount", "reader", json!({}), json!({})),
+        object("PersistentVolume", "demo-volume", json!({"phase":"Bound"}), json!({"capacity":{"storage":"1Gi"},"storageClassName":"standard","accessModes":["ReadWriteOnce"],"claimRef":{"namespace":"demo","name":"redis-data"}})),
+        object("Endpoints", "api", json!({}), json!({})),
+        object("ReplicationController", "legacy-worker", json!({"readyReplicas":1}), json!({"replicas":1,"selector":{"app":"legacy-worker"},"template":{"metadata":{"labels":{"app":"legacy-worker"}},"spec":{"containers":[{"name":"worker","image":"example/worker:v1"}]}}})),
+        object("ResourceQuota", "team-budget", json!({"hard":{"requests.cpu":"4","requests.memory":"8Gi"},"used":{"requests.cpu":"500m","requests.memory":"256Mi"}}), json!({"hard":{"requests.cpu":"4","requests.memory":"8Gi"}})),
+        object("LimitRange", "container-defaults", json!({}), json!({"limits":[{"type":"Container","default":{"cpu":"500m","memory":"256Mi"},"defaultRequest":{"cpu":"100m","memory":"64Mi"}}]})),
+        object("EndpointSlice", "api-demo", json!({}), json!({})),
+        object("HorizontalPodAutoscaler", "api", json!({"currentReplicas":2,"desiredReplicas":2}), json!({"scaleTargetRef":{"apiVersion":"apps/v1","kind":"Deployment","name":"api"},"minReplicas":2,"maxReplicas":5,"metrics":[{"type":"Resource","resource":{"name":"cpu","target":{"type":"Utilization","averageUtilization":75}}}]})),
+        object("PodDisruptionBudget", "api", json!({"disruptionsAllowed":1,"currentHealthy":2,"desiredHealthy":1}), json!({"minAvailable":1,"selector":{"matchLabels":{"app":"api"}}})),
+        object("NetworkPolicy", "api-ingress", json!({}), json!({"podSelector":{"matchLabels":{"app":"api"}},"policyTypes":["Ingress"],"ingress":[{"ports":[{"protocol":"TCP","port":8080}]}]})),
+        object("CustomResourceDefinition", "widgets.demo.local", json!({"conditions":[{"type":"Established","status":"True"}]}), json!({"group":"demo.local","scope":"Namespaced","names":{"plural":"widgets","singular":"widget","kind":"Widget"},"versions":[{"name":"v1","served":true,"storage":true,"schema":{"openAPIV3Schema":{"type":"object"}}}]})),
+        object("ClusterRole", "demo-reader", json!({}), json!({})),
+        object("ClusterRoleBinding", "demo-reader", json!({}), json!({})),
+        object("PriorityClass", "batch-priority", json!({}), json!({})),
+        object("RuntimeClass", "standard", json!({}), json!({})),
+        object("CertificateSigningRequest", "demo-client", json!({"conditions":[]}), json!({"signerName":"kubernetes.io/kube-apiserver-client","usages":["client auth"],"username":"demo-user","request":"synthetic-example-no-private-key"})),
+        object("VolumeAttachment", "demo-attachment", json!({"attached":true}), json!({"attacher":"demo.local/storage","nodeName":"demo-node","source":{"persistentVolumeName":"demo-volume"}})),
+        object("APIService", "v1beta1.metrics.k8s.io", json!({"conditions":[{"type":"Available","status":"True"}]}), json!({"group":"metrics.k8s.io","version":"v1beta1","groupPriorityMinimum":100,"versionPriority":100,"service":{"name":"metrics-server","namespace":"kube-system"}})),
+    ]);
     let mut event = object("Event", "worker-backoff", json!({}), json!({}));
     event["type"] = json!("Warning");
     event["reason"] = json!("BackOff");
@@ -1248,6 +1551,59 @@ fn demo_objects() -> Vec<Value> {
     event["involvedObject"] = json!({"kind":"Pod","namespace":"demo","name":"worker-6a1bc"});
     objects.push(event);
     for object in &mut objects {
+        match object["kind"].as_str().unwrap_or("") {
+            "Pod" if object["metadata"]["name"] == "api-7d4f9" => {
+                object["metadata"]["labels"] = json!({"app":"api"});
+                object["metadata"]["ownerReferences"] = json!([{"apiVersion":"apps/v1","kind":"ReplicaSet","name":"api-7d4f9","uid":"demo-ReplicaSet-api-7d4f9","controller":true}]);
+            }
+            "Pod" => {
+                object["metadata"]["labels"] = json!({"app":"worker"});
+            }
+            "ReplicaSet" => {
+                object["metadata"]["labels"] = json!({"app":"api"});
+                object["metadata"]["ownerReferences"] = json!([{"apiVersion":"apps/v1","kind":"Deployment","name":"api","uid":"demo-Deployment-api","controller":true}]);
+            }
+            "Deployment" => {
+                object["metadata"]["labels"] = json!({"app":"api"});
+                object["spec"]["selector"] = json!({"matchLabels":{"app":"api"}});
+                object["spec"]["template"]["metadata"]["labels"] = json!({"app":"api"});
+            }
+            "Service" => {
+                object["spec"]["selector"] = json!({"app":"api"});
+            }
+            "Role" | "ClusterRole" => {
+                object["rules"] = json!([{"apiGroups":[""],"resources":["pods","services"],"verbs":["get","list","watch"]}]);
+            }
+            "RoleBinding" => {
+                object["subjects"] = json!([{"kind":"ServiceAccount","name":"reader","namespace":"demo"},{"kind":"User","apiGroup":"rbac.authorization.k8s.io","name":"demo-user"}]);
+                object["roleRef"] =
+                    json!({"apiGroup":"rbac.authorization.k8s.io","kind":"Role","name":"viewer"});
+            }
+            "ClusterRoleBinding" => {
+                object["subjects"] = json!([{"kind":"Group","apiGroup":"rbac.authorization.k8s.io","name":"demo-viewers"}]);
+                object["roleRef"] = json!({"apiGroup":"rbac.authorization.k8s.io","kind":"ClusterRole","name":"demo-reader"});
+            }
+            "ServiceAccount" => {
+                object["automountServiceAccountToken"] = json!(false);
+            }
+            "Endpoints" => {
+                object["subsets"] = json!([{"addresses":[{"ip":"10.0.0.10","targetRef":{"kind":"Pod","namespace":"demo","name":"api-7d4f9"}}],"ports":[{"port":8080,"protocol":"TCP"}]}]);
+            }
+            "EndpointSlice" => {
+                object["metadata"]["labels"] = json!({"kubernetes.io/service-name":"api"});
+                object["addressType"] = json!("IPv4");
+                object["endpoints"] = json!([{"addresses":["10.0.0.10"],"conditions":{"ready":true},"targetRef":{"kind":"Pod","namespace":"demo","name":"api-7d4f9"}}]);
+                object["ports"] = json!([{"port":8080,"protocol":"TCP"}]);
+            }
+            "PriorityClass" => {
+                object["value"] = json!(1000);
+                object["globalDefault"] = json!(false);
+            }
+            "RuntimeClass" => {
+                object["handler"] = json!("runc");
+            }
+            _ => {}
+        }
         if object["kind"] == "StorageClass" {
             object["provisioner"] = json!("demo.local/storage");
         }
@@ -1415,6 +1771,69 @@ pub fn summary(object: &Value) -> String {
 mod tests {
     use super::*;
     use crate::cli::runtime;
+    #[test]
+    fn log_ranges_reach_the_api_and_unbound_reads_keep_log_only_permissions() -> Result<()> {
+        runtime()?.block_on(async {
+            let requests = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+            let recorded = requests.clone();
+            let service = tower::service_fn(move |request: http::Request<kube::client::Body>| {
+                recorded
+                    .lock()
+                    .unwrap_or_else(|e| panic!("{e}"))
+                    .push(request.uri().to_string());
+                async move {
+                    Ok::<_, std::convert::Infallible>(http::Response::new(
+                        http_body_util::Full::new(bytes::Bytes::from_static(
+                            b"first\nsecond\nthird\nfourth\n",
+                        )),
+                    ))
+                }
+            });
+            let mut gateway = Gateway::for_test_client(Client::new(service, "default"), "default");
+            assert!(gateway.logs("default", "app", None, false).await.is_err());
+            assert!(requests.lock().unwrap_or_else(|e| panic!("{e}")).is_empty());
+            gateway.logs = true;
+            let range = crate::logs::ReadOptions {
+                tail_lines: 2,
+                since_seconds: Some(60),
+                head: false,
+            };
+            assert_eq!(
+                gateway
+                    .logs_with_options("default", "app", Some("main".into()), false, range)
+                    .await?,
+                "third\nfourth\n"
+            );
+            let head = crate::logs::ReadOptions {
+                tail_lines: 2,
+                head: true,
+                ..Default::default()
+            };
+            let mut feed = gateway
+                .follow_logs_with_read_options(
+                    "default",
+                    "app",
+                    None,
+                    false,
+                    Default::default(),
+                    head,
+                )
+                .await?;
+            assert_eq!(feed.next().await?, Some("first".into()));
+            assert_eq!(feed.next().await?, Some("second".into()));
+            assert_eq!(feed.next().await?, None);
+            let requests = requests.lock().unwrap_or_else(|e| panic!("{e}"));
+            assert_eq!(requests.len(), 2); // No additional Pod GET for plain logs.
+            assert!(requests[0].contains("tailLines=2"));
+            assert!(requests[0].contains("sinceSeconds=60"));
+            assert!(requests[0].contains("container=main"));
+            assert!(requests[0].contains("timestamps=true"));
+            assert!(requests[1].contains("limitBytes=262144"));
+            assert!(!requests[1].contains("tailLines"));
+            assert!(!requests[1].contains("follow=true"));
+            Ok(())
+        })
+    }
     #[test]
     fn offline_resource_edit_is_sealed_and_preserves_container_fields() -> Result<()> {
         runtime()?.block_on(async {
@@ -1730,6 +2149,81 @@ mod tests {
             assert!(!prepared.summary.contains("private-canary"));
             assert!(gateway.perform(&prepared, false).await.is_err());
         });
+    }
+
+    #[test]
+    fn atomic_container_edit_uses_workload_api_and_rejects_unreviewed_admission() -> Result<()> {
+        runtime()?.block_on(async {
+            use std::sync::{Arc, atomic::{AtomicBool, AtomicUsize, Ordering}};
+            for (kind, resource, group, path) in [
+                ("Deployment", "deployments", "apps", "/spec/template/spec/containers"),
+                ("StatefulSet", "statefulsets", "apps", "/spec/template/spec/containers"),
+                ("DaemonSet", "daemonsets", "apps", "/spec/template/spec/containers"),
+                ("CronJob", "cronjobs", "batch", "/spec/jobTemplate/spec/template/spec/containers"),
+            ] {
+                let containers = json!([
+                    {"name":"api","image":"nginx:1","env":[{"name":"TOKEN","value":"private-canary"}],"resources":{"limits":{"example.com/gpu":"1"}}},
+                    {"name":"sidecar","image":"example/sidecar:1"}
+                ]);
+                let spec = if kind == "CronJob" {
+                    json!({"schedule":"0 2 * * *","jobTemplate":{"spec":{"template":{"spec":{"containers":containers}}}}})
+                } else {
+                    json!({"template":{"spec":{"containers":containers}}})
+                };
+                let original = json!({"apiVersion":format!("{group}/v1"),"kind":kind,"metadata":{"name":"api","namespace":"test","uid":"uid-1","resourceVersion":"7"},"spec":spec});
+                let expected_uri = format!("/apis/{group}/v1/namespaces/test/{resource}/api");
+                let poison = Arc::new(AtomicBool::new(false));
+                let poison_response = poison.clone();
+                let requests = Arc::new(AtomicUsize::new(0));
+                let counted = requests.clone();
+                let service = tower::service_fn(move |request: http::Request<kube::client::Body>| {
+                    let mut response = original.clone();
+                    let expected_uri = expected_uri.clone();
+                    let poison_response = poison_response.clone();
+                    counted.fetch_add(1, Ordering::SeqCst);
+                    async move {
+                        use http_body_util::BodyExt;
+                        assert_eq!(request.uri().path(), expected_uri);
+                        if request.method() == http::Method::PATCH {
+                            assert_eq!(request.headers()["content-type"], "application/strategic-merge-patch+json");
+                            assert!(request.uri().query().is_some_and(|query| query.contains("dryRun=All")));
+                            let body = request.into_body().collect().await.unwrap_or_else(|error| panic!("{error}")).to_bytes();
+                            let patch: Value = serde_json::from_slice(&body).unwrap_or_else(|error| panic!("{error}"));
+                            assert_eq!(patch["metadata"], json!({"uid":"uid-1","resourceVersion":"7"}));
+                            assert!(!String::from_utf8_lossy(&body).contains("private-canary"));
+                            let patch_containers = patch.pointer(path).unwrap_or_else(|| panic!("missing reviewed container patch"));
+                            assert_eq!(patch_containers, &json!([{"name":"api","image":"nginx:2","resources":{"requests":{"cpu":"100m","memory":"64Mi"},"limits":{"cpu":"500m","memory":"128Mi"}}}]));
+                            let selected = response.pointer_mut(path).unwrap_or_else(|| panic!("missing mock containers"));
+                            selected[0]["image"] = json!("nginx:2");
+                            selected[0]["resources"]["requests"] = json!({"cpu":"0.1","memory":"64Mi"});
+                            selected[0]["resources"]["limits"]["cpu"] = json!("500m");
+                            selected[0]["resources"]["limits"]["memory"] = json!("128Mi");
+                            if poison_response.load(Ordering::SeqCst) {
+                                selected[1]["image"] = json!("unreviewed:2");
+                            }
+                        }
+                        Ok::<_, std::convert::Infallible>(http::Response::new(http_body_util::Full::new(bytes::Bytes::from(response.to_string()))))
+                    }
+                });
+                let mut gateway = Gateway::connect(Connection { demo:true, writable:true, ..Default::default() }).await?;
+                gateway.client = Some(Client::new(service, "test"));
+                let action = Action::SetContainer {
+                    container:"api".into(),
+                    edit:crate::edit::ContainerEdit {
+                        image:"nginx:2".into(),
+                        resources:Some(crate::edit::ResourceEdit { cpu_request:"100m".into(),memory_request:"64Mi".into(),cpu_limit:"500m".into(),memory_limit:"128Mi".into() }),
+                    },
+                };
+                let reviewed = gateway.prepare(resource,"test","api",action.clone()).await?;
+                assert!(reviewed.summary.contains("+ nginx:2"));
+                assert!(!reviewed.summary.contains("private-canary"));
+                assert_eq!(requests.load(Ordering::SeqCst),2);
+                poison.store(true, Ordering::SeqCst);
+                assert!(gateway.prepare(resource,"test","api",action).await.is_err());
+                assert_eq!(requests.load(Ordering::SeqCst),4);
+            }
+            Ok(())
+        })
     }
 
     #[test]

@@ -113,6 +113,8 @@ impl Cache {
 pub struct WatchFeed {
     api: Api<DynamicObject>,
     kind: Kind,
+    selector: String,
+    fields: String,
     cache: Cache,
     rv: String,
     initialized: bool,
@@ -125,13 +127,24 @@ pub struct WatchFeed {
     terminal: Option<String>,
 }
 impl WatchFeed {
+    #[cfg(test)]
     pub(crate) fn new(api: Api<DynamicObject>, kind: Kind) -> Self {
+        Self::with_filters(api, kind, String::new(), String::new())
+    }
+    pub(crate) fn with_filters(
+        api: Api<DynamicObject>,
+        kind: Kind,
+        selector: String,
+        fields: String,
+    ) -> Self {
         let now = Instant::now();
         let terminal = (kind.kind == "Secret" || kind.plural == "secrets")
             .then(|| "Secret watches are forbidden".to_owned());
         Self {
             api,
             kind,
+            selector,
+            fields,
             cache: Cache::default(),
             rv: String::new(),
             initialized: false,
@@ -222,6 +235,8 @@ impl WatchFeed {
         let mut seen = HashSet::new();
         for _ in 0..10 {
             let params = ListParams {
+                label_selector: (!self.selector.is_empty()).then(|| self.selector.clone()),
+                field_selector: (!self.fields.is_empty()).then(|| self.fields.clone()),
                 limit: Some(200),
                 continue_token: continuation.take(),
                 ..Default::default()
@@ -291,6 +306,8 @@ impl WatchFeed {
         let mut recovering = false;
         if self.stream.is_none() {
             let params = WatchParams {
+                label_selector: (!self.selector.is_empty()).then(|| self.selector.clone()),
+                field_selector: (!self.fields.is_empty()).then(|| self.fields.clone()),
                 timeout: Some(8),
                 bookmarks: true,
                 ..Default::default()
@@ -424,6 +441,7 @@ mod tests {
     use super::*;
     use kube::{Client, api::ApiResource};
     use std::sync::{Arc, Mutex};
+    use tower::Layer;
     fn kind() -> Kind {
         Kind {
             plural: "pods".into(),
@@ -431,6 +449,7 @@ mod tests {
             group: String::new(),
             version: "v1".into(),
             namespaced: true,
+            short_names: vec!["po".into()],
         }
     }
     fn object(name: &str, uid: &str, rv: &str) -> DynamicObject {
@@ -471,7 +490,10 @@ mod tests {
             }
         });
         let api = Api::namespaced_with(
-            Client::new(service, "default"),
+            Client::new(
+                crate::transport::BodyBudgetLayer::default().layer(service),
+                "default",
+            ),
             "default",
             &ApiResource::erase::<k8s_openapi::api::core::v1::Pod>(&()),
         );
@@ -479,6 +501,86 @@ mod tests {
     }
     fn runtime() -> tokio::runtime::Runtime {
         crate::cli::runtime().unwrap_or_else(|e| panic!("{e}"))
+    }
+    #[test]
+    fn selector_is_preserved_on_initial_list_watch_and_relist() {
+        runtime().block_on(async {
+            let (mut feed, requests) = feed(vec![
+                (200, list("1")),
+                (410, String::new()),
+                (200, list("2")),
+            ]);
+            feed.selector = "app=web,tier!=batch".into();
+            feed.fields = "spec.nodeName=worker".into();
+            assert!(!feed.next().await.stale);
+            assert!(feed.next().await.stale);
+            assert!(!feed.next().await.stale);
+            let paths = requests.lock().unwrap_or_else(|e| panic!("{e}"));
+            assert_eq!(paths.len(), 3);
+            assert!(
+                paths
+                    .iter()
+                    .all(|path| path.contains("labelSelector=app%3Dweb%2Ctier%21%3Dbatch")),
+                "{paths:?}"
+            );
+            assert!(
+                paths
+                    .iter()
+                    .all(|path| path.contains("fieldSelector=spec.nodeName%3Dworker")),
+                "{paths:?}"
+            );
+        });
+    }
+
+    #[test]
+    fn http_watch_denials_clear_cached_objects_even_with_empty_or_malformed_bodies() {
+        runtime().block_on(async {
+            for code in [401,403] {
+                for body in [String::new(), "{malformed CANARY".into(), json!({"kind":"Status","apiVersion":"v1","code":200,"reason":"CANARY"}).to_string()] {
+                    let initial = json!({"apiVersion":"v1","kind":"PodList","metadata":{"resourceVersion":"1"},"items":[object("a","a","1")]}).to_string();
+                    let (mut feed,requests) = feed(vec![(200,initial),(code,body)]);
+                    assert_eq!(feed.next().await.objects.len(),1);
+                    let denied = feed.next().await;
+                    assert!(denied.terminal && denied.stale);
+                    assert!(denied.objects.is_empty());
+                    assert!(denied.resource_version.is_empty());
+                    assert!(!denied.message.contains("CANARY"));
+                    assert!(feed.next().await.terminal);
+                    assert_eq!(requests.lock().unwrap_or_else(|error|panic!("{error}")).len(),2);
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn http_watch_expiry_relists_and_server_failure_retries_with_retained_version() {
+        runtime().block_on(async {
+            let initial = || json!({"apiVersion":"v1","kind":"PodList","metadata":{"resourceVersion":"1"},"items":[object("a","a","1")]}).to_string();
+            let (mut expired,requests) = feed(vec![(200,initial()),(410,String::new()),(200,list("9"))]);
+            assert_eq!(expired.next().await.objects.len(),1);
+            let stale = expired.next().await;
+            assert!(stale.stale && !stale.terminal);
+            assert!(stale.objects.is_empty() && stale.resource_version.is_empty());
+            expired.retry_at = Instant::now();
+            let rebuilt = expired.next().await;
+            assert!(!rebuilt.stale);
+            assert_eq!(rebuilt.resource_version,"9");
+            assert_eq!(requests.lock().unwrap_or_else(|error|panic!("{error}")).len(),3);
+
+            let (mut retrying,requests) = feed(vec![(200,initial()),(503,"non-JSON CANARY".into()),(200,String::new())]);
+            assert_eq!(retrying.next().await.objects.len(),1);
+            let stale = retrying.next().await;
+            assert!(stale.stale && !stale.terminal);
+            assert_eq!(stale.objects.len(),1);
+            assert_eq!(stale.resource_version,"1");
+            assert!(retrying.initialized && retrying.retry_at > Instant::now());
+            assert!(!stale.message.contains("CANARY"));
+            retrying.retry_at = Instant::now();
+            retrying.next().await;
+            let paths = requests.lock().unwrap_or_else(|error|panic!("{error}"));
+            assert_eq!(paths.len(),3);
+            assert!(paths[2].contains("resourceVersion=1"));
+        });
     }
     #[test]
     fn list_watch_delete_uid_replacement_and_bookmark_reconnect() {

@@ -42,6 +42,8 @@ pub struct Options {
     pub follow: bool,
     pub previous: bool,
     pub log_seconds: u32,
+    pub log_read: crate::logs::ReadOptions,
+    pub selector: String,
     pub interactive: bool,
     pub metrics_resources: bool,
     pub session_seconds: u16,
@@ -64,6 +66,8 @@ fn parse(args: Vec<String>) -> Result<Options> {
         follow: false,
         previous: false,
         log_seconds: crate::logs::DEFAULT_FOLLOW_SECONDS,
+        log_read: crate::logs::ReadOptions::default(),
+        selector: String::new(),
         interactive: false,
         metrics_resources: false,
         session_seconds: 900,
@@ -79,6 +83,25 @@ fn parse(args: Vec<String>) -> Result<Options> {
             "--yaml" => opts.yaml = true,
             "--follow" => opts.follow = true,
             "--previous" => opts.previous = true,
+            "--head" => opts.log_read.head = true,
+            "--tail" => {
+                opts.log_read.tail_lines = args
+                    .next()
+                    .ok_or("--tail needs a line count")?
+                    .parse()
+                    .map_err(|_| "invalid log tail")?
+            }
+            "--since-seconds" => {
+                opts.log_read.since_seconds = Some(
+                    args.next()
+                        .ok_or("--since-seconds needs a value")?
+                        .parse()
+                        .map_err(|_| "invalid log lookback")?,
+                )
+            }
+            "--selector" | "-l" => {
+                opts.selector = args.next().ok_or("--selector needs a label selector")?
+            }
             "--log-seconds" => {
                 opts.log_seconds = args
                     .next()
@@ -178,6 +201,24 @@ fn parse(args: Vec<String>) -> Result<Options> {
     }
     if opts.previous && opts.command.first().is_none_or(|v| v != "logs") {
         return Err("--previous requires logs".into());
+    }
+    opts.log_read.validate()?;
+    if opts.log_read != crate::logs::ReadOptions::default()
+        && opts.command.first().is_none_or(|v| v != "logs")
+    {
+        return Err("--head/--tail/--since-seconds require logs".into());
+    }
+    if opts.log_read.head && opts.follow {
+        return Err("--head is a snapshot and cannot be followed".into());
+    }
+    crate::selectors::validate(&opts.selector)?;
+    if !opts.selector.is_empty()
+        && opts
+            .command
+            .first()
+            .is_some_and(|c| !matches!(c.as_str(), "ui" | "list" | "watch"))
+    {
+        return Err("--selector requires ui, list or watch".into());
     }
     if opts.follow
         && opts
@@ -332,10 +373,32 @@ pub fn run_args(args: Vec<String>) -> Result<()> {
             }
             return Ok(());
         }
+        "dir" => {
+            if opts.command.len() > 2 {
+                return Err("usage: dir [PATH]".into());
+            }
+            let path = std::path::Path::new(opts.command.get(1).map(String::as_str).unwrap_or("."));
+            if path.is_file() {
+                outputln!("{}", crate::navigation_views::preview_manifest(path)?);
+            } else {
+                let directory = crate::navigation_views::directory(path)?;
+                outputln!(
+                    "LOCAL MANIFESTS | {}",
+                    safety::safe_text(&directory.path.display().to_string(), 4096)
+                );
+                for entry in directory.entries {
+                    outputln!("{}{}", entry.name, if entry.directory { "/" } else { "" });
+                }
+                if directory.truncated {
+                    outputln!("TRUNCATED directory listing; select a narrower path");
+                }
+            }
+            return Ok(());
+        }
         "ui" => return tui::run(opts),
         "list" | "watch" | "metrics" | "get" | "view" | "logs" | "resources" | "doctor"
         | "scale" | "restart" | "delete" | "set-image" | "set-resources" | "exec" | "attach"
-        | "forward" => {}
+        | "forward" | "pulses" | "xray" | "workloads" | "can" => {}
         _ => return Err("unknown command; see --help".into()),
     }
     if cmd == "view"
@@ -350,10 +413,26 @@ pub fn run_args(args: Vec<String>) -> Result<()> {
         let mut gateway=tokio::time::timeout(Duration::from_secs(15),Gateway::connect(opts.connection.clone())).await.map_err(|_|"connection timed out")??;
         let ns=gateway.namespace.clone();
         let args=&opts.command[1..];
-        if matches!(cmd, "list" | "get" | "view" | "watch") && let Some(resource) = args.first() {
+        if matches!(cmd, "list" | "get" | "view" | "watch" | "xray") && let Some(resource) = args.first() {
             discover_if_needed(&mut gateway, resource).await?;
         }
         match cmd {
+            "can" => {
+                if args.len() != 1 { return Err("usage: can u:NAME|g:NAME|s:NAME [-n NAMESPACE]".into()); }
+                outputln!("{}", crate::navigation_views::can(&gateway, &ns, &args[0]).await?);
+            },
+            "workloads" => {
+                if !args.is_empty() { return Err("usage: workloads [-n NAMESPACE]".into()); }
+                outputln!("{}", crate::insights::workloads(&gateway,&ns).await?);
+            },
+            "pulses" => {
+                if !args.is_empty() { return Err("usage: pulses [-n NAMESPACE]".into()); }
+                outputln!("{}", crate::insights::pulses(&gateway, &ns).await?);
+            },
+            "xray" => {
+                if args.len() != 1 { return Err("usage: xray RESOURCE [-n NAMESPACE]".into()); }
+                outputln!("{}", crate::insights::xray(&gateway, &args[0], &ns).await?);
+            },
             "exec"|"attach"|"forward" => {
                 if !io::stdin().is_terminal() || !io::stdout().is_terminal() {return Err("subresource operations require interactive terminal approval".into());}
                 let request=match cmd {
@@ -371,7 +450,7 @@ pub fn run_args(args: Vec<String>) -> Result<()> {
             },
             "watch" => {
                 if args.len() != 1 { return Err("usage: watch <resource> [--json]".into()); }
-                let mut feed = gateway.watch(&args[0], &ns)?;
+                let mut feed = gateway.watch_selector(&args[0], &ns, &opts.selector)?;
                 loop {
                     let snapshot = feed.next().await;
                     let record = serde_json::json!({"items":snapshot.objects,"resourceVersion":snapshot.resource_version,"stale":snapshot.stale,"truncated":snapshot.truncated,"terminal":snapshot.terminal,"status":snapshot.message});
@@ -390,11 +469,11 @@ pub fn run_args(args: Vec<String>) -> Result<()> {
                 let value=if opts.metrics_resources {crate::metrics::collect_with_allocations(&gateway,scope,&ns).await?} else {crate::metrics::collect(&gateway,scope,&ns).await?};
                 if opts.json {print_json(&serde_json::to_value(value).map_err(|_| "metrics output failed")?)?;} else {output!("{}",value.text());}
             },
-            "doctor"=>{outputln!("KBorg {}\ncontext: {}\nserver: {}\nnamespace: {}\nmode: {}\nauth: certificate/token; reviewed helpers require explicit trust policy\nAI/extensions: disabled; exec/attach/forward require separate explicit capability and --write",env!("CARGO_PKG_VERSION"),safety::safe_text(&gateway.context,100),safety::safe_text(&gateway.server,200),safety::safe_text(&ns,63),if opts.connection.writable{"WRITE ENABLED"}else{"READ ONLY"});
+            "doctor"=>{outputln!("KBorg {}\ncontext: {}\nserver: {}\nnamespace: {}\nmode: {}\nauth: certificate/token; reviewed helpers require explicit trust policy\nAI diagnosis: disabled; registered extensions require explicit opt-in\nexec/attach/forward require separate explicit capability and --write",env!("CARGO_PKG_VERSION"),safety::safe_text(&gateway.context,100),safety::safe_text(&gateway.server,200),safety::safe_text(&ns,63),if opts.connection.writable{"WRITE ENABLED"}else{"READ ONLY"});
                 let result=tokio::time::timeout(Duration::from_secs(15),gateway.list("pods",&ns)).await.map_err(|_|"API timed out")??;
                 outputln!("API pods read: OK ({} objects)",result["items"].as_array().map_or(0,Vec::len));},
             "resources"=>{let resources=tokio::time::timeout(Duration::from_secs(15),gateway.discover()).await.map_err(|_|"discovery timed out")??; if opts.json{print_json(&serde_json::to_value(resources).map_err(|_|"serialization failed")?)?;}else{for kind in resources{outputln!("{}\t{}",kind.key(),if kind.namespaced{"namespaced"}else{"cluster"});}}},
-            "list"=>{if args.len()!=1{return Err("usage: list <resource>".into());}let value=tokio::time::timeout(Duration::from_secs(15),gateway.list(&args[0],&ns)).await.map_err(|_|"API timed out")??;
+            "list"=>{if args.len()!=1{return Err("usage: list <resource>".into());}let value=tokio::time::timeout(Duration::from_secs(15),gateway.list_selector(&args[0],&ns,&opts.selector)).await.map_err(|_|"API timed out")??;
                 if opts.json {print_json(&value)?;} else {outputln!("NAMESPACE\tNAME\tSTATUS");if let Some(items)=value["items"].as_array(){for v in items{outputln!("{}\t{}\t{}",safety::safe_text(v["metadata"]["namespace"].as_str().unwrap_or("-"),63),safety::safe_text(v["metadata"]["name"].as_str().unwrap_or("-"),253),safety::safe_text(&summary(v),100));}}
 if value["truncated"]==true {eprintln!("TRUNCATED: limit reached; narrow namespace scope");}}},
             "get"=>{if args.len()!=2{return Err("usage: get <resource> <name>".into());}let value=tokio::time::timeout(Duration::from_secs(15),gateway.get(&args[0],&ns,&args[1])).await.map_err(|_|"API timed out")??; if opts.yaml {output!("{}",crate::inspect::yaml(&value)?);}else{print_json(&value)?;}},
@@ -433,23 +512,23 @@ if value["truncated"]==true {eprintln!("TRUNCATED: limit reached; narrow namespa
             "logs"=>{
                 if args.is_empty() || args.len()>2{return Err("usage: logs <pod> [container] [--follow|--previous] (requires --allow-logs)".into());}
                 if opts.follow {
-                    let mut feed=gateway.follow_logs_with_options(&ns,&args[0],args.get(1).cloned(),false,crate::logs::FollowOptions{seconds:opts.log_seconds}).await?;
+                    let mut feed=gateway.follow_logs_with_read_options(&ns,&args[0],args.get(1).cloned(),false,crate::logs::FollowOptions{seconds:opts.log_seconds},opts.log_read).await?;
                     while let Some(line)=feed.next().await? {
                         let line=if opts.json {serde_json::json!({"line":line}).to_string()}else{line};
                         if let Err(error)=writeln!(io::stdout().lock(),"{line}") {if error.kind()==io::ErrorKind::BrokenPipe {return Ok(());}return Err("log output failed".into());}
                     }
                 }else{
-                    let logs=tokio::time::timeout(Duration::from_secs(15),gateway.logs(&ns,&args[0],args.get(1).cloned(),opts.previous)).await.map_err(|_|"logs timed out")??;
+                    let logs=tokio::time::timeout(Duration::from_secs(15),gateway.logs_with_options(&ns,&args[0],args.get(1).cloned(),opts.previous,opts.log_read)).await.map_err(|_|"logs timed out")??;
                     if opts.json{print_json(&serde_json::json!({"logs":logs,"bounded":true}))?;}else{outputln!("{logs}");}
                 }
             },
             "scale"|"restart"|"delete"|"set-image"|"set-resources"=>{
                 if !io::stdin().is_terminal() || !io::stdout().is_terminal(){return Err("noninteractive writes are disabled; use the interactive TUI or terminal confirmation".into());}
                 let (resource,name,action)=match cmd {
-                    "set-image"=>{if args.len()!=3{return Err("usage: set-image <deployment> <container> <image> --write".into());}("deployments",args[0].as_str(),Action::SetImage{container:args[1].clone(),image:args[2].clone()})},
-                    "set-resources"=>{if args.len()!=6{return Err("usage: set-resources DEPLOYMENT CONTAINER CPU_REQUEST MEMORY_REQUEST CPU_LIMIT MEMORY_LIMIT --write".into());}("deployments",args[0].as_str(),Action::SetResources{container:args[1].clone(),resources:crate::edit::ResourceEdit{cpu_request:args[2].clone(),memory_request:args[3].clone(),cpu_limit:args[4].clone(),memory_limit:args[5].clone()}})},
-                    "scale"=>{if args.len()!=2{return Err("usage: scale <deployment> <replicas> --write".into());}("deployments",args[0].as_str(),Action::Scale(args[1].parse().map_err(|_|"invalid replicas")?))},
-                    "restart"=>{if args.len()!=1{return Err("usage: restart <deployment> --write".into());}("deployments",args[0].as_str(),Action::Restart)},
+                    "set-image"=>{let (resource,args)=write_args(args,3,"set-image [RESOURCE] NAME CONTAINER IMAGE --write")?;(resource,args[0].as_str(),Action::SetImage{container:args[1].clone(),image:args[2].clone()})},
+                    "set-resources"=>{let (resource,args)=write_args(args,6,"set-resources [RESOURCE] NAME CONTAINER CPU_REQUEST MEMORY_REQUEST CPU_LIMIT MEMORY_LIMIT --write")?;(resource,args[0].as_str(),Action::SetResources{container:args[1].clone(),resources:crate::edit::ResourceEdit{cpu_request:args[2].clone(),memory_request:args[3].clone(),cpu_limit:args[4].clone(),memory_limit:args[5].clone()}})},
+                    "scale"=>{let (resource,args)=write_args(args,2,"scale [RESOURCE] NAME REPLICAS --write")?;(resource,args[0].as_str(),Action::Scale(args[1].parse().map_err(|_|"invalid replicas")?))},
+                    "restart"=>{let (resource,args)=write_args(args,1,"restart [RESOURCE] NAME --write")?;(resource,args[0].as_str(),Action::Restart)},
                     _=>{if args.len()!=2{return Err("usage: delete <resource> <name> --write".into());}(args[0].as_str(),args[1].as_str(),Action::Delete)},
                 };
                 let prepared=tokio::time::timeout(Duration::from_secs(15),gateway.prepare(resource,&ns,name,action)).await.map_err(|_|"dry-run timed out")??;
@@ -461,6 +540,17 @@ if value["truncated"]==true {eprintln!("TRUNCATED: limit reached; narrow namespa
             _=>{},
         } Ok(())
     })
+}
+fn write_args<'a>(
+    args: &'a [String],
+    count: usize,
+    usage: &str,
+) -> Result<(&'a str, &'a [String])> {
+    match args.len() {
+        n if n == count => Ok(("deployments", args)),
+        n if n == count + 1 => Ok((&args[0], &args[1..])),
+        _ => Err(format!("usage: {usage}")),
+    }
 }
 fn print_json(value: &serde_json::Value) -> Result<()> {
     let encoded = serde_json::to_string_pretty(value).map_err(|_| "JSON serialization failed")?;
@@ -517,18 +607,14 @@ fn copilot_command(opts: &Options) -> Result<()> {
 async fn discover_if_needed(gateway: &mut Gateway, resource: &str) -> Result<()> {
     if resource.is_empty()
         || resource.len() > 253
-        || !resource
-            .bytes()
-            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'.' | b'-'))
+        || !resource.bytes().all(|b| {
+            b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'.' | b'-' | b'/')
+        })
         || resource.split('.').next() == Some("secrets")
     {
         return Err("invalid or disabled resource kind".into());
     }
-    let known = |g: &Gateway| {
-        g.kinds
-            .iter()
-            .any(|k| k.key() == resource || k.plural == resource)
-    };
+    let known = |g: &Gateway| g.find(resource).is_ok();
     if !known(gateway) {
         gateway.discover().await?;
     }
@@ -757,6 +843,24 @@ mod tests {
             )
             .is_err()
         );
+        Ok(())
+    }
+    #[test]
+    fn label_and_log_ranges_validate_before_connecting() -> Result<()> {
+        let parse_words = |s: &str| parse(s.split_whitespace().map(str::to_owned).collect());
+        let options = parse_words("list po --selector app=web,tier!=batch")?;
+        assert_eq!(options.selector, "app=web,tier!=batch");
+        let options = parse_words("logs pod --since-seconds 300 --tail 500")?;
+        assert_eq!(options.log_read.since_seconds, Some(300));
+        for command in [
+            "list pods --selector app=((web))",
+            "logs pod --tail 0",
+            "logs pod --head --follow",
+            "list pods --head",
+            "metrics pods --selector app=web",
+        ] {
+            assert!(parse_words(command).is_err(), "{command}");
+        }
         Ok(())
     }
     #[test]

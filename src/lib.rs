@@ -23,9 +23,15 @@ pub mod overview;
 pub mod handoff;
 
 pub mod advice;
+pub mod aliases;
 pub mod allocations;
 pub mod auth;
 pub mod extensions;
+pub mod insights;
+pub mod navigation_views;
 pub mod pager;
+pub mod screendump;
+pub mod selectors;
 pub mod session;
 pub mod transport;
+pub mod ui_logs;

@@ -1,0 +1,73 @@
+{
+  "schema": 1,
+  "context": "docker-desktop",
+  "namespace": "kube-system",
+  "binary_sha256": "4868ed8134564e98099501d643c67b769662b7a5509a0fa370579e2d6cd4d145",
+  "read_only": true,
+  "terminal_restored": true,
+  "screens": [
+    {
+      "name": "initial-live-pods",
+      "required": [
+        "PRODUCTION",
+        "docker-desktop",
+        "kube-system",
+        "pods [",
+        "coredns"
+      ]
+    },
+    {
+      "name": "nodes-alias",
+      "required": [
+        "nodes [",
+        "desktop-control-plane"
+      ]
+    },
+    {
+      "name": "node-pods-drilldown",
+      "required": [
+        "pods [",
+        "FIELD:spec.nodeName=desktop-control-plane",
+        "FILTERED"
+      ]
+    },
+    {
+      "name": "namespace-command",
+      "required": [
+        "pods [",
+        "NS kube-system"
+      ]
+    },
+    {
+      "name": "pod-alias-regex",
+      "required": [
+        "pods [",
+        "coredns",
+        "FILTERED"
+      ]
+    },
+    {
+      "name": "server-label-selector",
+      "required": [
+        "pods [",
+        "LABEL:app=kborg-no-such-app",
+        "No objects in this scope"
+      ]
+    },
+    {
+      "name": "return-nodes",
+      "required": [
+        "nodes [",
+        "desktop-control-plane"
+      ]
+    },
+    {
+      "name": "metrics-unavailable",
+      "required": [
+        "Metrics",
+        "unavailable"
+      ]
+    }
+  ],
+  "scope": "Native macOS PTY against existing Docker Desktop; no cluster mutations."
+}
