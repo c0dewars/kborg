@@ -121,6 +121,9 @@ pub enum Action {
 pub enum Intent {
     Install,
     InstallCrds,
+    UpgradeCrds,
+    DeleteCrds,
+    Test(Release),
     Upgrade(Release),
     Rollback {
         current: Release,
@@ -133,15 +136,36 @@ impl Intent {
         match self {
             Self::Install => "INSTALL HELM RELEASE",
             Self::InstallCrds => "INSTALL CHART CRDS",
+            Self::UpgradeCrds => "UPGRADE CHART CRDS",
+            Self::DeleteCrds => "DELETE CHART CRDS",
+            Self::Test(_) => "TEST HELM RELEASE",
             Self::Upgrade(_) => "UPGRADE HELM RELEASE",
             Self::Rollback { .. } => "ROLL BACK HELM RELEASE",
             Self::Uninstall(_) => "UNINSTALL HELM RELEASE",
         }
     }
+    pub fn is_crd(&self) -> bool {
+        matches!(
+            self,
+            Self::InstallCrds | Self::UpgradeCrds | Self::DeleteCrds
+        )
+    }
+    fn has_chart_input(&self) -> bool {
+        matches!(
+            self,
+            Self::Install
+                | Self::Upgrade(_)
+                | Self::InstallCrds
+                | Self::UpgradeCrds
+                | Self::DeleteCrds
+        )
+    }
     fn current(&self) -> Option<&Release> {
         match self {
-            Self::Install | Self::InstallCrds => None,
-            Self::Upgrade(release) | Self::Uninstall(release) => Some(release),
+            Self::Install | Self::InstallCrds | Self::UpgradeCrds | Self::DeleteCrds => None,
+            Self::Upgrade(release) | Self::Uninstall(release) | Self::Test(release) => {
+                Some(release)
+            }
             Self::Rollback { current, .. } => Some(current),
         }
     }
@@ -155,6 +179,7 @@ pub struct Form {
     allow_hooks: bool,
     allow_crds: bool,
     registry: crate::helm_oci::Options,
+    keyring: Option<std::path::PathBuf>,
 }
 pub struct WriteDraft {
     pub options: crate::helm_lifecycle::Options,
@@ -179,20 +204,22 @@ impl Form {
             .map(|path| path.to_string_lossy().into_owned())
             .unwrap_or_default();
         let fields = match &intent {
-            Intent::Install | Intent::InstallCrds => vec![
-                (
-                    "Namespace",
-                    if namespace == "*" {
-                        String::new()
-                    } else {
-                        namespace.clone()
-                    },
-                ),
-                ("Release", String::new()),
-                ("Packaged chart / OCI digest", chart),
-            ],
+            Intent::Install | Intent::InstallCrds | Intent::UpgradeCrds | Intent::DeleteCrds => {
+                vec![
+                    (
+                        "Namespace",
+                        if namespace == "*" {
+                            String::new()
+                        } else {
+                            namespace.clone()
+                        },
+                    ),
+                    ("Release", String::new()),
+                    ("Chart source", chart),
+                ]
+            }
             Intent::Upgrade(_) => vec![
-                ("Packaged chart / OCI digest", chart),
+                ("Chart source", chart),
                 ("Values file (optional)", values.clone()),
             ],
             _ => vec![],
@@ -210,6 +237,7 @@ impl Form {
             allow_hooks: false,
             allow_crds: false,
             registry: Default::default(),
+            keyring: None,
         }
     }
     pub fn set_lifecycle_policy(
@@ -221,6 +249,9 @@ impl Form {
         self.allow_hooks = allow_hooks;
         self.allow_crds = allow_crds;
         self.registry = registry;
+    }
+    pub fn set_keyring(&mut self, keyring: Option<std::path::PathBuf>) {
+        self.keyring = keyring;
     }
     pub fn key(&mut self, key: KeyCode) {
         let count = self.fields.len();
@@ -254,8 +285,11 @@ impl Form {
     }
     pub fn draft(&self, executable: std::path::PathBuf, seconds: u16) -> Result<WriteDraft> {
         use crate::helm_lifecycle::{Options, Request};
-        if matches!(self.intent, Intent::InstallCrds) && !self.allow_crds {
-            return Err("Chart CRD installation requires explicit --allow-helm-crds.".into());
+        if self.intent.is_crd() && !self.allow_crds {
+            return Err("Chart CRD actions require explicit --allow-helm-crds.".into());
+        }
+        if matches!(self.intent, Intent::Test(_)) && !self.allow_hooks {
+            return Err("Helm tests require explicit --allow-helm-hooks.".into());
         }
         let path = |value: &str, optional: bool| -> Result<Option<std::path::PathBuf>> {
             if value.is_empty() {
@@ -279,7 +313,7 @@ impl Form {
                 let path = path(value, false)?.ok_or("Missing chart source")?;
                 if path.extension().is_none_or(|extension| extension != "tgz") {
                     return Err(
-                        "Choose a packaged .tgz chart or an OCI reference pinned by sha256 digest."
+                        "Choose a packaged .tgz chart or an OCI reference with an explicit tag or sha256 digest."
                             .into(),
                     );
                 }
@@ -287,7 +321,7 @@ impl Form {
             }
         };
         let (namespace, release, storage, request) = match &self.intent {
-            Intent::Install | Intent::InstallCrds => {
+            Intent::Install | Intent::InstallCrds | Intent::UpgradeCrds | Intent::DeleteCrds => {
                 let namespace = self.fields[0].1.trim();
                 let release = self.fields[1].1.trim();
                 if !safety::valid_id(namespace) {
@@ -297,13 +331,14 @@ impl Form {
                     return Err("Release name must be a DNS name of at most 53 bytes.".into());
                 }
                 let chart = chart(&self.fields[2].1)?;
-                let request = if matches!(self.intent, Intent::InstallCrds) {
-                    Request::InstallCrds { chart }
-                } else {
-                    Request::Install {
+                let request = match self.intent {
+                    Intent::InstallCrds => Request::InstallCrds { chart },
+                    Intent::UpgradeCrds => Request::UpgradeCrds { chart },
+                    Intent::DeleteCrds => Request::DeleteCrds { chart },
+                    _ => Request::Install {
                         chart,
                         values: path(&self.fields[3].1, true)?,
-                    }
+                    },
                 };
                 (namespace.into(), release.into(), self.storage, request)
             }
@@ -324,6 +359,12 @@ impl Form {
                     revision: target.revision,
                 },
             ),
+            Intent::Test(current) => (
+                current.namespace.clone(),
+                current.name.clone(),
+                current.storage,
+                Request::Test,
+            ),
             Intent::Uninstall(current) => (
                 current.namespace.clone(),
                 current.name.clone(),
@@ -341,6 +382,7 @@ impl Form {
                 allow_hooks: self.allow_hooks,
                 allow_crds: self.allow_crds,
                 registry: self.registry.clone(),
+                keyring: self.keyring.clone(),
             },
             request,
             expected: self.intent.current().cloned(),
@@ -352,17 +394,18 @@ impl Form {
         })
     }
     pub fn lines(&self, width: usize, height: usize) -> Vec<String> {
-        let mut lines = vec![if let Some(current) = self.intent.current() {
+        let roomy = height >= self.fields.len() + 8 && width >= 54;
+        let target = if let Some(current) = self.intent.current() {
             format!(
-                "{}/{} | current revision {} | {} storage",
+                "{}/{}  |  revision {}  |  {}",
                 current.namespace,
                 current.name,
                 current.revision,
                 current.storage.name()
             )
-        } else if matches!(self.intent, Intent::InstallCrds) {
+        } else if self.intent.is_crd() {
             format!(
-                "Cluster-wide schema creation | label {}",
+                "Cluster-wide schemas  |  label {}",
                 self.fields
                     .first()
                     .map(|(_, value)| value.as_str())
@@ -370,85 +413,128 @@ impl Form {
             )
         } else {
             format!(
-                "Namespace {} | {} storage",
+                "Namespace {}  |  {} storage",
                 self.fields
                     .first()
                     .map(|(_, value)| value.as_str())
                     .unwrap_or(&self.namespace),
                 self.storage.name()
             )
-        }];
+        };
+        let mut lines = vec![format!("  TARGET  {target}")];
         if let Intent::Rollback { target, .. } = &self.intent {
             lines.push(format!(
-                "Target revision {} | {} {} | captured UID {}",
-                target.revision, target.chart_name, target.chart_version, target.uid
+                "  TO      revision {}  |  {} {}",
+                target.revision, target.chart_name, target.chart_version
             ));
         }
-        if height >= 5 {
-            lines.push(if self.fields.iter().any(|(label,value)| *label=="Packaged chart / OCI digest" && value.starts_with("oci://")) {
-                "OCI bytes verified by digest; publisher signatures not checked.".into()
-            } else {
-                "Chart: local .tgz or OCI pinned by sha256. Preparation verifies the source before review.".into()
-            });
+        if height >= self.fields.len() + 3 {
             lines.push(format!(
-                "Requested capabilities | hooks {} | CRDs {}",
+                "  POLICY  hooks {}  /  CRDs {}  /  signature {}",
                 if self.allow_hooks { "ON" } else { "OFF" },
-                if self.allow_crds {
-                    "ON: separate create-only review"
+                if self.allow_crds { "ON" } else { "OFF" },
+                if !self.intent.has_chart_input() {
+                    "n/a (stored release)"
+                } else if self.keyring.is_some() {
+                    "REQUIRED"
                 } else {
-                    "OFF"
+                    "not checked"
                 }
             ));
-        }
-        if height >= 6 && matches!(self.intent, Intent::InstallCrds) {
-            lines.push(
-                "Namespaced custom resources; schemas retained on uninstall. No release installed."
-                    .into(),
-            );
-        }
-        if height >= self.fields.len() + 4
-            && !matches!(self.intent, Intent::InstallCrds)
-            && let Some(source) = self
+            if let Some((_, source)) = self
                 .fields
                 .iter()
-                .find(|(label, _)| *label == "Packaged chart / OCI digest")
-            && let Ok(reference) = crate::helm_oci::Reference::parse(&source.1)
-        {
-            let digest = reference.digest().trim_start_matches("sha256:");
-            lines.push(format!(
-                "OCI sha256:{}...{} | {}/{}",
-                &digest[..12],
-                &digest[digest.len() - 8..],
-                reference.registry(),
-                reference.repository()
-            ));
+                .find(|(label, _)| *label == "Chart source")
+            {
+                lines.push(
+                    if let Ok(reference) = crate::helm_oci::Reference::parse(source) {
+                        if let Some(digest) = reference.digest() {
+                            let digest = digest.trim_start_matches("sha256:");
+                            format!(
+                                "  SOURCE  OCI sha256:{}...{}  |  {}",
+                                &digest[..12],
+                                &digest[digest.len() - 8..],
+                                reference.registry()
+                            )
+                        } else {
+                            format!(
+                                "  SOURCE  OCI tag {}  |  digest resolved during preparation",
+                                reference.tag().unwrap_or("?")
+                            )
+                        }
+                    } else {
+                        "  SOURCE  Packaged chart .tgz or OCI :tag / @sha256:digest".into()
+                    },
+                );
+            }
         }
-        if height >= 3 && matches!(self.intent, Intent::Uninstall(_)) {
-            lines.push("DESTRUCTIVE: release-managed resources will be removed. Review before confirmation.".into());
+        if roomy {
+            lines.push(String::new());
+            lines.push("  DETAILS".into());
         }
-        if self.fields.is_empty() && height > lines.len() {
-            lines.push("Enter prepares the review; this does not execute Helm.".into());
+        let mut suffix = Vec::new();
+        if roomy {
+            suffix.push(String::new());
+            suffix.push(if matches!(self.intent, Intent::DeleteCrds) {
+                "  DESTRUCTIVE  Owned custom instances and cluster-wide schemas will be deleted."
+                    .into()
+            } else if matches!(self.intent, Intent::UpgradeCrds) {
+                "  IMPACT  Cluster-wide schema changes; existing instances are checked.".into()
+            } else if matches!(self.intent, Intent::InstallCrds) {
+                "  IMPACT  Namespaced custom resources; schemas retained on uninstall.".into()
+            } else if matches!(self.intent, Intent::Uninstall(_)) {
+                "  DESTRUCTIVE  Release-managed resources will be removed.".into()
+            } else if matches!(self.intent, Intent::Test(_)) {
+                "  IMPACT  Stored test hooks execute; release revision stays unchanged.".into()
+            } else {
+                "  NEXT  Prepare the complete plan, review every line, then approve.".into()
+            });
         }
-        let capacity = height.saturating_sub(lines.len()).max(1);
+        if self.intent.is_crd() && height >= self.fields.len() + 4 {
+            suffix.push("  No release installed. CRD actions are reviewed separately.".into());
+        }
+        // Reserve a visible input row even at 28x10. Metadata never hides the
+        // active field, and long paths retain the editable tail.
+        let capacity = height.saturating_sub(lines.len() + suffix.len()).max(1);
+        lines.truncate(height.saturating_sub(1).max(1));
         let start = self.active.saturating_sub(capacity.saturating_sub(1));
         for (index, (label, value)) in self.fields.iter().enumerate().skip(start).take(capacity) {
             let label = if width < 40 {
                 match *label {
-                    "Packaged chart / OCI digest" => "Chart",
+                    "Chart source" => "Chart",
                     "Values file (optional)" => "Values",
                     "Namespace" => "NS",
                     label => label,
                 }
             } else {
-                label
+                match *label {
+                    "Values file (optional)" => "Values file",
+                    label => label,
+                }
             };
-            let prefix = format!("{} {label}: ", if index == self.active { ">" } else { " " });
+            let prefix = if width >= 54 {
+                format!(
+                    " {} {:<13} ",
+                    if index == self.active { ">" } else { " " },
+                    label
+                )
+            } else {
+                format!(
+                    " {} {label}: ",
+                    if index == self.active { ">" } else { " " }
+                )
+            };
             lines.push(format!(
                 "{prefix}{}{}",
                 tail(value, width.saturating_sub(prefix.len() + 1)),
                 if index == self.active { "_" } else { "" }
             ));
         }
+        if self.fields.is_empty() && height > lines.len() + suffix.len() {
+            lines.push("  Ready to prepare the complete operation review.".into());
+        }
+        lines.extend(suffix);
+        lines.truncate(height);
         lines
     }
 }
@@ -508,10 +594,47 @@ impl Review {
         }
     }
     fn wrapped(&self, width: usize) -> Vec<String> {
-        super::wrap_text(self.prepared.summary(), width.max(1))
+        let overview = self.prepared.overview();
+        let mut introduction = vec![
+            format!(
+                "OPERATION   {}  /  NOT EXECUTED",
+                overview.operation.to_ascii_uppercase()
+            ),
+            format!("TARGET      {}", overview.target),
+            format!("CONNECTION  {}  |  {}", overview.context, overview.endpoint),
+            String::new(),
+            if self.prepared.is_demo() {
+                "CHANGE PLAN  Simulated plan / no cluster writes".into()
+            } else {
+                format!(
+                    "CHANGE PLAN  {} resources  /  {} hooks  /  {} CRDs",
+                    overview.resources, overview.hooks, overview.crds
+                )
+            },
+        ];
+        if let Some(source) = overview.source {
+            introduction.push(format!("SOURCE       {source}"));
+        }
+        if overview.destructive {
+            introduction.push(
+                "IMPACT       DESTRUCTIVE / schema-changing operation. Review all details.".into(),
+            );
+        }
+        introduction.extend([
+            String::new(),
+            "APPROVAL     Read every line, then type the exact confirmation below.".into(),
+            String::new(),
+            "FULL REVIEW".into(),
+        ]);
+        let text = format!("{}\n{}", introduction.join("\n"), self.prepared.summary());
+        super::wrap_text(&text, width.saturating_sub(2).max(1))
             .lines()
-            .map(str::to_owned)
+            .map(|line| format!("  {line}"))
             .collect()
+    }
+    pub fn progress(&self, width: usize) -> (usize, usize) {
+        let count = self.wrapped(width).len();
+        (count.saturating_sub(self.remaining(width)), count)
     }
     pub fn mark_drawn(&mut self, width: usize, height: usize) {
         if width != self.width {
@@ -696,6 +819,11 @@ impl Table {
             }
             KeyCode::Char('i') => return Action::Lifecycle(Box::new(Intent::Install)),
             KeyCode::Char('c') => return Action::Lifecycle(Box::new(Intent::InstallCrds)),
+            KeyCode::Char('t') => {
+                if let Some(current) = self.current() {
+                    return Action::Lifecycle(Box::new(Intent::Test(current)));
+                }
+            }
             KeyCode::Char('u') => {
                 if let Some(current) = self.current() {
                     return Action::Lifecycle(Box::new(Intent::Upgrade(current)));
@@ -843,9 +971,9 @@ impl Table {
     }
     pub fn help(&self) -> &'static str {
         if self.parent.is_some() {
-            "Enter/v values | r rollback | u upgrade | Ctrl-D uninstall | d metadata | Esc back"
+            "[Enter/v] values  [r] rollback  [t] test  [u] upgrade  [Ctrl-D] uninstall  [Esc] back"
         } else {
-            "Enter/r history | i install | u upgrade | c chart CRDs | Ctrl-D uninstall | v values | m resources | Esc back"
+            "[Enter] history  [i] install  [u] upgrade  [t] test  [c] CRDs  [Ctrl-D] uninstall  [Esc] back"
         }
     }
 }
@@ -909,6 +1037,7 @@ mod tests {
                     allow_hooks: false,
                     allow_crds: false,
                     registry: Default::default(),
+                    keyring: None,
                 },
                 crate::helm_lifecycle::Request::Install {
                     chart: "/demo/chart.tgz".into(),
@@ -996,7 +1125,7 @@ mod tests {
             "auth contents and private file paths are not part of form preview"
         );
         form.fields[2].1 = "oci://registry.example/team/chart:latest".into();
-        assert!(form.draft("/trusted/helm".into(), 300).is_err());
+        assert!(form.draft("/trusted/helm".into(), 300).is_ok());
         Ok(())
     }
     #[test]
@@ -1022,7 +1151,7 @@ mod tests {
         assert_eq!(draft.options.release, "my.api");
         assert!(draft.expected.is_none());
         let lines = form.lines(82, 8).join("\n");
-        assert!(lines.contains("retained on uninstall"));
+        assert!(lines.contains("No release installed"));
         assert!(lines.contains("No release installed"));
         assert!(!lines.contains("Values file"));
         Ok(())
@@ -1051,6 +1180,127 @@ mod tests {
         form.clear();
         assert!(form.fields[2].1.is_empty());
         Ok(())
+    }
+    #[test]
+    fn configured_keyring_is_required_only_when_the_form_acquires_a_chart() {
+        let current = release("web", 3, Storage::Secret);
+        for intent in [
+            Intent::Test(current.clone()),
+            Intent::Rollback {
+                current: current.clone(),
+                target: Box::new(release("web", 1, Storage::Secret)),
+            },
+            Intent::Uninstall(current.clone()),
+        ] {
+            let mut form = Form::new(intent, "default".into(), Storage::Secret, None, true);
+            form.set_keyring(Some("/private/trusted.gpg".into()));
+            let lines = form.lines(98, 12).join("\n");
+            assert!(lines.contains("signature n/a (stored release)"));
+            assert!(!lines.contains("signature REQUIRED"));
+        }
+        let mut install = Form::new(
+            Intent::Install,
+            "default".into(),
+            Storage::Secret,
+            None,
+            true,
+        );
+        assert!(
+            install
+                .lines(98, 12)
+                .join("\n")
+                .contains("signature not checked")
+        );
+        install.set_keyring(Some("/private/trusted.gpg".into()));
+        assert!(
+            install
+                .lines(98, 12)
+                .join("\n")
+                .contains("signature REQUIRED")
+        );
+    }
+    #[test]
+    fn test_and_schema_actions_keep_explicit_capabilities_and_request_identity() -> Result<()> {
+        let current = release("web", 3, Storage::Secret);
+        let mut form = Form::new(
+            Intent::Test(current.clone()),
+            "ignored".into(),
+            Storage::ConfigMap,
+            None,
+            true,
+        );
+        assert!(form.fields.is_empty());
+        assert!(form.draft("/demo/helm".into(), 300).is_err());
+        form.set_lifecycle_policy(true, false, Default::default());
+        let draft = form.draft("/demo/helm".into(), 300)?;
+        assert!(matches!(
+            draft.request,
+            crate::helm_lifecycle::Request::Test
+        ));
+        assert_eq!(draft.options.namespace, current.namespace);
+        assert_eq!(draft.options.storage, Storage::Secret);
+        assert!(same_release(
+            draft.expected.as_ref().unwrap_or(&current),
+            &current
+        ));
+        for intent in [Intent::UpgradeCrds, Intent::DeleteCrds] {
+            let mut form = Form::new(intent, "staging".into(), Storage::Secret, None, true);
+            assert_eq!(form.fields.len(), 3);
+            form.fields[1].1 = "schema-owner".into();
+            assert!(form.draft("/demo/helm".into(), 300).is_err());
+            form.set_lifecycle_policy(false, true, Default::default());
+            let draft = form.draft("/demo/helm".into(), 300)?;
+            assert!(matches!(
+                draft.request,
+                crate::helm_lifecycle::Request::UpgradeCrds { .. }
+                    | crate::helm_lifecycle::Request::DeleteCrds { .. }
+            ));
+            assert!(draft.expected.is_none());
+            assert!(!form.lines(98, 11).join("\n").contains("Values file"));
+        }
+        Ok(())
+    }
+    #[test]
+    fn review_overview_preserves_the_complete_plan_and_coverage_requirement() -> Result<()> {
+        let mut review = demo_review()?;
+        let all = review.wrapped(118).join("\n");
+        for section in [
+            "OPERATION",
+            "TARGET",
+            "CONNECTION",
+            "CHANGE PLAN",
+            "APPROVAL",
+            "FULL REVIEW",
+        ] {
+            assert!(all.contains(section));
+        }
+        let backend = super::super::wrap_text(review.prepared.summary(), 116)
+            .lines()
+            .map(|line| format!("  {line}"))
+            .collect::<Vec<_>>();
+        assert!(
+            review.wrapped(118).ends_with(&backend),
+            "all backend lines retain order and content after the consistent gutter"
+        );
+        assert!(all.contains("Simulated plan / no cluster writes"));
+        review.typed = review.prepared.confirmation();
+        review.mark_drawn(118, 3);
+        let (painted, total) = review.progress(118);
+        assert_eq!(painted, 3);
+        assert!(total > painted && !review.can_execute(120, 32, 7));
+        assert_eq!(review.remaining(118), total - painted);
+        Ok(())
+    }
+    #[test]
+    fn modern_forms_keep_active_input_tail_at_every_supported_size() {
+        for (width, height) in [(26, 2), (46, 4), (78, 8), (98, 12)] {
+            let mut form = Form::new(Intent::Install, "demo".into(), Storage::Secret, None, true);
+            form.fields[2].1 = format!("/{}-VISIBLE.tgz", "x".repeat(300));
+            form.active = 2;
+            let lines = form.lines(width, height);
+            assert!(lines.len() <= height);
+            assert!(lines.join("\n").contains("VISIBLE.tgz_"));
+        }
     }
     #[test]
     fn familiar_list_and_history_keys_capture_selected_revision() {

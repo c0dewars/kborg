@@ -1,0 +1,20 @@
+{
+  "ephemeral_keys": true,
+  "personal_keyrings_used": false,
+  "trusted_verifier_positive": true,
+  "wrong_key_rejected": true,
+  "signer_fingerprint": "B613B2CF0C6D962BA0F41758D98D7BF95669544B",
+  "chart_count": 2,
+  "private_signing_material_removed": true,
+  "container_removed": true,
+  "public_fixture_sha256": {
+    "kborg-extension-fixture-0.1.1.tgz": "ce29aa9749a376ddf10516011d303696bee3bad7e6d59b079bf4a18f42f912cf",
+    "kborg-extension-fixture-0.1.1.tgz.prov": "404953fa3900d8ebe28f28155aae2d9a6d24b61b4764f52c6b7240b976e79f81",
+    "kborg-extension-fixture-0.1.2.tgz": "1e1941ba4c1d528138f73bad4517de3b0e2673543407268157cbd89a68275948",
+    "kborg-extension-fixture-0.1.2.tgz.prov": "ddf9617ff6f4eb5b9c64fafb22429f16ff52c78293780a5b85203a0a8f3b46af",
+    "trusted.gpg": "f9bbec9fac558703821173f21e56b09455c8d0615c682a1282909edbf27314a5",
+    "wrong.gpg": "7345878baed64cd1616501ef457cbb3320c920ffce41234ef6114a8b49243dd7"
+  },
+  "fixture_generator_sha256": "2fcd876be7d422d720cb04b50b6ca79cac1382198adce75617e9c0e779ef3490",
+  "scope": "Public artifacts and test trust only; generated private signing material/container removed before success."
+}

@@ -1,4 +1,4 @@
-//! Digest-pinned Helm OCI acquisition, independent of Kubernetes credentials.
+//! Helm OCI acquisition sealed to one digest, independent of Kubernetes credentials.
 //! Downloads are bounded and verified before a private packaged chart is written.
 //! Digest integrity is not signature/authorship verification.
 use crate::{Result, safety};
@@ -33,7 +33,7 @@ pub struct Reference {
     source: String,
     registry: String,
     repository: String,
-    digest: String,
+    selector: String,
 }
 impl Reference {
     pub fn parse(source: &str) -> Result<Self> {
@@ -44,21 +44,29 @@ impl Reference {
         {
             return Err("OCI chart reference is too long or contains invalid characters".into());
         }
-        let (location, pinned) = rest.rsplit_once('@').ok_or("OCI chart requires an immutable @sha256:<64 lowercase hex> digest; tags are not accepted")?;
-        if !valid_digest(pinned) {
-            return Err("OCI chart requires an immutable @sha256:<64 lowercase hex> digest; tags are not accepted".into());
-        }
-        let (registry, repository) = location
+        let (registry, target) = rest
             .split_once('/')
             .ok_or("OCI chart reference needs a registry and repository/chart name")?;
+        let (repository, selector) = if let Some((repository, digest)) = target.rsplit_once('@') {
+            if !valid_digest(digest) {
+                return Err("OCI digest must be @sha256:<64 lowercase hex>".into());
+            }
+            (repository, digest)
+        } else {
+            let (repository, tag) = target.rsplit_once(':').ok_or("OCI chart needs an explicit :TAG or @sha256 digest; implicit latest is not accepted")?;
+            if !valid_tag(tag) {
+                return Err("OCI tag must contain 1..128 ASCII letters, digits, underscores, dots or dashes; use underscore for Helm version build metadata".into());
+            }
+            (repository, tag)
+        };
         if !valid_authority(registry) || !valid_repository(repository) {
-            return Err("invalid OCI registry or repository; userinfo, tags, queries, escapes and traversal are not accepted".into());
+            return Err("invalid OCI registry or repository; userinfo, queries, escapes and traversal are not accepted".into());
         }
         Ok(Self {
             source: source.into(),
             registry: registry.into(),
             repository: repository.into(),
-            digest: pinned.into(),
+            selector: selector.into(),
         })
     }
     pub fn as_str(&self) -> &str {
@@ -70,8 +78,14 @@ impl Reference {
     pub fn repository(&self) -> &str {
         &self.repository
     }
-    pub fn digest(&self) -> &str {
-        &self.digest
+    pub fn digest(&self) -> Option<&str> {
+        valid_digest(&self.selector).then_some(self.selector.as_str())
+    }
+    pub fn tag(&self) -> Option<&str> {
+        (!valid_digest(&self.selector)).then_some(self.selector.as_str())
+    }
+    pub fn selector(&self) -> &str {
+        &self.selector
     }
     fn uri(&self, kind: &str, id: &str) -> Result<Uri> {
         format!(
@@ -81,6 +95,18 @@ impl Reference {
         .parse()
         .map_err(|_| "cannot build OCI request".into())
     }
+}
+
+fn valid_tag(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 128
+        && value
+            .as_bytes()
+            .first()
+            .is_some_and(|b| b.is_ascii_alphanumeric() || *b == b'_')
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
 }
 
 fn valid_digest(value: &str) -> bool {
@@ -170,10 +196,13 @@ pub struct Options {
 #[derive(Clone, Debug, serde::Serialize)]
 pub struct Acquired {
     pub reference: String,
+    pub resolved_reference: String,
     pub manifest_digest: String,
     pub chart_digest: String,
     pub config_digest: String,
     pub chart_bytes: u64,
+    pub chart_filename: String,
+    pub provenance_path: Option<PathBuf>,
     /// Integrity only: the provenance signature is not verified by this module.
     pub provenance_digest: Option<String>,
 }
@@ -728,18 +757,21 @@ fn descriptor(value: &Value, media: &str, limit: usize) -> Result<Descriptor> {
     })
 }
 fn verify(bytes: &[u8], expected: &str, size: Option<usize>) -> Result<()> {
-    let actual = format!(
+    let actual = sha256(bytes);
+    if actual != expected || size.is_some_and(|size| bytes.len() != size) {
+        return Err("OCI content digest/size mismatch; no chart retained".into());
+    }
+    Ok(())
+}
+fn sha256(bytes: &[u8]) -> String {
+    format!(
         "sha256:{}",
         digest(&SHA256, bytes)
             .as_ref()
             .iter()
             .map(|b| format!("{b:02x}"))
             .collect::<String>()
-    );
-    if actual != expected || size.is_some_and(|size| bytes.len() != size) {
-        return Err("OCI content digest/size mismatch; no chart retained".into());
-    }
-    Ok(())
+    )
 }
 
 /// Acquire one immutable OCI manifest and its Helm chart. Caller owns the
@@ -775,12 +807,15 @@ async fn acquire_inner(
 ) -> Result<Acquired> {
     let bytes = fetcher
         .fetch(
-            reference.uri("manifests", &reference.digest)?,
+            reference.uri("manifests", reference.selector())?,
             MAX_MANIFEST,
             false,
         )
         .await?;
-    verify(&bytes, &reference.digest, None)?;
+    let manifest_digest = sha256(&bytes);
+    if let Some(pinned) = reference.digest() {
+        verify(&bytes, pinned, None)?;
+    }
     let manifest: Value = serde_json::from_slice(&bytes)
         .map_err(|_| "invalid OCI manifest JSON; remote content suppressed")?;
     if manifest["schemaVersion"] != 2
@@ -816,12 +851,12 @@ async fn acquire_inner(
         .fetch(reference.uri("blobs", &config.digest)?, config.size, true)
         .await?;
     verify(&config_bytes, &config.digest, Some(config.size))?;
-    if !serde_json::from_slice::<Value>(&config_bytes)
-        .map_err(|_| "invalid OCI Helm config JSON")?
-        .is_object()
-    {
+    let config_metadata: Value =
+        serde_json::from_slice(&config_bytes).map_err(|_| "invalid OCI Helm config JSON")?;
+    if !config_metadata.is_object() {
         return Err("OCI Helm config must be an object".into());
     }
+    let chart_filename = archive_filename(&config_metadata)?;
     let chart_bytes = fetcher
         .fetch(reference.uri("blobs", &chart.digest)?, chart.size, true)
         .await?;
@@ -829,6 +864,7 @@ async fn acquire_inner(
     if !chart_bytes.starts_with(&[0x1f, 0x8b]) {
         return Err("OCI Helm chart is not a gzip packaged chart".into());
     }
+    let mut provenance_bytes = None;
     if let Some(provenance) = &provenance {
         let bytes = fetcher
             .fetch(
@@ -838,9 +874,70 @@ async fn acquire_inner(
             )
             .await?;
         verify(&bytes, &provenance.digest, Some(provenance.size))?;
+        provenance_bytes = Some(bytes);
     }
     // Final synchronous create/sync/permission sealing has no await point.
     // Only remove a partial file after our create_new actually succeeded.
+    let provenance_path = if let Some(bytes) = provenance_bytes {
+        let mut adjacent = destination.as_os_str().to_os_string();
+        adjacent.push(".prov");
+        let adjacent = PathBuf::from(adjacent);
+        write_immutable(&adjacent, &bytes)?;
+        Some(adjacent)
+    } else {
+        None
+    };
+    if let Err(error) = write_immutable(destination, &chart_bytes) {
+        if let Some(path) = &provenance_path {
+            let _ = std::fs::remove_file(path);
+        }
+        return Err(error);
+    }
+    Ok(Acquired {
+        reference: reference.source.clone(),
+        resolved_reference: format!(
+            "oci://{}/{}@{manifest_digest}",
+            reference.registry, reference.repository
+        ),
+        manifest_digest,
+        chart_digest: chart.digest,
+        config_digest: config.digest,
+        chart_bytes: chart_bytes.len() as u64,
+        chart_filename,
+        provenance_path,
+        provenance_digest: provenance.map(|p| p.digest),
+    })
+}
+pub(crate) fn valid_archive_filename(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 240
+        && name.ends_with(".tgz")
+        && name
+            .as_bytes()
+            .first()
+            .is_some_and(u8::is_ascii_alphanumeric)
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"._-+".contains(&b))
+}
+fn archive_filename(metadata: &Value) -> Result<String> {
+    let name = metadata["name"]
+        .as_str()
+        .filter(|s| !s.is_empty() && s.len() <= 128)
+        .ok_or("OCI Helm config lacks a bounded chart name")?;
+    let version = metadata["version"]
+        .as_str()
+        .filter(|s| !s.is_empty() && s.len() <= 128)
+        .ok_or("OCI Helm config lacks a bounded chart version")?;
+    let filename = format!("{name}-{version}.tgz");
+    if !valid_archive_filename(&filename) {
+        return Err(
+            "OCI chart name/version cannot form a safe signature verification filename".into(),
+        );
+    }
+    Ok(filename)
+}
+fn write_immutable(destination: &Path, bytes: &[u8]) -> Result<()> {
     safety::checked_path(destination)?;
     let parent = destination
         .parent()
@@ -858,7 +955,7 @@ async fn acquire_inner(
         .map_err(|_| "cannot create OCI chart destination; refusing overwrite")?;
     let write = (|| {
         use std::io::Write;
-        file.write_all(&chart_bytes)
+        file.write_all(bytes)
             .map_err(|_| "cannot write downloaded OCI chart")?;
         #[cfg(unix)]
         {
@@ -874,14 +971,7 @@ async fn acquire_inner(
         let _ = std::fs::remove_file(destination);
         return Err(error);
     }
-    Ok(Acquired {
-        reference: reference.source.clone(),
-        manifest_digest: reference.digest.clone(),
-        chart_digest: chart.digest,
-        config_digest: config.digest,
-        chart_bytes: chart_bytes.len() as u64,
-        provenance_digest: provenance.map(|p| p.digest),
-    })
+    Ok(())
 }
 
 #[cfg(test)]
@@ -971,7 +1061,7 @@ mod tests {
         let mut bodies = BTreeMap::from([
             (
                 reference
-                    .uri("manifests", reference.digest())?
+                    .uri("manifests", reference.selector())?
                     .path()
                     .into(),
                 manifest,
@@ -991,8 +1081,7 @@ mod tests {
             .map_err(|_| "runtime".into())
     }
     #[test]
-    fn pinned_reference_has_one_canonical_scope_and_rejects_mutable_or_ambiguous_inputs()
-    -> Result<()> {
+    fn reference_has_one_canonical_scope_and_rejects_ambiguous_inputs() -> Result<()> {
         let digest = "a".repeat(64);
         for host in ["ghcr.io", "127.0.0.1:5443", "localhost:5443", "[::1]:5443"] {
             let source = format!("oci://{host}/team/chart@sha256:{digest}");
@@ -1026,6 +1115,89 @@ mod tests {
             Reference::parse(&format!("oci://ghcr.io/a/chart@sha256:{}", "A".repeat(64))).is_err()
         );
         Ok(())
+    }
+    #[test]
+    fn explicit_tags_are_bounded_and_unambiguous() -> Result<()> {
+        for tag in [
+            "latest",
+            "stable",
+            "1.2.3",
+            "1.2.3_build.4",
+            "_candidate",
+            "UPPER",
+        ] {
+            let source = format!("oci://registry.test/team/chart:{tag}");
+            let reference = Reference::parse(&source)?;
+            assert_eq!(reference.tag(), Some(tag));
+            assert_eq!(reference.digest(), None);
+            assert_eq!(reference.as_str(), source);
+        }
+        for bad in ["", ".hidden", "-bad", "a+b", "a/b", "a@b", "a?b", "a%3Ab"] {
+            assert!(Reference::parse(&format!("oci://registry.test/team/chart:{bad}")).is_err());
+        }
+        assert!(Reference::parse("oci://registry.test/team/chart").is_err());
+        assert!(
+            Reference::parse(&format!(
+                "oci://registry.test/team/chart:{}",
+                "a".repeat(129)
+            ))
+            .is_err()
+        );
+        Ok(())
+    }
+    #[test]
+    fn mutable_tag_is_requested_once_and_seals_a_digest_and_named_provenance() -> Result<()> {
+        runtime()?.block_on(async {
+            let root = Temp::new()?;
+            let destination = root.0.join("chart.tgz");
+            let (pinned, mut bodies) = fixture(true)?;
+            let manifest_path = pinned
+                .uri("manifests", pinned.selector())?
+                .path()
+                .to_owned();
+            let manifest = bodies.remove(&manifest_path).ok_or("fixture manifest")?;
+            let reference = Reference::parse("oci://registry.test/x/chart:stable")?;
+            let tag_path = reference.uri("manifests", "stable")?.path().to_owned();
+            let requests = Arc::new(AtomicUsize::new(0));
+            let recorded = requests.clone();
+            let mut transport = fetcher(client(move |request| {
+                if request.uri().path() == tag_path {
+                    let first = recorded.fetch_add(1, Ordering::Relaxed) == 0;
+                    return response(
+                        200,
+                        if first {
+                            manifest.clone()
+                        } else {
+                            b"TAG_MOVED_UNREVIEWED".to_vec()
+                        },
+                    );
+                }
+                response(
+                    200,
+                    bodies
+                        .get(request.uri().path())
+                        .cloned()
+                        .unwrap_or_default(),
+                )
+            }));
+            let acquired = acquire_inner(&reference, &destination, &mut transport).await?;
+            assert_eq!(requests.load(Ordering::Relaxed), 1);
+            assert_eq!(acquired.reference, reference.as_str());
+            assert_eq!(acquired.resolved_reference, pinned.as_str());
+            assert_eq!(acquired.manifest_digest, pinned.digest().ok_or("digest")?);
+            assert_eq!(acquired.chart_filename, "chart-1.0.0.tgz");
+            let provenance = acquired.provenance_path.ok_or("retained signature")?;
+            assert_eq!(
+                std::fs::read(&provenance).map_err(|_| "provenance")?,
+                b"SIGNATURE_NOT_AUTHENTICATED"
+            );
+            verify(
+                &safety::read_small(&provenance, MAX_PROVENANCE as u64)?,
+                acquired.provenance_digest.as_deref().ok_or("digest")?,
+                None,
+            )?;
+            Ok(())
+        })
     }
     #[test]
     fn immutable_acquisition_verifies_all_descriptors_and_never_overwrites() -> Result<()> {

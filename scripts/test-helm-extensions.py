@@ -170,7 +170,7 @@ spec:
     path.chmod(0o600)
 
 
-def run_target(target, args, temporary, image, report):
+def run_target(target, args, temporary, image, report, extra_checks=None):
     context = "docker-desktop" if target == "desktop" else "kborg-validation"
     expected = args.expected_desktop_server if target == "desktop" else args.expected_minikube_server
     prefix = [shutil.which("kubectl"), "--context", context, "--request-timeout=30s"]
@@ -218,7 +218,8 @@ def run_target(target, args, temporary, image, report):
                              roleRef={"apiGroup": "rbac.authorization.k8s.io", "kind": "Role", "name": "operator"})]
         kube("create", "-f", "-", data=json.dumps({"apiVersion": "v1", "kind": "List", "items": resources}))
         # Kubernetes RBAC cannot resourceName-limit create. This test credential
-        # receives only CRD create + exact-name get; no CRD update/delete/list.
+        # starts with CRD create + exact-name get. Completion checks add only
+        # exact-schema update/delete and the unique fixture API group inventory.
         cluster_resources = [
             {"apiVersion": "rbac.authorization.k8s.io/v1", "kind": "ClusterRole",
              "metadata": {"name": namespace, "labels": {"kborg.dev/run-id": run_id}},
@@ -229,6 +230,11 @@ def run_target(target, args, temporary, image, report):
              "subjects": [{"kind": "ServiceAccount", "name": "operator", "namespace": namespace}],
              "roleRef": {"apiGroup": "rbac.authorization.k8s.io", "kind": "ClusterRole", "name": namespace}},
         ]
+        if extra_checks:
+            cluster_resources[0]["rules"].extend([
+                {"apiGroups": ["apiextensions.k8s.io"], "resources": ["customresourcedefinitions"], "resourceNames": [crd_name], "verbs": ["update", "delete"]},
+                {"apiGroups": [group], "resources": ["widgets"], "verbs": ["get", "list", "delete"]},
+            ])
         for obj in cluster_resources:
             current = json.loads(kube("create", "-f", "-", "-o", "json", data=json.dumps(obj)))
             cluster_owned.append((obj["kind"].lower() + "s", obj["metadata"]["name"], current["metadata"]["uid"]))
@@ -250,16 +256,26 @@ def run_target(target, args, temporary, image, report):
 
         def operation(action, release, *parameters, flags=(), callback=None, success=True, confirm=None, text_required=()):
             record["phase"] = action + ":" + release
+            print(f"{target}: {action} {release} (expected {'success' if success else 'refusal/failure'})", flush=True)
             code, text, reviewed = lifecycle.terminal([*common, *flags, "helm", action, release, *parameters], environment,
                                                        confirm if confirm is not None else namespace + "/" + release,
                                                        callback, timeout=260)
-            require(canary not in text and base64.b64encode(canary.encode()).decode() not in text,
+            require(all(value not in text and base64.b64encode(value.encode()).decode() not in text
+                        for value in (canary, "KBORG_SIGNATURE_FIXTURE_CANARY")),
                     "Helm extension review exposed Secret contents")
             if (code == 0) != success:
                 # Application-generated error lines already suppress remote
                 # diagnostics. Never retain the surrounding review/transcript.
                 errors = re.findall(r"KBorg: ([^\r\n]{1,1200})", text)
                 record["failure_category"] = errors[-1] if errors else "operation outcome; inspect scoped fixture state"
+                summaries = re.findall(r"(Helm [a-z-]+ outcome UNKNOWN[^\r\n]{1,2000})", text)
+                if summaries:
+                    record["failure_summary"] = summaries[-1]
+                jobs = json.loads(kube("-n", namespace, "get", "jobs", "-o", "json"))["items"]
+                record["failure_job_phases"] = [{"name": job["metadata"]["name"], "active": job.get("status", {}).get("active", 0),
+                    "succeeded": job.get("status", {}).get("succeeded", 0), "failed": job.get("status", {}).get("failed", 0),
+                    "conditions": [{"type": c["type"], "status": c["status"], "reason": c.get("reason")} for c in job.get("status", {}).get("conditions", [])]}
+                    for job in jobs]
             require((code == 0) == success, f"{action} {release} unexpected result; private diagnostics suppressed")
             if success or confirm is not None or callback is not None:
                 require(reviewed, "extension action did not reach the expected terminal review")
@@ -270,6 +286,20 @@ def run_target(target, args, temporary, image, report):
         # OCI transport tests are inserted before extension writes. The fixture
         # exposes OCI manifest/config/chart bytes over verified loopback TLS.
         registry_module = module("extension_oci_fixture", "fixture-helm-oci.py")
+        def invoke_extra(crd_uid):
+            extra_checks(target=target, args=args, directory=directory, record=record,
+                         namespace=namespace, group=group, crd_name=crd_name, crd_uid=crd_uid,
+                         run_id=run_id, image=image, canary=canary, kube=kube,
+                         operation=operation, environment=environment, credential=credential,
+                         reader_context=reader_context, first=first, second=second, simple=simple,
+                         registry_module=registry_module)
+        if extra_checks and getattr(args, "completion_only", False):
+            operation("crds", "extended", first, flags=["--allow-helm-crds"])
+            crd_uid = json.loads(kube("get", "crd", crd_name, "-o", "json"))["metadata"]["uid"]
+            invoke_extra(crd_uid)
+            record["passed"], record["phase"], record["scope"] = True, "complete", "completion-only; original extension regression excluded"
+            print(target + ": completion acceptance passed", flush=True)
+            return
         record["registry_authentication"] = []
         for mode in ("basic", "bearer", "private-bearer", "token-redirect"):
             with registry_module.Registry(directory, {"simple": simple}, mode=mode) as registry:
@@ -369,7 +399,7 @@ def run_target(target, args, temporary, image, report):
             require(not kube("-n", namespace, "get", "configmap", "failed-hook-settings", "--ignore-not-found", "-o", "name").strip(), "failed pre-install hook created ordinary resources")
             operation("uninstall", "failed-hook", flags=extensions_flags)
             record["checks"].append("completed success hook deleted; failed Job BackoffLimitExceeded and completed Failed record; hook-failed cleanup; UNKNOWN with failed release; reviewed uninstall reconciles fixture")
-            if target == "desktop" and args.ui_screenshots:
+            if target == "desktop" and args.ui_screenshots and extra_checks is None:
                 record["phase"] = "live-extension-ui"
                 ui = module("extension_live_ui", "test-live-extensions-ui.py")
                 record["live_ui"] = ui.run(args.binary, args.helm, credential, reader_context, namespace,
@@ -380,6 +410,8 @@ def run_target(target, args, temporary, image, report):
                             "live UI hook did not complete")
                 require(not kube("-n", namespace, "get", "widgets." + group, "ui-extensions-widget", "--ignore-not-found", "-o", "name").strip(), "live UI uninstall left custom resource")
                 require(json.loads(kube("get", "crd", crd_name, "-o", "json"))["metadata"]["uid"] == crd_uid, "live UI removed/replaced retained schema")
+            if extra_checks:
+                invoke_extra(crd_uid)
             record["registry"] = registry.report()
         record["passed"], record["phase"] = True, "complete"
         print(target + ": OCI/hooks/CRDs acceptance passed", flush=True)
@@ -430,7 +462,7 @@ def run_target(target, args, temporary, image, report):
 
 
 
-def main():
+def main(extra_checks=None, extra_sources=(), configure_parser=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--target", choices=("desktop", "minikube", "both"), default="both")
     parser.add_argument("--expected-desktop-server")
@@ -439,6 +471,8 @@ def main():
     parser.add_argument("--helm", type=Path, default=PROJECT / ".local/platform-tools/helm")
     parser.add_argument("--ui-screenshots", type=Path)
     parser.add_argument("--output", type=Path, default=PROJECT / "test-results/helm-extensions-local.json")
+    if configure_parser:
+        configure_parser(parser)
     args = parser.parse_args()
     args.binary, args.helm = args.binary.resolve(strict=True), args.helm.resolve(strict=True)
     targets = ("desktop", "minikube") if args.target == "both" else (args.target,)
@@ -447,6 +481,7 @@ def main():
     require("@sha256:" in image and len(image.rsplit(":", 1)[1]) == 64, "fixture image must be digest-pinned")
     paths = sorted((PROJECT / "src").glob("*.rs")) + sorted((PROJECT / "tests").glob("*.rs"))
     paths += [PROJECT / name for name in ("Cargo.toml", "Cargo.lock", "scripts/test-helm-extensions.py", "scripts/fixture-helm-oci.py", "scripts/test-helm-lifecycle.py", "scripts/test-helm-logs-metrics.py")]
+    paths += [PROJECT / name for name in extra_sources]
     if args.ui_screenshots:
         paths += [PROJECT / "scripts/test-live-extensions-ui.py", PROJECT / "scripts/test-live-lifecycle-ui.py", PROJECT / "scripts/test-terminal.py"]
     hashes = {str(path.relative_to(PROJECT)): hashlib.sha256(path.read_bytes()).hexdigest() for path in paths}
@@ -461,7 +496,7 @@ def main():
             directory = Path(temporary).resolve()
             directory.chmod(0o700)
             for target in targets:
-                run_target(target, args, directory, image, report)
+                run_target(target, args, directory, image, report, extra_checks=extra_checks)
     finally:
         report["temporary_credentials_removed"] = directory is not None and not directory.exists()
         report["source_unchanged"] = all(hashlib.sha256((PROJECT / path).read_bytes()).hexdigest() == digest for path, digest in hashes.items())

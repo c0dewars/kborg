@@ -4,6 +4,7 @@
 Explicit local endpoints only. Uses namespace-scoped, short-lived credentials;
 never retains terminal output, kubeconfigs, Helm payloads or private keys.
 """
+import re
 import argparse
 import base64
 import errno
@@ -100,9 +101,18 @@ def terminal(argv, environment, confirmation, after_review=None, timeout=150):
                                 raise
                 if status is not None:
                     break
-            if status is None:
-                os.waitpid(pid,0)
+        # A macOS PTY writer can remain blocked while our master is open.
+        # Release the terminal before the final reap; never wait indefinitely.
         os.close(master)
+        if status is None:
+            reap_deadline=time.monotonic()+3
+            while time.monotonic()<reap_deadline:
+                waited,value=os.waitpid(pid,os.WNOHANG)
+                if waited:
+                    status=value
+                    break
+                time.sleep(.02)
+            require(status is not None,"terminal child did not exit after cancellation/kill and PTY closure")
 
 
 def chart(path, revision, image, canary, *, dynamic=False, replicas=1):
@@ -232,10 +242,17 @@ def run_target(target, args, temporary, image, report):
 
         def operation(storage, action, release, *parameters, confirm=None, callback=None, success=True):
             record["phase"] = storage + ":" + action
+            print(f"{target}: {storage} {action} {release} (expected {'success' if success else 'refusal/failure'})", flush=True)
             code, text, reviewed = terminal([*writes,"--helm-storage",storage,"helm",action,release,*parameters],environment,
                                              confirm if confirm is not None else namespace + "/" + release,callback)
             require(canary not in text and base64.b64encode(canary.encode()).decode() not in text,
                     "Helm terminal review exposed Secret contents")
+            if (code == 0) != success or ((success or confirm is not None or callback is not None) and not reviewed):
+                errors = re.findall(r"KBorg: ([^\r\n]{1,1200})", text)
+                record["failure_category"] = errors[-1] if errors else "expected review or operation outcome missing"
+                summaries = re.findall(r"(Helm [a-z-]+ outcome UNKNOWN[^\r\n]{1,2000})", text)
+                if summaries:
+                    record["failure_summary"] = summaries[-1]
             require((code == 0) == success, f"{storage} {action} unexpected result; private diagnostics suppressed")
             if success or confirm is not None or callback is not None:
                 require(reviewed,"lifecycle command did not reach the expected terminal review")

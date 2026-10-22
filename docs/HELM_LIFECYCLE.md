@@ -1,6 +1,6 @@
 # Helm lifecycle and workload logs
 
-KBorg can prepare and execute Helm install, upgrade, rollback and uninstall from
+KBorg can prepare and execute Helm install, upgrade, rollback, uninstall and stored release tests from
 its CLI or Helm view. Browsing remains native; lifecycle actions use an explicitly
 selected trusted **Helm 4.3.1** executable on macOS/Linux x86-64 or ARM64.
 They require `--write`, `--allow-helm`, and `--allow-helm-write` together. A strict
@@ -16,9 +16,11 @@ an `operator` profile; configuration never enables those capabilities by itself.
 ```
 
 Type `:helm`. The release table keeps Enter/r for history, adds `i` for install,
-`u` for upgrade and Ctrl-D for uninstall. In history, `r` rolls back to the selected
-revision. Forms capture the release, namespace, local chart or digest-pinned OCI source and optional values
-file. The `c` key and `:helm-crds` open a separate create-only schema review. Use the executable basename `helm`: native dry-run admission uses the `helm`
+`u` for upgrade, `t` for release tests and Ctrl-D for uninstall. In history, `r` rolls back to the selected
+revision. Forms capture the release, namespace, local chart or OCI tag/digest source and optional values
+file. The `c` key and `:helm-crds` open a separate create-only schema review. Explicit
+`:helm-crds-upgrade` and `:helm-crds-delete` handle schema changes with cluster-wide
+impact review. Use the executable basename `helm`: native dry-run admission uses the `helm`
 field manager, while upstream derives its manager from the executable basename.
 Renamed executables are outside this validated workflow. The executable is
 supplied when launching KBorg, not by chart data.
@@ -37,7 +39,7 @@ native operation families retain their own shorter approval lifetimes.
 
 ## CLI examples
 
-KBorg accepts a local `.tgz` or a digest-pinned OCI reference, with dependencies already bundled. OCI acquisition finishes and verifies every digest before review; execution uses a sealed local snapshot. The namespace must already exist. Hooks and create-only CRD bootstrap require separate opt-ins; see [HELM_EXTENSIONS.md](HELM_EXTENSIONS.md) for examples and boundaries.
+KBorg accepts a local `.tgz` or an OCI tag/digest reference, with dependencies already bundled. OCI acquisition finishes and verifies every digest before review; execution uses a sealed local snapshot. The namespace must already exist. Hooks/tests and schema operations require separate opt-ins; see [HELM_EXTENSIONS.md](HELM_EXTENSIONS.md) for examples and boundaries.
 
 ```sh
 kborg --context docker-desktop -n staging \
@@ -81,7 +83,7 @@ limited to 8 MiB compressed and 32 MiB expanded; reviews are limited to 512 KiB.
 Supported charts contain at most 128 affected ordinary namespaced resources.
 Explicit allowlisted families include core configuration/workload networking,
 apps workloads, batch workloads, autoscaling, disruption budgets and namespaced
-RBAC. The explicit extensions add reviewed hooks, a separate create-only CRD stage and schema-bound namespaced custom resources; see [HELM_EXTENSIONS.md](HELM_EXTENSIONS.md). Other cluster-scoped resources, system/cross-namespace targets, plugins, post-renderers, foreign-resource adoption and recognized GitOps-managed resources are rejected.
+RBAC. The explicit extensions add reviewed hooks, separate schema create/update/delete stages and schema-bound namespaced custom resources; see [HELM_EXTENSIONS.md](HELM_EXTENSIONS.md). Other cluster-scoped resources, system/cross-namespace targets, plugins, post-renderers, foreign-resource adoption and recognized GitOps-managed resources are rejected.
 
 Time/random/credential-generating functions, cluster lookups and dynamic template
 evaluation are rejected, as are unordered `keys`/`values` iteration and dynamic

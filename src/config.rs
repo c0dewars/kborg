@@ -197,6 +197,7 @@ mod tests {
             helm_values: None,
             helm_registry_ca: None,
             helm_registry_auth: None,
+            helm_keyring: None,
             helm_timeout_seconds: 300,
             log_seconds: crate::logs::DEFAULT_FOLLOW_SECONDS,
             log_read: crate::logs::ReadOptions::default(),

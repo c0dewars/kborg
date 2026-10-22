@@ -1,0 +1,8 @@
+{
+  "run_id": "35dc91698ab24b15a7cfb442c3c4756c",
+  "container": "kborg-completion-build-35dc91698ab2",
+  "volume": "kborg-completion-build-35dc91698ab2-scratch",
+  "container_removed": true,
+  "volume_removed": true,
+  "exit_code": 0
+}

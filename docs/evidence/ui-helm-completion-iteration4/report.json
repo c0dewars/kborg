@@ -1,0 +1,61 @@
+{
+  "passed": true,
+  "binary_sha256": "fc846bd3bac99709ee7fc400d3de02e4585b419e6c60ba7af39b7073ff2d01ef",
+  "terminal_restored": true,
+  "screens": [
+    {
+      "name": "resources",
+      "path": "/Users/brunogarcia/Desktop/HyperMac/repos/kborg/docs/evidence/ui-helm-completion-iteration4/resources.png",
+      "width": 120,
+      "height": 34
+    },
+    {
+      "name": "helm-releases",
+      "path": "/Users/brunogarcia/Desktop/HyperMac/repos/kborg/docs/evidence/ui-helm-completion-iteration4/helm-releases.png",
+      "width": 120,
+      "height": 34
+    },
+    {
+      "name": "helm-install-form",
+      "path": "/Users/brunogarcia/Desktop/HyperMac/repos/kborg/docs/evidence/ui-helm-completion-iteration4/helm-install-form.png",
+      "width": 120,
+      "height": 34
+    },
+    {
+      "name": "helm-review-overview",
+      "path": "/Users/brunogarcia/Desktop/HyperMac/repos/kborg/docs/evidence/ui-helm-completion-iteration4/helm-review-overview.png",
+      "width": 120,
+      "height": 34
+    },
+    {
+      "name": "helm-test-form",
+      "path": "/Users/brunogarcia/Desktop/HyperMac/repos/kborg/docs/evidence/ui-helm-completion-iteration4/helm-test-form.png",
+      "width": 120,
+      "height": 34
+    },
+    {
+      "name": "crd-delete-form",
+      "path": "/Users/brunogarcia/Desktop/HyperMac/repos/kborg/docs/evidence/ui-helm-completion-iteration4/crd-delete-form.png",
+      "width": 120,
+      "height": 34
+    },
+    {
+      "name": "crd-delete-narrow",
+      "path": "/Users/brunogarcia/Desktop/HyperMac/repos/kborg/docs/evidence/ui-helm-completion-iteration4/crd-delete-narrow.png",
+      "width": 48,
+      "height": 12
+    }
+  ],
+  "invocation_policy": {
+    "mode": "offline DEMO; no registry/tool/cluster writes",
+    "additional_flags": [
+      "--helm-keyring",
+      "[generated public fixture]"
+    ],
+    "keyring": "generated public acceptance fixture trusted.gpg; no key material retained in report",
+    "assertions": [
+      "Install with configured keyring: signature REQUIRED",
+      "Test with the same configured keyring: signature n/a (stored release)"
+    ]
+  }
+}

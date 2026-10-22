@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import gzip
+import io
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 from pathlib import Path
@@ -19,11 +21,13 @@ import shutil
 import ssl
 import subprocess
 import threading
+import tarfile
 from urllib.parse import parse_qs, urlsplit
 
 
 CONFIG = "application/vnd.cncf.helm.config.v1+json"
 CHART = "application/vnd.cncf.helm.chart.content.v1.tar+gzip"
+PROVENANCE = "application/vnd.cncf.helm.chart.provenance.v1.prov"
 MANIFEST = "application/vnd.oci.image.manifest.v1+json"
 
 
@@ -37,10 +41,38 @@ def write_private(path, data):
         stream.write(data)
 
 
+def metadata(chart):
+    with gzip.GzipFile(fileobj=io.BytesIO(chart)) as stream:
+        raw = stream.read(32 * 1024 * 1024 + 1)
+    if len(raw) > 32 * 1024 * 1024:
+        raise ValueError("fixture chart expands beyond 32 MiB")
+    found = []
+    with tarfile.open(fileobj=io.BytesIO(raw), mode="r:") as archive:
+        for index, member in enumerate(archive):
+            if index >= 4096:
+                raise ValueError("fixture chart has too many entries")
+            if re.fullmatch(r"[^/]+/Chart.yaml", member.name) and member.isfile():
+                if member.size > 65536:
+                    raise ValueError("fixture chart metadata is too large")
+                text = archive.extractfile(member).read().decode("utf-8")
+                fields = {}
+                for field in ("name", "version"):
+                    # Fixture metadata is deliberately plain scalar YAML, never
+                    # an arbitrary production YAML parser or chart renderer.
+                    matches = re.findall(r"(?m)^" + field + r":\s*[\"']?([A-Za-z0-9_.+\-]+)[\"']?\s*$", text)
+                    if len(matches) != 1:
+                        raise ValueError("fixture chart needs simple unique name/version metadata")
+                    fields[field] = matches[0]
+                found.append(fields)
+    if len(found) != 1:
+        raise ValueError("fixture chart needs one root Chart.yaml")
+    return found[0]
+
+
 class Registry:
     MODES = {"anonymous", "basic", "bearer", "private-bearer", "token-redirect"}
 
-    def __init__(self, root: Path, charts: dict[str, Path], mode="anonymous"):
+    def __init__(self, root: Path, charts: dict[str, Path], mode="anonymous", provenance=None):
         if mode not in self.MODES or not charts:
             raise ValueError("invalid OCI fixture mode or empty chart set")
         self.mode = mode
@@ -48,7 +80,10 @@ class Registry:
         self.root.mkdir(mode=0o700)
         self.ca_file = self.root / "ca.pem"
         self.auth_file = None
-        self.refs, self.tampered_refs = {}, {}
+        self.refs, self.tampered_refs, self.tag_refs = {}, {}, {}
+        self._contents = {}
+        self._tag_moves = 0
+        self._provenance_layers = 0
         self._routes, self._thread, self._server = {}, None, None
         self._lock = threading.Lock()
         self._counts = {key: 0 for key in ("manifest", "blob", "token", "redirect_capture", "denied", "unexpected_authorization")}
@@ -126,19 +161,33 @@ class Registry:
                     chart = stream.read(8 * 1024 * 1024 + 1)
                 if len(chart) > 8 * 1024 * 1024 or not chart.startswith(b"\x1f\x8b"):
                     raise ValueError("fixture chart must be a bounded packaged gzip chart")
-                config_bytes = json.dumps({"name": name, "version": "0.1.0"}, separators=(",", ":")).encode()
+                config_bytes = json.dumps(metadata(chart), separators=(",", ":")).encode()
+                blobs = [(CONFIG, config_bytes), (CHART, chart)]
+                candidate = Path(str(path) + ".prov") if provenance is None else provenance.get(name)
+                if candidate is not None and Path(candidate).is_file():
+                    with Path(candidate).open("rb") as stream:
+                        prov = stream.read(1024 * 1024 + 1)
+                    if not prov or len(prov) > 1024 * 1024:
+                        raise ValueError("fixture provenance must be bounded and nonempty")
+                    blobs.append((PROVENANCE, prov))
+                    self._provenance_layers += 1
                 manifest = json.dumps({"schemaVersion": 2, "mediaType": MANIFEST,
                                        "config": {"mediaType": CONFIG, "digest": digest(config_bytes), "size": len(config_bytes)},
-                                       "layers": [{"mediaType": CHART, "digest": digest(chart), "size": len(chart)}]},
+                                       "layers": [{"mediaType": media, "digest": digest(data), "size": len(data)} for media, data in blobs[1:]]},
                                       separators=(",", ":")).encode()
+                self._contents[name] = (manifest, blobs)
                 for suffix, tampered in ((name, False), (name + "-tampered", True)):
                     repository = "fixtures/" + suffix
                     prefix = "/v2/" + repository
                     self._routes[prefix + "/manifests/" + digest(manifest)] = (MANIFEST, manifest, repository)
-                    self._routes[prefix + "/blobs/" + digest(config_bytes)] = (CONFIG, config_bytes, repository)
-                    self._routes[prefix + "/blobs/" + digest(chart)] = (CHART, chart[:-1] + bytes([chart[-1] ^ 1]) if tampered else chart, repository)
+                    for media, data in blobs:
+                        payload = data[:-1] + bytes([data[-1] ^ 1]) if tampered and media == CHART else data
+                        self._routes[prefix + "/blobs/" + digest(data)] = (media, payload, repository)
                     target = self.tampered_refs if tampered else self.refs
                     target[name] = "oci://" + self.registry + "/" + repository + "@" + digest(manifest)
+                    if not tampered:
+                        self._routes[prefix + "/manifests/stable"] = (MANIFEST, manifest, repository)
+                        self.tag_refs[name] = "oci://" + self.registry + "/" + repository + ":stable"
             if mode in {"basic", "private-bearer", "token-redirect"}:
                 self.auth_file = self.root / "registry-auth.json"
                 write_private(self.auth_file, json.dumps({"registry": self.registry, "username": "fixture-reader", "password": self._password}).encode())
@@ -167,8 +216,22 @@ class Registry:
         with self._lock:
             return {"mode": self.mode, "tls": True, "loopback_only": True, "digest_pinned": True,
                     "chart_count": self._chart_count, "tamper_routes": len(self.tampered_refs),
+                    "tag_refs": len(self.tag_refs), "tag_moves": self._tag_moves, "provenance_layers": self._provenance_layers,
                     "requests": dict(self._counts), "authorization_kinds": dict(self._auth_counts),
                     "protocol_fixture_not_upstream_registry": True}
+
+    def move_tag(self, name, target_name):
+        if name not in self._contents or target_name not in self._contents:
+            raise ValueError("unknown fixture chart tag movement")
+        manifest, blobs = self._contents[target_name]
+        repository = "fixtures/" + name
+        prefix = "/v2/" + repository
+        with self._lock:
+            for media, data in blobs:
+                self._routes[prefix + "/blobs/" + digest(data)] = (media, data, repository)
+            self._routes[prefix + "/manifests/" + digest(manifest)] = (MANIFEST, manifest, repository)
+            self._routes[prefix + "/manifests/stable"] = (MANIFEST, manifest, repository)
+            self._tag_moves += 1
 
     def _count(self, key):
         with self._lock:
@@ -207,7 +270,8 @@ class Registry:
             if self.mode == "token-redirect":
                 return self._reply(handler, 307, headers={"Location": self.url + "/capture-private"})
             return self._reply(handler, 200, json.dumps({"token": self._token}).encode(), {"Content-Type": "application/json"})
-        route = self._routes.get(uri.path)
+        with self._lock:
+            route = self._routes.get(uri.path)
         if route is None or uri.query:
             return self._reply(handler, 404)
         media, data, repository = route

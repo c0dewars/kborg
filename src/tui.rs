@@ -1065,6 +1065,12 @@ impl App {
             ("logs",[selector])=>self.request_log_group(self.namespace.clone(),crate::logs::PodLogSelection::Selector(selector.clone()),false,true),
             ("helm-install",[])=>self.begin_helm_form(helm_ui::Intent::Install),
             ("helm-crds",[])=>self.begin_helm_form(helm_ui::Intent::InstallCrds),
+            ("helm-crds-upgrade",[])=>self.begin_helm_form(helm_ui::Intent::UpgradeCrds),
+            ("helm-crds-delete",[])=>self.begin_helm_form(helm_ui::Intent::DeleteCrds),
+            ("helm-test",[])=>{
+                let selected=match &self.modal {Modal::Helm(table)=>table.current(),_=>self.subviews.iter().rev().find_map(|modal|if let Modal::Helm(table)=modal{table.current()}else{None})};
+                if let Some(release)=selected {self.begin_helm_form(helm_ui::Intent::Test(release));}else{self.status="Select a release in :helm before :helm-test or press t in its table.".into();}
+            }
             ("helm",[])=>self.request_helm(helm_ui::Request::List(self.namespace.clone(),self.options.helm_storage),false),
             ("helm",[ns]) if ns=="all" || ns=="*" || safety::valid_id(ns)=>self.request_helm(helm_ui::Request::List(if ns=="all"{"*".into()}else{ns.clone()},self.options.helm_storage),false),
             ("history",[name]) if crate::helm::valid_release_name(name)=>self.request_helm(helm_ui::Request::NamedHistory(self.namespace.clone(),name.clone(),self.options.helm_storage),false),
@@ -2172,17 +2178,32 @@ impl App {
             self.status="Choose the trusted native Helm executable explicitly with --helm-tool ABSOLUTE_PATH.".into();
             return;
         }
-        let (namespace, storage) = match &self.modal {
-            Modal::Helm(table) => (
-                table.namespace.clone(),
-                table.storage.or(self.options.helm_storage),
-            ),
-            _ => (self.namespace.clone(), self.options.helm_storage),
+        let table = match &self.modal {
+            Modal::Helm(table) => Some(table.as_ref()),
+            _ => self.subviews.iter().rev().find_map(|modal| {
+                if let Modal::Helm(table) = modal {
+                    Some(table.as_ref())
+                } else {
+                    None
+                }
+            }),
         };
-        if matches!(intent, helm_ui::Intent::InstallCrds)
-            && !self.options.connection.allow_helm_crds
-        {
-            self.status="Chart CRD installation requires explicit --allow-helm-crds and a separate complete review.".into();
+        let (namespace, storage) = table
+            .map(|table| {
+                (
+                    table.namespace.clone(),
+                    table.storage.or(self.options.helm_storage),
+                )
+            })
+            .unwrap_or_else(|| (self.namespace.clone(), self.options.helm_storage));
+        if intent.is_crd() && !self.options.connection.allow_helm_crds {
+            self.status="Chart CRD actions require explicit --allow-helm-crds and a separate complete review.".into();
+            return;
+        }
+        if matches!(intent, helm_ui::Intent::Test(_)) && !self.options.connection.allow_helm_hooks {
+            self.status =
+                "Helm tests require explicit --allow-helm-hooks and a complete operation review."
+                    .into();
             return;
         }
         let mut form = helm_ui::Form::new(
@@ -2200,6 +2221,7 @@ impl App {
                 auth_file: self.options.helm_registry_auth.clone(),
             },
         );
+        form.set_keyring(self.options.helm_keyring.clone());
         self.status = "Helm draft; no execution requested.".into();
         self.sticky_status = false;
         let current = std::mem::replace(&mut self.modal, Modal::None);
@@ -2407,7 +2429,7 @@ impl App {
                 KeyCode::Enter => {
                     let (width, height) = terminal::size().unwrap_or((80, 24));
                     if self.busy || !review.can_execute(width, height, self.epoch) {
-                        self.status="Read every review line (PgUp/PgDown), keep this session, and type the exact namespace/release before execution.".into();
+                        self.status="Read every review line (PgUp/PgDown), keep this session, and type the exact confirmation shown below.".into();
                         self.modal = Modal::HelmReview(review);
                     } else {
                         let confirmation = review.prepared.confirmation();
@@ -4210,7 +4232,10 @@ fn resource_label(kind: &Kind) -> String {
         }
     }
 }
-const TUI_HELP: &str = "NAVIGATE LIKE K9S\n  :pod :pods :po           Singular, plural or discovered short name\n  :pod NAMESPACE          Resource in namespace; all means all namespaces\n  :pod /api|web           Resource plus regex filter\n  :pod app=api,tier=web    Server-side label selector\n  :pod @CONTEXT           Switch context; context names retain their case\n  :ctx / :ctx NAME        Context picker (Pod view) / direct switch (same view)\n  :ns / :ns NAME          Namespace picker / direct switch (Pod view)\n  Ctrl-A / :aliases       Resource alias picker; Enter navigates\n  :pulses / :pu           Read-only cluster health snapshot\n  :xray po|svc|dp [NS]    Ownership and service relationship snapshot\n  :screendump / :sd       Browse saved redacted resource snapshots\n  :can u:NAME             Read-only RBAC subject view\n  :dir PATH               Browse local YAML directory; no apply\n  :helm [NAMESPACE]       Native release metadata (--allow-helm)\n  :history RELEASE        Selected release revision history\n  :q :q! :qa :Q :quit     Quit (in-flight mutations must finish)\n\nCOMMAND PROMPT\n  : / Tab                 Open prompt; Tab completes; Shift-Tab reverses\n  Up / Down               Recall in-session command history\n  Left Right Home End     Edit at cursor; Ctrl-U clears\n  Enter / Esc             Run command / cancel without changing view\n  [ / ] / -               Previous / next / last view\n  Esc                     Close view or return to previous resource\n\nFILTER\n  /PATTERN                Case-insensitive regex over namespace/name/status\n  /!PATTERN               Inverse regex\n  /-f PATTERN             Fuzzy subsequence match\n  /-l LABEL_SELECTOR      Apply server-side label selector on Enter\n  Enter / Esc             Keep / restore previous filter and selected UID\n\nRESOURCE TABLE\n  j k / arrows            Move; PgUp PgDown Home End page\n  Enter                   Drill into containers, related Pods or namespace\n  d                       Describe selected object (redacted overview)\n  y / v                   View redacted YAML; J views JSON\n  c / n                   Copy name / namespace via terminal OSC52 clipboard\n  w / 0                   Warp to selected namespace / all namespaces\n  N / A / S / R           Sort by name / age / status / readiness\n  C / M                   Sort Pods/Nodes by CPU / memory, highest first\n  CPU/MEM snapshots refresh every 15s while the table is visible; - means\n  unknown, never zero. ~ indicates Metrics API omitted UID; creation checked.\n  Table CPU/MEM labels are rounded; d or m shows exact measured quantities.\n  Space / Ctrl-Space      Mark / mark range (visual only; no bulk mutations)\n  Ctrl-Backslash          Clear marks\n  Ctrl-S                  Save current visible redacted resource snapshot\n  Ctrl-R / :discover      Refresh / API discovery; r restarts workloads\n  l / p                   Follow logs / previous logs (--allow-logs)\n  Pod s / a / f / F       Shell / attach / forwards / new forward\n  Workload s / r          Scale Deployment-StatefulSet / reviewed restart\n  e                       Controlled workload container editor\n  Ctrl-D                  Reviewed deletion; Ctrl-K force kill disabled\n  o                       Show selected Pod's Node\n\nHELM AND LOGS\n  Helm Enter / r          Release revision history\n  History Enter / v       Explicit selected revision stored values\n  Helm i / u / c          Install / upgrade / separately install chart CRDs\n  History r / Ctrl-D      Rollback selected revision / uninstall current release\n  Helm lifecycle needs --write --allow-helm --allow-helm-write and --helm-tool.\n  Sources: local .tgz or exact oci://HOST/repo/chart@sha256:<64hex>.\n  Hooks/CRDs require --allow-helm-hooks / --allow-helm-crds; default OFF.\n  :helm-crds prepares create-only Namespaced CRDs, retained on uninstall.\n  Every review line must be painted before exact namespace/release approval.\n  Helm d / m / y          Metadata / resource identities / metadata YAML\n  Helm Ctrl-R / /         Refresh / filter; Esc returns to previous view\n  Log a                   Toggle all ordinary containers / preferred container\n  Workload l / p          Fixed captured Pod membership / previous logs\n  :logs LABEL_SELECTOR    Explicit namespace-scoped multi-Pod log capture\n  Group reloads keep the same Pod UIDs; close and reopen to capture new Pods.\n  Log 0..6                Tail / head / last 1m,5m,15m,30m,1h\n  Log s w t f             Autoscroll / wrap / timestamps / fullscreen\n  Pod l honors the default-container annotation, otherwise merges multiple\n  ordinary containers. Each merged line carries a namespace/Pod/container.\n\nKBORG COMMANDS\n  :actions                Discover actions with capability reasons\n  :scale :image :restart  Explicit reviewed workload operations\n  :metrics [resources]    Metrics / opt into requests-limit comparisons\n  :overview               Live overview of up to four explicit contexts\n  :themes                 Theme preview and custom palette creation\n\nLIMITS AND SAFETY\n  Context, namespace and mode remain visible; DEMO is sample data.\n  STALE and TRUNCATED indicate incomplete data. Regex uses bounded Rust regex\n  syntax; look-around and backreferences are unavailable. Secrets excluded.\n  e edits only ordinary-container image and optional CPU/memory budget on\n  Deployments, StatefulSets, DaemonSets and CronJobs, with captured UID, fresh\n  server dry-run and full review. Generic YAML editing/apply is unavailable.\n  Transfer and node cordon/uncordon/drain/shell,\n  benchmarks and external scans have explicit unavailable messages.\n  Helm release reads need --allow-helm. Values are stored overrides with\n  known fields redacted; custom keys can remain confidential. Complete\n  review is mandatory for lifecycle changes. Raw storage, chart files and notes are excluded.\n  Visual marks never authorize bulk writes. Every mutation requires --write\n  plus one-use approval; shell/attach/forward need separate capabilities.";
+const TUI_HELP: &str = "NAVIGATE LIKE K9S\n  :pod :pods :po           Singular, plural or discovered short name\n  :pod NAMESPACE          Resource in namespace; all means all namespaces\n  :pod /api|web           Resource plus regex filter\n  :pod app=api,tier=web    Server-side label selector\n  :pod @CONTEXT           Switch context; context names retain their case\n  :ctx / :ctx NAME        Context picker (Pod view) / direct switch (same view)\n  :ns / :ns NAME          Namespace picker / direct switch (Pod view)\n  Ctrl-A / :aliases       Resource alias picker; Enter navigates\n  :pulses / :pu           Read-only cluster health snapshot\n  :xray po|svc|dp [NS]    Ownership and service relationship snapshot\n  :screendump / :sd       Browse saved redacted resource snapshots\n  :can u:NAME             Read-only RBAC subject view\n  :dir PATH               Browse local YAML directory; no apply\n  :helm [NAMESPACE]       Native release metadata (--allow-helm)\n  :history RELEASE        Selected release revision history\n  :q :q! :qa :Q :quit     Quit (in-flight mutations must finish)\n\nCOMMAND PROMPT\n  : / Tab                 Open prompt; Tab completes; Shift-Tab reverses\n  Up / Down               Recall in-session command history\n  Left Right Home End     Edit at cursor; Ctrl-U clears\n  Enter / Esc             Run command / cancel without changing view\n  [ / ] / -               Previous / next / last view\n  Esc                     Close view or return to previous resource\n\nFILTER\n  /PATTERN                Case-insensitive regex over namespace/name/status\n  /!PATTERN               Inverse regex\n  /-f PATTERN             Fuzzy subsequence match\n  /-l LABEL_SELECTOR      Apply server-side label selector on Enter\n  Enter / Esc             Keep / restore previous filter and selected UID\n\nRESOURCE TABLE\n  j k / arrows            Move; PgUp PgDown Home End page\n  Enter                   Drill into containers, related Pods or namespace\n  d                       Describe selected object (redacted overview)\n  y / v                   View redacted YAML; J views JSON\n  c / n                   Copy name / namespace via terminal OSC52 clipboard\n  w / 0                   Warp to selected namespace / all namespaces\n  N / A / S / R           Sort by name / age / status / readiness\n  C / M                   Sort Pods/Nodes by CPU / memory, highest first\n  CPU/MEM snapshots refresh every 15s while the table is visible; - means\n  unknown, never zero. ~ indicates Metrics API omitted UID; creation checked.\n  Table CPU/MEM labels are rounded; d or m shows exact measured quantities.\n  Space / Ctrl-Space      Mark / mark range (visual only; no bulk mutations)\n  Ctrl-Backslash          Clear marks\n  Ctrl-S                  Save current visible redacted resource snapshot\n  Ctrl-R / :discover      Refresh / API discovery; r restarts workloads\n  l / p                   Follow logs / previous logs (--allow-logs)\n  Pod s / a / f / F       Shell / attach / forwards / new forward\n  Workload s / r          Scale Deployment-StatefulSet / reviewed restart\n  e                       Controlled workload container editor\n  Ctrl-D                  Reviewed deletion; Ctrl-K force kill disabled\n  o                       Show selected Pod's Node\n\nHELM AND LOGS\n  Helm Enter / r          Release revision history\n  History Enter / v       Explicit selected revision stored values\n  Helm i / u / t / c      Install / upgrade / test / separately install chart CRDs\n  History r / Ctrl-D      Rollback selected revision / uninstall current release\n  Helm lifecycle needs --write --allow-helm --allow-helm-write and --helm-tool.\n  Sources: local .tgz or explicit OCI :TAG / @sha256:DIGEST.
+  --helm-keyring requires native Helm provenance verification during prepare.\n  Hooks/CRDs require --allow-helm-hooks / --allow-helm-crds; default OFF.\n  :helm-crds prepares create-only Namespaced CRDs, retained on uninstall.
+  :helm-test runs stored tests; :helm-crds-upgrade reviews schema changes.
+  :helm-crds-delete is explicit, checks live instances and needs stronger approval.\n  Every review line must be painted before exact namespace/release approval.\n  Helm d / m / y          Metadata / resource identities / metadata YAML\n  Helm Ctrl-R / /         Refresh / filter; Esc returns to previous view\n  Log a                   Toggle all ordinary containers / preferred container\n  Workload l / p          Fixed captured Pod membership / previous logs\n  :logs LABEL_SELECTOR    Explicit namespace-scoped multi-Pod log capture\n  Group reloads keep the same Pod UIDs; close and reopen to capture new Pods.\n  Log 0..6                Tail / head / last 1m,5m,15m,30m,1h\n  Log s w t f             Autoscroll / wrap / timestamps / fullscreen\n  Pod l honors the default-container annotation, otherwise merges multiple\n  ordinary containers. Each merged line carries a namespace/Pod/container.\n\nKBORG COMMANDS\n  :actions                Discover actions with capability reasons\n  :scale :image :restart  Explicit reviewed workload operations\n  :metrics [resources]    Metrics / opt into requests-limit comparisons\n  :overview               Live overview of up to four explicit contexts\n  :themes                 Theme preview and custom palette creation\n\nLIMITS AND SAFETY\n  Context, namespace and mode remain visible; DEMO is sample data.\n  STALE and TRUNCATED indicate incomplete data. Regex uses bounded Rust regex\n  syntax; look-around and backreferences are unavailable. Secrets excluded.\n  e edits only ordinary-container image and optional CPU/memory budget on\n  Deployments, StatefulSets, DaemonSets and CronJobs, with captured UID, fresh\n  server dry-run and full review. Generic YAML editing/apply is unavailable.\n  Transfer and node cordon/uncordon/drain/shell,\n  benchmarks and external scans have explicit unavailable messages.\n  Helm release reads need --allow-helm. Values are stored overrides with\n  known fields redacted; custom keys can remain confidential. Complete\n  review is mandatory for lifecycle changes. Raw storage, chart files and notes are excluded.\n  Visual marks never authorize bulk writes. Every mutation requires --write\n  plus one-use approval; shell/attach/forward need separate capabilities.";
 
 #[derive(Clone, Copy, Debug)]
 struct Rect {
@@ -4384,6 +4409,28 @@ fn identity_line(context: &str, namespace: &str, server: &str, width: usize) -> 
     }
     line
 }
+fn blend(a: themes::Rgb, b: themes::Rgb, percent: u16) -> themes::Rgb {
+    let channel =
+        |a: u8, b: u8| ((u16::from(a) * (100 - percent) + u16::from(b) * percent) / 100) as u8;
+    themes::Rgb(channel(a.0, b.0), channel(a.1, b.1), channel(a.2, b.2))
+}
+fn helm_heading(line: &str) -> bool {
+    let text = line.trim_start();
+    [
+        "TARGET  ",
+        "POLICY  ",
+        "SOURCE  ",
+        "DETAILS",
+        "OPERATION",
+        "CONNECTION",
+        "CHANGE PLAN",
+        "APPROVAL",
+        "FULL REVIEW",
+    ]
+    .iter()
+    .any(|prefix| text.starts_with(prefix))
+        || (!text.is_empty() && text.chars().all(|c| !c.is_ascii_lowercase()))
+}
 fn row(
     out: &mut impl Write,
     y: u16,
@@ -4464,6 +4511,57 @@ fn panel(
         bg,
     )
 }
+fn ui_color(app: &App, role: &str) -> Color {
+    if app.options.color && !app.theme.terminal {
+        app.theme.get(role).color()
+    } else {
+        Color::Reset
+    }
+}
+fn render_helm_review_footer(
+    out: &mut impl Write,
+    review: &helm_ui::Review,
+    w: u16,
+    h: u16,
+    colors: [Color; 4],
+) -> io::Result<()> {
+    let [warning, accent, success, bg] = colors;
+    let width = usize::from(w.saturating_sub(2));
+    let remaining = review.remaining(width);
+    let (painted, total) = review.progress(width);
+    let text = format!(
+        "CONFIRM {} > {}_",
+        review.prepared.confirmation(),
+        review.typed
+    );
+    let chars = text.chars().collect::<Vec<_>>();
+    let start = chars.len().saturating_sub(usize::from(w));
+    row(
+        out,
+        h - 2,
+        w,
+        &chars.into_iter().skip(start).collect::<String>(),
+        warning,
+        bg,
+    )?;
+    let progress = if w < 40 {
+        format!("{remaining} unread | Enter run | Esc")
+    } else if w < 80 {
+        format!("{remaining} unread | PgUp/Dn review | Enter run | Esc")
+    } else {
+        format!(
+            " {remaining} unread  |  {painted}/{total} displayed  |  [PgUp/PgDn] review  [Enter] execute  [Esc] cancel"
+        )
+    };
+    row(
+        out,
+        h - 1,
+        w,
+        &progress,
+        if remaining == 0 { success } else { accent },
+        bg,
+    )
+}
 fn draw(app: &mut App) -> Result<()> {
     let (w, h) = terminal::size().map_err(|_| "cannot read terminal size")?;
     let mut frame = Vec::new();
@@ -4472,11 +4570,32 @@ fn draw(app: &mut App) -> Result<()> {
     out.write_all(&frame)
         .and_then(|_| out.flush())
         .map_err(|_| "draw failed")?;
-    if w >= 28
-        && h >= 10
-        && let Modal::HelmReview(review) = &mut app.modal
-    {
-        review.mark_drawn(usize::from(w - 2), usize::from(h - 8));
+    if w >= 28 && h >= 10 {
+        let changed = if let Modal::HelmReview(review) = &mut app.modal {
+            let before = review.remaining(usize::from(w - 2));
+            review.mark_drawn(usize::from(w - 2), usize::from(h - 8));
+            before != review.remaining(usize::from(w - 2))
+        } else {
+            false
+        };
+        if changed && let Modal::HelmReview(review) = &app.modal {
+            // Content has already been successfully written and flushed. Only
+            // now acknowledge those lines and repaint the small progress footer.
+            render_helm_review_footer(
+                &mut out,
+                review,
+                w,
+                h,
+                [
+                    ui_color(app, "warning"),
+                    ui_color(app, "accent"),
+                    ui_color(app, "success"),
+                    ui_color(app, "background"),
+                ],
+            )
+            .and_then(|_| out.flush())
+            .map_err(|_| "draw failed")?;
+        }
     }
     Ok(())
 }
@@ -4498,7 +4617,7 @@ fn modal_rect(modal: &Modal, width: u16, height: u16) -> Rect {
             | Modal::HelmForm(..)
     );
     let modal_width = if compact && width >= 80 {
-        width.saturating_sub(10).min(84)
+        width.saturating_sub(12).min(100)
     } else {
         width
     };
@@ -4508,7 +4627,7 @@ fn modal_rect(modal: &Modal, width: u16, height: u16) -> Rect {
         Modal::Resources(..) => 10,
         Modal::Editor(..) => 13,
         Modal::ForwardForm(..) => 9,
-        Modal::HelmForm(form) => (form.fields.len() as u16).saturating_add(6),
+        Modal::HelmForm(form) => (form.fields.len() as u16).saturating_add(10),
         Modal::EditContainers(_, _, _, _, values, _) => (values.len() as u16).saturating_add(3),
         Modal::Scale(..) => 6,
         Modal::Picker(_, items, _) | Modal::SessionContainers(_, _, _, items, _, _) => {
@@ -4641,6 +4760,18 @@ fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
     };
     let bg = color("background");
     let fg = color("text");
+    // Surfaces are derived from the selected palette, so every theme keeps its
+    // identity and existing terminal-depth/NO_COLOR handling remains central.
+    let surface = if app.options.color && !t.terminal {
+        blend(t.get("background"), t.get("text"), 8).color()
+    } else {
+        Color::Reset
+    };
+    let raised = if app.options.color && !t.terminal {
+        blend(t.get("background"), t.get("text"), 13).color()
+    } else {
+        Color::Reset
+    };
     if w < 28 || h < 10 {
         for y in 0..h {
             row(out, y, w, "", fg, bg).map_err(|_| "draw failed")?;
@@ -4659,41 +4790,51 @@ fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
     } else {
         "PRODUCTION READ ONLY"
     };
-    let header = if w >= 64 {
-        format!(" KBORG  /  {mode}")
-    } else {
-        format!("KBorg | {mode}")
-    };
-    row(
+    row(out, 0, w, "", fg, surface).map_err(|_| "draw failed")?;
+    let brand = if w >= 64 { "  KBORG  " } else { "KBORG " };
+    cell(
         out,
         0,
-        w,
-        &header,
-        color("status_text"),
-        color("status_background"),
+        0,
+        brand.len() as u16,
+        brand,
+        color("selection_text"),
+        color("selection_background"),
+    )
+    .map_err(|_| "draw failed")?;
+    let mode_text = if w >= 64 {
+        format!("  {mode}")
+    } else {
+        mode.into()
+    };
+    let mode_color = if app.options.connection.writable && !app.options.connection.demo {
+        color("warning")
+    } else {
+        color("muted")
+    };
+    cell(
+        out,
+        brand.len() as u16,
+        0,
+        w.saturating_sub(brand.len() as u16),
+        &mode_text,
+        mode_color,
+        surface,
     )
     .map_err(|_| "draw failed")?;
     if w >= 90 {
-        let badge = format!(" {}  v{} ", app.theme.name, env!("CARGO_PKG_VERSION"));
+        let badge = format!("{}  v{}  ", app.theme.name, env!("CARGO_PKG_VERSION"));
         let width = badge.len().min(usize::from(w / 3)) as u16;
-        cell(
-            out,
-            w - width,
-            0,
-            width,
-            &badge,
-            color("status_text"),
-            color("status_background"),
-        )
-        .map_err(|_| "draw failed")?;
+        cell(out, w - width, 0, width, &badge, color("muted"), surface)
+            .map_err(|_| "draw failed")?;
     }
     row(
         out,
         1,
         w,
         &identity_line(&app.context, &app.namespace, &app.server, usize::from(w)),
-        color("accent"),
-        bg,
+        fg,
+        surface,
     )
     .map_err(|_| "draw failed")?;
     let freshness = if app.busy {
@@ -4747,7 +4888,7 @@ fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
                     "accent"
                 },
             ),
-            (format!(" {} {resource} ", visible.len()), "text"),
+            (format!("  {} {resource}  ", visible.len()), "text"),
             (format!(" OK {healthy} "), "success"),
             (
                 format!(" ATTENTION {attention} "),
@@ -4775,7 +4916,12 @@ fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
         if width == 0 {
             break;
         }
-        cell(out, x, 2, width, &text, color(role), bg).map_err(|_| "draw failed")?;
+        let band_bg = if app.options.color && !t.terminal && matches!(role, "success" | "warning") {
+            blend(t.get("background"), t.get(role), 10).color()
+        } else {
+            bg
+        };
+        cell(out, x, 2, width, &text, color(role), band_bg).map_err(|_| "draw failed")?;
         x += width;
     }
     let layout = Layout::new(w, h);
@@ -4799,6 +4945,16 @@ fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
             title
         };
         panel(out, rect, &title, true, color("muted"), bg).map_err(|_| "draw failed")?;
+        cell(
+            out,
+            rect.x + 1,
+            rect.y,
+            rect.width - 2,
+            &format!(" {title}"),
+            color("accent"),
+            surface,
+        )
+        .map_err(|_| "draw failed")?;
         let namespaced = app
             .kinds
             .get(app.kind_index)
@@ -4828,8 +4984,8 @@ fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
             rect.y + 1,
             rect.width - 2,
             &format!("   {}", table_line(&cols, None, now)),
-            color("muted"),
-            bg,
+            fg,
+            raised,
         )
         .map_err(|_| "draw failed")?;
         let start = app.selected.saturating_sub(height.saturating_sub(1));
@@ -4914,7 +5070,7 @@ fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
         h - 3,
         w,
         &format!(
-            "{}{}",
+            " {}{}",
             if app.sticky_status { "! " } else { "" },
             app.status
         ),
@@ -4923,7 +5079,7 @@ fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
         } else {
             color("muted")
         },
-        bg,
+        surface,
     )
     .map_err(|_| "draw failed")?;
     row(
@@ -4931,9 +5087,9 @@ fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
         h - 2,
         w,
         if w >= 100 {
-            " d describe  y/v YAML  e edit  l logs  s shell  f forwards  ? help"
+            " [Enter] open   [d] describe   [y] YAML   [e] edit   [l] logs   [s] shell   [?] help"
         } else {
-            "d describe | y YAML | l logs | C/M CPU/mem | m metrics | ? help"
+            " [d] describe  [y] YAML  [l] logs  [m] metrics  [?] help"
         },
         color("accent"),
         bg,
@@ -4944,9 +5100,9 @@ fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
         h - 1,
         w,
         if w >= 80 {
-            " : command  / filter  Ctrl-A aliases  :ctx context  :ns namespace  :q quit"
+            " [:] command   [/] filter   [Ctrl-A] aliases   :ctx context   :ns namespace   :q quit"
         } else {
-            " : command  / filter  :q quit"
+            " [:] command  [/] filter  :q quit"
         },
         color("muted"),
         bg,
@@ -5034,9 +5190,7 @@ fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
                 Modal::Follow(view) => return render_log_modal(app, view, w, h, out),
                 Modal::Helm(table) => table.title(),
                 Modal::HelmForm(form) => form.intent.label(),
-                Modal::HelmReview(_) => {
-                    "HELM REVIEW / every line must be displayed before execution"
-                }
+                Modal::HelmReview(_) => "HELM REVIEW / approval required",
                 Modal::HelmRunning(..) => "HELM EXECUTION / asynchronous reviewed operation",
                 Modal::HelmOutcome(title, ..) => title.as_str(),
                 Modal::HelmLoading(_) => "HELM / bounded storage read",
@@ -5070,20 +5224,36 @@ fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
                 Modal::Filter(..) => "",
             };
             let rect = modal_rect(modal, w, h);
+            let modal_bg = if matches!(modal, Modal::HelmForm(..)) {
+                surface
+            } else {
+                bg
+            };
             panel(
                 out,
                 rect,
                 title,
                 true,
-                if matches!(
-                    modal,
-                    Modal::Confirm(..) | Modal::SessionConfirm(..) | Modal::HelmReview(..)
-                ) {
+                if matches!(modal,Modal::Confirm(..)|Modal::SessionConfirm(..)|Modal::HelmReview(..)) || matches!(modal,Modal::HelmForm(form) if matches!(form.intent,helm_ui::Intent::DeleteCrds | helm_ui::Intent::Uninstall(_))) {
                     color("warning")
                 } else {
                     color("accent")
                 },
-                bg,
+                modal_bg,
+            )
+            .map_err(|_| "draw failed")?;
+            cell(
+                out,
+                rect.x + 1,
+                rect.y,
+                rect.width.saturating_sub(2),
+                &format!(" {title}"),
+                if matches!(modal, Modal::HelmReview(..)) || matches!(modal,Modal::HelmForm(form) if matches!(form.intent,helm_ui::Intent::DeleteCrds | helm_ui::Intent::Uninstall(_))) {
+                    color("warning")
+                } else {
+                    color("accent")
+                },
+                raised,
             )
             .map_err(|_| "draw failed")?;
             let height = usize::from(rect.height.saturating_sub(2));
@@ -5254,29 +5424,40 @@ fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
             };
             for (index, line) in lines.iter().take(height).enumerate() {
                 let selected = line.starts_with(" > ");
+                let heading = helm_heading(line);
+                let table_header = matches!(modal, Modal::Helm(..))
+                    && line.contains("REV ")
+                    && (line.contains("STATUS") || line.contains("STATE"));
+                let warning = line.contains("DESTRUCTIVE")
+                    || line.starts_with("ATTENTION:")
+                    || line.starts_with("UNKNOWN")
+                    || line.starts_with("  IMPACT");
+                let line_fg = if selected {
+                    color("selection_text")
+                } else if warning {
+                    color("warning")
+                } else if heading {
+                    color("accent")
+                } else if matches!(modal, Modal::Confirm(..) | Modal::SessionConfirm(..)) {
+                    color("warning")
+                } else {
+                    fg
+                };
+                let line_bg = if selected {
+                    color("selection_background")
+                } else if table_header {
+                    raised
+                } else {
+                    modal_bg
+                };
                 cell(
                     out,
                     rect.x + 1,
                     rect.y + 1 + index as u16,
                     rect.width.saturating_sub(2),
                     line,
-                    if matches!(
-                        modal,
-                        Modal::Confirm(..) | Modal::SessionConfirm(..) | Modal::HelmReview(..)
-                    ) {
-                        color("warning")
-                    } else if selected {
-                        color("selection_text")
-                    } else if !line.is_empty() && line.chars().all(|c| !c.is_ascii_lowercase()) {
-                        color("accent")
-                    } else {
-                        fg
-                    },
-                    if selected {
-                        color("selection_background")
-                    } else {
-                        bg
-                    },
+                    line_fg,
+                    line_bg,
                 )
                 .map_err(|_| "draw failed")?;
             }
@@ -5299,7 +5480,13 @@ fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
             } else if matches!(modal, Modal::Overview(..)) {
                 "Esc close | J redacted JSON | y YAML | PgUp/PgDown scroll"
             } else if matches!(modal, Modal::HelmForm(..)) {
-                "Tab field | Ctrl-U clear | Enter prepare review | Esc back"
+                if w < 40 {
+                    "Tab next  Enter review  Esc"
+                } else if w < 80 {
+                    "[Tab] next  [Enter] review  [Esc] back"
+                } else {
+                    " [Tab] next field   [Shift-Tab] previous   [Ctrl-U] clear   [Enter] prepare review   [Esc] back"
+                }
             } else if matches!(modal, Modal::HelmRunning(..)) {
                 "Ctrl-C request cancellation | wait for final outcome"
             } else if matches!(modal, Modal::HelmOutcome(..)) {
@@ -5331,30 +5518,12 @@ fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
             )
             .map_err(|_| "draw failed")?;
             if let Modal::HelmReview(review) = modal {
-                let remaining = review.remaining(usize::from(w.saturating_sub(2)));
-                let text = format!(
-                    "CONFIRM {} > {}_",
-                    review.prepared.confirmation(),
-                    review.typed
-                );
-                let chars = text.chars().collect::<Vec<_>>();
-                let start = chars.len().saturating_sub(usize::from(w));
-                row(
+                render_helm_review_footer(
                     out,
-                    h - 2,
+                    review,
                     w,
-                    &chars.into_iter().skip(start).collect::<String>(),
-                    color("warning"),
-                    bg,
-                )
-                .map_err(|_| "draw failed")?;
-                row(
-                    out,
-                    h - 1,
-                    w,
-                    &format!("{remaining} unread | PgUp/PgDn review | Enter execute | Esc cancel"),
-                    color("accent"),
-                    bg,
+                    h,
+                    [color("warning"), color("accent"), color("success"), bg],
                 )
                 .map_err(|_| "draw failed")?;
             }
@@ -5786,6 +5955,7 @@ mod layout_tests {
                     helm_values: None,
                     helm_registry_ca: None,
                     helm_registry_auth: None,
+                    helm_keyring: None,
                     helm_timeout_seconds: 300,
                     allow_tools: false,
                     allow_extensions: false,
@@ -5885,6 +6055,7 @@ mod layout_tests {
                     allow_hooks: false,
                     allow_crds: false,
                     registry: Default::default(),
+                    keyring: None,
                 },
                 crate::helm_lifecycle::Request::Install {
                     chart: "/demo/chart.tgz".into(),
@@ -5957,9 +6128,53 @@ mod layout_tests {
         let draft = form.draft("/demo/helm".into(), 300)?;
         assert_eq!(draft.options.namespace, "staging");
         assert_eq!(draft.options.storage, crate::helm::Storage::ConfigMap);
+        app.subviews.clear();
         app.begin_helm_form(helm_ui::Intent::Install);
         assert!(matches!(app.modal,Modal::HelmForm(ref form) if form.fields[0].1=="default"));
         assert!(commands.try_recv().is_err());
+        Ok(())
+    }
+    #[test]
+    fn schema_commands_require_capabilities_and_keep_visible_helm_scope() -> Result<()> {
+        let (mut app, _, mut commands) = harness();
+        app.options.connection.demo = true;
+        app.options.connection.writable = true;
+        app.options.connection.allow_helm = true;
+        app.options.connection.allow_helm_write = true;
+        app.command("helm-crds-delete")?;
+        assert!(matches!(app.modal, Modal::None));
+        assert!(app.status.contains("--allow-helm-crds"));
+        app.options.connection.allow_helm_crds = true;
+        app.options.helm_keyring = Some("/private/trusted.gpg".into());
+        app.subviews.push(Modal::Helm(Box::new(helm_ui::Table::new(
+            crate::helm::Snapshot {
+                releases: vec![],
+                truncated: false,
+                issues: vec![],
+                source: "test".into(),
+            },
+            None,
+            "staging".into(),
+            Some(crate::helm::Storage::ConfigMap),
+        ))));
+        app.command("helm-crds-upgrade")?;
+        let Modal::HelmForm(form) = &mut app.modal else {
+            return Err("schema upgrade form missing".into());
+        };
+        assert_eq!(form.fields[0].1, "staging");
+        assert!(matches!(form.intent, helm_ui::Intent::UpgradeCrds));
+        form.fields[1].1 = "schema-owner".into();
+        let draft = form.draft("/demo/helm".into(), 300)?;
+        assert_eq!(draft.options.storage, crate::helm::Storage::ConfigMap);
+        assert_eq!(draft.options.keyring, app.options.helm_keyring);
+        assert!(matches!(
+            draft.request,
+            crate::helm_lifecycle::Request::UpgradeCrds { .. }
+        ));
+        assert!(
+            commands.try_recv().is_err(),
+            "forms never enqueue writes before review"
+        );
         Ok(())
     }
     #[test]

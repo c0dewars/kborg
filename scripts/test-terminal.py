@@ -180,7 +180,7 @@ def lifecycle_session(binary, args, captures):
             capture("helm-review-cancelled",["INSTALL HELM RELEASE","demo-new"])
             pinned = "oci://registry.example/team/chart@sha256:" + "a"*64
             keys(b"\t\x15" + pinned.encode())
-            capture("helm-oci-default-off",["INSTALL HELM RELEASE","OCI sha256:","hooks OFF","CRDs OFF","publisher signatures"])
+            capture("helm-oci-default-off",["INSTALL HELM RELEASE","OCI sha256:","hooks OFF","CRDs OFF","signature not checked"])
             keys(b"\x15/demo/chart.tgz")
             keys(b"\r","HELM REVIEW")
             resize(48,12)
@@ -203,7 +203,7 @@ def lifecycle_session(binary, args, captures):
             keys(b"\x1b","HELM / releases")
             keys(b"\r","HELM HISTORY")
             keys(b"\x1b[Br","ROLL BACK HELM RELEASE")
-            capture("helm-rollback-form",["ROLL BACK HELM RELEASE","Target revision 1"])
+            capture("helm-rollback-form",["ROLL BACK HELM RELEASE","TO      revision 1"])
             keys(b"\r","HELM REVIEW")
             complete_review("demo/demo-api")
             capture("helm-rollback-simulated",["HELM OPERATION SUCCEEDED","SIMULATED"])
@@ -272,7 +272,7 @@ def extension_form_session(binary, args, captures):
                         raise
                     if not data:break
                     output.extend(data)
-                    assert len(output)<=4*1024*1024,"extension form terminal output exceeded bound"
+                    assert len(output)<=8*1024*1024,"extension form terminal output exceeded bound"
                     screen.feed(data.decode("utf-8",errors="replace"))
         def keys(value,expected=None):
             os.write(master,value)
@@ -289,18 +289,56 @@ def extension_form_session(binary, args, captures):
                 assert value.casefold() in screen.text().casefold(),f"{name}: missing {value!r}\n{screen.text()}"
             captures.append({"name":name,"width":120,"height":32})
             if args.screenshots:screen.png(args.screenshots/f"{name}.png")
+        def complete_review(confirmation):
+            keys(b"\x1b[H")
+            for _ in range(200):
+                if re.search(r"\b0 unread\b",screen.text()):break
+                keys(b"\x1b[6~")
+            else:raise AssertionError("demo extension review was not completely painted")
+            keys(confirmation.encode())
+            keys(b"\r","HELM OPERATION SUCCEEDED")
         try:
             keys(b"","api-7d4f9")
             keys(b":helm\r","HELM / releases")
             keys(b"i","INSTALL HELM RELEASE")
             pinned="oci://registry.example/team/chart@sha256:"+"a"*64
             keys(b"\toci-demo\t\x15"+pinned.encode())
-            capture("helm-oci-explicit-policy",["INSTALL HELM RELEASE","OCI sha256:","hooks ON","CRDs ON","publisher signatures"])
+            capture("helm-oci-explicit-policy",["INSTALL HELM RELEASE","OCI sha256:","hooks ON","CRDs ON","signature not checked"])
             keys(b"\x1b","HELM / releases")
             keys(b"c","INSTALL CHART CRDS")
             keys(b"\tcrd-demo\t\x15"+pinned.encode())
-            capture("helm-crds-form",["INSTALL CHART CRDS","Cluster-wide schema creation","retained on uninstall","No release installed"])
+            capture("helm-crds-form",["INSTALL CHART CRDS","Cluster-wide schemas","retained on uninstall","No release installed"])
             assert "Values file" not in screen.text(),"CRD bootstrap must not offer release values"
+            keys(b"\x1b","HELM / releases")
+            keys(b"t","TEST HELM RELEASE")
+            capture("helm-test-form",["TEST HELM RELEASE","demo-api","revision 2"])
+            keys(b"\r","HELM REVIEW")
+            capture("helm-test-review",["HELM REVIEW","SIMULATED HELM test","CHANGE PLAN"])
+            complete_review("demo/demo-api")
+            capture("helm-test-simulated",["HELM OPERATION SUCCEEDED","SIMULATED"])
+            keys(b"\x1b","HELM / releases")
+            keys(b":helm-crds-upgrade\r","UPGRADE CHART CRDS")
+            keys(b"\tschema-demo")
+            capture("helm-crds-upgrade-form",["UPGRADE CHART CRDS","Cluster-wide schemas","schema-demo"])
+            keys(b"\r","HELM REVIEW")
+            capture("helm-crds-upgrade-review",["HELM REVIEW","SIMULATED HELM crds-upgrade","schema-changing"])
+            keys(b"\x1b","UPGRADE CHART CRDS")
+            keys(b"\x1b","HELM / releases")
+            keys(b":helm-crds-delete\r","DELETE CHART CRDS")
+            keys(b"\tschema-demo")
+            capture("helm-crds-delete-form",["DELETE CHART CRDS","DESTRUCTIVE","schema-demo"])
+            keys(b"\r","HELM REVIEW")
+            capture("helm-crds-delete-review",["HELM REVIEW","CONFIRM DELETE CRDS demo/schema-demo"])
+            keys(b"demo/schema-demo\r","HELM REVIEW")
+            capture("helm-crds-delete-weak-confirmation-denied",["HELM REVIEW","exact confirmation","CONFIRM DELETE CRDS"])
+            keys(b"\x15")
+            complete_review("DELETE CRDS demo/schema-demo")
+            capture("helm-crds-delete-simulated",["HELM OPERATION SUCCEEDED","SIMULATED"])
+            keys(b"\x1b","HELM / releases")
+            keys(b"i","INSTALL HELM RELEASE")
+            tagged="oci://registry.example/team/chart:1.2.3"
+            keys(b"\ttag-demo\t\x15"+tagged.encode())
+            capture("helm-oci-tag-form",["INSTALL HELM RELEASE","OCI tag 1.2.3","digest resolved during preparation"])
             keys(b"\x1b","HELM / releases")
             keys(b"\x1b")
             keys(b":q\r")
@@ -319,11 +357,21 @@ def extension_form_session(binary, args, captures):
             return {"status":0,"cpu":usage.ru_utime+usage.ru_stime,"rss":usage.ru_maxrss}
         finally:
             if process.poll() is None:
-                os.write(master,b"\x03")
-                try:process.wait(timeout=3)
-                except subprocess.TimeoutExpired:process.kill();process.wait(timeout=3)
+                try:
+                    os.write(master,b"\x03")
+                    until=time.monotonic()+3
+                    while process.poll() is None and time.monotonic()<until:
+                        if select.select([master],[],[],.05)[0]:
+                            try:os.read(master,65536)
+                            except OSError:break
+                    if process.poll() is None:process.kill()
+                except OSError:pass
+            # A macOS child can be blocked flushing the PTY during teardown.
+            # Closing our ends releases that wait before the final bounded reap.
             os.close(master)
             os.close(slave)
+            if process.poll() is None:process.wait(timeout=3)
+
 
 
 def main():
