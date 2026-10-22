@@ -45,6 +45,8 @@ pub struct Options {
     pub helm_storage: Option<crate::helm::Storage>,
     pub helm_tool: Option<PathBuf>,
     pub helm_values: Option<PathBuf>,
+    pub helm_registry_ca: Option<PathBuf>,
+    pub helm_registry_auth: Option<PathBuf>,
     pub helm_timeout_seconds: u16,
     pub log_seconds: u32,
     pub log_read: crate::logs::ReadOptions,
@@ -74,6 +76,8 @@ fn parse(args: Vec<String>) -> Result<Options> {
         helm_storage: None,
         helm_tool: None,
         helm_values: None,
+        helm_registry_ca: None,
+        helm_registry_auth: None,
         helm_timeout_seconds: 300,
         log_seconds: crate::logs::DEFAULT_FOLLOW_SECONDS,
         log_read: crate::logs::ReadOptions::default(),
@@ -96,6 +100,22 @@ fn parse(args: Vec<String>) -> Result<Options> {
             "--all-containers" => opts.all_containers = true,
             "--allow-helm" => opts.connection.allow_helm = true,
             "--allow-helm-write" => opts.connection.allow_helm_write = true,
+            "--allow-helm-hooks" => opts.connection.allow_helm_hooks = true,
+            "--allow-helm-crds" => opts.connection.allow_helm_crds = true,
+            "--helm-registry-ca" | "--helm-registry-auth" => {
+                let value = PathBuf::from(
+                    args.next()
+                        .ok_or("Helm registry option needs an absolute file path")?,
+                );
+                if !value.is_absolute() {
+                    return Err("Helm registry CA/auth files require absolute paths".into());
+                }
+                if arg == "--helm-registry-ca" {
+                    opts.helm_registry_ca = Some(value);
+                } else {
+                    opts.helm_registry_auth = Some(value);
+                }
+            }
             "--helm-tool" => {
                 let path = PathBuf::from(
                     args.next()
@@ -273,13 +293,19 @@ fn parse(args: Vec<String>) -> Result<Options> {
     } else if opts.all_containers {
         return Err("--all-containers requires logs without an explicit container".into());
     }
-    if (opts.helm_tool.is_some() || opts.helm_values.is_some() || opts.helm_timeout_seconds != 300)
+    if (opts.helm_tool.is_some()
+        || opts.helm_values.is_some()
+        || opts.helm_timeout_seconds != 300
+        || opts.helm_registry_ca.is_some()
+        || opts.helm_registry_auth.is_some()
+        || opts.connection.allow_helm_hooks
+        || opts.connection.allow_helm_crds)
         && opts
             .command
             .first()
             .is_some_and(|command| !matches!(command.as_str(), "ui" | "helm"))
     {
-        return Err("Helm tool, values and timeout options require ui or helm".into());
+        return Err("Helm lifecycle, registry, hook and CRD options require ui or helm".into());
     }
     if opts.helm_storage.is_some()
         && opts
@@ -867,6 +893,7 @@ async fn helm_mutation_command(
                 values: opts.helm_values.clone(),
             },
         ),
+        HelmCommand::Crds(name, chart) => (name, Request::InstallCrds { chart }),
         HelmCommand::Rollback(name, revision) => (name, Request::Rollback { revision }),
         HelmCommand::Uninstall(name) => (name, Request::Uninstall),
         _ => return Err("invalid Helm lifecycle action".into()),
@@ -883,6 +910,12 @@ async fn helm_mutation_command(
             release,
             storage: opts.helm_storage.unwrap_or(crate::helm::Storage::Secret),
             seconds: opts.helm_timeout_seconds,
+            allow_hooks: opts.connection.allow_helm_hooks,
+            allow_crds: opts.connection.allow_helm_crds,
+            registry: crate::helm_oci::Options {
+                ca_file: opts.helm_registry_ca.clone(),
+                auth_file: opts.helm_registry_auth.clone(),
+            },
         },
         request,
     );
@@ -987,6 +1020,7 @@ enum HelmCommand {
     Values(String, u32),
     Install(String, PathBuf),
     Upgrade(String, PathBuf),
+    Crds(String, PathBuf),
     Rollback(String, u32),
     Uninstall(String),
 }
@@ -994,11 +1028,15 @@ impl HelmCommand {
     fn is_mutation(&self) -> bool {
         matches!(
             self,
-            Self::Install(..) | Self::Upgrade(..) | Self::Rollback(..) | Self::Uninstall(..)
+            Self::Install(..)
+                | Self::Upgrade(..)
+                | Self::Crds(..)
+                | Self::Rollback(..)
+                | Self::Uninstall(..)
         )
     }
     fn parse(command: &str, args: &[String]) -> Result<Self> {
-        let usage = "usage: helm [list] | helm history RELEASE | helm detail|resources|values RELEASE REVISION | helm install|upgrade RELEASE CHART.tgz | helm rollback RELEASE REVISION | helm uninstall RELEASE (lifecycle requires --write --allow-helm --allow-helm-write --helm-tool ABS)";
+        let usage = "usage: helm [list] | helm history RELEASE | helm detail|resources|values RELEASE REVISION | helm install|upgrade|crds RELEASE CHART.tgz_OR_PINNED_OCI | helm rollback RELEASE REVISION | helm uninstall RELEASE (lifecycle requires --write --allow-helm --allow-helm-write --helm-tool ABS; crds needs --allow-helm-crds)";
         let name = |name: &String| {
             if crate::helm::valid_release_name(name) {
                 Ok(name.clone())
@@ -1024,16 +1062,20 @@ impl HelmCommand {
             [list] if list == "list" => Ok(Self::List),
             [history, release] if history == "history" => Ok(Self::History(name(release)?)),
             [mode, release] if mode == "uninstall" => Ok(Self::Uninstall(name(release)?)),
-            [mode, release, chart] if mode == "install" || mode == "upgrade" => {
-                if chart.is_empty() || chart.contains("://") || !chart.ends_with(".tgz") {
-                    return Err("Helm install/upgrade requires a local packaged .tgz chart".into());
+            [mode, release, chart] if matches!(mode.as_str(), "install" | "upgrade" | "crds") => {
+                if chart.starts_with("oci://") {
+                    crate::helm_oci::Reference::parse(chart)?;
+                } else if chart.is_empty() || chart.contains("://") || !chart.ends_with(".tgz") {
+                    return Err("Helm charts require a local packaged .tgz file or exact oci:// reference pinned by sha256 digest".into());
                 }
                 let release = name(release)?;
                 let chart = PathBuf::from(chart);
                 Ok(if mode == "install" {
                     Self::Install(release, chart)
-                } else {
+                } else if mode == "upgrade" {
                     Self::Upgrade(release, chart)
+                } else {
+                    Self::Crds(release, chart)
                 })
             }
             [mode, release, rev] => {
@@ -1389,6 +1431,67 @@ fn theme_command(opts: &Options) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn pinned_oci_and_helm_extension_flags_validate_before_connecting() -> Result<()> {
+        let pinned = format!(
+            "oci://registry.example:5443/team/chart@sha256:{}",
+            "a".repeat(64)
+        );
+        for mode in ["install", "upgrade", "crds"] {
+            let options = parse(vec![
+                "--allow-helm-hooks".into(),
+                "--allow-helm-crds".into(),
+                "--helm-registry-ca".into(),
+                "/tmp/registry-ca.pem".into(),
+                "--helm-registry-auth".into(),
+                "/tmp/registry-auth.json".into(),
+                "helm".into(),
+                mode.into(),
+                "my.api".into(),
+                pinned.clone(),
+            ])?;
+            assert!(options.connection.allow_helm_hooks);
+            assert!(options.connection.allow_helm_crds);
+            assert_eq!(
+                options.helm_registry_ca,
+                Some("/tmp/registry-ca.pem".into())
+            );
+            assert_eq!(
+                options.helm_registry_auth,
+                Some("/tmp/registry-auth.json".into())
+            );
+            let command = HelmCommand::parse("helm", &options.command[1..])?;
+            assert!(command.is_mutation());
+            match command {
+                HelmCommand::Install(name, chart)
+                | HelmCommand::Upgrade(name, chart)
+                | HelmCommand::Crds(name, chart) => {
+                    assert_eq!(name, "my.api");
+                    assert_eq!(chart.to_str(), Some(pinned.as_str()));
+                }
+                _ => return Err("unexpected chart command".into()),
+            }
+        }
+        for command in [
+            "helm install web oci://registry.example/team/chart:latest",
+            "helm install web oci://registry.example/team/chart",
+            "--allow-helm-hooks list pods",
+            "--allow-helm-crds history web",
+            "--helm-registry-ca relative.pem helm list",
+            "--helm-registry-auth relative.json helm list",
+            "--helm-values /tmp/values.yaml helm crds web /tmp/chart.tgz",
+            "--json helm crds web /tmp/chart.tgz",
+        ] {
+            assert!(
+                parse(command.split_whitespace().map(str::to_owned).collect()).is_err(),
+                "{command}"
+            );
+        }
+        let defaults = parse(vec!["ui".into()])?;
+        assert!(!defaults.connection.allow_helm_hooks);
+        assert!(!defaults.connection.allow_helm_crds);
+        Ok(())
+    }
     #[test]
     fn lifecycle_and_workload_scopes_validate_before_connecting() -> Result<()> {
         let words = |s: &str| parse(s.split_whitespace().map(str::to_owned).collect());

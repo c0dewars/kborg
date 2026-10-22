@@ -120,6 +120,7 @@ pub enum Action {
 #[derive(Clone)]
 pub enum Intent {
     Install,
+    InstallCrds,
     Upgrade(Release),
     Rollback {
         current: Release,
@@ -131,6 +132,7 @@ impl Intent {
     pub fn label(&self) -> &'static str {
         match self {
             Self::Install => "INSTALL HELM RELEASE",
+            Self::InstallCrds => "INSTALL CHART CRDS",
             Self::Upgrade(_) => "UPGRADE HELM RELEASE",
             Self::Rollback { .. } => "ROLL BACK HELM RELEASE",
             Self::Uninstall(_) => "UNINSTALL HELM RELEASE",
@@ -138,7 +140,7 @@ impl Intent {
     }
     fn current(&self) -> Option<&Release> {
         match self {
-            Self::Install => None,
+            Self::Install | Self::InstallCrds => None,
             Self::Upgrade(release) | Self::Uninstall(release) => Some(release),
             Self::Rollback { current, .. } => Some(current),
         }
@@ -150,6 +152,9 @@ pub struct Form {
     pub active: usize,
     namespace: String,
     storage: Storage,
+    allow_hooks: bool,
+    allow_crds: bool,
+    registry: crate::helm_oci::Options,
 }
 pub struct WriteDraft {
     pub options: crate::helm_lifecycle::Options,
@@ -174,7 +179,7 @@ impl Form {
             .map(|path| path.to_string_lossy().into_owned())
             .unwrap_or_default();
         let fields = match &intent {
-            Intent::Install => vec![
+            Intent::Install | Intent::InstallCrds => vec![
                 (
                     "Namespace",
                     if namespace == "*" {
@@ -184,22 +189,38 @@ impl Form {
                     },
                 ),
                 ("Release", String::new()),
-                ("Packaged chart (.tgz)", chart),
-                ("Values file (optional)", values),
+                ("Packaged chart / OCI digest", chart),
             ],
             Intent::Upgrade(_) => vec![
-                ("Packaged chart (.tgz)", chart),
-                ("Values file (optional)", values),
+                ("Packaged chart / OCI digest", chart),
+                ("Values file (optional)", values.clone()),
             ],
             _ => vec![],
         };
+        let mut fields = fields;
+        if matches!(intent, Intent::Install) {
+            fields.push(("Values file (optional)", values));
+        }
         Self {
             intent,
             fields,
             active: 0,
             namespace,
             storage,
+            allow_hooks: false,
+            allow_crds: false,
+            registry: Default::default(),
         }
+    }
+    pub fn set_lifecycle_policy(
+        &mut self,
+        allow_hooks: bool,
+        allow_crds: bool,
+        registry: crate::helm_oci::Options,
+    ) {
+        self.allow_hooks = allow_hooks;
+        self.allow_crds = allow_crds;
+        self.registry = registry;
     }
     pub fn key(&mut self, key: KeyCode) {
         let count = self.fields.len();
@@ -233,6 +254,9 @@ impl Form {
     }
     pub fn draft(&self, executable: std::path::PathBuf, seconds: u16) -> Result<WriteDraft> {
         use crate::helm_lifecycle::{Options, Request};
+        if matches!(self.intent, Intent::InstallCrds) && !self.allow_crds {
+            return Err("Chart CRD installation requires explicit --allow-helm-crds.".into());
+        }
         let path = |value: &str, optional: bool| -> Result<Option<std::path::PathBuf>> {
             if value.is_empty() {
                 return if optional {
@@ -247,8 +271,23 @@ impl Form {
             }
             Ok(Some(path))
         };
+        let chart = |value: &str| -> Result<std::path::PathBuf> {
+            if value.starts_with("oci://") {
+                crate::helm_oci::Reference::parse(value)?;
+                Ok(value.into())
+            } else {
+                let path = path(value, false)?.ok_or("Missing chart source")?;
+                if path.extension().is_none_or(|extension| extension != "tgz") {
+                    return Err(
+                        "Choose a packaged .tgz chart or an OCI reference pinned by sha256 digest."
+                            .into(),
+                    );
+                }
+                Ok(path)
+            }
+        };
         let (namespace, release, storage, request) = match &self.intent {
-            Intent::Install => {
+            Intent::Install | Intent::InstallCrds => {
                 let namespace = self.fields[0].1.trim();
                 let release = self.fields[1].1.trim();
                 if !safety::valid_id(namespace) {
@@ -257,23 +296,23 @@ impl Form {
                 if !helm::valid_release_name(release) {
                     return Err("Release name must be a DNS name of at most 53 bytes.".into());
                 }
-                let chart = path(&self.fields[2].1, false)?.ok_or("Missing packaged chart")?;
-                (
-                    namespace.into(),
-                    release.into(),
-                    self.storage,
+                let chart = chart(&self.fields[2].1)?;
+                let request = if matches!(self.intent, Intent::InstallCrds) {
+                    Request::InstallCrds { chart }
+                } else {
                     Request::Install {
                         chart,
                         values: path(&self.fields[3].1, true)?,
-                    },
-                )
+                    }
+                };
+                (namespace.into(), release.into(), self.storage, request)
             }
             Intent::Upgrade(current) => (
                 current.namespace.clone(),
                 current.name.clone(),
                 current.storage,
                 Request::Upgrade {
-                    chart: path(&self.fields[0].1, false)?.ok_or("Missing packaged chart")?,
+                    chart: chart(&self.fields[0].1)?,
                     values: path(&self.fields[1].1, true)?,
                 },
             ),
@@ -299,6 +338,9 @@ impl Form {
                 release,
                 storage,
                 seconds,
+                allow_hooks: self.allow_hooks,
+                allow_crds: self.allow_crds,
+                registry: self.registry.clone(),
             },
             request,
             expected: self.intent.current().cloned(),
@@ -318,6 +360,14 @@ impl Form {
                 current.revision,
                 current.storage.name()
             )
+        } else if matches!(self.intent, Intent::InstallCrds) {
+            format!(
+                "Cluster-wide schema creation | label {}",
+                self.fields
+                    .first()
+                    .map(|(_, value)| value.as_str())
+                    .unwrap_or(&self.namespace)
+            )
         } else {
             format!(
                 "Namespace {} | {} storage",
@@ -335,7 +385,43 @@ impl Form {
             ));
         }
         if height >= 5 {
-            lines.push("Local packaged charts only. Preparation validates files and renders a complete review.".into());
+            lines.push(if self.fields.iter().any(|(label,value)| *label=="Packaged chart / OCI digest" && value.starts_with("oci://")) {
+                "OCI bytes verified by digest; publisher signatures not checked.".into()
+            } else {
+                "Chart: local .tgz or OCI pinned by sha256. Preparation verifies the source before review.".into()
+            });
+            lines.push(format!(
+                "Requested capabilities | hooks {} | CRDs {}",
+                if self.allow_hooks { "ON" } else { "OFF" },
+                if self.allow_crds {
+                    "ON: separate create-only review"
+                } else {
+                    "OFF"
+                }
+            ));
+        }
+        if height >= 6 && matches!(self.intent, Intent::InstallCrds) {
+            lines.push(
+                "Namespaced custom resources; schemas retained on uninstall. No release installed."
+                    .into(),
+            );
+        }
+        if height >= self.fields.len() + 4
+            && !matches!(self.intent, Intent::InstallCrds)
+            && let Some(source) = self
+                .fields
+                .iter()
+                .find(|(label, _)| *label == "Packaged chart / OCI digest")
+            && let Ok(reference) = crate::helm_oci::Reference::parse(&source.1)
+        {
+            let digest = reference.digest().trim_start_matches("sha256:");
+            lines.push(format!(
+                "OCI sha256:{}...{} | {}/{}",
+                &digest[..12],
+                &digest[digest.len() - 8..],
+                reference.registry(),
+                reference.repository()
+            ));
         }
         if height >= 3 && matches!(self.intent, Intent::Uninstall(_)) {
             lines.push("DESTRUCTIVE: release-managed resources will be removed. Review before confirmation.".into());
@@ -348,7 +434,7 @@ impl Form {
         for (index, (label, value)) in self.fields.iter().enumerate().skip(start).take(capacity) {
             let label = if width < 40 {
                 match *label {
-                    "Packaged chart (.tgz)" => "Chart",
+                    "Packaged chart / OCI digest" => "Chart",
                     "Values file (optional)" => "Values",
                     "Namespace" => "NS",
                     label => label,
@@ -609,6 +695,7 @@ impl Table {
                 self.selected = 0;
             }
             KeyCode::Char('i') => return Action::Lifecycle(Box::new(Intent::Install)),
+            KeyCode::Char('c') => return Action::Lifecycle(Box::new(Intent::InstallCrds)),
             KeyCode::Char('u') => {
                 if let Some(current) = self.current() {
                     return Action::Lifecycle(Box::new(Intent::Upgrade(current)));
@@ -758,7 +845,7 @@ impl Table {
         if self.parent.is_some() {
             "Enter/v values | r rollback | u upgrade | Ctrl-D uninstall | d metadata | Esc back"
         } else {
-            "Enter/r history | i install | u upgrade | Ctrl-D uninstall | v values | m resources | Esc back"
+            "Enter/r history | i install | u upgrade | c chart CRDs | Ctrl-D uninstall | v values | m resources | Esc back"
         }
     }
 }
@@ -819,6 +906,9 @@ mod tests {
                     release: "demo-new".into(),
                     storage: Storage::Secret,
                     seconds: 300,
+                    allow_hooks: false,
+                    allow_crds: false,
+                    registry: Default::default(),
                 },
                 crate::helm_lifecycle::Request::Install {
                     chart: "/demo/chart.tgz".into(),
@@ -856,6 +946,85 @@ mod tests {
             review.remaining(78) > 0,
             "new wrapping starts a fresh coverage record"
         );
+        Ok(())
+    }
+    #[test]
+    fn pinned_oci_form_preserves_source_and_explicit_extension_policy() -> Result<()> {
+        let pinned = format!(
+            "oci://registry.example:5443/team/chart@sha256:{}",
+            "a".repeat(64)
+        );
+        let mut form = Form::new(
+            Intent::Install,
+            "staging".into(),
+            Storage::Secret,
+            None,
+            false,
+        );
+        form.fields[1].1 = "my.api".into();
+        form.fields[2].1 = pinned.clone();
+        let default = form.draft("/trusted/helm".into(), 300)?;
+        assert!(!default.options.allow_hooks);
+        assert!(!default.options.allow_crds);
+        form.set_lifecycle_policy(
+            true,
+            true,
+            crate::helm_oci::Options {
+                ca_file: Some("/private/registry-ca.pem".into()),
+                auth_file: Some("/private/registry-auth.json".into()),
+            },
+        );
+        let draft = form.draft("/trusted/helm".into(), 300)?;
+        assert!(draft.options.allow_hooks && draft.options.allow_crds);
+        assert_eq!(
+            draft.options.registry.auth_file,
+            Some("/private/registry-auth.json".into())
+        );
+        assert_eq!(
+            draft.options.registry.ca_file,
+            Some("/private/registry-ca.pem".into())
+        );
+        assert!(
+            matches!(draft.request,crate::helm_lifecycle::Request::Install{chart,..} if chart.to_str()==Some(pinned.as_str()))
+        );
+        let lines = form.lines(82, 8).join("\n");
+        assert!(lines.contains("hooks ON"));
+        assert!(lines.contains("CRDs ON"));
+        assert!(lines.contains("sha256"));
+        assert!(
+            !lines.contains("registry-auth.json"),
+            "auth contents and private file paths are not part of form preview"
+        );
+        form.fields[2].1 = "oci://registry.example/team/chart:latest".into();
+        assert!(form.draft("/trusted/helm".into(), 300).is_err());
+        Ok(())
+    }
+    #[test]
+    fn chart_crds_are_separate_capability_gated_forms_without_values() -> Result<()> {
+        let mut form = Form::new(
+            Intent::InstallCrds,
+            "staging".into(),
+            Storage::Secret,
+            Some(std::path::Path::new("/private/values.yaml")),
+            true,
+        );
+        assert_eq!(form.intent.label(), "INSTALL CHART CRDS");
+        assert_eq!(form.fields.len(), 3);
+        form.fields[1].1 = "my.api".into();
+        assert!(form.draft("/demo/helm".into(), 300).is_err());
+        form.set_lifecycle_policy(false, true, Default::default());
+        let draft = form.draft("/demo/helm".into(), 300)?;
+        assert!(matches!(
+            draft.request,
+            crate::helm_lifecycle::Request::InstallCrds { .. }
+        ));
+        assert_eq!(draft.options.namespace, "staging");
+        assert_eq!(draft.options.release, "my.api");
+        assert!(draft.expected.is_none());
+        let lines = form.lines(82, 8).join("\n");
+        assert!(lines.contains("retained on uninstall"));
+        assert!(lines.contains("No release installed"));
+        assert!(!lines.contains("Values file"));
         Ok(())
     }
     #[test]

@@ -33,6 +33,10 @@ pub struct Config {
     #[serde(default)]
     pub allow_helm_write: bool,
     #[serde(default)]
+    pub allow_helm_hooks: bool,
+    #[serde(default)]
+    pub allow_helm_crds: bool,
+    #[serde(default)]
     pub allow_exec: bool,
     #[serde(default)]
     pub allow_attach: bool,
@@ -58,6 +62,8 @@ impl Default for Config {
             allow_logs: false,
             allow_helm: false,
             allow_helm_write: false,
+            allow_helm_hooks: false,
+            allow_helm_crds: false,
             allow_exec: false,
             allow_attach: false,
             allow_forward: false,
@@ -104,6 +110,12 @@ pub fn apply(config: Config, options: &mut Options) -> Result<()> {
     }
     if options.connection.allow_helm_write && !config.allow_helm_write {
         return Err("configuration forbids Helm lifecycle actions".into());
+    }
+    if options.connection.allow_helm_hooks && !config.allow_helm_hooks {
+        return Err("configuration forbids Helm hooks".into());
+    }
+    if options.connection.allow_helm_crds && !config.allow_helm_crds {
+        return Err("configuration forbids Helm CRD actions".into());
     }
     if options.connection.logs && !config.allow_logs {
         return Err("configuration forbids log access".into());
@@ -183,6 +195,8 @@ mod tests {
             helm_storage: None,
             helm_tool: None,
             helm_values: None,
+            helm_registry_ca: None,
+            helm_registry_auth: None,
             helm_timeout_seconds: 300,
             log_seconds: crate::logs::DEFAULT_FOLLOW_SECONDS,
             log_read: crate::logs::ReadOptions::default(),
@@ -194,6 +208,35 @@ mod tests {
         }
     }
 
+    #[test]
+    fn helm_extension_configuration_constrains_but_never_enables_capabilities() -> Result<()> {
+        let allowed = || Config {
+            profile: Profile::Operator,
+            allow_helm: true,
+            allow_helm_write: true,
+            allow_helm_hooks: true,
+            allow_helm_crds: true,
+            ..Config::default()
+        };
+        let mut disabled = options();
+        apply(allowed(), &mut disabled)?;
+        assert!(!disabled.connection.allow_helm_hooks);
+        assert!(!disabled.connection.allow_helm_crds);
+        for (hooks, crds) in [(true, false), (false, true)] {
+            let mut selected = options();
+            selected.connection.allow_helm_hooks = hooks;
+            selected.connection.allow_helm_crds = crds;
+            let mut denied = allowed();
+            denied.allow_helm_hooks = false;
+            denied.allow_helm_crds = false;
+            assert!(apply(denied, &mut selected).is_err());
+            assert!(selected.connection.context.is_none());
+            apply(allowed(), &mut selected)?;
+            assert_eq!(selected.connection.allow_helm_hooks, hooks);
+            assert_eq!(selected.connection.allow_helm_crds, crds);
+        }
+        Ok(())
+    }
     #[test]
     fn helm_write_permission_requires_both_cli_opt_in_and_operator_config() -> Result<()> {
         let mut selected = options();

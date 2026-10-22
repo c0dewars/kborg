@@ -178,6 +178,10 @@ def lifecycle_session(binary, args, captures):
             capture("helm-install-review",["SIMULATED HELM install","CONFIRM demo/demo-new"])
             keys(b"\x1b","INSTALL HELM RELEASE")
             capture("helm-review-cancelled",["INSTALL HELM RELEASE","demo-new"])
+            pinned = "oci://registry.example/team/chart@sha256:" + "a"*64
+            keys(b"\t\x15" + pinned.encode())
+            capture("helm-oci-default-off",["INSTALL HELM RELEASE","OCI sha256:","hooks OFF","CRDs OFF","publisher signatures"])
+            keys(b"\x15/demo/chart.tgz")
             keys(b"\r","HELM REVIEW")
             resize(48,12)
             capture("helm-review-narrow",["HELM REVIEW","unread"])
@@ -210,6 +214,8 @@ def lifecycle_session(binary, args, captures):
             complete_review("demo/demo-api")
             capture("helm-uninstall-simulated",["HELM OPERATION SUCCEEDED","SIMULATED"])
             keys(b"\x1b","HELM / releases")
+            keys(b"c")
+            capture("helm-crds-denied",["HELM / releases","--allow-helm-crds"])
             keys(b"\x1b")
             drain(.3)
             keys(b":deploy\r","deployments")
@@ -237,6 +243,85 @@ def lifecycle_session(binary, args, captures):
             if process.poll() is None:
                 os.killpg(process.pid,signal.SIGKILL)
                 process.wait(timeout=3)
+            os.close(master)
+            os.close(slave)
+
+
+def extension_form_session(binary, args, captures):
+    """Real demo UI frames for explicit flags; no chart or registry is accessed."""
+    with tempfile.TemporaryDirectory(prefix="kborg-extension-terminal-") as temporary:
+        master, slave = pty.openpty()
+        original_mode = termios.tcgetattr(slave)
+        fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 32, 120, 0, 0))
+        environment = os.environ.copy()
+        environment.update(TERM="xterm-256color", COLORTERM="truecolor", KBORG_CONFIG_DIR=str(Path(temporary).resolve()))
+        environment.pop("NO_COLOR",None)
+        def setup():
+            os.setsid()
+            fcntl.ioctl(0,termios.TIOCSCTTY,0)
+        process=subprocess.Popen([str(binary),"--demo","--theme","catppuccin-mocha","--write","--allow-helm","--allow-helm-write","--allow-helm-hooks","--allow-helm-crds","--helm-tool","/demo/helm","--no-splash","--no-mouse","--color=always"],stdin=slave,stdout=slave,stderr=slave,env=environment,preexec_fn=setup)
+        screen=Screen(120,32)
+        output=bytearray()
+        def drain(seconds):
+            until=time.monotonic()+seconds
+            while time.monotonic()<until:
+                if select.select([master],[],[],min(.05,max(0,until-time.monotonic())))[0]:
+                    try:data=os.read(master,65536)
+                    except OSError as error:
+                        if error.errno==errno.EIO:break
+                        raise
+                    if not data:break
+                    output.extend(data)
+                    assert len(output)<=4*1024*1024,"extension form terminal output exceeded bound"
+                    screen.feed(data.decode("utf-8",errors="replace"))
+        def keys(value,expected=None):
+            os.write(master,value)
+            deadline=time.monotonic()+6
+            while time.monotonic()<deadline:
+                drain(.1)
+                if expected is None or expected.casefold() in screen.text().casefold():return
+            raise AssertionError(f"missing {expected!r} in demo extension frame\n{screen.text()}")
+        def capture(name,required):
+            deadline=time.monotonic()+6
+            while any(value.casefold() not in screen.text().casefold() for value in required) and time.monotonic()<deadline:
+                drain(.1)
+            for value in required:
+                assert value.casefold() in screen.text().casefold(),f"{name}: missing {value!r}\n{screen.text()}"
+            captures.append({"name":name,"width":120,"height":32})
+            if args.screenshots:screen.png(args.screenshots/f"{name}.png")
+        try:
+            keys(b"","api-7d4f9")
+            keys(b":helm\r","HELM / releases")
+            keys(b"i","INSTALL HELM RELEASE")
+            pinned="oci://registry.example/team/chart@sha256:"+"a"*64
+            keys(b"\toci-demo\t\x15"+pinned.encode())
+            capture("helm-oci-explicit-policy",["INSTALL HELM RELEASE","OCI sha256:","hooks ON","CRDs ON","publisher signatures"])
+            keys(b"\x1b","HELM / releases")
+            keys(b"c","INSTALL CHART CRDS")
+            keys(b"\tcrd-demo\t\x15"+pinned.encode())
+            capture("helm-crds-form",["INSTALL CHART CRDS","Cluster-wide schema creation","retained on uninstall","No release installed"])
+            assert "Values file" not in screen.text(),"CRD bootstrap must not offer release values"
+            keys(b"\x1b","HELM / releases")
+            keys(b"\x1b")
+            keys(b":q\r")
+            deadline=time.monotonic()+6
+            usage=None
+            while time.monotonic()<deadline:
+                waited,status,child_usage=os.wait4(process.pid,os.WNOHANG)
+                if waited:
+                    process.returncode=os.waitstatus_to_exitcode(status)
+                    usage=child_usage
+                    break
+                drain(.1)
+            drain(.1)
+            assert process.returncode==0 and usage is not None,"extension form session did not exit"
+            assert b"\x1b[?1049l" in output and termios.tcgetattr(master)==original_mode,"extension form terminal restoration failed"
+            return {"status":0,"cpu":usage.ru_utime+usage.ru_stime,"rss":usage.ru_maxrss}
+        finally:
+            if process.poll() is None:
+                os.write(master,b"\x03")
+                try:process.wait(timeout=3)
+                except subprocess.TimeoutExpired:process.kill();process.wait(timeout=3)
             os.close(master)
             os.close(slave)
 
@@ -413,8 +498,9 @@ def main():
             os.close(master)
             os.close(slave)
     lifecycle_usage = lifecycle_session(binary, args, captures)
-    native_usage["cpu"] += lifecycle_usage["cpu"]
-    native_usage["rss"] = max(native_usage["rss"], lifecycle_usage["rss"])
+    extension_usage = extension_form_session(binary, args, captures)
+    native_usage["cpu"] += lifecycle_usage["cpu"] + extension_usage["cpu"]
+    native_usage["rss"] = max(native_usage["rss"], lifecycle_usage["rss"], extension_usage["rss"])
     report = {"schema": 1, "platform": os.uname().sysname, "architecture": os.uname().machine,
               "binary": str(binary), "binary_sha256": __import__("hashlib").sha256(binary.read_bytes()).hexdigest(),
               "elapsed_seconds": round(time.monotonic() - started, 3),
@@ -422,7 +508,7 @@ def main():
               "peak_rss_bytes": native_usage["rss"] if os.uname().sysname == "Darwin" else native_usage["rss"] * 1024,
               "idle_output_bytes_over_2_seconds": idle_bytes,
               "terminal_restored": True, "screens": captures,
-              "scope": "two native PTY sessions, offline samples and SIMULATED Helm lifecycle; no real tool/cluster writes; ASCII truecolor; not a real-terminal/platform matrix"}
+              "scope": "three native PTY sessions, offline samples, OCI/CRD forms and SIMULATED Helm lifecycle; no registry/tool/cluster writes; ASCII truecolor; not a real-terminal/platform matrix"}
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(report, indent=2) + "\n")
     print(json.dumps(report, indent=2))

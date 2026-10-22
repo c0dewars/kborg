@@ -1,0 +1,33 @@
+{
+  "timestamp_utc": "2026-10-22T16:25:00.918346+00:00",
+  "context": "docker-desktop",
+  "binary_sha256": "75117d867807843e878113e2e145eac54b571ce2d0a015a2a0cc29430a7b4756",
+  "passed": true,
+  "reads": {
+    "pods": {
+      "items": 1,
+      "response_keys": [
+        "allocation_status",
+        "api_version",
+        "items",
+        "namespace",
+        "scope",
+        "source",
+        "truncated"
+      ]
+    },
+    "nodes": {
+      "items": 1,
+      "response_keys": [
+        "allocation_status",
+        "api_version",
+        "items",
+        "namespace",
+        "scope",
+        "source",
+        "truncated"
+      ]
+    }
+  },
+  "scope": "Read-only available Pod and Node samples from the existing verified-TLS provider; no workload identity/payload retained."
+}

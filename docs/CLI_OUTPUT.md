@@ -88,7 +88,7 @@ matching Pods are not silently added. Identity/deletion failures stop the group;
 per-source endpoint failures remain attributed notices within sanitized text.
 Snapshot head/tail applies once across all sources, not once per Pod.
 
-Helm install/upgrade/rollback/uninstall are human-reviewed commands, separately
+Helm install/upgrade/rollback/uninstall/crds are human-reviewed commands, separately
 requiring `--write --allow-helm --allow-helm-write` and trusted Unix Helm 4.3.1.
 They reject `--json` and piped confirmations. Their review, fresh validation,
 uncertain outcomes and supported chart subset are documented in

@@ -122,6 +122,7 @@ pub const SPECIAL: &[&str] = &[
     "helm",
     "history",
     "helm-install",
+    "helm-crds",
     "logs",
     "scans",
     "scan",

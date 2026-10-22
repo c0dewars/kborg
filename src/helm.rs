@@ -1,5 +1,6 @@
 //! Native Helm v3/v4 release storage reads with explicit, bounded projections.
-//! Raw storage, chart files, notes and rendered manifests never leave this module.
+//! Public views exclude raw storage, chart files, notes and rendered manifests.
+//! Reviewed lifecycle receives only a crate-private, identity-bound hook projection.
 use crate::{Result, gateway::Gateway, safety};
 use base64::{Engine, engine::general_purpose::STANDARD};
 use flate2::read::MultiGzDecoder;
@@ -9,7 +10,7 @@ use k8s_openapi::{
 };
 use kube::{Api, Client, api::ListParams};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Value, json};
 use std::{
     collections::{BTreeMap, BTreeSet},
     io::Read,
@@ -706,6 +707,72 @@ fn selected_object(object: Stored, release: &Release) -> Result<(Release, Vec<u8
     let bytes = decode(object.payload()?, &mut DecodeBudget::default())?;
     Ok((project(&bytes, &identity)?, bytes))
 }
+/// A lifecycle-only read of the exact reviewed storage revision. Never expose
+/// the returned manifests through the public release browser or diagnostics.
+pub(crate) async fn lifecycle_hooks(gateway: &Gateway, release: &Release) -> Result<Value> {
+    let (current, bytes) = selected(gateway, release).await?;
+    if current.resource_version != release.resource_version || current.status != release.status {
+        return Err("stored Helm hook revision changed; refresh and prepare again".into());
+    }
+    hook_projection(&bytes)
+}
+fn hook_projection(bytes: &[u8]) -> Result<Value> {
+    let release: Value = serde_json::from_slice(bytes)
+        .map_err(|_| "invalid stored Helm hook envelope; contents suppressed")?;
+    let fields = release
+        .as_object()
+        .ok_or("invalid stored Helm hook envelope")?;
+    if fields
+        .keys()
+        .any(|key| key.eq_ignore_ascii_case("hooks") && key != "hooks")
+    {
+        return Err(
+            "noncanonical stored Helm hook field; execution semantics are ambiguous".into(),
+        );
+    }
+    let Some(hooks) = fields.get("hooks").filter(|value| !value.is_null()) else {
+        return Ok(Value::Array(vec![]));
+    };
+    let hooks = hooks
+        .as_array()
+        .filter(|hooks| hooks.len() <= crate::helm_extensions::MAX_HOOKS)
+        .ok_or("stored Helm hooks must be a bounded array")?;
+    let mut projected = Vec::with_capacity(hooks.len());
+    for hook in hooks {
+        let hook = hook.as_object().ok_or("invalid stored Helm hook record")?;
+        // Go's JSON decoder also accepts case-insensitive field aliases. Reject
+        // aliases/unknown fields rather than projecting different semantics.
+        if hook.keys().any(|key| {
+            ![
+                "name",
+                "kind",
+                "path",
+                "manifest",
+                "events",
+                "last_run",
+                "weight",
+                "delete_policies",
+                "output_log_policies",
+            ]
+            .contains(&key.as_str())
+        }) {
+            return Err("stored Helm hook has unsupported/noncanonical execution fields".into());
+        }
+        let mut result = serde_json::Map::new();
+        for key in ["name", "kind", "manifest"] {
+            result.insert(key.into(), hook.get(key).cloned().unwrap_or(Value::Null));
+        }
+        result.insert(
+            "weight".into(),
+            hook.get("weight").cloned().unwrap_or(json!(0)),
+        );
+        for key in ["events", "delete_policies", "output_log_policies"] {
+            result.insert(key.into(), hook.get(key).cloned().unwrap_or(json!([])));
+        }
+        projected.push(Value::Object(result));
+    }
+    Ok(Value::Array(projected))
+}
 pub async fn detail(gateway: &Gateway, release: &Release) -> Result<Detail> {
     if gateway.is_demo() {
         let release = demo_selected(release)?;
@@ -784,7 +851,7 @@ pub async fn values(gateway: &Gateway, release: &Release) -> Result<Values> {
         notice: NOTICE.into(),
     })
 }
-fn redact_values(value: &mut Value, depth: usize, nodes: &mut usize) -> Result<()> {
+pub(crate) fn redact_values(value: &mut Value, depth: usize, nodes: &mut usize) -> Result<()> {
     redact_values_at(value, depth, nodes, false)
 }
 fn redact_values_at(value: &mut Value, depth: usize, nodes: &mut usize, tls: bool) -> Result<()> {
@@ -1007,6 +1074,59 @@ mod tests {
             Storage::ConfigMap => serde_json::from_value(value).map(Stored::ConfigMap),
         }
         .map_err(|_| "invalid storage fixture".into())
+    }
+    #[test]
+    fn lifecycle_hook_projection_binds_native_storage_uid_rv_and_actual_execution_metadata()
+    -> Result<()> {
+        crate::cli::runtime()?.block_on(async {
+            for storage in [Storage::Secret, Storage::ConfigMap] {
+                let hook = json!({"apiVersion":"v1","kind":"ConfigMap","metadata":{"name":"cleanup","namespace":"test","labels":{"app.kubernetes.io/managed-by":"Helm"},"annotations":{"meta.helm.sh/release-name":"sample","meta.helm.sh/release-namespace":"test","helm.sh/hook":"pre-delete"}},"data":{"message":"cleanup"}});
+                let mut wire = payload("sample", 2, "deployed");
+                wire["hooks"] = json!([{"name":"cleanup","kind":"ConfigMap","path":"PATH_CANARY","manifest":hook.to_string(),"events":["pre-delete"],"weight":0,"delete_policies":[],"output_log_policies":[],"last_run":{"phase":"RUN_CANARY"}}]);
+                let encoded = encoded(&wire, true)?;
+                let mut body = object_value(storage, "sample", 2, "deployed", true)?;
+                body["data"]["release"] = json!(if storage == Storage::Secret { STANDARD.encode(encoded) } else { encoded });
+                let object = stored(storage, body.clone())?;
+                let identity = object.identity(storage, "test")?;
+                let expected = project(&decode(object.payload()?, &mut DecodeBudget::default())?, &identity)?;
+                let returned = Arc::new(Mutex::new(body));
+                let state = returned.clone();
+                let service = tower::service_fn(move |request: http::Request<kube::client::Body>| {
+                    let body = state.lock().unwrap_or_else(|error| panic!("{error}")).clone();
+                    let suffix = if storage == Storage::Secret { "secrets" } else { "configmaps" };
+                    assert_eq!(request.method(), http::Method::GET);
+                    assert_eq!(request.uri().path(), format!("/api/v1/namespaces/test/{suffix}/sh.helm.release.v1.sample.v2"));
+                    async move { Ok::<_, std::convert::Infallible>(http::Response::new(http_body_util::Full::new(bytes::Bytes::from(body.to_string())))) }
+                });
+                let gateway = Gateway::for_helm_test_client(Client::new(service, "test"), "test");
+                let raw = lifecycle_hooks(&gateway, &expected).await?;
+                assert!(!raw.to_string().contains("CANARY"));
+                let plan = crate::helm_extensions::hooks(&raw,"test","sample",crate::helm_extensions::Operation::Uninstall,true)?;
+                assert_eq!(plan.active().len(), 1);
+                for variant in 0..4 {
+                    let mut altered = wire.clone();
+                    match variant {
+                        0 => altered["hooks"][0]["events"] = json!(["post-install"]),
+                        1 => altered["hooks"][0]["delete_policies"] = json!(["hook-failed"]),
+                        2 => altered["hooks"][0]["weight"] = json!(1),
+                        _ => altered["hooks"][0]["output_log_policies"] = json!(["hook-succeeded"]),
+                    }
+                    let projected = hook_projection(&serde_json::to_vec(&altered).map_err(|_| "fixture JSON")?)?;
+                    assert!(crate::helm_extensions::hooks(&projected,"test","sample",crate::helm_extensions::Operation::Uninstall,true).is_err());
+                }
+                for field in ["resourceVersion", "uid"] {
+                    returned.lock().unwrap_or_else(|error| panic!("{error}"))["metadata"][field] = json!("changed");
+                    assert!(lifecycle_hooks(&gateway, &expected).await.is_err());
+                }
+            }
+            let mut aliases = payload("sample", 2, "deployed");
+            aliases["Hooks"] = json!([]);
+            assert!(hook_projection(&serde_json::to_vec(&aliases).map_err(|_| "fixture JSON")?).is_err());
+            aliases.as_object_mut().ok_or("fixture object")?.remove("Hooks");
+            aliases["hooks"] = json!([{"Events":["pre-delete"]}]);
+            assert!(hook_projection(&serde_json::to_vec(&aliases).map_err(|_| "fixture JSON")?).is_err());
+            Ok(())
+        })
     }
     #[test]
     fn secret_and_configmap_storage_decode_only_safe_metadata_for_gzip_and_legacy() -> Result<()> {

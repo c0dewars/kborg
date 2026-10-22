@@ -17,8 +17,8 @@ an `operator` profile; configuration never enables those capabilities by itself.
 
 Type `:helm`. The release table keeps Enter/r for history, adds `i` for install,
 `u` for upgrade and Ctrl-D for uninstall. In history, `r` rolls back to the selected
-revision. Forms capture the release, namespace, local chart and optional values
-file. Use the executable basename `helm`: native dry-run admission uses the `helm`
+revision. Forms capture the release, namespace, local chart or digest-pinned OCI source and optional values
+file. The `c` key and `:helm-crds` open a separate create-only schema review. Use the executable basename `helm`: native dry-run admission uses the `helm`
 field manager, while upstream derives its manager from the executable basename.
 Renamed executables are outside this validated workflow. The executable is
 supplied when launching KBorg, not by chart data.
@@ -37,10 +37,7 @@ native operation families retain their own shorter approval lifetimes.
 
 ## CLI examples
 
-Package charts locally with a separately trusted Helm installation first. KBorg
-accepts a local `.tgz`, with dependencies already bundled; it does not download a
-chart, resolve an OCI reference or update dependencies while preparing a write.
-The namespace must already exist.
+KBorg accepts a local `.tgz` or a digest-pinned OCI reference, with dependencies already bundled. OCI acquisition finishes and verifies every digest before review; execution uses a sealed local snapshot. The namespace must already exist. Hooks and create-only CRD bootstrap require separate opt-ins; see [HELM_EXTENSIONS.md](HELM_EXTENSIONS.md) for examples and boundaries.
 
 ```sh
 kborg --context docker-desktop -n staging \
@@ -78,15 +75,13 @@ original kubeconfig paths, exec helpers and inherited Helm endpoint overrides
 are not forwarded. Helper-derived credentials retain their expiry/revocation
 checks. The Helm process retains the operating system user's permissions; this
 supervision is not an OS sandbox and does not impose an OS memory/CPU limit.
-Use trusted local charts. Inputs must be regular, non-symlink files. Charts are
+Use trusted chart sources. Local inputs must be regular, non-symlink files. Charts are
 limited to 8 MiB compressed and 32 MiB expanded; reviews are limited to 512 KiB.
 
 Supported charts contain at most 128 affected ordinary namespaced resources.
 Explicit allowlisted families include core configuration/workload networking,
 apps workloads, batch workloads, autoscaling, disruption budgets and namespaced
-RBAC. Cluster-scoped resources, system/cross-namespace targets, CRDs, hooks,
-plugins, post-renderers, foreign-resource adoption and recognized GitOps-managed
-resources are rejected. Hook-dependent charts need a separate supported workflow.
+RBAC. The explicit extensions add reviewed hooks, a separate create-only CRD stage and schema-bound namespaced custom resources; see [HELM_EXTENSIONS.md](HELM_EXTENSIONS.md). Other cluster-scoped resources, system/cross-namespace targets, plugins, post-renderers, foreign-resource adoption and recognized GitOps-managed resources are rejected.
 
 Time/random/credential-generating functions, cluster lookups and dynamic template
 evaluation are rejected, as are unordered `keys`/`values` iteration and dynamic
