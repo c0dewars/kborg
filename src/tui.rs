@@ -2935,6 +2935,13 @@ impl App {
         }
     }
     fn key(&mut self, code: KeyCode) -> Result<bool> {
+        self.key_with_approval_size(code, terminal::size)
+    }
+    fn key_with_approval_size(
+        &mut self,
+        code: KeyCode,
+        approval_size: impl FnOnce() -> io::Result<(u16, u16)>,
+    ) -> Result<bool> {
         if matches!(self.modal, Modal::AdviceRunning) {
             self.status = "Copilot request running; Ctrl-C cancels and waits for cleanup.".into();
             return Ok(false);
@@ -2994,7 +3001,8 @@ impl App {
             Modal::WriteReview(mut review) => match code {
                 KeyCode::Esc => self.close_subview(),
                 KeyCode::Enter => {
-                    let (width, height) = terminal::size().unwrap_or((80, 24));
+                    let (width, height) =
+                        approval_size().map_err(|_| "cannot read terminal size for approval")?;
                     if !self.busy && review.view.ready(width, height, self.epoch) {
                         self.modal = Modal::WriteRunning;
                         let task = match review.plan {
@@ -3032,18 +3040,21 @@ impl App {
             Modal::Export(draft) => match code {
                 KeyCode::Esc => self.close_subview(),
                 KeyCode::Enter => {
-                    let (width, height) = terminal::size().unwrap_or((80, 24));
+                    let (width, height) =
+                        approval_size().map_err(|_| "cannot read terminal size for approval")?;
                     let review = safety::review_display(&draft.review());
                     if let Err(error) = review {
                         self.status = error;
                         self.modal = Modal::Export(draft);
-                    } else if wrap_text(
-                        &review.unwrap_or_default(),
-                        usize::from(width.saturating_sub(2)),
-                    )
-                    .lines()
-                    .count()
-                        > usize::from(height.saturating_sub(8))
+                    } else if width < 28
+                        || height < 10
+                        || wrap_text(
+                            &review.unwrap_or_default(),
+                            usize::from(width.saturating_sub(2)),
+                        )
+                        .lines()
+                        .count()
+                            > usize::from(height.saturating_sub(8))
                     {
                         self.status="Enlarge the terminal to review the full export destination before saving.".into();
                         self.modal = Modal::Export(draft);
@@ -3068,7 +3079,8 @@ impl App {
             Modal::AdviceReview(mut review) => match code {
                 KeyCode::Esc => self.close_subview(),
                 KeyCode::Enter => {
-                    let (width, height) = terminal::size().unwrap_or((80, 24));
+                    let (width, height) =
+                        approval_size().map_err(|_| "cannot read terminal size for approval")?;
                     if self.busy || !review.can_send(width, height, self.epoch) {
                         self.status="Read every preview line and type the exact transfer confirmation. Local previews cannot send.".into();
                         self.modal = Modal::AdviceReview(review);
@@ -3164,7 +3176,8 @@ impl App {
                     self.close_subview();
                 }
                 KeyCode::Enter => {
-                    let (width, height) = terminal::size().unwrap_or((80, 24));
+                    let (width, height) =
+                        approval_size().map_err(|_| "cannot read terminal size for approval")?;
                     if self.busy || !review.can_execute(width, height, self.epoch) {
                         self.status="Read every review line (PgUp/PgDown), keep this session, and type the exact confirmation shown below.".into();
                         self.modal = Modal::HelmReview(review);
@@ -7408,7 +7421,7 @@ mod layout_tests {
         };
         form.fields[0].1 = "demo".into();
         form.fields[1].1 = "demo-new".into();
-        app.key(KeyCode::Enter)?;
+        app.key_with_approval_size(KeyCode::Enter, || Ok((80, 24)))?;
         assert_eq!(app.status, "Preparing Helm review; no execution requested.");
         assert!(matches!(
             commands.try_recv(),
@@ -7427,7 +7440,7 @@ mod layout_tests {
         };
         review.typed = review.prepared.confirmation();
         review.mark_drawn(78, 500);
-        app.key(KeyCode::Enter)?;
+        app.key_with_approval_size(KeyCode::Enter, || Ok((80, 24)))?;
         assert!(app.write_inflight);
         assert_eq!(
             app.status,
@@ -7456,20 +7469,20 @@ mod layout_tests {
             app.epoch,
         )));
         assert!(screen(&app, 28, 10).join("\n").contains("unread"));
-        app.key(KeyCode::Enter)?;
+        app.key_with_approval_size(KeyCode::Enter, || Ok((80, 24)))?;
         assert!(commands.try_recv().is_err());
         if let Modal::HelmReview(review) = &mut app.modal {
             review.typed = review.prepared.confirmation();
             review.mark_drawn(78, 500);
             review.epoch = app.epoch - 1;
         }
-        app.key(KeyCode::Enter)?;
+        app.key_with_approval_size(KeyCode::Enter, || Ok((80, 24)))?;
         assert!(commands.try_recv().is_err());
         if let Modal::HelmReview(review) = &mut app.modal {
             review.epoch = app.epoch;
         }
         app.helm_return = Some(("demo".into(), crate::helm::Storage::Secret));
-        app.key(KeyCode::Enter)?;
+        app.key_with_approval_size(KeyCode::Enter, || Ok((80, 24)))?;
         assert!(app.write_inflight && matches!(app.modal, Modal::HelmRunning(..)));
         let (generation, mut cancel) = match commands.try_recv() {
             Ok((_, Task::HelmExecute(_, typed, generation, cancel))) => {
@@ -7512,11 +7525,73 @@ mod layout_tests {
         review.typed = review.prepared.confirmation();
         review.mark_drawn(78, 500);
         app.modal = Modal::HelmReview(Box::new(review));
-        app.key(KeyCode::Enter)?;
+        app.key_with_approval_size(KeyCode::Enter, || Ok((80, 24)))?;
         assert!(!app.write_inflight && !app.busy);
         assert!(
             matches!(app.modal,Modal::HelmOutcome(ref title,..) if title.contains("NOT STARTED"))
         );
+        Ok(())
+    }
+    #[test]
+    fn approval_enter_requires_known_painted_dimensions_before_export_or_dispatch() -> Result<()> {
+        struct Directory(std::path::PathBuf);
+        impl Drop for Directory {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|_| "test clock unavailable")?
+            .as_nanos();
+        let path = std::env::temp_dir()
+            .canonicalize()
+            .map_err(|_| "test temporary root unavailable")?
+            .join(format!("kborg-export-size-{}-{stamp}", std::process::id()));
+        std::fs::create_dir(&path).map_err(|_| "test directory creation failed")?;
+        let directory = Directory(path);
+        safety::ensure_private_dir(&directory.0)?;
+        let (mut app, _, mut commands) = harness();
+        for (width, height) in [(20, 100), (27, 100), (120, 9)] {
+            let draft = crate::exports::fixture_at(&directory.0.join("exports"))?;
+            let destination = draft.path().to_owned();
+            app.modal = Modal::Export(draft);
+            let painted = screen(&app, width, height).join("\n");
+            assert!(painted.contains("needs 28x10"));
+            assert!(!painted.contains("File (escaped)"));
+            app.key_with_approval_size(KeyCode::Enter, || Ok((width, height)))?;
+            assert!(!destination.exists());
+            assert!(matches!(app.modal, Modal::Export(_)));
+            assert!(commands.try_recv().is_err());
+        }
+        let draft = crate::exports::fixture_at(&directory.0.join("exports"))?;
+        let destination = draft.path().to_owned();
+        app.modal = Modal::Export(draft);
+        assert!(
+            app.key_with_approval_size(KeyCode::Enter, || Err(io::Error::other("fixture")))
+                .is_err()
+        );
+        assert!(!destination.exists());
+        assert!(!directory.0.join("exports").exists());
+        let draft = crate::exports::fixture_at(&directory.0.join("exports"))?;
+        let destination = draft.path().to_owned();
+        app.modal = Modal::Export(draft);
+        assert!(screen(&app, 120, 34).join("\n").contains("File (escaped)"));
+        app.key_with_approval_size(KeyCode::Enter, || Ok((120, 34)))?;
+        assert_eq!(
+            std::fs::read_to_string(destination).map_err(|_| "test export unavailable")?,
+            "kind: Pod\n"
+        );
+        let mut review = helm_ui::Review::new(demo_helm_prepared()?, app.epoch);
+        review.typed = review.prepared.confirmation();
+        review.mark_drawn(78, 500);
+        app.modal = Modal::HelmReview(Box::new(review));
+        assert!(
+            app.key_with_approval_size(KeyCode::Enter, || Err(io::Error::other("fixture")))
+                .is_err()
+        );
+        assert!(!app.write_inflight);
+        assert!(commands.try_recv().is_err());
         Ok(())
     }
     #[test]

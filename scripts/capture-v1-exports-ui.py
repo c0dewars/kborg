@@ -30,9 +30,25 @@ def main():
             raise RuntimeError(f'missing {expected}:\n{screen.text()}')
         def capture(name):
             path=a.screenshots/f'{name}.png';screen.png(path);captures.append({'name':name,'path':str(path.resolve())})
+        def resize(width,height):
+            nonlocal screen
+            fcntl.ioctl(slave,termios.TIOCSWINSZ,struct.pack('HHHH',height,width,0,0))
+            screen=Screen(width,height)
+            os.killpg(proc.pid,signal.SIGWINCH)
+            drain(.4)
         try:
             keys(expected='api-7d4f9');drain(.5)
             keys(b':export\r','EXPORT / review local file');capture('resource-export-review')
+            # Width suppresses modal painting, even when the tall viewport could
+            # fit every wrapped line. Enter must not create any export directory.
+            resize(20,100);keys(expected='needs 28x10')
+            assert 'File (escaped)' not in screen.text()
+            keys(b'\r');assert not (config/'exports').exists(), 'unpainted 20x100 review created an export'
+            keys(expected='needs 28x10');capture('resource-export-too-narrow')
+            checks.append('Enter at 20x100 creates no file when only the resize notice is painted')
+            resize(120,34);keys(expected='EXPORT / review local file');keys(expected='File (escaped)');capture('resource-export-review-restored')
+            assert not (config/'exports').exists()
+            checks.append('restoring width retains the unsaved export review and destination')
             keys(b'\x1b');assert not (config/'exports').exists();checks.append('resource export cancel writes no file')
             keys(b':export\r','EXPORT / review local file');keys(b'\r','EXPORT RESULT');keys(expected='Saved');capture('resource-export-saved');keys(b'\x1b')
             files=list((config/'exports').glob('*.yaml'));assert len(files)==1;assert 'api-7d4f9' in files[0].read_text();assert files[0].stat().st_mode & 0o777==0o600

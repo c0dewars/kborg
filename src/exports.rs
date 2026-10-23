@@ -124,6 +124,18 @@ pub fn helm(detail: &crate::helm::Detail) -> Result<Draft> {
 }
 
 #[cfg(test)]
+pub(crate) fn fixture_at(directory: &Path) -> Result<Draft> {
+    Draft::at(
+        directory,
+        "resource",
+        "yaml",
+        "Export fixture",
+        "kind: Pod\n".into(),
+        "Private test snapshot",
+    )
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     #[test]
