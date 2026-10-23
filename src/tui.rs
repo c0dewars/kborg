@@ -7170,6 +7170,15 @@ pub fn run(options: Options) -> Result<()> {
             app.refresh = true;
             dirty = true;
         }
+        // `--contexts`: open the dashboard once the startup connection settles,
+        // whether or not the default context itself is reachable.
+        if !app.options.dashboard.is_empty() && !app.busy && matches!(app.modal, Modal::None) {
+            let names = std::mem::take(&mut app.options.dashboard);
+            if let Err(error) = app.open_dashboard(names) {
+                app.status = error;
+            }
+            dirty = true;
+        }
         if matches!(app.modal, Modal::Metrics(..))
             && !app.busy
             && app.last_metrics.elapsed() >= Duration::from_secs(5)
@@ -7427,6 +7436,7 @@ mod layout_tests {
                     previous: false,
                     all_containers: false,
                     dynamic_membership: false,
+                    dashboard: Vec::new(),
                     helm_storage: None,
                     helm_tool: None,
                     helm_values: None,

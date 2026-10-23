@@ -28,6 +28,8 @@ pub(super) struct Dashboard {
     pub help: bool,
     pub notice: Option<(String, bool)>,
     pub logs: Option<LogPane>,
+    /// k10s focus mode: pressing the focused card's number again shows it alone.
+    pub focus: bool,
 }
 impl Dashboard {
     pub fn new(names: &[String], demo: bool) -> Self {
@@ -42,6 +44,7 @@ impl Dashboard {
             help: false,
             notice: None,
             logs: None,
+            focus: false,
         }
     }
     pub fn selected(&self) -> Option<&ContextSummary> {
@@ -101,7 +104,9 @@ impl Dashboard {
             KeyCode::Char('1'..='4') => {
                 if let KeyCode::Char(number) = key {
                     let selected = number as usize - '1' as usize;
-                    if selected < count {
+                    if selected == self.selected && count > 1 {
+                        self.focus = !self.focus;
+                    } else if selected < count {
                         self.selected = selected;
                     }
                 }
@@ -265,6 +270,72 @@ fn log_pane(app: &App, pane: &LogPane, rect: Rect, out: &mut impl Write) -> Resu
     Ok(())
 }
 
+/// Node and app readiness lines: headline Node and app rows first, then
+/// named degraded workloads. Unavailable evidence is labelled, never zero.
+fn infra_lines(
+    infra: &crate::cluster_health::InfraSummary,
+    demo: bool,
+) -> Vec<(String, &'static str)> {
+    let label = |state: &EvidenceState| {
+        if demo && matches!(state, EvidenceState::Live) {
+            "SAMPLE"
+        } else {
+            state_label(state)
+        }
+    };
+    let nodes = &infra.nodes;
+    let node_line = if matches!(nodes.state, EvidenceState::Live) {
+        let usage = match (nodes.cpu_percent, nodes.memory_percent) {
+            (Some(cpu), Some(memory)) => format!("   CPU {cpu}%   MEM {memory}%"),
+            _ if matches!(nodes.metrics, EvidenceState::Live) => "   usage unknown".into(),
+            _ => format!("   metrics {}", label(&nodes.metrics)),
+        };
+        let cordoned = if nodes.cordoned > 0 {
+            format!("   {} cordoned", nodes.cordoned)
+        } else {
+            String::new()
+        };
+        (
+            format!(
+                "NODES {}/{} ready{cordoned}{usage}",
+                nodes.ready, nodes.total
+            ),
+            if nodes.ready < nodes.total {
+                "warning"
+            } else {
+                "text"
+            },
+        )
+    } else {
+        (format!("NODES {}", label(&nodes.state)), "muted")
+    };
+    let apps = &infra.workloads;
+    let mut lines = vec![node_line];
+    if matches!(apps.state, EvidenceState::Live) {
+        lines.push((
+            format!(
+                "APPS {} deploy   {} sts   {} degraded",
+                apps.deployments, apps.statefulsets, apps.degraded
+            ),
+            if apps.degraded > 0 { "warning" } else { "text" },
+        ));
+        lines.extend(
+            apps.named
+                .iter()
+                .map(|name| (format!("  {name}"), "warning")),
+        );
+        if apps.degraded > apps.named.len() {
+            lines.push((
+                format!("  +{} more", apps.degraded - apps.named.len()),
+                "muted",
+            ));
+        }
+    } else {
+        lines.push((format!("APPS {}", label(&apps.state)), "muted"));
+    }
+    lines
+}
+
 fn card(
     app: &App,
     dashboard: &Dashboard,
@@ -339,13 +410,33 @@ fn card(
         "text",
     )?;
     let expanded = rect.height >= 12;
+    let infra = summary.infra.as_ref().filter(|_| expanded);
     let warning_row = if split {
         1
+    } else if infra.is_some() && rect.height >= 14 {
+        8
     } else if expanded {
         6
     } else {
         4
     };
+    if let Some(infra) = infra {
+        let rows = infra_lines(infra, summary.demo);
+        let (start, limit) = if split {
+            (7, rect.height.saturating_sub(3))
+        } else if warning_row == 8 {
+            (6, 8)
+        } else {
+            (0, 0)
+        };
+        for (offset, (text, role)) in rows.iter().enumerate() {
+            let at = start + offset as u16;
+            if at >= limit {
+                break;
+            }
+            line(at, false, text, role)?;
+        }
+    }
     if let Some(health) = &summary.health {
         line(
             3,
@@ -528,7 +619,7 @@ pub(super) fn render(
         };
         panel(out, rect, "DASHBOARD KEYS", true, color("accent"), bg).map_err(|_| "draw failed")?;
         let help = [
-            "1..4             Focus a context card",
+            "1..4             Focus a card; its number again toggles full screen",
             "Arrows / Tab     Move between cards",
             "Enter            Open focused context Pods",
             "w                Select next recent warning",
@@ -573,8 +664,20 @@ pub(super) fn render(
         let card_height = height.saturating_sub(pane.map_or(0, |(_, h)| h + 1));
         let mut cards_bottom = 4;
         if card_height >= 12 || pane.is_none() {
-            for (index, rect) in cards(width, card_height, dashboard.rows.len(), dashboard.selected)
-            {
+            let layout = if dashboard.focus {
+                vec![(
+                    dashboard.selected,
+                    Rect {
+                        x: 0,
+                        y: 4,
+                        width,
+                        height: card_height.saturating_sub(7),
+                    },
+                )]
+            } else {
+                cards(width, card_height, dashboard.rows.len(), dashboard.selected)
+            };
+            for (index, rect) in layout {
                 cards_bottom = cards_bottom.max(rect.y + rect.height);
                 card(app, dashboard, index, rect, out, now)?;
             }
@@ -652,6 +755,42 @@ pub(super) fn render(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn number_again_toggles_focus_and_cards_show_node_and_app_readiness() {
+        let names = vec!["north".into(), "south".into()];
+        let mut dashboard = Dashboard::new(&names, false);
+        dashboard.key(KeyCode::Char('2'));
+        assert!(!dashboard.focus);
+        dashboard.key(KeyCode::Char('2'));
+        assert!(dashboard.focus);
+        dashboard.key(KeyCode::Char('2'));
+        assert!(!dashboard.focus);
+        let mut infra = crate::cluster_health::InfraSummary::connecting();
+        infra.nodes.state = EvidenceState::Live;
+        infra.nodes.ready = 2;
+        infra.nodes.total = 3;
+        infra.nodes.metrics = EvidenceState::Denied;
+        infra.workloads.state = EvidenceState::Denied;
+        let lines = infra_lines(&infra, false);
+        assert_eq!(lines[0].0, "NODES 2/3 ready   metrics DENIED");
+        assert_eq!(lines[0].1, "warning");
+        assert_eq!(lines[1].0, "APPS DENIED");
+        infra.workloads = crate::cluster_health::WorkloadEvidence {
+            state: EvidenceState::Live,
+            deployments: 9,
+            statefulsets: 1,
+            degraded: 6,
+            named: vec![
+                "deploy/a".into(),
+                "deploy/b".into(),
+                "deploy/c".into(),
+                "sts/d".into(),
+            ],
+        };
+        let lines = infra_lines(&infra, false);
+        assert_eq!(lines[1].0, "APPS 9 deploy   1 sts   6 degraded");
+        assert_eq!(lines.last().map(|line| line.0.as_str()), Some("  +2 more"));
+    }
     #[test]
     fn focus_survives_updates_and_never_selects_missing_cards() {
         let names = vec!["north".into(), "south".into()];

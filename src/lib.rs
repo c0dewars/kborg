@@ -12,6 +12,7 @@ pub mod watch;
 pub type Result<T> = std::result::Result<T, String>;
 
 pub mod audit;
+pub mod cluster_health;
 pub mod completions;
 pub mod config;
 pub mod dashboard_health;

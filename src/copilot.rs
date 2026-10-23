@@ -17,7 +17,93 @@ pub fn host(value: &str) -> Result<String> {
     if value.len() <= 253 && value.ends_with(".ghe.com") && value.split('.').all(safety::valid_id) {
         return Ok(value.into());
     }
-    Err("Copilot host must be github.com or an Enterprise Cloud *.ghe.com hostname; Enterprise Server is not assumed supported".into())
+    Err("Copilot host must be github.com or an Enterprise Cloud *.ghe.com hostname; Enterprise Server is configured through a policy with \"deployment\": \"server\"".into())
+}
+
+/// Where Copilot inference is served. Each deployment has its own exact broker
+/// allowlist; nothing is inferred from a hostname beyond these three shapes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Deployment {
+    /// github.com
+    GitHub,
+    /// GitHub Enterprise Cloud with data residency: TENANT.ghe.com
+    EnterpriseCloud(String),
+    /// GitHub Enterprise Server 3.22+ in offline mode, using the instance's
+    /// administrator-configured model provider.
+    EnterpriseServer(String),
+}
+
+/// Approved provider authorities for github.com inference.
+pub const GITHUB_AUTHORITIES: &[&str] = &[
+    "api.github.com",
+    "api.githubcopilot.com",
+    "api.individual.githubcopilot.com",
+    "api.business.githubcopilot.com",
+    "api.enterprise.githubcopilot.com",
+    "copilot-proxy.githubusercontent.com",
+];
+
+fn dns_name(value: &str) -> bool {
+    value.len() <= 253
+        && value.contains('.')
+        && value.split('.').all(safety::valid_id)
+        && !value
+            .rsplit('.')
+            .next()
+            .is_some_and(|label| label.bytes().all(|b| b.is_ascii_digit()))
+}
+
+impl Deployment {
+    /// `kind` is the policy's optional `deployment` field. github.com and
+    /// *.ghe.com are recognized; any other host must say `server` explicitly.
+    pub fn parse(host: &str, kind: Option<&str>) -> Result<Self> {
+        if !dns_name(host) {
+            return Err("Copilot host must be one lowercase DNS hostname without scheme, port, path or IP literal".into());
+        }
+        let tenant = host.strip_suffix(".ghe.com");
+        let deployment = match (host, tenant, kind) {
+            ("github.com", _, None | Some("github.com")) => Self::GitHub,
+            (_, Some(tenant), None | Some("ghe.com")) if !tenant.contains('.') => {
+                Self::EnterpriseCloud(host.into())
+            }
+            (_, None, Some("server"))
+                if !["github.com", "githubusercontent.com", "githubcopilot.com", "ghe.com"]
+                    .iter()
+                    .any(|public| host == *public || host.ends_with(&format!(".{public}"))) =>
+            {
+                Self::EnterpriseServer(host.into())
+            }
+            _ => return Err("Copilot deployment must be github.com, a single-label TENANT.ghe.com, or an explicit \"server\" for a GitHub Enterprise Server hostname outside GitHub-owned domains".into()),
+        };
+        Ok(deployment)
+    }
+    pub fn host(&self) -> &str {
+        match self {
+            Self::GitHub => "github.com",
+            Self::EnterpriseCloud(host) | Self::EnterpriseServer(host) => host,
+        }
+    }
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::GitHub => "GitHub.com",
+            Self::EnterpriseCloud(_) => "GitHub Enterprise Cloud with data residency",
+            Self::EnterpriseServer(_) => "GitHub Enterprise Server (offline provider mode)",
+        }
+    }
+    /// Exact TLS authorities on port 443 the egress broker may reach.
+    pub fn authorities(&self) -> Vec<String> {
+        match self {
+            Self::GitHub => GITHUB_AUTHORITIES.iter().map(|h| (*h).to_owned()).collect(),
+            Self::EnterpriseCloud(host) => {
+                vec![
+                    host.clone(),
+                    format!("api.{host}"),
+                    format!("copilot-api.{host}"),
+                ]
+            }
+            Self::EnterpriseServer(host) => vec![host.clone()],
+        }
+    }
 }
 
 /// Explicit executable selection prevents PATH/current-directory executable substitution.
@@ -230,6 +316,38 @@ mod tests {
             assert!(host(value).is_err());
         }
         assert_eq!(host("https://acme.ghe.com"), Ok("acme.ghe.com".into()));
+        assert_eq!(
+            Deployment::parse("github.com", None),
+            Ok(Deployment::GitHub)
+        );
+        assert_eq!(
+            Deployment::parse("acme.ghe.com", None).map(|d| d.authorities()),
+            Ok(vec![
+                "acme.ghe.com".into(),
+                "api.acme.ghe.com".into(),
+                "copilot-api.acme.ghe.com".into()
+            ])
+        );
+        assert_eq!(
+            Deployment::parse("git.corp.example", Some("server")).map(|d| d.authorities()),
+            Ok(vec!["git.corp.example".into()])
+        );
+        for (host, kind) in [
+            ("git.corp.example", None),
+            ("github.com", Some("server")),
+            ("evil.github.com", Some("server")),
+            ("x.ghe.com", Some("server")),
+            ("a.b.ghe.com", None),
+            ("acme.ghe.com", Some("github.com")),
+            ("10.0.0.1", Some("server")),
+            ("Git.Corp.example", Some("server")),
+            ("git.corp.example:8443", Some("server")),
+            ("https://git.corp.example", Some("server")),
+            ("localhost", Some("server")),
+            ("git.corp.example", Some("enterprise")),
+        ] {
+            assert!(Deployment::parse(host, kind).is_err(), "{host} {kind:?}");
+        }
         let object = json!({"kind":"Pod","metadata":{"name":"private-name","namespace":"secret-team"},"spec":{"containers":[{"env":[{"value":"PASSWORD"}]}]},"status":{"phase":"Pending","conditions":[{"type":"Ready","status":"False","reason":"Wait\u{1b}[31m","message":"PRIVATE"}]}});
         let output = minimize(&object).to_string();
         for secret in [

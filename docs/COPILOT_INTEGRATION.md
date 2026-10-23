@@ -1,6 +1,6 @@
 # Reviewed GitHub Copilot advice
 
-KBorg can send an explicitly reviewed, minimized Kubernetes status bundle to GitHub Copilot. The response is advice: KBorg never executes suggested commands or applies suggested changes. The contained inference path currently supports **macOS ARM64, GitHub.com and the reviewed native Copilot CLI 1.0.91**. Other platforms and unsupported runtime versions fail closed.
+KBorg can send an explicitly reviewed, minimized Kubernetes status bundle to GitHub Copilot. The response is advice: KBorg never executes suggested commands or applies suggested changes. The contained inference path currently supports **macOS ARM64 and the reviewed native Copilot CLI 1.0.91**, against **GitHub.com, GitHub Enterprise Cloud with data residency (`TENANT.ghe.com`) or GitHub Enterprise Server 3.22+ in offline provider mode**. Other platforms and unsupported runtime versions fail closed.
 
 `:copilot` opens a local preview for the selected resource. A configured policy enables a separate transfer review; configuration alone never sends data. Read every preview line and type the exact host/account confirmation. CLI `copilot diagnose RESOURCE NAME --copilot-policy ABS` requires an interactive terminal and the same explicit confirmation. Demo mode remains local preview only. Cancel with Ctrl-C; cancellation cannot retract bytes already received by the provider.
 
@@ -25,12 +25,39 @@ Use an absolute, nonsymlink JSON policy path with no group/world write permissio
 }
 ```
 
+## GitHub Enterprise deployments
+
+The policy `host` selects one deployment. Each deployment has its own exact broker allowlist; there is no wildcard and no fallback to another deployment.
+
+| Deployment | Policy | Broker authorities (TLS, port 443) | Runtime selection |
+|---|---|---|---|
+| GitHub.com | `"host": "github.com"` | `api.github.com`, `api.githubcopilot.com`, `api.individual/business/enterprise.githubcopilot.com`, `copilot-proxy.githubusercontent.com` | `GH_HOST=github.com` |
+| GHE.com (data residency) | `"host": "TENANT.ghe.com"` (deployment inferred, or `"deployment": "ghe.com"`) | `TENANT.ghe.com`, `api.TENANT.ghe.com`, `copilot-api.TENANT.ghe.com` | `GH_HOST` and `COPILOT_GH_HOST` set to the tenant |
+| GitHub Enterprise Server | `"host": "github.example.internal", "deployment": "server"` | only that host | `COPILOT_OFFLINE=true`, `COPILOT_PROVIDER_GHES_HOST`, `COPILOT_PROVIDER_GHES_TOKEN` |
+
+- A GHE.com tenant must be a single label (`acme.ghe.com`). The pinned 1.0.91 runtime derives `api.` and `copilot-api.` endpoints from the selected host; both are approved exactly, nothing else under `ghe.com` is.
+- GHES uses GitHub's documented offline provider mode (GHES 3.22+, technical preview at the time of writing). The instance forwards the bundle to the model provider its administrator configured; KBorg cannot see or verify that provider, and the transfer review says so. A GHES host must be named explicitly with `"deployment": "server"` and cannot be a GitHub-owned domain, an IP literal or a name with a port.
+- GHES-only options: `"allow_private_network": true` lets the broker reach RFC 1918, CGNAT (100.64/10) and IPv6 ULA addresses for that one host. Loopback, link-local (including 169.254.169.254 metadata), multicast and unspecified addresses remain blocked. `"tls_ca_file": "/absolute/ca.pem"` pins an internal CA bundle; it must be a non-writable, single-link file containing only PEM certificates, and is copied into the private sandbox state for the run.
+- Credentials are host-bound: `gh auth token --hostname HOST --user LOGIN` for `gh_cli`, and a `credential_file` whose `host` equals the policy host. Classic `ghp_` tokens are still refused.
+- Validation status: the policy, allowlists, private-range gating and environment are unit-tested, and the token-free macOS sandbox canary passes against the pinned runtime. No GHE.com tenant or GHES 3.22 instance was available, so live enterprise inference has **not** been demonstrated; run the existing live test against your own tenant before relying on it.
+
+Example GHES policy fragment:
+
+```json
+{
+  "host": "github.example.internal",
+  "deployment": "server",
+  "allow_private_network": true,
+  "tls_ca_file": "/Library/KBorg/corp-root-ca.pem"
+}
+```
+
 Both digest values must actually contain 64 lowercase hexadecimal characters. Select native Mach-O executables directly, not npm JavaScript loaders or symlinks. The supplied pins are trust decisions: a computed matching hash and successful native signature check do not independently establish publisher identity.
 
 Exactly one credential source is required:
 
-- `gh_cli` deliberately reuses the selected stored GitHub CLI account. KBorg invokes the pinned private snapshot with `gh auth token --hostname github.com --user LOGIN`, without switching accounts. Ambient token variables are removed. Only this separate credential lookup receives the user HOME and explicit GitHub configuration directory, allowing the selected stored Keychain credential. Its output remains in memory. The Copilot child receives neither directory nor the `gh` executable. Existing `gh` authority can be broader than Copilot; KBorg cannot independently inspect all grants. A stored OAuth, user-to-server or fine-grained token is required; classic PAT fallback is refused.
-- Alternatively use `credential_file` instead of `gh_cli`. This must be an absolute, nonsymlink, single-link file with mode 0600 containing strict JSON: `{"schema_version":1,"host":"github.com","account":"LOGIN","token":"github_pat_…"}`. Select a fine-grained PAT limited to Copilot Requests. Never commit this file. KBorg cannot independently verify every grant from token syntax.
+- `gh_cli` deliberately reuses the selected stored GitHub CLI account. KBorg invokes the pinned private snapshot with `gh auth token --hostname HOST --user LOGIN`, without switching accounts. Ambient token variables are removed. Only this separate credential lookup receives the user HOME and explicit GitHub configuration directory, allowing the selected stored Keychain credential. Its output remains in memory. The Copilot child receives neither directory nor the `gh` executable. Existing `gh` authority can be broader than Copilot; KBorg cannot independently inspect all grants. A stored OAuth, user-to-server or fine-grained token is required; classic PAT fallback is refused.
+- Alternatively use `credential_file` instead of `gh_cli`. This must be an absolute, nonsymlink, single-link file with mode 0600 containing strict JSON: `{"schema_version":1,"host":"HOST","account":"LOGIN","token":"github_pat_…"}` with `HOST` equal to the policy host. Select a fine-grained PAT limited to Copilot Requests. Never commit this file. KBorg cannot independently verify every grant from token syntax.
 
 `--copilot-policy` enables setup only. No account is implicitly selected and no environment-token fallback occurs. Policy, executable and credential identities are rechecked; a changed account/token after review requires a new preparation. The exact approval expires after five minutes.
 
@@ -46,8 +73,8 @@ Every preparation and execution establishes fresh positive and negative checks a
 
 - Private empty HOME/config/current directory; environment cleared. The native is pinned and copied to a separate private executable snapshot. Its version is checked without a credential.
 - macOS SBPL denies outside reads/writes, child executables/fork and direct networking. Standard system libraries and the pinned native's private, versioned extracted addon cache remain readable/mappable. The process can write only its temporary state area. An explicitly permitted broker loopback port is the sole outbound socket destination.
-- A random per-session authenticated CONNECT broker accepts only exact approved TLS authorities on port 443. It independently checks the ClientHello SNI, rejects encrypted ClientHello, resolves only public addresses, rejects reserved/private/transition ranges and bounds connections, DNS work, bytes and lifetime. Native TLS still validates the server certificate end to end. The broker cannot inspect encrypted HTTP paths or request bodies.
-- Approved provider authorities are `api.github.com`, `api.githubcopilot.com`, `api.individual.githubcopilot.com`, `api.business.githubcopilot.com`, `api.enterprise.githubcopilot.com` and `copilot-proxy.githubusercontent.com`. These services receive the approved request and the selected credential as required by the trusted native runtime. Host containment does not reduce a reused token's server-side grants.
+- A random per-session authenticated CONNECT broker accepts only exact approved TLS authorities on port 443. It independently checks the ClientHello SNI, rejects encrypted ClientHello, resolves only public addresses (plus enterprise-private ranges for an explicitly opted-in GHES host), rejects reserved/private/transition ranges and bounds connections, DNS work, bytes and lifetime. Native TLS still validates the server certificate end to end. The broker cannot inspect encrypted HTTP paths or request bodies.
+- Approved provider authorities depend on the deployment (see the table above). For GitHub.com they are `api.github.com`, `api.githubcopilot.com`, `api.individual.githubcopilot.com`, `api.business.githubcopilot.com`, `api.enterprise.githubcopilot.com` and `copilot-proxy.githubusercontent.com`. These services receive the approved request and the selected credential as required by the trusted native runtime. Host containment does not reduce a reused token's server-side grants.
 - Tool/MCP/custom-instruction/auto-login/remote switches are defense in depth. **They are not the sandbox.** The OS policy and broker remain mandatory. No insecure retry, alternate account, direct-network fallback or TLS bypass exists.
 - Supervision bounds the inference subprocess wall time (1–120 seconds), CPU time, open descriptors, generated files, captured output and network bytes. Stdin/stdout/stderr are supervised concurrently. Cancellation, early errors and dropped inference futures kill and reap the process group and close broker connections. Temporary state is removed. Token-free startup checks and explicit credential lookup have separate short deadlines. There is no claim of a hard resident-memory cap.
 
