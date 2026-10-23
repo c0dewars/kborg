@@ -123,6 +123,7 @@ pub enum Intent {
     InstallCrds,
     UpgradeCrds,
     DeleteCrds,
+    MigrateCrds,
     Test(Release),
     Upgrade(Release),
     Rollback {
@@ -138,6 +139,7 @@ impl Intent {
             Self::InstallCrds => "INSTALL CHART CRDS",
             Self::UpgradeCrds => "UPGRADE CHART CRDS",
             Self::DeleteCrds => "DELETE CHART CRDS",
+            Self::MigrateCrds => "MIGRATE CRD STORAGE",
             Self::Test(_) => "TEST HELM RELEASE",
             Self::Upgrade(_) => "UPGRADE HELM RELEASE",
             Self::Rollback { .. } => "ROLL BACK HELM RELEASE",
@@ -147,7 +149,7 @@ impl Intent {
     pub fn is_crd(&self) -> bool {
         matches!(
             self,
-            Self::InstallCrds | Self::UpgradeCrds | Self::DeleteCrds
+            Self::InstallCrds | Self::UpgradeCrds | Self::DeleteCrds | Self::MigrateCrds
         )
     }
     fn has_chart_input(&self) -> bool {
@@ -158,11 +160,16 @@ impl Intent {
                 | Self::InstallCrds
                 | Self::UpgradeCrds
                 | Self::DeleteCrds
+                | Self::MigrateCrds
         )
     }
     fn current(&self) -> Option<&Release> {
         match self {
-            Self::Install | Self::InstallCrds | Self::UpgradeCrds | Self::DeleteCrds => None,
+            Self::Install
+            | Self::InstallCrds
+            | Self::UpgradeCrds
+            | Self::DeleteCrds
+            | Self::MigrateCrds => None,
             Self::Upgrade(release) | Self::Uninstall(release) | Self::Test(release) => {
                 Some(release)
             }
@@ -180,6 +187,7 @@ pub struct Form {
     allow_crds: bool,
     registry: crate::helm_oci::Options,
     keyring: Option<std::path::PathBuf>,
+    sigstore_policy: Option<std::path::PathBuf>,
 }
 pub struct WriteDraft {
     pub options: crate::helm_lifecycle::Options,
@@ -204,7 +212,11 @@ impl Form {
             .map(|path| path.to_string_lossy().into_owned())
             .unwrap_or_default();
         let fields = match &intent {
-            Intent::Install | Intent::InstallCrds | Intent::UpgradeCrds | Intent::DeleteCrds => {
+            Intent::Install
+            | Intent::InstallCrds
+            | Intent::UpgradeCrds
+            | Intent::DeleteCrds
+            | Intent::MigrateCrds => {
                 vec![
                     (
                         "Namespace",
@@ -238,6 +250,7 @@ impl Form {
             allow_crds: false,
             registry: Default::default(),
             keyring: None,
+            sigstore_policy: None,
         }
     }
     pub fn set_lifecycle_policy(
@@ -252,6 +265,9 @@ impl Form {
     }
     pub fn set_keyring(&mut self, keyring: Option<std::path::PathBuf>) {
         self.keyring = keyring;
+    }
+    pub fn set_sigstore_policy(&mut self, policy: Option<std::path::PathBuf>) {
+        self.sigstore_policy = policy;
     }
     pub fn key(&mut self, key: KeyCode) {
         let count = self.fields.len();
@@ -321,7 +337,11 @@ impl Form {
             }
         };
         let (namespace, release, storage, request) = match &self.intent {
-            Intent::Install | Intent::InstallCrds | Intent::UpgradeCrds | Intent::DeleteCrds => {
+            Intent::Install
+            | Intent::InstallCrds
+            | Intent::UpgradeCrds
+            | Intent::DeleteCrds
+            | Intent::MigrateCrds => {
                 let namespace = self.fields[0].1.trim();
                 let release = self.fields[1].1.trim();
                 if !safety::valid_id(namespace) {
@@ -335,6 +355,7 @@ impl Form {
                     Intent::InstallCrds => Request::InstallCrds { chart },
                     Intent::UpgradeCrds => Request::UpgradeCrds { chart },
                     Intent::DeleteCrds => Request::DeleteCrds { chart },
+                    Intent::MigrateCrds => Request::MigrateCrds { chart },
                     _ => Request::Install {
                         chart,
                         values: path(&self.fields[3].1, true)?,
@@ -383,6 +404,7 @@ impl Form {
                 allow_crds: self.allow_crds,
                 registry: self.registry.clone(),
                 keyring: self.keyring.clone(),
+                sigstore_policy: self.sigstore_policy.clone(),
             },
             request,
             expected: self.intent.current().cloned(),
@@ -394,7 +416,7 @@ impl Form {
         })
     }
     pub fn lines(&self, width: usize, height: usize) -> Vec<String> {
-        let roomy = height >= self.fields.len() + 8 && width >= 54;
+        let roomy = height >= self.fields.len() + 10 && width >= 54;
         let target = if let Some(current) = self.intent.current() {
             format!(
                 "{}/{}  |  revision {}  |  {}",
@@ -421,26 +443,43 @@ impl Form {
                 self.storage.name()
             )
         };
-        let mut lines = vec![format!("  TARGET  {target}")];
+        let mut lines = Vec::new();
+        if roomy {
+            lines.push("  01 CONFIGURE    /    02 Review    /    03 Execute".into());
+            lines.push(String::new());
+        }
+        lines.push(format!("  Target  {target}"));
         if let Intent::Rollback { target, .. } = &self.intent {
             lines.push(format!(
-                "  TO      revision {}  |  {} {}",
+                "  To      revision {}  |  {} {}",
                 target.revision, target.chart_name, target.chart_version
             ));
         }
         if height >= self.fields.len() + 3 {
             lines.push(format!(
-                "  POLICY  hooks {}  /  CRDs {}  /  signature {}",
+                "  Checks  hooks {}  /  CRDs {}  /  signature {}",
                 if self.allow_hooks { "ON" } else { "OFF" },
                 if self.allow_crds { "ON" } else { "OFF" },
                 if !self.intent.has_chart_input() {
                     "n/a (stored release)"
-                } else if self.keyring.is_some() {
+                } else if self.keyring.is_some() || self.sigstore_policy.is_some() {
                     "REQUIRED"
                 } else {
                     "not checked"
                 }
             ));
+            if self.intent.has_chart_input()
+                && (self.keyring.is_some() || self.sigstore_policy.is_some())
+            {
+                lines.push(format!(
+                    "  Trust   {} / checked during preparation",
+                    match (self.keyring.is_some(), self.sigstore_policy.is_some()) {
+                        (true, true) => "OpenPGP + Sigstore",
+                        (true, false) => "OpenPGP public keyring",
+                        _ => "Sigstore bundle + explicit trust",
+                    }
+                ));
+            }
             if let Some((_, source)) = self
                 .fields
                 .iter()
@@ -451,32 +490,35 @@ impl Form {
                         if let Some(digest) = reference.digest() {
                             let digest = digest.trim_start_matches("sha256:");
                             format!(
-                                "  SOURCE  OCI sha256:{}...{}  |  {}",
+                                "  Source  OCI sha256:{}...{}  |  {}",
                                 &digest[..12],
                                 &digest[digest.len() - 8..],
                                 reference.registry()
                             )
                         } else {
                             format!(
-                                "  SOURCE  OCI tag {}  |  digest resolved during preparation",
+                                "  Source  OCI tag {}  |  digest resolved during preparation",
                                 reference.tag().unwrap_or("?")
                             )
                         }
                     } else {
-                        "  SOURCE  Packaged chart .tgz or OCI :tag / @sha256:digest".into()
+                        "  Source  Local .tgz or OCI with an explicit tag or digest".into()
                     },
                 );
             }
         }
         if roomy {
             lines.push(String::new());
-            lines.push("  DETAILS".into());
+            lines.push("  Details".into());
         }
         let mut suffix = Vec::new();
         if roomy {
             suffix.push(String::new());
             suffix.push(if matches!(self.intent, Intent::DeleteCrds) {
                 "  DESTRUCTIVE  Owned custom instances and cluster-wide schemas will be deleted."
+                    .into()
+            } else if matches!(self.intent, Intent::MigrateCrds) {
+                "  IMPACT  Rewrite owned instances; old storage versions need controller proof."
                     .into()
             } else if matches!(self.intent, Intent::UpgradeCrds) {
                 "  IMPACT  Cluster-wide schema changes; existing instances are checked.".into()
@@ -487,11 +529,11 @@ impl Form {
             } else if matches!(self.intent, Intent::Test(_)) {
                 "  IMPACT  Stored test hooks execute; release revision stays unchanged.".into()
             } else {
-                "  NEXT  Prepare the complete plan, review every line, then approve.".into()
+                "  Enter prepares the review. Approval comes next.".into()
             });
         }
         if self.intent.is_crd() && height >= self.fields.len() + 4 {
-            suffix.push("  No release installed. CRD actions are reviewed separately.".into());
+            suffix.push("  Separate CRD operation; no Helm release is installed.".into());
         }
         // Reserve a visible input row even at 28x10. Metadata never hides the
         // active field, and long paths retain the editable tail.
@@ -596,12 +638,15 @@ impl Review {
     fn wrapped(&self, width: usize) -> Vec<String> {
         let overview = self.prepared.overview();
         let mut introduction = vec![
+            "01 Configure    /    02 REVIEW    /    03 Execute".into(),
+            String::new(),
             format!(
                 "OPERATION   {}  /  NOT EXECUTED",
                 overview.operation.to_ascii_uppercase()
             ),
             format!("TARGET      {}", overview.target),
             format!("CONNECTION  {}  |  {}", overview.context, overview.endpoint),
+            format!("TRUST       {}", overview.trust),
             String::new(),
             if self.prepared.is_demo() {
                 "CHANGE PLAN  Simulated plan / no cluster writes".into()
@@ -1038,6 +1083,7 @@ mod tests {
                     allow_crds: false,
                     registry: Default::default(),
                     keyring: None,
+                    sigstore_policy: None,
                 },
                 crate::helm_lifecycle::Request::Install {
                     chart: "/demo/chart.tgz".into(),
@@ -1151,8 +1197,7 @@ mod tests {
         assert_eq!(draft.options.release, "my.api");
         assert!(draft.expected.is_none());
         let lines = form.lines(82, 8).join("\n");
-        assert!(lines.contains("No release installed"));
-        assert!(lines.contains("No release installed"));
+        assert!(lines.contains("no Helm release is installed"));
         assert!(!lines.contains("Values file"));
         Ok(())
     }

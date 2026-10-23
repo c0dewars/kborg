@@ -48,6 +48,8 @@ pub struct Options {
     pub helm_registry_ca: Option<PathBuf>,
     pub helm_registry_auth: Option<PathBuf>,
     pub helm_keyring: Option<PathBuf>,
+    pub helm_sigstore_policy: Option<PathBuf>,
+    pub copilot_policy: Option<PathBuf>,
     pub helm_timeout_seconds: u16,
     pub log_seconds: u32,
     pub log_read: crate::logs::ReadOptions,
@@ -80,6 +82,8 @@ fn parse(args: Vec<String>) -> Result<Options> {
         helm_registry_ca: None,
         helm_registry_auth: None,
         helm_keyring: None,
+        helm_sigstore_policy: None,
+        copilot_policy: None,
         helm_timeout_seconds: 300,
         log_seconds: crate::logs::DEFAULT_FOLLOW_SECONDS,
         log_read: crate::logs::ReadOptions::default(),
@@ -104,6 +108,26 @@ fn parse(args: Vec<String>) -> Result<Options> {
             "--allow-helm-write" => opts.connection.allow_helm_write = true,
             "--allow-helm-hooks" => opts.connection.allow_helm_hooks = true,
             "--allow-helm-crds" => opts.connection.allow_helm_crds = true,
+            "--copilot-policy" => {
+                let path = PathBuf::from(
+                    args.next()
+                        .ok_or("--copilot-policy needs an absolute policy file")?,
+                );
+                if !path.is_absolute() {
+                    return Err("--copilot-policy requires an absolute path".into());
+                }
+                opts.copilot_policy = Some(path);
+            }
+            "--helm-sigstore-policy" => {
+                let path = PathBuf::from(
+                    args.next()
+                        .ok_or("--helm-sigstore-policy needs an absolute policy file")?,
+                );
+                if !path.is_absolute() {
+                    return Err("--helm-sigstore-policy requires an absolute policy path".into());
+                }
+                opts.helm_sigstore_policy = Some(path);
+            }
             "--helm-keyring" => {
                 let path = PathBuf::from(
                     args.next()
@@ -311,6 +335,7 @@ fn parse(args: Vec<String>) -> Result<Options> {
         || opts.helm_registry_ca.is_some()
         || opts.helm_registry_auth.is_some()
         || opts.helm_keyring.is_some()
+        || opts.helm_sigstore_policy.is_some()
         || opts.connection.allow_helm_hooks
         || opts.connection.allow_helm_crds)
         && opts
@@ -319,6 +344,14 @@ fn parse(args: Vec<String>) -> Result<Options> {
             .is_some_and(|command| !matches!(command.as_str(), "ui" | "helm"))
     {
         return Err("Helm lifecycle, registry, hook and CRD options require ui or helm".into());
+    }
+    if opts.copilot_policy.is_some()
+        && opts
+            .command
+            .first()
+            .is_some_and(|command| !matches!(command.as_str(), "ui" | "copilot"))
+    {
+        return Err("--copilot-policy requires ui or copilot".into());
     }
     if opts.helm_storage.is_some()
         && opts
@@ -909,6 +942,7 @@ async fn helm_mutation_command(
         HelmCommand::Crds(name, chart) => (name, Request::InstallCrds { chart }),
         HelmCommand::UpgradeCrds(name, chart) => (name, Request::UpgradeCrds { chart }),
         HelmCommand::DeleteCrds(name, chart) => (name, Request::DeleteCrds { chart }),
+        HelmCommand::MigrateCrds(name, chart) => (name, Request::MigrateCrds { chart }),
         HelmCommand::Test(name) => (name, Request::Test),
         HelmCommand::Rollback(name, revision) => (name, Request::Rollback { revision }),
         HelmCommand::Uninstall(name) => (name, Request::Uninstall),
@@ -929,6 +963,7 @@ async fn helm_mutation_command(
             allow_hooks: opts.connection.allow_helm_hooks,
             allow_crds: opts.connection.allow_helm_crds,
             keyring: opts.helm_keyring.clone(),
+            sigstore_policy: opts.helm_sigstore_policy.clone(),
             registry: crate::helm_oci::Options {
                 ca_file: opts.helm_registry_ca.clone(),
                 auth_file: opts.helm_registry_auth.clone(),
@@ -1040,6 +1075,7 @@ enum HelmCommand {
     Crds(String, PathBuf),
     UpgradeCrds(String, PathBuf),
     DeleteCrds(String, PathBuf),
+    MigrateCrds(String, PathBuf),
     Test(String),
     Rollback(String, u32),
     Uninstall(String),
@@ -1053,13 +1089,14 @@ impl HelmCommand {
                 | Self::Crds(..)
                 | Self::UpgradeCrds(..)
                 | Self::DeleteCrds(..)
+                | Self::MigrateCrds(..)
                 | Self::Test(..)
                 | Self::Rollback(..)
                 | Self::Uninstall(..)
         )
     }
     fn parse(command: &str, args: &[String]) -> Result<Self> {
-        let usage = "usage: helm [list] | helm history RELEASE | helm detail|resources|values RELEASE REVISION | helm install|upgrade|crds|crds-upgrade|crds-delete RELEASE CHART.tgz_OR_OCI | helm rollback RELEASE REVISION | helm uninstall|test RELEASE (lifecycle requires --write --allow-helm --allow-helm-write --helm-tool ABS; schema actions need --allow-helm-crds; test needs --allow-helm-hooks)";
+        let usage = "usage: helm [list] | helm history RELEASE | helm detail|resources|values RELEASE REVISION | helm install|upgrade|crds|crds-upgrade|crds-delete|crds-migrate RELEASE CHART.tgz_OR_OCI | helm rollback RELEASE REVISION | helm uninstall|test RELEASE (lifecycle requires --write --allow-helm --allow-helm-write --helm-tool ABS; schema actions need --allow-helm-crds; test needs --allow-helm-hooks)";
         let name = |name: &String| {
             if crate::helm::valid_release_name(name) {
                 Ok(name.clone())
@@ -1089,7 +1126,12 @@ impl HelmCommand {
             [mode, release, chart]
                 if matches!(
                     mode.as_str(),
-                    "install" | "upgrade" | "crds" | "crds-upgrade" | "crds-delete"
+                    "install"
+                        | "upgrade"
+                        | "crds"
+                        | "crds-upgrade"
+                        | "crds-delete"
+                        | "crds-migrate"
                 ) =>
             {
                 if chart.starts_with("oci://") {
@@ -1104,6 +1146,7 @@ impl HelmCommand {
                     "upgrade" => Self::Upgrade(release, chart),
                     "crds" => Self::Crds(release, chart),
                     "crds-upgrade" => Self::UpgradeCrds(release, chart),
+                    "crds-migrate" => Self::MigrateCrds(release, chart),
                     _ => Self::DeleteCrds(release, chart),
                 })
             }
@@ -1221,6 +1264,30 @@ fn print_json(value: &serde_json::Value) -> Result<()> {
 fn copilot_command(opts: &Options) -> Result<()> {
     let args = &opts.command[1..];
     match args.first().map(String::as_str) {
+        Some("diagnose") if args.len() == 3 => {
+            if opts.json || !io::stdin().is_terminal() || !io::stdout().is_terminal() { return Err("Copilot diagnosis requires an interactive transfer review; --json is unavailable".into()); }
+            let path = opts.copilot_policy.as_ref().ok_or("Copilot diagnosis requires --copilot-policy ABS; see docs/COPILOT_INTEGRATION.md")?;
+            let options = crate::advice::load_options(path)?;
+            runtime()?.block_on(async {
+                let mut gateway = tokio::time::timeout(Duration::from_secs(20),Gateway::connect(opts.connection.clone())).await.map_err(|_|"connection timed out")??;
+                if gateway.is_demo() { return Err("Demo diagnosis is local preview only; use copilot preview".into()); }
+                discover_if_needed(&mut gateway,&args[1]).await?;
+                let object = tokio::time::timeout(Duration::from_secs(15),gateway.get(&args[1],&gateway.namespace,&args[2])).await.map_err(|_|"diagnostic read timed out")??;
+                let prepared = crate::advice::prepare(&object,options).await?;
+                outputln!("{}\n\nEXACT DIAGNOSTIC PAYLOAD\n{}",prepared.summary(),prepared.preview()?);
+                output!("> "); io::stdout().flush().map_err(|_|"output failed")?;
+                let typed = helm_terminal_confirmation().await?;
+                let (cancel,receiver) = tokio::sync::oneshot::channel();
+                let operation = crate::advice::run(prepared,&typed,Some(receiver));
+                tokio::pin!(operation);
+                let result = tokio::select! {
+                    result = &mut operation => result?,
+                    _ = tokio::signal::ctrl_c() => { let _=cancel.send(()); operation.await? },
+                };
+                outputln!("COPILOT ADVICE / review independently\n{}",safety::safe_lines(&result.answer,64*1024));
+                Ok(())
+            })
+        }
         Some("preflight") => {
             let mut executable=None; let mut host=None; let mut expected=None; let mut token=None;
             for pair in args[1..].chunks(2) {
@@ -1247,7 +1314,7 @@ fn copilot_command(opts: &Options) -> Result<()> {
             })?;
             let preview=crate::advice::prepare_preview(&object,&args[4])?;
             outputln!("LOCAL PREVIEW ONLY; no request is sent.\n{}",preview.preview()?);
-            outputln!("Automated diagnosis remains disabled until hostname-bound egress and Copilot credential authority are validated.");
+            outputln!("Use copilot diagnose with an explicit --copilot-policy for a separately approved advisory request.");
             Ok(())
         },
         Some("login") if args.len() == 5 && args[1] == "--cli" && args[3] == "--host" => {
@@ -1263,7 +1330,7 @@ fn copilot_command(opts: &Options) -> Result<()> {
             outputln!("Minimized context saved locally. Inspect the JSON before manually sharing with GitHub Copilot. No AI request was made.");
             Ok(())
         }
-        _ => Err("usage: copilot preflight --cli ABS_NATIVE --host HOST [--expected-sha256 SHA] [--credential-file FILE] | copilot preview RESOURCE NAME --host HOST | copilot login --cli <absolute executable> --host <github.com|org.ghe.com> | copilot context <resource> <name> --output <new JSON file>".into()),
+        _ => Err("usage: copilot diagnose RESOURCE NAME --copilot-policy ABS | copilot preflight --cli ABS_NATIVE --host HOST [--expected-sha256 SHA] [--credential-file FILE] | copilot preview RESOURCE NAME --host HOST | copilot login --cli <absolute executable> --host <github.com|org.ghe.com> | copilot context <resource> <name> --output <new JSON file>".into()),
     }
 }
 async fn discover_if_needed(gateway: &mut Gateway, resource: &str) -> Result<()> {
@@ -1409,7 +1476,7 @@ fn theme_command(opts: &Options) -> Result<()> {
             outputln!("Theme saved.");
         }
         "reset" => {
-            themes::use_theme("catppuccin-mocha")?;
+            themes::use_theme(themes::DEFAULT_THEME)?;
             outputln!("Appearance reset.");
         }
         "new" => {
@@ -1461,12 +1528,74 @@ fn theme_command(opts: &Options) -> Result<()> {
 mod tests {
     use super::*;
     #[test]
+    fn explicit_signature_and_advice_policies_have_strict_scope() -> Result<()> {
+        assert!(
+            parse(
+                "--helm-sigstore-policy relative.json ui"
+                    .split_whitespace()
+                    .map(str::to_owned)
+                    .collect()
+            )
+            .is_err()
+        );
+        assert!(
+            parse(
+                "--helm-sigstore-policy /tmp/p.json list pods"
+                    .split_whitespace()
+                    .map(str::to_owned)
+                    .collect()
+            )
+            .is_err()
+        );
+        assert!(
+            parse(
+                "--copilot-policy /tmp/p.json list pods"
+                    .split_whitespace()
+                    .map(str::to_owned)
+                    .collect()
+            )
+            .is_err()
+        );
+        assert!(
+            parse(
+                "--json helm crds-migrate web /tmp/chart.tgz"
+                    .split_whitespace()
+                    .map(str::to_owned)
+                    .collect()
+            )
+            .is_err()
+        );
+        let options = parse(
+            "--copilot-policy /tmp/p.json copilot diagnose pods web"
+                .split_whitespace()
+                .map(str::to_owned)
+                .collect(),
+        )?;
+        assert_eq!(options.copilot_policy, Some("/tmp/p.json".into()));
+        let options = parse(
+            "--helm-sigstore-policy /tmp/p.json helm crds-migrate web /tmp/chart.tgz"
+                .split_whitespace()
+                .map(str::to_owned)
+                .collect(),
+        )?;
+        assert_eq!(options.helm_sigstore_policy, Some("/tmp/p.json".into()));
+        assert!(HelmCommand::parse("helm", &options.command[1..])?.is_mutation());
+        Ok(())
+    }
+    #[test]
     fn oci_and_helm_extension_flags_validate_before_connecting() -> Result<()> {
         let pinned = format!(
             "oci://registry.example:5443/team/chart@sha256:{}",
             "a".repeat(64)
         );
-        for mode in ["install", "upgrade", "crds", "crds-upgrade", "crds-delete"] {
+        for mode in [
+            "install",
+            "upgrade",
+            "crds",
+            "crds-upgrade",
+            "crds-delete",
+            "crds-migrate",
+        ] {
             let options = parse(vec![
                 "--allow-helm-hooks".into(),
                 "--allow-helm-crds".into(),
@@ -1496,7 +1625,8 @@ mod tests {
                 | HelmCommand::Upgrade(name, chart)
                 | HelmCommand::Crds(name, chart)
                 | HelmCommand::UpgradeCrds(name, chart)
-                | HelmCommand::DeleteCrds(name, chart) => {
+                | HelmCommand::DeleteCrds(name, chart)
+                | HelmCommand::MigrateCrds(name, chart) => {
                     assert_eq!(name, "my.api");
                     assert_eq!(chart.to_str(), Some(pinned.as_str()));
                 }

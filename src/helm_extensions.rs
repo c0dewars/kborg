@@ -380,7 +380,7 @@ pub struct CrdDefinition {
 /// Compare the complete spec, including nested schemas/rules. Only documented
 /// CRD defaulting and typed API omission of known empty fields are normalized.
 /// No schema properties, validation rules or arbitrary map keys are ignored.
-fn normalized_crd_spec(spec: &Value) -> Option<Value> {
+pub(crate) fn normalized_crd_spec(spec: &Value) -> Option<Value> {
     let mut spec = spec.clone();
     let map = spec.as_object_mut()?;
     let names = map.get_mut("names")?.as_object_mut()?;
@@ -927,6 +927,83 @@ fn no_new_defaults(value: &Value, depth: usize) -> Result<()> {
     Ok(())
 }
 
+/// A storage-only migration cannot reinterpret or prune any stored data. All
+/// retained/new version schemas and subresource/default settings are identical.
+pub fn migration_versions(
+    previous: &CrdDefinition,
+    next: &CrdDefinition,
+) -> Result<(String, String)> {
+    let mut before =
+        normalized_crd_spec(&previous.object["spec"]).ok_or("invalid previous migration schema")?;
+    let mut after =
+        normalized_crd_spec(&next.object["spec"]).ok_or("invalid desired migration schema")?;
+    let old = before
+        .as_object_mut()
+        .ok_or("invalid previous spec")?
+        .remove("versions")
+        .and_then(|value| value.as_array().cloned())
+        .ok_or("previous versions missing")?;
+    let new = after
+        .as_object_mut()
+        .ok_or("invalid desired spec")?
+        .remove("versions")
+        .and_then(|value| value.as_array().cloned())
+        .ok_or("desired versions missing")?;
+    if before != after || previous.name != next.name {
+        return Err("storage migration preserves exact API identity, metadata policy, scope and None conversion".into());
+    }
+    let storage = |versions: &[Value]| -> Result<String> {
+        versions
+            .iter()
+            .find(|version| version["storage"] == true && version["served"] == true)
+            .and_then(|version| version["name"].as_str())
+            .map(str::to_owned)
+            .ok_or_else(|| "migration requires one served storage version".into())
+    };
+    let source = storage(&old)?;
+    let target = storage(&new)?;
+    let template = |version: &Value| -> Result<Value> {
+        let mut version = version.clone();
+        let map = version
+            .as_object_mut()
+            .ok_or("invalid version definition")?;
+        for key in ["name", "storage", "served"] {
+            map.remove(key);
+        }
+        Ok(version)
+    };
+    let baseline = template(old.first().ok_or("old schema versions missing")?)?;
+    for version in old.iter().chain(&new) {
+        if template(version)? != baseline {
+            return Err("storage migration requires identical structural schemas, defaults and version settings; conversion/schema changes are unsupported".into());
+        }
+    }
+    for previous in &old {
+        let name = previous["name"]
+            .as_str()
+            .ok_or("old version name missing")?;
+        let next = new
+            .iter()
+            .find(|version| version["name"] == name)
+            .ok_or("storage migration never removes an existing version; retain old served APIs")?;
+        if previous["served"] != next["served"]
+            && !(name == target && previous["served"] == false && next["served"] == true)
+        {
+            return Err(
+                "storage migration cannot change existing served-version membership".into(),
+            );
+        }
+    }
+    if new.iter().any(|version| {
+        !old.iter()
+            .any(|previous| previous["name"] == version["name"])
+            && version["name"] != target
+    }) {
+        return Err("storage migration can add only the new storage version".into());
+    }
+    Ok((source, target))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1297,6 +1374,50 @@ mod tests {
                 compatible_upgrade(&crd_definition(previous)?, &crd_definition(after)?, &[])
                     .is_err()
             );
+        }
+        Ok(())
+    }
+    #[test]
+    fn storage_migration_only_changes_storage_and_adds_identical_target_version() -> Result<()> {
+        let previous = crd_definition(definition())?;
+        let mut next = definition();
+        let mut target = next["spec"]["versions"][0].clone();
+        target["name"] = json!("v2");
+        next["spec"]["versions"][0]["storage"] = json!(false);
+        next["spec"]["versions"]
+            .as_array_mut()
+            .ok_or("versions")?
+            .push(target);
+        let desired = crd_definition(next.clone())?;
+        assert_eq!(
+            migration_versions(&previous, &desired)?,
+            ("v1".into(), "v2".into())
+        );
+        assert_eq!(
+            migration_versions(&desired, &desired)?,
+            ("v2".into(), "v2".into())
+        );
+        for variant in 0..5 {
+            let mut changed = next.clone();
+            match variant {
+                0 => {
+                    changed["spec"]["versions"][1]["schema"]["openAPIV3Schema"]["properties"]["spec"]
+                        ["properties"]["value"]["type"] = json!("integer")
+                }
+                1 => changed["spec"]["versions"][0]["served"] = json!(false),
+                2 => {
+                    changed["spec"]["versions"]
+                        .as_array_mut()
+                        .ok_or("versions")?
+                        .remove(0);
+                }
+                3 => {
+                    changed["spec"]["versions"][1]["schema"]["openAPIV3Schema"]["properties"]["spec"]
+                        ["properties"]["value"]["default"] = json!("new")
+                }
+                _ => changed["spec"]["names"]["singular"] = json!("other"),
+            };
+            assert!(migration_versions(&previous, &crd_definition(changed)?).is_err());
         }
         Ok(())
     }

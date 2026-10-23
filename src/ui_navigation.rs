@@ -125,6 +125,8 @@ pub const SPECIAL: &[&str] = &[
     "helm-crds",
     "helm-crds-upgrade",
     "helm-crds-delete",
+    "helm-crds-migrate",
+    "copilot",
     "helm-test",
     "logs",
     "scans",

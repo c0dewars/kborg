@@ -27,7 +27,7 @@ References: [command guide](https://k9scli.io/topics/commands/), [command interp
 | `:dir`, `:dirs`, `:d`, `:ls [PATH]` | Bounded local manifest browser and redacted YAML/JSON preview. No arbitrary manifest apply/delete or external editor. |
 | `:pf`, `:portforward`, `:portforwards` | View/cancel this session's reviewed loopback forward. One active forward; four simultaneous clients; bounded duration. |
 | `:container`, `:containers` | Container drilldown for a selected Pod. |
-| `:helm`; `:history`; `:helm-install`; `:helm-test`; `:helm-crds`; `:helm-crds-upgrade`; `:helm-crds-delete` | Native Helm v3/v4 Secret/ConfigMap browsing with `--allow-helm`. List Enter/r → history; revision Enter → redacted stored overrides; d metadata, m resource identities, y safe YAML. Reviewed list i/u/Ctrl-D install/upgrade/uninstall and history r rollback require all three write/Helm flags and trusted Unix Helm 4.3.1. Deterministic local/OCI charts, opt-in reviewed hooks, t/release tests, c/CRD bootstrap and explicit schema update/delete; no SQL storage. |
+| `:helm`; `:history`; `:helm-install`; `:helm-test`; `:helm-crds`; `:helm-crds-upgrade`; `:helm-crds-delete`; `:helm-crds-migrate` | Native Helm v3/v4 Secret/ConfigMap browsing with `--allow-helm`. List Enter/r → history; revision Enter → redacted stored overrides; d metadata, m resource identities, y safe YAML. Reviewed list i/u/Ctrl-D install/upgrade/uninstall and history r rollback require all three write/Helm flags and trusted Unix Helm 4.3.1. Deterministic local/OCI charts, opt-in reviewed hooks, t/release tests, c/CRD bootstrap and explicit schema update/delete/storage migration; no SQL storage. |
 | `:logs LABELS`; workload/Service `l`/`p` | Fixed membership of up to eight Pods/32 ordinary-container streams in one namespace, using actual selectors and CronJob→Job controller UIDs. Range/reconnect retains captured identities; reopen to include new rollout Pods. |
 | `:cow` | Local novelty view; never a process invocation. |
 
@@ -39,6 +39,8 @@ evidence. Generic Secret reads, force kill, node cordon/drain/shell, Pod file
 transfer/sanitization, arbitrary manifest editing, k9s plugins and benchmark
 execution remain unsupported. These are material parity gaps, not alternate
 meanings for the same commands.
+
+Copilot is a KBorg-specific extension: `:copilot` previews selected minimized status and, with an explicit macOS ARM64 policy, requests read-only advice after full account-bound review. It does not redefine k9s resource commands.
 
 ## Navigation and contextual keys
 

@@ -1,0 +1,20 @@
+{
+  "passed": true,
+  "binary_sha256": "c7899ad5ffbf7e274c568bd4521252b8ccbef5116ed027fde3ae7f1fb7c342d5",
+  "context_preserved": "docker-desktop",
+  "kubeconfig_explicit": true,
+  "server": "https://127.0.0.1:49409",
+  "provider_available": true,
+  "apiservice_available": true,
+  "apiservice_tls_verification_enabled": true,
+  "results": {
+    "pods": {
+      "samples": 1,
+      "truncated": false
+    },
+    "nodes": {
+      "samples": 1,
+      "truncated": false
+    }
+  }
+}

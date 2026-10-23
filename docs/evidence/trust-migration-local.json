@@ -1,0 +1,267 @@
+{
+  "schema": 1,
+  "timestamp_utc": "2026-10-23T08:21:29Z",
+  "binary_sha256": "c7899ad5ffbf7e274c568bd4521252b8ccbef5116ed027fde3ae7f1fb7c342d5",
+  "helm_sha256": "c62da98a8e5728f5acc08b66bbe5c3ad1cb6b71d3d31b7bf939d9f4b6628c96d",
+  "helm_version": "v4.3.1+gc0d08d0",
+  "targets": [
+    {
+      "target": "desktop",
+      "context": "docker-desktop",
+      "server": "https://127.0.0.1:49409",
+      "run_id": "dd42fb221b6c",
+      "namespace": "kborg-migration-dd42fb221b6c",
+      "kubernetes": "v1.36.1",
+      "passed": true,
+      "cleanup": true,
+      "checks": [
+        "incompatible schemas and old-version removal refused",
+        "ordinary confirmation and foreign cross-namespace instance refused",
+        "stale instance review refused before storage switch",
+        "all captured owned instances across two namespaces rewritten with content and UID preservation",
+        "native stage and fresh review retain historical storedVersions without claiming complete storage proof"
+      ],
+      "controller_migrations": [],
+      "phase": "complete",
+      "live_ui": {
+        "passed": true,
+        "binary_sha256": "c7899ad5ffbf7e274c568bd4521252b8ccbef5116ed027fde3ae7f1fb7c342d5",
+        "terminal_restored": true,
+        "review_cancelled_without_approval": true,
+        "screens": [
+          {
+            "name": "migration-form",
+            "path": "/Users/brunogarcia/Desktop/HyperMac/repos/kborg/docs/evidence/trust-migration-ui/desktop/migration-form.png",
+            "width": 120,
+            "height": 34
+          },
+          {
+            "name": "migration-review-overview",
+            "path": "/Users/brunogarcia/Desktop/HyperMac/repos/kborg/docs/evidence/trust-migration-ui/desktop/migration-review-overview.png",
+            "width": 120,
+            "height": 34
+          },
+          {
+            "name": "migration-review-page-2",
+            "path": "/Users/brunogarcia/Desktop/HyperMac/repos/kborg/docs/evidence/trust-migration-ui/desktop/migration-review-page-2.png",
+            "width": 120,
+            "height": 34
+          },
+          {
+            "name": "migration-review-page-4",
+            "path": "/Users/brunogarcia/Desktop/HyperMac/repos/kborg/docs/evidence/trust-migration-ui/desktop/migration-review-page-4.png",
+            "width": 120,
+            "height": 34
+          },
+          {
+            "name": "migration-review-page-7",
+            "path": "/Users/brunogarcia/Desktop/HyperMac/repos/kborg/docs/evidence/trust-migration-ui/desktop/migration-review-page-7.png",
+            "width": 120,
+            "height": 34
+          },
+          {
+            "name": "migration-review-ready",
+            "path": "/Users/brunogarcia/Desktop/HyperMac/repos/kborg/docs/evidence/trust-migration-ui/desktop/migration-review-ready.png",
+            "width": 120,
+            "height": 34
+          },
+          {
+            "name": "migration-review-cancelled",
+            "path": "/Users/brunogarcia/Desktop/HyperMac/repos/kborg/docs/evidence/trust-migration-ui/desktop/migration-review-cancelled.png",
+            "width": 120,
+            "height": 34
+          }
+        ],
+        "canceled_review_schema_and_instance_uid_rv_unchanged": true
+      },
+      "ui_capture_count": 7,
+      "ui_capture_paths": [
+        "/Users/brunogarcia/Desktop/HyperMac/repos/kborg/docs/evidence/trust-migration-ui/desktop/migration-form.png",
+        "/Users/brunogarcia/Desktop/HyperMac/repos/kborg/docs/evidence/trust-migration-ui/desktop/migration-review-overview.png",
+        "/Users/brunogarcia/Desktop/HyperMac/repos/kborg/docs/evidence/trust-migration-ui/desktop/migration-review-page-2.png",
+        "/Users/brunogarcia/Desktop/HyperMac/repos/kborg/docs/evidence/trust-migration-ui/desktop/migration-review-page-4.png",
+        "/Users/brunogarcia/Desktop/HyperMac/repos/kborg/docs/evidence/trust-migration-ui/desktop/migration-review-page-7.png",
+        "/Users/brunogarcia/Desktop/HyperMac/repos/kborg/docs/evidence/trust-migration-ui/desktop/migration-review-ready.png",
+        "/Users/brunogarcia/Desktop/HyperMac/repos/kborg/docs/evidence/trust-migration-ui/desktop/migration-review-cancelled.png"
+      ],
+      "ui_report_path": "/Users/brunogarcia/Desktop/HyperMac/repos/kborg/docs/evidence/trust-migration-ui/desktop/report.json",
+      "controller_api": null,
+      "outcome": {
+        "switched": 1,
+        "rewritten": 2,
+        "finalized": 0,
+        "pending": 1,
+        "complete": false,
+        "controller_migrations": []
+      },
+      "cleanup_errors": [],
+      "seconds": 26.775
+    },
+    {
+      "target": "minikube",
+      "context": "kborg-validation",
+      "server": "https://127.0.0.1:61504",
+      "run_id": "4be7a671bf23",
+      "namespace": "kborg-migration-4be7a671bf23",
+      "kubernetes": "v1.35.9",
+      "passed": true,
+      "cleanup": true,
+      "checks": [
+        "incompatible schemas and old-version removal refused",
+        "ordinary confirmation and foreign cross-namespace instance refused",
+        "stale instance review refused before storage switch",
+        "all captured owned instances across two namespaces rewritten with content and UID preservation",
+        "official controller Succeeded+checkpoint and guarded status finalization"
+      ],
+      "controller_migrations": [
+        {
+          "api_version": "storagemigration.k8s.io/v1beta1",
+          "name": "kborg-migrate-e4f2c13d55aaa9bba34014200f7d140e-0",
+          "uid": "c932cb6d-fc5e-47cf-82af-b9578c36b0b3"
+        }
+      ],
+      "phase": "complete",
+      "live_ui": {
+        "passed": true,
+        "binary_sha256": "c7899ad5ffbf7e274c568bd4521252b8ccbef5116ed027fde3ae7f1fb7c342d5",
+        "terminal_restored": true,
+        "review_cancelled_without_approval": true,
+        "screens": [
+          {
+            "name": "migration-form",
+            "path": "/Users/brunogarcia/Desktop/HyperMac/repos/kborg/docs/evidence/trust-migration-ui/minikube/migration-form.png",
+            "width": 120,
+            "height": 34
+          },
+          {
+            "name": "migration-review-overview",
+            "path": "/Users/brunogarcia/Desktop/HyperMac/repos/kborg/docs/evidence/trust-migration-ui/minikube/migration-review-overview.png",
+            "width": 120,
+            "height": 34
+          },
+          {
+            "name": "migration-review-page-2",
+            "path": "/Users/brunogarcia/Desktop/HyperMac/repos/kborg/docs/evidence/trust-migration-ui/minikube/migration-review-page-2.png",
+            "width": 120,
+            "height": 34
+          },
+          {
+            "name": "migration-review-page-4",
+            "path": "/Users/brunogarcia/Desktop/HyperMac/repos/kborg/docs/evidence/trust-migration-ui/minikube/migration-review-page-4.png",
+            "width": 120,
+            "height": 34
+          },
+          {
+            "name": "migration-review-page-7",
+            "path": "/Users/brunogarcia/Desktop/HyperMac/repos/kborg/docs/evidence/trust-migration-ui/minikube/migration-review-page-7.png",
+            "width": 120,
+            "height": 34
+          },
+          {
+            "name": "migration-review-ready",
+            "path": "/Users/brunogarcia/Desktop/HyperMac/repos/kborg/docs/evidence/trust-migration-ui/minikube/migration-review-ready.png",
+            "width": 120,
+            "height": 34
+          },
+          {
+            "name": "migration-review-cancelled",
+            "path": "/Users/brunogarcia/Desktop/HyperMac/repos/kborg/docs/evidence/trust-migration-ui/minikube/migration-review-cancelled.png",
+            "width": 120,
+            "height": 34
+          }
+        ],
+        "canceled_review_schema_and_instance_uid_rv_unchanged": true
+      },
+      "ui_capture_count": 7,
+      "ui_capture_paths": [
+        "/Users/brunogarcia/Desktop/HyperMac/repos/kborg/docs/evidence/trust-migration-ui/minikube/migration-form.png",
+        "/Users/brunogarcia/Desktop/HyperMac/repos/kborg/docs/evidence/trust-migration-ui/minikube/migration-review-overview.png",
+        "/Users/brunogarcia/Desktop/HyperMac/repos/kborg/docs/evidence/trust-migration-ui/minikube/migration-review-page-2.png",
+        "/Users/brunogarcia/Desktop/HyperMac/repos/kborg/docs/evidence/trust-migration-ui/minikube/migration-review-page-4.png",
+        "/Users/brunogarcia/Desktop/HyperMac/repos/kborg/docs/evidence/trust-migration-ui/minikube/migration-review-page-7.png",
+        "/Users/brunogarcia/Desktop/HyperMac/repos/kborg/docs/evidence/trust-migration-ui/minikube/migration-review-ready.png",
+        "/Users/brunogarcia/Desktop/HyperMac/repos/kborg/docs/evidence/trust-migration-ui/minikube/migration-review-cancelled.png"
+      ],
+      "ui_report_path": "/Users/brunogarcia/Desktop/HyperMac/repos/kborg/docs/evidence/trust-migration-ui/minikube/report.json",
+      "controller_api": "v1beta1",
+      "outcome": {
+        "switched": 1,
+        "rewritten": 2,
+        "finalized": 1,
+        "pending": 0,
+        "complete": true,
+        "controller_migrations": [
+          {
+            "api_version": "storagemigration.k8s.io/v1beta1",
+            "name": "kborg-migrate-e4f2c13d55aaa9bba34014200f7d140e-0",
+            "uid": "c932cb6d-fc5e-47cf-82af-b9578c36b0b3"
+          }
+        ]
+      },
+      "cleanup_errors": [],
+      "seconds": 46.699
+    }
+  ],
+  "tested_source_sha256": {
+    "src/advice.rs": "4f06216106b38b53eb1d00a4e850bb7d325d169b9f29337507d063da45bef1d3",
+    "src/aliases.rs": "54c548e89426a6ef3269ffe1ed037cd820b26f74532385157411b51ee9a48f31",
+    "src/allocations.rs": "a0d4891aa7b36b4e341d52276748d602fa29b3aa37664393be20b5eb6d40c337",
+    "src/audit.rs": "ce4a4681532af7b2bfea6d4ff18beeb8c3cc1960cf2f69ea32103e4ff986b279",
+    "src/auth.rs": "0ed06ef678869accf1d4de83e877c146f4f6f1b8c4b778a9f5c14be0ed42ec87",
+    "src/cli.rs": "ca17471be52576dbed2c76f56e0e03d9ff147d4e53cf471943f1fbf92cea393d",
+    "src/completions.rs": "0a5efbb06e337ade7bd25c3f8564dca06c4df8a33226ca6c23140f037177563f",
+    "src/config.rs": "42fcd7c044fdd5bef5001e68fa44f0cceca0e5992eca60714db3f37555702dc6",
+    "src/copilot.rs": "e22827b3b0d0de75f887446aa231609798a03d289712603f4ed5e358723d1053",
+    "src/copilot_process.rs": "dc1b562369329875055210749c783e15a67869277c94b9fa8053d74e885da9e8",
+    "src/copilot_proxy.rs": "0a8fc2f072f75fdc837f0f508ba6d44e107defdb10ed49d3caab0e75a141b185",
+    "src/copilot_runtime.rs": "b95ff37842f06aec251fc65627be5e4c8253842ed2ef6e155edf85de076e488a",
+    "src/discovery.rs": "54e858ddc52d5a777e85aaffc922aa0c93fe89117bfd56a4fafa5810bd633089",
+    "src/edit.rs": "80b377f8f87f525389322d810c921136df914deda7b85da901cf08d6e12d546a",
+    "src/extensions.rs": "96f26dd56d3528a11c9dc2d24ba928a5ac63c5ff8043c0cfbf6687934d136e3e",
+    "src/gateway.rs": "ab471b08adc09abaf356f8801bc7161f307db7c72a073e746d5681dc664e9c43",
+    "src/handoff.rs": "c38c98c7f895850c7511f7e0c0374683444f308885860a1e2d4d949d362ed3e7",
+    "src/helm.rs": "ae13a5cd25a83f91ebd575eaaff66cd4f6b94895b0c75716263259761c3b1adc",
+    "src/helm_crds.rs": "4ee5b0dd90cee62785fe7e2feff3588b0a90887ba865a874a3505d5c93ad66af",
+    "src/helm_extensions.rs": "04177d7af827728c8f2304c0ad6c52ab8fc2bc732e872c0b02976748c6bebc4e",
+    "src/helm_lifecycle.rs": "64872b8677f878fabb288d793cedc7a42f8ce9c0625dd33932e1ef02c3e228bf",
+    "src/helm_migration.rs": "a179891dca17d543d32cd562092375912c115b4e02c802e3c79d71a11ee98912",
+    "src/helm_oci.rs": "a471815ed484b9e0fce3328c110ae9ffbd2608fe0f72fa853644df4e24c461c4",
+    "src/helm_provenance.rs": "f154fe1070359bbaf74547fe0cebf790efc839c24505f252205c546928e0a65b",
+    "src/helm_sigstore.rs": "2c9561d423a836a9095cec224125facb4c540a919aba9ee1b03984ff38713648",
+    "src/insights.rs": "5a7a7fe4e58bf8b55cd72ca32385f850dbc01b628a09e0a90fff9b769df18539",
+    "src/inspect.rs": "ee066b3ecfb1b251b1b834242f70c8ac4ff2b208f1d81763802ceb4b6269bfc9",
+    "src/lib.rs": "c59d1563badbebe01325dba801bf1cb5fc6aa9a86a95d11dd6848c4ed6dc1ffc",
+    "src/logs.rs": "e57f9bf2d794f4590a026571f6c402856f1fb147c8c8c75f044da36809f2462f",
+    "src/main.rs": "397d518c3303e14bce67dc7021bdddf6ae97808f78fa58ba0f54801d07ad07b5",
+    "src/metrics.rs": "04f219ee6ee114b798f23fc52a93a973c9aec4df8e53a38c1b9362d24f9a5ca2",
+    "src/navigation_views.rs": "ec07e90494fa6f27e875a7debf43205556292e47c8f77a1691adceccc7bba652",
+    "src/ops.rs": "c3b0a124c9ffeb717f6d93d245981a5d87f55a9e4d0252477246fb707ad0e7ad",
+    "src/overview.rs": "e014141605d9404e1a610b747f00edbf251b7490c3478b403ce4f5e6e75d0215",
+    "src/pager.rs": "bd57e79d484b98d25226ae7682edf7a78a0b7dce5fe0a6df6ddda093a7885143",
+    "src/policy.rs": "fd96d63ffa8af19f2ad2f6e90bf22e72785be8ec78024c665dbd7733469f0b2b",
+    "src/safety.rs": "fed551da5e0abeb844b1c3ff08317495d7f2e41e5e30527bbfe08aaea88bbdcf",
+    "src/screendump.rs": "ca8adddda5d7563220ac14a370dfd8def0b70c2d3a72b14f640aaf7adbeb7d7c",
+    "src/selectors.rs": "598922f71b3798a99523416ce06125986a2a12bd6758aa134c54f183feb7c3ef",
+    "src/session.rs": "385a47ec1716b0e76ba3ca4adb8b998c0dd32dab0e7debba1fd897eba06a496f",
+    "src/themes.rs": "c1e2a46e975496d7ec5195a536c33c5302b0382e3ae1ba1bd8c048183472bdb9",
+    "src/transport.rs": "5ac1be0dc57a6995222db7cbf8a673e191c4aef2317907c4de2abc550db9c16d",
+    "src/tui.rs": "7f798009d97e593d2cb92180a19c39b3df7359ed117b3e9d37ccca24229309f9",
+    "src/ui_advice.rs": "9ae8394c2b27914c6beda7cace4be41e6a937d58653c33ada3e5ca3cfc2f8324",
+    "src/ui_helm.rs": "2eeb67deedad2699b68c7910dec973d40aa1a70135ca4cbbec44c3e3c918e567",
+    "src/ui_logs.rs": "146c2c3b8587655f119e2ffe384af4707323d95e74e9856d6c425977fb187f16",
+    "src/ui_metrics.rs": "af6497d8c40ef0562d26c77535bb23f944a1b482ad1b7eae30c4d342157a46b5",
+    "src/ui_navigation.rs": "cbbe1223f38c6651d7fead49a73ddc57e05da958bd5dba35cd42ed2dac48f234",
+    "src/watch.rs": "1655d76c17d0e1dbbdfcdeed63eecb98270df0701f1c3fe3fd2575912ee5f3dc",
+    "Cargo.toml": "0dbc079a25e0a919bdc346fb52194158b1e1e9e99fde57be92577a49c438c1b1",
+    "Cargo.lock": "6707a4b7efbb1f53c2d78595de335675a5b451758b8fa3b76ba6d84e18493a8e",
+    "scripts/test-helm-migration.py": "563b8e35d00819de146e9a5a5c2044ed8853f8ecbad04202b08c210ca503bad4",
+    "scripts/test-helm-extensions.py": "5c22ee471295a53db6cce42c8870936286e3a7036f03e4f59d27cd0fba6bfbdb",
+    "scripts/test-helm-lifecycle.py": "57de354c006a782c05f7fe4312c536e604b78a99fb9caad4eab946c59fea4e5f",
+    "scripts/test-helm-logs-metrics.py": "b479a57507657058702f1016b68190837c4924b9d9aed4ca18191275b30a26ae",
+    "scripts/test-live-trust-ui.py": "f59c8abd594f0e41409f3f9eecb2676f26402847256ad4a81a0d2938316240f0",
+    "scripts/test-terminal.py": "acea29f9c41f79cb9e7ab8b74693416ce017cc7d7704facc517148b12a2bb0f1",
+    "scripts/test-live-lifecycle-ui.py": "66e13c6517fd1d2eb34afe395d6b16a5bc7a3875dd63205f32e365c552882d80"
+  },
+  "temporary_credentials_removed": true,
+  "source_unchanged": true
+}

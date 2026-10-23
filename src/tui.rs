@@ -20,6 +20,8 @@ use crossterm::{
     },
 };
 use serde_json::Value;
+#[path = "ui_advice.rs"]
+mod advice_ui;
 #[path = "ui_helm.rs"]
 mod helm_ui;
 #[path = "ui_navigation.rs"]
@@ -116,6 +118,18 @@ enum Task {
     Manifest(std::path::PathBuf),
     Helm(helm_ui::Request, u64),
     HelmPrepare(Box<helm_ui::WriteDraft>, u64),
+    AdvicePrepare(
+        String,
+        String,
+        String,
+        Option<String>,
+        Option<std::path::PathBuf>,
+    ),
+    AdviceExecute(
+        Box<crate::advice::PreparedAdvice>,
+        String,
+        tokio::sync::oneshot::Receiver<()>,
+    ),
     HelmExecute(
         Box<crate::helm_lifecycle::Prepared>,
         String,
@@ -134,6 +148,8 @@ enum Reply {
     Directory(crate::navigation_views::Directory),
     Helm(u64, Result<helm_ui::Response>),
     HelmPrepared(u64, Result<Box<crate::helm_lifecycle::Prepared>>),
+    AdvicePrepared(Result<(Option<crate::advice::PreparedAdvice>, String)>),
+    AdviceOutcome(Result<crate::advice::AdviceOutput>),
     HelmOutcome(u64, Result<crate::helm_lifecycle::Outcome>),
     Overview(crate::overview::OverviewFeed),
     SessionPrepared(Box<crate::ops::ReviewedOperation>),
@@ -397,6 +413,28 @@ fn worker() -> Worker {
                             }else{Reply::Failure("Forward canceled before start: context or scope changed; review again.".into())}
                         }else{Reply::Failure("Not connected; review again after reconnecting.".into())}
                     }
+                    Task::AdvicePrepare(kind,namespace,name,uid,policy)=>{
+                        let result=async {
+                            if epoch!=watch_results.epoch.load(std::sync::atomic::Ordering::SeqCst){return Err("Copilot preview canceled: context/scope changed.".into());}
+                            let gateway=gateway.as_ref().ok_or("Not connected; select a resource first.")?;
+                            let object=tokio::time::timeout(Duration::from_secs(15),gateway.get(&kind,&namespace,&name)).await.map_err(|_|"Diagnostic read timed out")??;
+                            if uid.as_deref().is_none_or(|expected|object["metadata"]["uid"].as_str()!=Some(expected)){return Err("Selected object was replaced; select and preview again.".into());}
+                            if let Some(policy)=policy.filter(|_|!gateway.is_demo()) {
+                                let options=crate::advice::load_options(&policy)?;
+                                let prepared=crate::advice::prepare(&object,options).await?;
+                                let text=format!("01 REVIEW TRANSFER    /    02 Ask Copilot    /    03 Read advice\n\n{}\n\nEXACT DIAGNOSTIC PAYLOAD\n{}",prepared.summary(),prepared.preview()?);
+                                Ok((Some(prepared),text))
+                            } else {
+                                let preview=crate::advice::prepare_preview(&object,"github.com")?;
+                                Ok((None,format!("01 LOCAL PREVIEW    /    No request sent\n\nCOPILOT ADVISORY\nReview diagnostic status before sharing it with GitHub Copilot.\nNames, namespaces, cluster identity, specs, logs and credentials are omitted.\nOnly known status terms are shared. Counters can still reveal workload state.\n\n{}\n\nEXACT DIAGNOSTIC PAYLOAD\n{}",if gateway.is_demo(){"DEMO / sample data. Sending is disabled in demo mode."}else{"Setup required: launch with --copilot-policy ABS. See docs/COPILOT_INTEGRATION.md."},preview.preview()?)))
+                            }
+                        }.await;
+                        Reply::AdvicePrepared(result)
+                    }
+                    Task::AdviceExecute(prepared,typed,cancel)=>{
+                        let result=if epoch!=watch_results.epoch.load(std::sync::atomic::Ordering::SeqCst){Err("Copilot transfer rejected: reviewed context/scope changed.".into())}else{crate::advice::run(*prepared,&typed,Some(cancel)).await};
+                        Reply::AdviceOutcome(result)
+                    }
                     Task::HelmPrepare(draft,generation)=>{
                         let result=if epoch!=watch_results.epoch.load(std::sync::atomic::Ordering::SeqCst){Err("Helm preparation canceled: context/scope changed.".into())}
                         else if let Some(gateway)=gateway.as_ref(){
@@ -492,7 +530,7 @@ fn worker() -> Worker {
                                         Reply::Prepared(Box::new(prepared))
                                     },
                                     Task::Execute(p,a) => Reply::Notice(g.execute(*p,a).await?),
-                                    Task::Connect(_) | Task::Watch(..) | Task::Metrics(..) | Task::RunSession(..) | Task::RunForward(..) | Task::Directory(_) | Task::Manifest(_) | Task::Helm(..) | Task::HelmPrepare(..) | Task::HelmExecute(..) => return Err("invalid worker task".into()),
+                                    Task::Connect(_) | Task::Watch(..) | Task::Metrics(..) | Task::RunSession(..) | Task::RunForward(..) | Task::Directory(_) | Task::Manifest(_) | Task::Helm(..) | Task::HelmPrepare(..) | Task::HelmExecute(..) | Task::AdvicePrepare(..) | Task::AdviceExecute(..) => return Err("invalid worker task".into()),
                                 })
                             };
                             match tokio::time::timeout(Duration::from_secs(25), future).await {
@@ -573,6 +611,10 @@ enum Modal {
     HelmLoading(&'static str),
     HelmDocument(String, String, usize),
     HelmForm(Box<helm_ui::Form>),
+    AdviceReview(Box<advice_ui::Review>),
+    AdviceLoading,
+    AdviceRunning,
+    AdviceDocument(String, String, usize),
     HelmReview(Box<helm_ui::Review>),
     HelmRunning(String, Instant, bool),
     HelmOutcome(String, String, usize),
@@ -676,6 +718,7 @@ struct App {
     log_target: Option<LogTarget>,
     helm_generation: u64,
     helm_cancel: Option<tokio::sync::oneshot::Sender<()>>,
+    advice_cancel: Option<tokio::sync::oneshot::Sender<()>>,
     helm_return: Option<(String, crate::helm::Storage)>,
     helm_elapsed: u64,
     last_forward: String,
@@ -1063,10 +1106,23 @@ impl App {
             ("can",_)=>self.status="Use :can u:USER | g:GROUP | s:NAMESPACE:SERVICEACCOUNT".into(),
             ("rbacs"|"policies"|"users"|"groups",_)=>self.status="Use :can u:USER, g:GROUP or s:NAMESPACE:SERVICEACCOUNT to inspect native RBAC policy. Subject-list views are unavailable.".into(),
             ("logs",[selector])=>self.request_log_group(self.namespace.clone(),crate::logs::PodLogSelection::Selector(selector.clone()),false,true),
+            ("copilot",[])=>{
+                if let Some((kind,namespace,name))=self.selected_target() {
+                    if self.busy {self.status="Wait for the current request before preparing Copilot.".into();}
+                    else {
+                        self.modal=Modal::AdviceLoading;
+                        self.send(Task::AdvicePrepare(kind,namespace,name,self.selected_uid(),self.options.copilot_policy.clone()));
+                        if !self.busy {
+                            self.modal=Modal::AdviceDocument("COPILOT NOT STARTED".into(),"Request queue unavailable; open Copilot again when the worker is available.".into(),0);
+                        }
+                    }
+                }else{self.status="Select a resource before :copilot.".into();}
+            }
             ("helm-install",[])=>self.begin_helm_form(helm_ui::Intent::Install),
             ("helm-crds",[])=>self.begin_helm_form(helm_ui::Intent::InstallCrds),
             ("helm-crds-upgrade",[])=>self.begin_helm_form(helm_ui::Intent::UpgradeCrds),
             ("helm-crds-delete",[])=>self.begin_helm_form(helm_ui::Intent::DeleteCrds),
+            ("helm-crds-migrate",[])=>self.begin_helm_form(helm_ui::Intent::MigrateCrds),
             ("helm-test",[])=>{
                 let selected=match &self.modal {Modal::Helm(table)=>table.current(),_=>self.subviews.iter().rev().find_map(|modal|if let Modal::Helm(table)=modal{table.current()}else{None})};
                 if let Some(release)=selected {self.begin_helm_form(helm_ui::Intent::Test(release));}else{self.status="Select a release in :helm before :helm-test or press t in its table.".into();}
@@ -1354,7 +1410,11 @@ impl App {
         }
         let writes = matches!(
             &task,
-            Task::Execute(..) | Task::RunSession(..) | Task::RunForward(..) | Task::HelmExecute(..)
+            Task::Execute(..)
+                | Task::RunSession(..)
+                | Task::RunForward(..)
+                | Task::HelmExecute(..)
+                | Task::AdviceExecute(..)
         );
         match self.worker.tx.try_send((self.epoch, task)) {
             Ok(()) => {
@@ -1474,6 +1534,41 @@ impl App {
                         self.items.len()
                     );
                 }
+                Reply::AdvicePrepared(result) => {
+                    if !matches!(self.modal, Modal::AdviceLoading) {
+                        continue;
+                    }
+                    self.modal = match result {
+                        Ok((prepared, text)) => {
+                            self.status = "Copilot preview ready; nothing sent.".into();
+                            Modal::AdviceReview(Box::new(advice_ui::Review::new(
+                                prepared, text, self.epoch,
+                            )))
+                        }
+                        Err(error) => Modal::AdviceDocument(
+                            "COPILOT SETUP / no request sent".into(),
+                            error,
+                            0,
+                        ),
+                    };
+                }
+                Reply::AdviceOutcome(result) => {
+                    self.advice_cancel = None;
+                    self.modal = match result {
+                        Ok(output) => Modal::AdviceDocument(
+                            "COPILOT ADVICE / review independently".into(),
+                            format!(
+                                "READ-ONLY ADVICE / no commands executed\n\n{}\n\nCheck suggestions against live state before taking action.",
+                                safety::safe_lines(&output.answer, 64 * 1024)
+                            ),
+                            0,
+                        ),
+                        Err(error) => {
+                            Modal::AdviceDocument("COPILOT REQUEST STOPPED".into(), error, 0)
+                        }
+                    };
+                    self.status = "Copilot request finished. No automatic remediation.".into();
+                }
                 Reply::HelmPrepared(generation, result) => {
                     if generation != self.helm_generation
                         || !matches!(self.modal, Modal::HelmLoading(_))
@@ -1514,6 +1609,10 @@ impl App {
                         Ok(outcome) => {
                             let title = if outcome.uncertain {
                                 "HELM OUTCOME UNKNOWN"
+                            } else if outcome.success
+                                && outcome.summary.contains("STAGED / finalization pending")
+                            {
+                                "CRD MIGRATION STAGED / finalization pending"
                             } else if outcome.success {
                                 "HELM OPERATION SUCCEEDED"
                             } else {
@@ -2222,6 +2321,7 @@ impl App {
             },
         );
         form.set_keyring(self.options.helm_keyring.clone());
+        form.set_sigstore_policy(self.options.helm_sigstore_policy.clone());
         self.status = "Helm draft; no execution requested.".into();
         self.sticky_status = false;
         let current = std::mem::replace(&mut self.modal, Modal::None);
@@ -2339,13 +2439,17 @@ impl App {
         }
     }
     fn key(&mut self, code: KeyCode) -> Result<bool> {
+        if matches!(self.modal, Modal::AdviceRunning) {
+            self.status = "Copilot request running; Ctrl-C cancels and waits for cleanup.".into();
+            return Ok(false);
+        }
         if matches!(self.modal, Modal::HelmRunning(..)) {
             self.status="Helm is running asynchronously. Ctrl-C requests cancellation; wait for the final outcome.".into();
             return Ok(false);
         }
         if self.write_inflight {
             self.status =
-                "Mutation in progress; wait for the result before navigating or quitting.".into();
+                "Operation in progress; wait for the result before navigating or quitting.".into();
             return Ok(false);
         }
         if code == KeyCode::Char(':')
@@ -2359,6 +2463,7 @@ impl App {
                 | Modal::Directory(..)
                 | Modal::ForwardView
                 | Modal::HelmDocument(..)
+                | Modal::AdviceDocument(..)
                 | Modal::Help(..) => true,
                 Modal::Follow(view) => !view.is_filtering(),
                 Modal::Helm(table) => !table.is_filtering(),
@@ -2378,6 +2483,56 @@ impl App {
         self.sticky_status = false;
         let modal = std::mem::replace(&mut self.modal, Modal::None);
         match modal {
+            Modal::AdviceReview(mut review) => match code {
+                KeyCode::Esc => self.close_subview(),
+                KeyCode::Enter => {
+                    let (width, height) = terminal::size().unwrap_or((80, 24));
+                    if self.busy || !review.can_send(width, height, self.epoch) {
+                        self.status="Read every preview line and type the exact transfer confirmation. Local previews cannot send.".into();
+                        self.modal = Modal::AdviceReview(review);
+                    } else if let Some(prepared) = review.prepared.take() {
+                        let (cancel, receiver) = tokio::sync::oneshot::channel();
+                        self.advice_cancel = Some(cancel);
+                        self.modal = Modal::AdviceRunning;
+                        self.send(Task::AdviceExecute(
+                            Box::new(prepared),
+                            review.typed,
+                            receiver,
+                        ));
+                        if !self.write_inflight {
+                            self.advice_cancel = None;
+                            self.modal = Modal::AdviceDocument(
+                                "COPILOT NOT STARTED".into(),
+                                "Request queue unavailable; prepare and review again.".into(),
+                                0,
+                            );
+                        }
+                    }
+                }
+                _ => {
+                    let (width, height) = terminal::size().unwrap_or((80, 24));
+                    review.key(
+                        code,
+                        usize::from(width.saturating_sub(2)),
+                        usize::from(height.saturating_sub(8)),
+                    );
+                    self.modal = Modal::AdviceReview(review);
+                }
+            },
+            Modal::AdviceLoading => {
+                if !matches!(code, KeyCode::Esc | KeyCode::Char('q')) {
+                    self.modal = Modal::AdviceLoading;
+                }
+            }
+            Modal::AdviceRunning => self.modal = Modal::AdviceRunning,
+            Modal::AdviceDocument(title, text, offset) => {
+                if matches!(code, KeyCode::Esc | KeyCode::Char('q')) {
+                    self.close_subview();
+                } else {
+                    let offset = scroll_offset(&text, offset, code);
+                    self.modal = Modal::AdviceDocument(title, text, offset);
+                }
+            }
             Modal::HelmForm(mut form) => match code {
                 KeyCode::Esc => self.close_subview(),
                 KeyCode::Enter => {
@@ -3746,6 +3901,16 @@ impl App {
         Ok(false)
     }
     fn key_event(&mut self, code: KeyCode, modifiers: KeyModifiers) -> Result<bool> {
+        if matches!(self.modal, Modal::AdviceRunning)
+            && modifiers.contains(KeyModifiers::CONTROL)
+            && code == KeyCode::Char('c')
+        {
+            if let Some(cancel) = self.advice_cancel.take() {
+                let _ = cancel.send(());
+            }
+            self.status = "Canceling Copilot; waiting for process and connection cleanup.".into();
+            return Ok(false);
+        }
         if matches!(self.modal, Modal::HelmRunning(..))
             && modifiers.contains(KeyModifiers::CONTROL)
             && code == KeyCode::Char('c')
@@ -3757,6 +3922,12 @@ impl App {
             return self.key(code);
         }
         if modifiers.contains(KeyModifiers::CONTROL) {
+            if let Modal::AdviceReview(review) = &mut self.modal {
+                if matches!(code, KeyCode::Char('u' | 'w')) {
+                    review.typed.clear();
+                }
+                return Ok(false);
+            }
             if let Modal::HelmForm(form) = &mut self.modal {
                 if matches!(code, KeyCode::Char('u' | 'w')) {
                     form.clear();
@@ -4235,7 +4406,7 @@ fn resource_label(kind: &Kind) -> String {
 const TUI_HELP: &str = "NAVIGATE LIKE K9S\n  :pod :pods :po           Singular, plural or discovered short name\n  :pod NAMESPACE          Resource in namespace; all means all namespaces\n  :pod /api|web           Resource plus regex filter\n  :pod app=api,tier=web    Server-side label selector\n  :pod @CONTEXT           Switch context; context names retain their case\n  :ctx / :ctx NAME        Context picker (Pod view) / direct switch (same view)\n  :ns / :ns NAME          Namespace picker / direct switch (Pod view)\n  Ctrl-A / :aliases       Resource alias picker; Enter navigates\n  :pulses / :pu           Read-only cluster health snapshot\n  :xray po|svc|dp [NS]    Ownership and service relationship snapshot\n  :screendump / :sd       Browse saved redacted resource snapshots\n  :can u:NAME             Read-only RBAC subject view\n  :dir PATH               Browse local YAML directory; no apply\n  :helm [NAMESPACE]       Native release metadata (--allow-helm)\n  :history RELEASE        Selected release revision history\n  :q :q! :qa :Q :quit     Quit (in-flight mutations must finish)\n\nCOMMAND PROMPT\n  : / Tab                 Open prompt; Tab completes; Shift-Tab reverses\n  Up / Down               Recall in-session command history\n  Left Right Home End     Edit at cursor; Ctrl-U clears\n  Enter / Esc             Run command / cancel without changing view\n  [ / ] / -               Previous / next / last view\n  Esc                     Close view or return to previous resource\n\nFILTER\n  /PATTERN                Case-insensitive regex over namespace/name/status\n  /!PATTERN               Inverse regex\n  /-f PATTERN             Fuzzy subsequence match\n  /-l LABEL_SELECTOR      Apply server-side label selector on Enter\n  Enter / Esc             Keep / restore previous filter and selected UID\n\nRESOURCE TABLE\n  j k / arrows            Move; PgUp PgDown Home End page\n  Enter                   Drill into containers, related Pods or namespace\n  d                       Describe selected object (redacted overview)\n  y / v                   View redacted YAML; J views JSON\n  c / n                   Copy name / namespace via terminal OSC52 clipboard\n  w / 0                   Warp to selected namespace / all namespaces\n  N / A / S / R           Sort by name / age / status / readiness\n  C / M                   Sort Pods/Nodes by CPU / memory, highest first\n  CPU/MEM snapshots refresh every 15s while the table is visible; - means\n  unknown, never zero. ~ indicates Metrics API omitted UID; creation checked.\n  Table CPU/MEM labels are rounded; d or m shows exact measured quantities.\n  Space / Ctrl-Space      Mark / mark range (visual only; no bulk mutations)\n  Ctrl-Backslash          Clear marks\n  Ctrl-S                  Save current visible redacted resource snapshot\n  Ctrl-R / :discover      Refresh / API discovery; r restarts workloads\n  l / p                   Follow logs / previous logs (--allow-logs)\n  Pod s / a / f / F       Shell / attach / forwards / new forward\n  Workload s / r          Scale Deployment-StatefulSet / reviewed restart\n  e                       Controlled workload container editor\n  Ctrl-D                  Reviewed deletion; Ctrl-K force kill disabled\n  o                       Show selected Pod's Node\n\nHELM AND LOGS\n  Helm Enter / r          Release revision history\n  History Enter / v       Explicit selected revision stored values\n  Helm i / u / t / c      Install / upgrade / test / separately install chart CRDs\n  History r / Ctrl-D      Rollback selected revision / uninstall current release\n  Helm lifecycle needs --write --allow-helm --allow-helm-write and --helm-tool.\n  Sources: local .tgz or explicit OCI :TAG / @sha256:DIGEST.
   --helm-keyring requires native Helm provenance verification during prepare.\n  Hooks/CRDs require --allow-helm-hooks / --allow-helm-crds; default OFF.\n  :helm-crds prepares create-only Namespaced CRDs, retained on uninstall.
   :helm-test runs stored tests; :helm-crds-upgrade reviews schema changes.
-  :helm-crds-delete is explicit, checks live instances and needs stronger approval.\n  Every review line must be painted before exact namespace/release approval.\n  Helm d / m / y          Metadata / resource identities / metadata YAML\n  Helm Ctrl-R / /         Refresh / filter; Esc returns to previous view\n  Log a                   Toggle all ordinary containers / preferred container\n  Workload l / p          Fixed captured Pod membership / previous logs\n  :logs LABEL_SELECTOR    Explicit namespace-scoped multi-Pod log capture\n  Group reloads keep the same Pod UIDs; close and reopen to capture new Pods.\n  Log 0..6                Tail / head / last 1m,5m,15m,30m,1h\n  Log s w t f             Autoscroll / wrap / timestamps / fullscreen\n  Pod l honors the default-container annotation, otherwise merges multiple\n  ordinary containers. Each merged line carries a namespace/Pod/container.\n\nKBORG COMMANDS\n  :actions                Discover actions with capability reasons\n  :scale :image :restart  Explicit reviewed workload operations\n  :metrics [resources]    Metrics / opt into requests-limit comparisons\n  :overview               Live overview of up to four explicit contexts\n  :themes                 Theme preview and custom palette creation\n\nLIMITS AND SAFETY\n  Context, namespace and mode remain visible; DEMO is sample data.\n  STALE and TRUNCATED indicate incomplete data. Regex uses bounded Rust regex\n  syntax; look-around and backreferences are unavailable. Secrets excluded.\n  e edits only ordinary-container image and optional CPU/memory budget on\n  Deployments, StatefulSets, DaemonSets and CronJobs, with captured UID, fresh\n  server dry-run and full review. Generic YAML editing/apply is unavailable.\n  Transfer and node cordon/uncordon/drain/shell,\n  benchmarks and external scans have explicit unavailable messages.\n  Helm release reads need --allow-helm. Values are stored overrides with\n  known fields redacted; custom keys can remain confidential. Complete\n  review is mandatory for lifecycle changes. Raw storage, chart files and notes are excluded.\n  Visual marks never authorize bulk writes. Every mutation requires --write\n  plus one-use approval; shell/attach/forward need separate capabilities.";
+  :helm-crds-delete is explicit, checks live instances and needs stronger approval.\n  :helm-crds-migrate reviews storage rewrites; controller proof gates finalization.\n  :copilot previews selected diagnostics; explicit policy and transfer approval to send.\n  Every review line must be painted before exact namespace/release approval.\n  Helm d / m / y          Metadata / resource identities / metadata YAML\n  Helm Ctrl-R / /         Refresh / filter; Esc returns to previous view\n  Log a                   Toggle all ordinary containers / preferred container\n  Workload l / p          Fixed captured Pod membership / previous logs\n  :logs LABEL_SELECTOR    Explicit namespace-scoped multi-Pod log capture\n  Group reloads keep the same Pod UIDs; close and reopen to capture new Pods.\n  Log 0..6                Tail / head / last 1m,5m,15m,30m,1h\n  Log s w t f             Autoscroll / wrap / timestamps / fullscreen\n  Pod l honors the default-container annotation, otherwise merges multiple\n  ordinary containers. Each merged line carries a namespace/Pod/container.\n\nKBORG COMMANDS\n  :actions                Discover actions with capability reasons\n  :scale :image :restart  Explicit reviewed workload operations\n  :metrics [resources]    Metrics / opt into requests-limit comparisons\n  :overview               Live overview of up to four explicit contexts\n  :themes                 Theme preview and custom palette creation\n\nLIMITS AND SAFETY\n  Context, namespace and mode remain visible; DEMO is sample data.\n  STALE and TRUNCATED indicate incomplete data. Regex uses bounded Rust regex\n  syntax; look-around and backreferences are unavailable. Secrets excluded.\n  e edits only ordinary-container image and optional CPU/memory budget on\n  Deployments, StatefulSets, DaemonSets and CronJobs, with captured UID, fresh\n  server dry-run and full review. Generic YAML editing/apply is unavailable.\n  Transfer and node cordon/uncordon/drain/shell,\n  benchmarks and external scans have explicit unavailable messages.\n  Helm release reads need --allow-helm. Values are stored overrides with\n  known fields redacted; custom keys can remain confidential. Complete\n  review is mandatory for lifecycle changes. Raw storage, chart files and notes are excluded.\n  Visual marks never authorize bulk writes. Every mutation requires --write\n  plus one-use approval; shell/attach/forward need separate capabilities.";
 
 #[derive(Clone, Copy, Debug)]
 struct Rect {
@@ -4420,7 +4591,10 @@ fn helm_heading(line: &str) -> bool {
         "TARGET  ",
         "POLICY  ",
         "SOURCE  ",
+        "TRUST  ",
+        "01 ",
         "DETAILS",
+        "Details",
         "OPERATION",
         "CONNECTION",
         "CHANGE PLAN",
@@ -4429,7 +4603,8 @@ fn helm_heading(line: &str) -> bool {
     ]
     .iter()
     .any(|prefix| text.starts_with(prefix))
-        || (!text.is_empty() && text.chars().all(|c| !c.is_ascii_lowercase()))
+        || (text.chars().any(|c| c.is_ascii_alphabetic())
+            && text.chars().all(|c| !c.is_ascii_lowercase()))
 }
 fn row(
     out: &mut impl Write,
@@ -4488,28 +4663,68 @@ fn panel(
         &format!(" {} {title} ", if focused { ">" } else { " " }),
         width,
     );
-    let top = format!("+{title}{}+", "-".repeat(width.saturating_sub(title.len())));
-    cell(out, rect.x, rect.y, rect.width, &top, fg, bg)?;
-    for y in rect.y + 1..rect.y + rect.height - 1 {
-        cell(
+    // Only these trusted, single-cell box glyphs bypass data's ASCII display
+    // policy. Non-UTF-8 locales keep the conservative ASCII frame.
+    let unicode = ["LC_ALL", "LC_CTYPE", "LANG"]
+        .iter()
+        .filter_map(|key| std::env::var(key).ok())
+        .find(|value| !value.is_empty())
+        .is_some_and(|value| {
+            let value = value.to_ascii_lowercase();
+            value.contains("utf-8") || value.contains("utf8")
+        });
+    let (tl, tr, bl, br, horizontal, vertical) = if unicode {
+        ("╭", "╮", "╰", "╯", "─", "│")
+    } else {
+        ("+", "+", "+", "+", "-", "|")
+    };
+    let mut line = |y, text: String| {
+        queue!(
             out,
-            rect.x,
-            y,
-            rect.width,
-            &format!("|{}|", " ".repeat(width)),
-            fg,
-            bg,
-        )?;
+            cursor::MoveTo(rect.x, y),
+            themes::ForegroundColor(fg),
+            themes::BackgroundColor(bg),
+            style::Print(text)
+        )
+    };
+    line(
+        rect.y,
+        format!(
+            "{tl}{title}{}{tr}",
+            horizontal.repeat(width.saturating_sub(title.len()))
+        ),
+    )?;
+    for y in rect.y + 1..rect.y + rect.height - 1 {
+        line(y, format!("{vertical}{}{vertical}", " ".repeat(width)))?;
     }
-    cell(
-        out,
-        rect.x,
+    line(
         rect.y + rect.height - 1,
-        rect.width,
-        &format!("+{}+", "-".repeat(width)),
-        fg,
-        bg,
+        format!("{bl}{}{br}", horizontal.repeat(width)),
     )
+}
+
+fn key_hints(
+    out: &mut impl Write,
+    y: u16,
+    width: u16,
+    hints: &[(&str, &str)],
+    colors: [Color; 3],
+) -> io::Result<()> {
+    let [key, text, bg] = colors;
+    row(out, y, width, "", text, bg)?;
+    let mut x = 1;
+    for (shortcut, label) in hints {
+        let label = format!(" {label}{}", if width < 50 { " " } else { "   " });
+        // Keep complete actions together; a clipped shortcut is misleading.
+        if x + shortcut.len() as u16 + label.len() as u16 > width {
+            break;
+        }
+        cell(out, x, y, shortcut.len() as u16, shortcut, key, bg)?;
+        x += shortcut.len() as u16;
+        cell(out, x, y, label.len() as u16, &label, text, bg)?;
+        x += label.len() as u16;
+    }
+    Ok(())
 }
 fn ui_color(app: &App, role: &str) -> Color {
     if app.options.color && !app.theme.terminal {
@@ -4517,6 +4732,37 @@ fn ui_color(app: &App, role: &str) -> Color {
     } else {
         Color::Reset
     }
+}
+fn render_advice_footer(
+    out: &mut impl Write,
+    review: &advice_ui::Review,
+    w: u16,
+    h: u16,
+    colors: [Color; 3],
+) -> io::Result<()> {
+    let [accent, warning, bg] = colors;
+    let remaining = review.remaining(usize::from(w.saturating_sub(2)));
+    let label = if review.prepared.is_some() {
+        format!("{} > {}_", review.confirmation(), review.typed)
+    } else {
+        review.confirmation()
+    };
+    row(out, h - 2, w, &label, warning, bg)?;
+    row(
+        out,
+        h - 1,
+        w,
+        &format!(
+            " {remaining} unread | PgUp/PgDown review | {} | Esc back",
+            if review.prepared.is_some() {
+                "Enter send approved payload"
+            } else {
+                "setup required to send"
+            }
+        ),
+        accent,
+        bg,
+    )
 }
 fn render_helm_review_footer(
     out: &mut impl Write,
@@ -4571,6 +4817,17 @@ fn draw(app: &mut App) -> Result<()> {
         .and_then(|_| out.flush())
         .map_err(|_| "draw failed")?;
     if w >= 28 && h >= 10 {
+        let advice_colors = [
+            ui_color(app, "accent"),
+            ui_color(app, "warning"),
+            ui_color(app, "background"),
+        ];
+        if let Modal::AdviceReview(review) = &mut app.modal {
+            review.mark_drawn(usize::from(w - 2), usize::from(h - 8));
+            render_advice_footer(&mut out, review, w, h, advice_colors)
+                .and_then(|_| out.flush())
+                .map_err(|_| "draw failed")?;
+        }
         let changed = if let Modal::HelmReview(review) = &mut app.modal {
             let before = review.remaining(usize::from(w - 2));
             review.mark_drawn(usize::from(w - 2), usize::from(h - 8));
@@ -4627,7 +4884,7 @@ fn modal_rect(modal: &Modal, width: u16, height: u16) -> Rect {
         Modal::Resources(..) => 10,
         Modal::Editor(..) => 13,
         Modal::ForwardForm(..) => 9,
-        Modal::HelmForm(form) => (form.fields.len() as u16).saturating_add(10),
+        Modal::HelmForm(form) => (form.fields.len() as u16).saturating_add(13),
         Modal::EditContainers(_, _, _, _, values, _) => (values.len() as u16).saturating_add(3),
         Modal::Scale(..) => 6,
         Modal::Picker(_, items, _) | Modal::SessionContainers(_, _, _, items, _, _) => {
@@ -4763,12 +5020,12 @@ fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
     // Surfaces are derived from the selected palette, so every theme keeps its
     // identity and existing terminal-depth/NO_COLOR handling remains central.
     let surface = if app.options.color && !t.terminal {
-        blend(t.get("background"), t.get("text"), 8).color()
+        blend(t.get("background"), t.get("text"), 3).color()
     } else {
         Color::Reset
     };
     let raised = if app.options.color && !t.terminal {
-        blend(t.get("background"), t.get("text"), 13).color()
+        blend(t.get("background"), t.get("text"), 6).color()
     } else {
         Color::Reset
     };
@@ -4790,18 +5047,14 @@ fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
     } else {
         "PRODUCTION READ ONLY"
     };
-    row(out, 0, w, "", fg, surface).map_err(|_| "draw failed")?;
+    let border = if app.options.color && !t.terminal {
+        blend(t.get("background"), t.get("muted"), 45).color()
+    } else {
+        Color::Reset
+    };
+    row(out, 0, w, "", fg, bg).map_err(|_| "draw failed")?;
     let brand = if w >= 64 { "  KBORG  " } else { "KBORG " };
-    cell(
-        out,
-        0,
-        0,
-        brand.len() as u16,
-        brand,
-        color("selection_text"),
-        color("selection_background"),
-    )
-    .map_err(|_| "draw failed")?;
+    cell(out, 0, 0, brand.len() as u16, brand, color("accent"), bg).map_err(|_| "draw failed")?;
     let mode_text = if w >= 64 {
         format!("  {mode}")
     } else {
@@ -4819,14 +5072,13 @@ fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
         w.saturating_sub(brand.len() as u16),
         &mode_text,
         mode_color,
-        surface,
+        bg,
     )
     .map_err(|_| "draw failed")?;
     if w >= 90 {
         let badge = format!("{}  v{}  ", app.theme.name, env!("CARGO_PKG_VERSION"));
         let width = badge.len().min(usize::from(w / 3)) as u16;
-        cell(out, w - width, 0, width, &badge, color("muted"), surface)
-            .map_err(|_| "draw failed")?;
+        cell(out, w - width, 0, width, &badge, color("muted"), bg).map_err(|_| "draw failed")?;
     }
     row(
         out,
@@ -4834,7 +5086,7 @@ fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
         w,
         &identity_line(&app.context, &app.namespace, &app.server, usize::from(w)),
         fg,
-        surface,
+        bg,
     )
     .map_err(|_| "draw failed")?;
     let freshness = if app.busy {
@@ -4889,13 +5141,16 @@ fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
                 },
             ),
             (format!("  {} {resource}  ", visible.len()), "text"),
-            (format!(" OK {healthy} "), "success"),
+            (format!(" {healthy} healthy "), "success"),
             (
-                format!(" ATTENTION {attention} "),
+                format!(
+                    " {attention} {} attention ",
+                    if attention == 1 { "needs" } else { "need" }
+                ),
                 if attention > 0 { "warning" } else { "muted" },
             ),
             (
-                format!(" SORT:{}{}", app.sort.label(), filter_hint,),
+                format!(" sort: {}{}", app.sort.label(), filter_hint,),
                 "muted",
             ),
         ]
@@ -4916,12 +5171,7 @@ fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
         if width == 0 {
             break;
         }
-        let band_bg = if app.options.color && !t.terminal && matches!(role, "success" | "warning") {
-            blend(t.get("background"), t.get(role), 10).color()
-        } else {
-            bg
-        };
-        cell(out, x, 2, width, &text, color(role), band_bg).map_err(|_| "draw failed")?;
+        cell(out, x, 2, width, &text, color(role), bg).map_err(|_| "draw failed")?;
         x += width;
     }
     let layout = Layout::new(w, h);
@@ -4944,15 +5194,15 @@ fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
         } else {
             title
         };
-        panel(out, rect, &title, true, color("muted"), bg).map_err(|_| "draw failed")?;
+        panel(out, rect, "", false, border, bg).map_err(|_| "draw failed")?;
         cell(
             out,
             rect.x + 1,
             rect.y,
-            rect.width - 2,
-            &format!(" {title}"),
+            (title.len() as u16 + 2).min(rect.width - 2),
+            &format!(" {title} "),
             color("accent"),
-            surface,
+            bg,
         )
         .map_err(|_| "draw failed")?;
         let namespaced = app
@@ -4984,8 +5234,8 @@ fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
             rect.y + 1,
             rect.width - 2,
             &format!("   {}", table_line(&cols, None, now)),
-            fg,
-            raised,
+            color("muted"),
+            surface,
         )
         .map_err(|_| "draw failed")?;
         let start = app.selected.saturating_sub(height.saturating_sub(1));
@@ -5028,8 +5278,6 @@ fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
                 ),
                 if selected {
                     color("selection_text")
-                } else if unhealthy {
-                    color("warning")
                 } else {
                     fg
                 },
@@ -5040,6 +5288,30 @@ fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
                 },
             )
             .map_err(|_| "draw failed")?;
+            if !selected {
+                let mut x = rect.x + 4;
+                for (column, width) in &cols {
+                    if matches!(column, Column::Status) {
+                        cell(
+                            out,
+                            x,
+                            rect.y + 2 + r as u16,
+                            *width as u16,
+                            &status,
+                            if unhealthy {
+                                color("warning")
+                            } else if health(object) == Health::Healthy {
+                                color("success")
+                            } else {
+                                color("muted")
+                            },
+                            bg,
+                        )
+                        .map_err(|_| "draw failed")?;
+                    }
+                    x += *width as u16 + 1;
+                }
+            }
         }
         if visible.is_empty() && height > 0 {
             let empty = if !app.filter.is_empty() {
@@ -5082,30 +5354,45 @@ fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
         surface,
     )
     .map_err(|_| "draw failed")?;
-    row(
+    let actions: &[(&str, &str)] = if w >= 100 {
+        &[
+            ("Enter", "open"),
+            ("d", "describe"),
+            ("y", "YAML"),
+            ("e", "edit"),
+            ("l", "logs"),
+            ("s", "shell"),
+            ("?", "help"),
+        ]
+    } else {
+        &[
+            ("d", "describe"),
+            ("y", "YAML"),
+            ("l", "logs"),
+            ("?", "help"),
+        ]
+    };
+    key_hints(
         out,
         h - 2,
         w,
-        if w >= 100 {
-            " [Enter] open   [d] describe   [y] YAML   [e] edit   [l] logs   [s] shell   [?] help"
-        } else {
-            " [d] describe  [y] YAML  [l] logs  [m] metrics  [?] help"
-        },
-        color("accent"),
-        bg,
+        actions,
+        [color("accent"), color("muted"), bg],
     )
     .map_err(|_| "draw failed")?;
-    row(
+    key_hints(
         out,
         h - 1,
         w,
-        if w >= 80 {
-            " [:] command   [/] filter   [Ctrl-A] aliases   :ctx context   :ns namespace   :q quit"
-        } else {
-            " [:] command  [/] filter  :q quit"
-        },
-        color("muted"),
-        bg,
+        &[
+            (":", "command"),
+            ("/", "filter"),
+            (":ctx", "context"),
+            (":ns", "namespace"),
+            ("Ctrl-A", "aliases"),
+            (":q", "quit"),
+        ],
+        [color("accent"), color("muted"), bg],
     )
     .map_err(|_| "draw failed")?;
     match &app.modal {
@@ -5190,6 +5477,16 @@ fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
                 Modal::Follow(view) => return render_log_modal(app, view, w, h, out),
                 Modal::Helm(table) => table.title(),
                 Modal::HelmForm(form) => form.intent.label(),
+                Modal::AdviceReview(review) => {
+                    if review.prepared.is_some() {
+                        "COPILOT / review diagnostic transfer"
+                    } else {
+                        "COPILOT / local preview only"
+                    }
+                }
+                Modal::AdviceLoading => "COPILOT / preparing local preview",
+                Modal::AdviceRunning => "COPILOT / advisory request in progress",
+                Modal::AdviceDocument(title, ..) => title.as_str(),
                 Modal::HelmReview(_) => "HELM REVIEW / approval required",
                 Modal::HelmRunning(..) => "HELM EXECUTION / asynchronous reviewed operation",
                 Modal::HelmOutcome(title, ..) => title.as_str(),
@@ -5229,12 +5526,14 @@ fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
             } else {
                 bg
             };
-            panel(
+            panel(out, rect, "", false, border, modal_bg).map_err(|_| "draw failed")?;
+            cell(
                 out,
-                rect,
-                title,
-                true,
-                if matches!(modal,Modal::Confirm(..)|Modal::SessionConfirm(..)|Modal::HelmReview(..)) || matches!(modal,Modal::HelmForm(form) if matches!(form.intent,helm_ui::Intent::DeleteCrds | helm_ui::Intent::Uninstall(_))) {
+                rect.x + 1,
+                rect.y,
+                (title.len() as u16 + 2).min(rect.width.saturating_sub(2)),
+                &format!(" {title} "),
+                if matches!(modal, Modal::HelmReview(..)) || matches!(modal,Modal::HelmForm(form) if matches!(form.intent,helm_ui::Intent::DeleteCrds | helm_ui::Intent::Uninstall(_))) {
                     color("warning")
                 } else {
                     color("accent")
@@ -5242,22 +5541,12 @@ fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
                 modal_bg,
             )
             .map_err(|_| "draw failed")?;
-            cell(
-                out,
-                rect.x + 1,
-                rect.y,
-                rect.width.saturating_sub(2),
-                &format!(" {title}"),
-                if matches!(modal, Modal::HelmReview(..)) || matches!(modal,Modal::HelmForm(form) if matches!(form.intent,helm_ui::Intent::DeleteCrds | helm_ui::Intent::Uninstall(_))) {
-                    color("warning")
-                } else {
-                    color("accent")
-                },
-                raised,
-            )
-            .map_err(|_| "draw failed")?;
             let height = usize::from(rect.height.saturating_sub(2));
             let lines = match modal {
+                Modal::AdviceReview(review)=>review.lines(usize::from(rect.width.saturating_sub(2)),height),
+                Modal::AdviceLoading=>vec!["Reading selected status and preparing the minimized preview...".into(),"No inference request is sent until you review and approve.".into()],
+                Modal::AdviceRunning=>vec!["COPILOT ADVISORY / read-only".into(),String::new(),"Waiting for the bounded Copilot response...".into(),"Ctrl-C cancels; wait for process and connection cleanup.".into(),"No commands or Kubernetes changes are authorized.".into()],
+                Modal::AdviceDocument(_,text,offset)=>wrap_text(text,usize::from(rect.width.saturating_sub(2))).lines().skip(*offset).map(str::to_owned).collect(),
                 Modal::HelmForm(form)=>form.lines(usize::from(rect.width.saturating_sub(2)),height),
                 Modal::HelmReview(review)=>review.lines(usize::from(rect.width.saturating_sub(2)),height),
                 Modal::HelmRunning(target,started,cancelled)=>wrap_text(&format!("Reviewed target {target}\n\n{} | elapsed {}s | Helm command budget {}s\nFinal validation has its own bounded 120-second deadline.\nThe UI remains responsive while native Helm runs.\nCtrl-C requests local cancellation; remote changes may already exist.\nWaiting for the final success, failure or UNKNOWN outcome.\nDo not launch another operation until this result is reconciled.",if *cancelled{"CANCELLATION REQUESTED"}else{"RUNNING"},started.elapsed().as_secs(),app.options.helm_timeout_seconds),usize::from(rect.width.saturating_sub(2))).lines().map(str::to_owned).collect(),
@@ -5436,6 +5725,13 @@ fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
                     color("selection_text")
                 } else if warning {
                     color("warning")
+                } else if line.contains("Sigstore verified")
+                    || line.contains("OpenPGP verified")
+                    || line.contains("OpenPGP + Sigstore verified")
+                {
+                    color("success")
+                } else if line.contains("signature not checked") {
+                    color("warning")
                 } else if heading {
                     color("accent")
                 } else if matches!(modal, Modal::Confirm(..) | Modal::SessionConfirm(..)) {
@@ -5445,7 +5741,7 @@ fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
                 };
                 let line_bg = if selected {
                     color("selection_background")
-                } else if table_header {
+                } else if table_header || line.trim_start().starts_with("01 ") {
                     raised
                 } else {
                     modal_bg
@@ -5479,6 +5775,10 @@ fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
                 "Esc stops all context watches | PgUp/PgDown scroll"
             } else if matches!(modal, Modal::Overview(..)) {
                 "Esc close | J redacted JSON | y YAML | PgUp/PgDown scroll"
+            } else if matches!(modal, Modal::AdviceRunning) {
+                "Ctrl-C cancel | waiting for advice | no automatic execution"
+            } else if matches!(modal, Modal::AdviceDocument(..) | Modal::AdviceLoading) {
+                "PgUp/PgDown scroll | Esc back"
             } else if matches!(modal, Modal::HelmForm(..)) {
                 if w < 40 {
                     "Tab next  Enter review  Esc"
@@ -5500,23 +5800,40 @@ fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
             } else {
                 "Esc close | Enter select | arrows / j k | PgUp PgDown scroll"
             };
-            row(out, h - 2, w, hints, color("accent"), bg).map_err(|_| "draw failed")?;
+            if matches!(modal, Modal::HelmForm(..)) {
+                let hints: &[(&str, &str)] = if w < 40 {
+                    &[("Tab", "next"), ("Enter", "review"), ("Esc", "")]
+                } else if w < 60 {
+                    &[("Tab", "next"), ("Enter", "review"), ("Esc", "back")]
+                } else {
+                    &[
+                        ("Tab", "next field"),
+                        ("Shift-Tab", "previous"),
+                        ("Ctrl-U", "clear"),
+                        ("Enter", "review"),
+                        ("Esc", "back"),
+                    ]
+                };
+                key_hints(out, h - 2, w, hints, [color("accent"), color("muted"), bg])
+                    .map_err(|_| "draw failed")?;
+            } else {
+                row(out, h - 2, w, hints, color("muted"), bg).map_err(|_| "draw failed")?;
+            }
+            // Connection, mode and freshness already remain visible above the
+            // modal. Reserve the last line for in-flight state and approvals.
             row(
                 out,
                 h - 1,
                 w,
-                &format!(
-                    "{} | {freshness}",
-                    if app.busy {
-                        "Request in progress"
-                    } else {
-                        mode
-                    }
-                ),
+                if app.busy { "Request in progress" } else { "" },
                 color("muted"),
                 bg,
             )
             .map_err(|_| "draw failed")?;
+            if let Modal::AdviceReview(review) = modal {
+                render_advice_footer(out, review, w, h, [color("accent"), color("warning"), bg])
+                    .map_err(|_| "draw failed")?;
+            }
             if let Modal::HelmReview(review) = modal {
                 render_helm_review_footer(
                     out,
@@ -5634,6 +5951,7 @@ pub fn run(options: Options) -> Result<()> {
         log_target: None,
         helm_generation: 0,
         helm_cancel: None,
+        advice_cancel: None,
         helm_return: None,
         helm_elapsed: 0,
         last_forward: String::new(),
@@ -5664,9 +5982,9 @@ pub fn run(options: Options) -> Result<()> {
         worker: worker(),
     };
     if first_run {
-        themes::use_theme("catppuccin-mocha")?;
+        themes::use_theme(themes::DEFAULT_THEME)?;
         app.theme_picker()?;
-        app.status = "Welcome! Arrows preview, Enter chooses; Esc keeps Catppuccin Mocha.".into();
+        app.status = "Welcome! Arrows preview, Enter chooses; Esc keeps Flexoki Dark.".into();
     }
     if let Some(error) = alias_error {
         app.modal = Modal::Detail(
@@ -5776,7 +6094,11 @@ pub fn run(options: Options) -> Result<()> {
                     if key.modifiers.contains(KeyModifiers::CONTROL)
                         && key.code == KeyCode::Char('c')
                     {
-                        if matches!(app.modal, Modal::HelmRunning(..)) {
+                        if matches!(app.modal, Modal::AdviceRunning) {
+                            let _ = app.key_event(KeyCode::Char('c'), KeyModifiers::CONTROL);
+                            dirty = true;
+                            continue;
+                        } else if matches!(app.modal, Modal::HelmRunning(..)) {
                             app.cancel_helm();
                             dirty = true;
                             continue;
@@ -5956,6 +6278,8 @@ mod layout_tests {
                     helm_registry_ca: None,
                     helm_registry_auth: None,
                     helm_keyring: None,
+                    helm_sigstore_policy: None,
+                    copilot_policy: None,
                     helm_timeout_seconds: 300,
                     allow_tools: false,
                     allow_extensions: false,
@@ -5995,6 +6319,7 @@ mod layout_tests {
                 log_target: None,
                 helm_generation: 0,
                 helm_cancel: None,
+                advice_cancel: None,
                 helm_return: None,
                 helm_elapsed: 0,
                 last_forward: String::new(),
@@ -6034,6 +6359,66 @@ mod layout_tests {
             commands,
         )
     }
+    #[test]
+    fn copilot_closed_queue_and_late_previews_do_not_leave_loading_views() -> Result<()> {
+        let (mut app, replies, commands) = harness();
+        app.items = vec![
+            serde_json::json!({"apiVersion":"v1","kind":"Pod","metadata":{"name":"test","namespace":"test","uid":"test-uid"}}),
+        ];
+        drop(commands);
+        app.command("copilot")?;
+        assert!(!app.busy);
+        assert!(
+            matches!(app.modal, Modal::AdviceDocument(ref title,..) if title.contains("NOT STARTED"))
+        );
+        app.modal = Modal::AdviceLoading;
+        app.key(KeyCode::Esc)?;
+        replies
+            .send((
+                app.epoch,
+                Reply::AdvicePrepared(Ok((None, "late preview".into()))),
+            ))
+            .map_err(|_| "reply closed")?;
+        app.receive();
+        assert!(matches!(app.modal, Modal::None));
+        app.modal = Modal::AdviceLoading;
+        replies
+            .send((
+                app.epoch - 1,
+                Reply::AdvicePrepared(Ok((None, "stale preview".into()))),
+            ))
+            .map_err(|_| "reply closed")?;
+        app.receive();
+        assert!(matches!(app.modal, Modal::AdviceLoading));
+        Ok(())
+    }
+    #[test]
+    fn copilot_cancellation_waits_for_cleanup_before_unlocking_navigation() -> Result<()> {
+        let (mut app, replies, _commands) = harness();
+        let (cancel, mut receiver) = tokio::sync::oneshot::channel();
+        app.advice_cancel = Some(cancel);
+        app.modal = Modal::AdviceRunning;
+        app.busy = true;
+        app.write_inflight = true;
+        app.command_epoch = Some(app.epoch);
+        app.key_event(KeyCode::Char('c'), KeyModifiers::CONTROL)?;
+        assert!(receiver.try_recv().is_ok());
+        assert!(app.busy && app.write_inflight && matches!(app.modal, Modal::AdviceRunning));
+        app.key(KeyCode::Esc)?;
+        assert!(matches!(app.modal, Modal::AdviceRunning));
+        replies
+            .send((
+                app.epoch,
+                Reply::AdviceOutcome(Err("Canceled after cleanup".into())),
+            ))
+            .map_err(|_| "reply closed")?;
+        app.receive();
+        assert!(!app.busy && !app.write_inflight && app.advice_cancel.is_none());
+        assert!(
+            matches!(app.modal,Modal::AdviceDocument(ref title,..) if title.contains("STOPPED"))
+        );
+        Ok(())
+    }
     fn demo_helm_prepared() -> Result<Box<crate::helm_lifecycle::Prepared>> {
         crate::cli::runtime()?.block_on(async {
             let gateway = Gateway::connect(Connection {
@@ -6056,6 +6441,7 @@ mod layout_tests {
                     allow_crds: false,
                     registry: Default::default(),
                     keyring: None,
+                    sigstore_policy: None,
                 },
                 crate::helm_lifecycle::Request::Install {
                     chart: "/demo/chart.tgz".into(),
@@ -6571,14 +6957,25 @@ mod layout_tests {
                     other => panic!("unexpected terminal command: {other}"),
                 }
             } else {
-                assert!(output[index].is_ascii_graphic() || output[index] == b' ');
+                let Some(character) = std::str::from_utf8(&output[index..])
+                    .ok()
+                    .and_then(|text| text.chars().next())
+                else {
+                    panic!("expected a valid terminal UTF-8 character");
+                };
+                assert!(
+                    character.is_ascii_graphic()
+                        || character == ' '
+                        || matches!(character, '╭' | '╮' | '╰' | '╯' | '─' | '│')
+                );
                 assert!(
                     x < usize::from(width) && y < usize::from(height),
                     "paint outside {width}x{height}: {x},{y}"
                 );
-                cells[y][x] = char::from(output[index]);
+                cells[y][x] = character;
                 painted[y][x] = true;
                 x += 1;
+                index += character.len_utf8() - 1;
             }
             index += 1;
         }
@@ -6936,7 +7333,7 @@ mod layout_tests {
                     let frame = screen(&app, width, height);
                     assert!(frame[0].contains("PRODUCTION READ ONLY"));
                     assert!(frame[1].contains("CTX test | NS test"));
-                    assert!(frame[3].starts_with('+'));
+                    assert!(frame[3].starts_with(['+', '╭']));
                 }
             }
         }
@@ -6960,7 +7357,14 @@ mod layout_tests {
             .iter()
             .skip(4)
             .take(4)
-            .map(|line| line[1..27].trim_end())
+            .map(|line| {
+                line.chars()
+                    .skip(1)
+                    .take(26)
+                    .collect::<String>()
+                    .trim_end()
+                    .to_owned()
+            })
             .collect();
         assert!(displayed.starts_with(&text));
         assert!(confirmation_fits("Short review", "test/api", 80, 24));
@@ -7257,7 +7661,7 @@ mod layout_tests {
             serde_json::json!({"kind":"Pod","metadata":{"name":"api","namespace":"test","uid":"pod1"},"spec":{"nodeName":"worker-a","containers":[{"name":"app","image":"example/api:v2"}]},"status":{"phase":"Running","containerStatuses":[{"name":"app","ready":true,"restartCount":0}]}}),
         ];
         let frame = screen(&app, 120, 32).join("\n");
-        for label in ["OK 1", "ATTENTION 0", "NAMESPACE", "api"] {
+        for label in ["1 healthy", "0 need attention", "NAMESPACE", "api"] {
             assert!(frame.contains(label));
         }
         let mut output = Vec::new();

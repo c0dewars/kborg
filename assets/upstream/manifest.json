@@ -126,5 +126,37 @@
     "sha256": "494aefdabf86acce06bd63001ad8aedad4ee38da23509d3f917d95aa3368b9a6",
     "repository": "altercation/solarized",
     "localAsset": "assets/upstream/solarized/LICENSE"
+  },
+  {
+    "revision": "8d723bac4a9ac46adfdf99d42155286977aac72a",
+    "sourceAsset": "README.md",
+    "family": "flexoki",
+    "sha256": "a0f3dd14202c3e8b4624fbdae535728c1532c8d382d4e76a1b0b29b9c78f7fc5",
+    "repository": "kepano/flexoki",
+    "localAsset": "assets/upstream/flexoki/README.md"
+  },
+  {
+    "revision": "8d723bac4a9ac46adfdf99d42155286977aac72a",
+    "sourceAsset": "LICENSE",
+    "family": "flexoki",
+    "sha256": "b0aeda2f9ebf5e09c6bfbf9323813ebeaedeabcc8cb441323c9f47aef9b05ba3",
+    "repository": "kepano/flexoki",
+    "localAsset": "assets/upstream/flexoki/LICENSE"
+  },
+  {
+    "revision": "2e8b94d54d48980ac9bbdfa6aae40b02227b71c3",
+    "sourceAsset": "rose_pine.toml",
+    "family": "rose-pine",
+    "sha256": "fc77f7eef38ed0901345d1a1f5d6db6e525480e65a478d5f2ff5762a0fac09eb",
+    "repository": "rose-pine/helix",
+    "localAsset": "assets/upstream/rose-pine/rose_pine.toml"
+  },
+  {
+    "revision": "2e8b94d54d48980ac9bbdfa6aae40b02227b71c3",
+    "sourceAsset": "LICENSE",
+    "family": "rose-pine",
+    "sha256": "b2ec9e48689252be5807d35d80689bbc40481c54d1f228c94dde8ffad1bdc824",
+    "repository": "rose-pine/helix",
+    "localAsset": "assets/upstream/rose-pine/LICENSE"
   }
 ]

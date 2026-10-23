@@ -43,6 +43,9 @@ pub enum Request {
     DeleteCrds {
         chart: PathBuf,
     },
+    MigrateCrds {
+        chart: PathBuf,
+    },
     Test,
     Install {
         chart: PathBuf,
@@ -63,6 +66,7 @@ impl Request {
             Self::InstallCrds { .. } => "crds",
             Self::UpgradeCrds { .. } => "crds-upgrade",
             Self::DeleteCrds { .. } => "crds-delete",
+            Self::MigrateCrds { .. } => "crds-migrate",
             Self::Test => "test",
             Self::Install { .. } => "install",
             Self::Upgrade { .. } => "upgrade",
@@ -82,6 +86,7 @@ pub struct Options {
     pub allow_crds: bool,
     pub registry: crate::helm_oci::Options,
     pub keyring: Option<PathBuf>,
+    pub sigstore_policy: Option<PathBuf>,
 }
 #[derive(Debug, Serialize)]
 pub struct Outcome {
@@ -442,6 +447,8 @@ pub struct Prepared {
     review_context: String,
     test_runs: Vec<helm::TestRun>,
     signature: Option<SignatureReview>,
+    sigstore: Option<crate::helm_sigstore::Prepared>,
+    migration: Option<crate::helm_migration::Plan>,
 }
 #[derive(Clone, Debug)]
 pub struct ReviewOverview {
@@ -454,6 +461,7 @@ pub struct ReviewOverview {
     pub hooks: usize,
     pub crds: usize,
     pub destructive: bool,
+    pub trust: String,
 }
 impl Prepared {
     pub fn overview(&self) -> ReviewOverview {
@@ -474,12 +482,34 @@ impl Prepared {
                 | Request::Upgrade { chart, .. }
                 | Request::InstallCrds { chart }
                 | Request::UpgradeCrds { chart }
-                | Request::DeleteCrds { chart } => {
+                | Request::DeleteCrds { chart }
+                | Request::MigrateCrds { chart } => {
                     Some(safety::safe_text(&chart.to_string_lossy(), 4096))
                 }
                 _ => None,
             }),
+            trust: if self.demo {
+                "SIMULATED / verification not performed".into()
+            } else {
+                match (&self.signature, &self.sigstore) {
+                    (Some(_), Some(_)) => "OpenPGP + Sigstore verified".into(),
+                    (Some(_), None) => "OpenPGP verified".into(),
+                    (None, Some(_)) => "Sigstore verified / chart archive bytes".into(),
+                    _ if matches!(
+                        self.request,
+                        Request::Test | Request::Rollback { .. } | Request::Uninstall
+                    ) =>
+                    {
+                        "Stored release / archive verification n/a".into()
+                    }
+                    _ => "Publisher signature not checked".into(),
+                }
+            },
             resources: self.resources.len()
+                + self
+                    .migration
+                    .as_ref()
+                    .map_or(0, |plan| plan.instance_count())
                 + if matches!(self.request, Request::DeleteCrds { .. }) {
                     self.impact
                         .iter()
@@ -498,7 +528,10 @@ impl Prepared {
             crds: self.crds.definitions.len(),
             destructive: matches!(
                 self.request,
-                Request::Uninstall | Request::DeleteCrds { .. } | Request::UpgradeCrds { .. }
+                Request::Uninstall
+                    | Request::DeleteCrds { .. }
+                    | Request::UpgradeCrds { .. }
+                    | Request::MigrateCrds { .. }
             ),
         }
     }
@@ -513,6 +546,8 @@ impl Prepared {
             "{}{}/{}",
             if matches!(self.request, Request::DeleteCrds { .. }) {
                 "DELETE CRDS "
+            } else if matches!(self.request, Request::MigrateCrds { .. }) {
+                "MIGRATE CRDS "
             } else {
                 ""
             },
@@ -546,7 +581,10 @@ fn unverified_archive_notice(request: &Request, keyring_supplied: bool) -> &'sta
 fn schema_request(request: &Request) -> bool {
     matches!(
         request,
-        Request::InstallCrds { .. } | Request::UpgradeCrds { .. } | Request::DeleteCrds { .. }
+        Request::InstallCrds { .. }
+            | Request::UpgradeCrds { .. }
+            | Request::DeleteCrds { .. }
+            | Request::MigrateCrds { .. }
     )
 }
 fn namespace_allowed(namespace: &str) -> Result<()> {
@@ -1381,7 +1419,10 @@ fn lifecycle_args(options: &Options, request: &Request, root: &Path, dry: bool) 
                 ]);
             }
         }
-        Request::InstallCrds { .. } | Request::UpgradeCrds { .. } | Request::DeleteCrds { .. } => {
+        Request::InstallCrds { .. }
+        | Request::UpgradeCrds { .. }
+        | Request::DeleteCrds { .. }
+        | Request::MigrateCrds { .. } => {
             return vec![];
         }
         Request::Test => {}
@@ -1427,7 +1468,9 @@ fn operation(request: &Request) -> crate::helm_extensions::Operation {
     use crate::helm_extensions::Operation;
     match request {
         Request::Install { .. } | Request::InstallCrds { .. } => Operation::Install,
-        Request::Upgrade { .. } | Request::UpgradeCrds { .. } => Operation::Upgrade,
+        Request::Upgrade { .. } | Request::UpgradeCrds { .. } | Request::MigrateCrds { .. } => {
+            Operation::Upgrade
+        }
         Request::DeleteCrds { .. } => Operation::Uninstall,
         Request::Test => Operation::Test,
         Request::Rollback { .. } => Operation::Rollback,
@@ -1563,6 +1606,7 @@ async fn dry_plan(
         Request::InstallCrds { .. }
         | Request::UpgradeCrds { .. }
         | Request::DeleteCrds { .. }
+        | Request::MigrateCrds { .. }
         | Request::Test => Err("native schema/test plan does not render release resources".into()),
     }
 }
@@ -1814,6 +1858,7 @@ async fn prepare_inner(gateway: &Gateway, options: Options, request: Request) ->
                 | Request::InstallCrds { .. }
                 | Request::UpgradeCrds { .. }
                 | Request::DeleteCrds { .. }
+                | Request::MigrateCrds { .. }
         ) {
             None
         } else {
@@ -1847,6 +1892,8 @@ async fn prepare_inner(gateway: &Gateway, options: Options, request: Request) ->
             options.release,
             if matches!(request, Request::DeleteCrds { .. }) {
                 "DELETE CRDS "
+            } else if matches!(request, Request::MigrateCrds { .. }) {
+                "MIGRATE CRDS "
             } else {
                 ""
             },
@@ -1881,6 +1928,8 @@ async fn prepare_inner(gateway: &Gateway, options: Options, request: Request) ->
             review_context: gateway.context.clone(),
             test_runs: vec![],
             signature: None,
+            sigstore: None,
+            migration: None,
         });
     }
     let (client, connection, _) = gateway.helm_lifecycle_access()?;
@@ -1912,13 +1961,15 @@ async fn prepare_inner(gateway: &Gateway, options: Options, request: Request) ->
     let mut chart_source = None;
     let mut values_hash = None;
     let mut signature = None;
+    let mut sigstore = None;
     let input = match &request {
         Request::Install { chart, values } | Request::Upgrade { chart, values } => {
             Some((chart, values.as_ref()))
         }
         Request::InstallCrds { chart }
         | Request::UpgradeCrds { chart }
-        | Request::DeleteCrds { chart } => Some((chart, None)),
+        | Request::DeleteCrds { chart }
+        | Request::MigrateCrds { chart } => Some((chart, None)),
         _ => None,
     };
     let mut crds = crate::helm_extensions::CrdPlan::default();
@@ -1978,6 +2029,15 @@ async fn prepare_inner(gateway: &Gateway, options: Options, request: Request) ->
                 fingerprint,
             });
         }
+        if let Some(policy) = &options.sigstore_policy {
+            let verification = crate::helm_sigstore::prepare(
+                &workspace.0.join("chart.tgz"),
+                policy,
+                &workspace.0.join("sigstore"),
+            )?;
+            crate::helm_sigstore::verify(&verification).await?;
+            sigstore = Some(verification);
+        }
         crds = inspect_chart(
             &safety::read_small(&workspace.0.join("chart.tgz"), MAX_CHART)?,
             options.allow_crds,
@@ -2002,6 +2062,7 @@ async fn prepare_inner(gateway: &Gateway, options: Options, request: Request) ->
             chart_hash,
             chart_source,
             signature,
+            sigstore,
             crds,
         )
         .await;
@@ -2184,6 +2245,12 @@ async fn prepare_inner(gateway: &Gateway, options: Options, request: Request) ->
             options.keyring.is_some(),
         ));
     }
+    if let Some(verification) = &sigstore {
+        summary.push_str(&verification.summary());
+        summary.push_str("Sigstore verification PASSED for the sealed chart archive; verified again before execution.\n");
+    } else if options.sigstore_policy.is_some() {
+        summary.push_str("Sigstore policy is not applied: this stored release operation acquires no chart archive.\n");
+    }
     if let Some(source) = &chart_source {
         summary.push_str(&format!("\n{source}\n"));
     }
@@ -2303,6 +2370,8 @@ async fn prepare_inner(gateway: &Gateway, options: Options, request: Request) ->
         review_context: gateway.context.clone(),
         test_runs,
         signature,
+        sigstore,
+        migration: None,
     })
 }
 fn crd_api() -> ApiResource {
@@ -2402,15 +2471,37 @@ async fn prepare_crds(
     chart_hash: Option<String>,
     chart_source: Option<String>,
     signature: Option<SignatureReview>,
+    sigstore: Option<crate::helm_sigstore::Prepared>,
     crds: crate::helm_extensions::CrdPlan,
 ) -> Result<Prepared> {
     if crds.definitions.is_empty() {
         return Err("packaged chart has no supported crds/ definitions to bootstrap".into());
     }
     let (client, _, _) = gateway.helm_lifecycle_access()?;
-    let (crd_seals, impact) = schema_preflight(&client, &crds, &request, &options, true).await?;
+    let migration = if matches!(request, Request::MigrateCrds { .. }) {
+        Some(
+            crate::helm_migration::prepare(&client, &crds, &options.namespace, &options.release)
+                .await?,
+        )
+    } else {
+        None
+    };
+    let (crd_seals, impact) = if let Some(plan) = &migration {
+        (
+            plan.entries()
+                .iter()
+                .map(|entry| Some(entry.before.clone()))
+                .collect(),
+            plan.entries()
+                .iter()
+                .map(|entry| entry.inventory.clone())
+                .collect(),
+        )
+    } else {
+        schema_preflight(&client, &crds, &request, &options, true).await?
+    };
     let mut summary = format!(
-        "REVIEW CLUSTER CRD {}\nContext: {}\nVerified endpoint: {}\nConfirmation label: {}/{} (NOT a namespace restriction)\nChart SHA-256: {}\nCRDs and this review affect ALL namespaces, including instances outside the confirmation namespace.\nNo Helm release revision is created or deleted by these native API operations. Exact schema UID/resourceVersion and complete instance membership are rechecked before writes.\nKnown-sensitive fields are redacted; the exact private chart/specification is hash-bound. Custom schema/instance data may still be confidential.\nNo automatic migration, rollback or retry. Cancellation or failure can leave partial changes. Budget {}seconds; review expires in15minutes.\n",
+        "REVIEW CLUSTER CRD {}\nContext: {}\nVerified endpoint: {}\nConfirmation label: {}/{} (NOT a namespace restriction)\nChart SHA-256: {}\nCRDs and this review affect ALL namespaces, including instances outside the confirmation namespace.\nNo Helm release revision is created or deleted by these native API operations. Exact schema UID/resourceVersion and complete instance membership are rechecked before writes.\nKnown-sensitive fields are redacted; the exact private chart/specification is hash-bound. Custom schema/instance data may still be confidential.\nNo automatic rollback or retry. Cancellation or failure can leave partial changes. Budget {}seconds; review expires in15minutes.\n",
         request.name(),
         safety::safe_text(&gateway.context, 253),
         safety::safe_text(&gateway.server, 1024),
@@ -2423,6 +2514,7 @@ async fn prepare_crds(
         Request::InstallCrds{..}=>summary.push_str("CREATE-ONLY: create missing definitions, retain exactly matching Established schemas. CRDs/data persist after ordinary release uninstall; approve the release separately.\n"),
         Request::UpgradeCrds{..}=>summary.push_str("SCHEMA UPDATE: only proven compatible validation relaxations or optional fields absent in captured data; preserve group/names/scope, served/storage versions, defaults, subresources and existing metadata. No conversion webhook or storage migration. Cluster-wide instances are read and sealed, not written by upgrade.\n"),
         Request::DeleteCrds{..}=>summary.push_str("DESTRUCTIVE: permanently delete every listed owned custom instance across ALL namespaces, then delete these cluster API definitions. All instances need exact Helm release ownership and no GitOps/ownerReferences/finalizers; foreign instances refuse deletion. Instance and schema deletes carry exact UID/resourceVersion preconditions. A complete empty re-list is required before deleting the CRD. This is NOT atomic: concurrent creation after the final list can be deleted by Kubernetes CRD cleanup; stop writers/controllers before approval. Data loss is irreversible; backups are your responsibility.\n"),
+        Request::MigrateCrds { .. } => summary.push_str(&migration.as_ref().ok_or("migration plan missing")?.review()?),
         _=>return Err("invalid schema workflow".into()),
     }
     if let Some(signature) = &signature {
@@ -2434,6 +2526,12 @@ async fn prepare_crds(
     } else {
         summary
             .push_str("No OpenPGP signature verified; content digest is not publisher identity.\n");
+    }
+    if let Some(verification) = &sigstore {
+        summary.push_str(&verification.summary());
+        summary.push_str("Sigstore verification PASSED for the sealed chart archive; verified again before execution.\n");
+    } else if options.sigstore_policy.is_some() {
+        summary.push_str("Sigstore policy is not applied: this stored release operation acquires no chart archive.\n");
     }
     if let Some(source) = &chart_source {
         summary.push_str(source);
@@ -2479,6 +2577,8 @@ async fn prepare_crds(
         "{}{}/{}",
         if matches!(request, Request::DeleteCrds { .. }) {
             "DELETE CRDS "
+        } else if matches!(request, Request::MigrateCrds { .. }) {
+            "MIGRATE CRDS "
         } else {
             ""
         },
@@ -2496,7 +2596,10 @@ async fn prepare_crds(
                 .into(),
         );
     }
-    let canonical = crds.canonical.clone();
+    let canonical = migration.as_ref().map_or_else(
+        || crds.canonical.clone(),
+        |plan| plan.canonical().to_owned(),
+    );
     Ok(Prepared {
         options,
         request,
@@ -2525,6 +2628,8 @@ async fn prepare_crds(
         review_context: gateway.context.clone(),
         test_runs: vec![],
         signature,
+        sigstore,
+        migration,
     })
 }
 async fn execute_crds(gateway: &Gateway, prepared: &Prepared) -> Result<()> {
@@ -2614,10 +2719,13 @@ fn start_audit(prepared: &Prepared, context: &str) -> Result<PathBuf> {
     let bootstrap = schema_request(&prepared.request);
     let mut value = json!({"schema_version":1,"stage":"intent","context":context,"namespace":if bootstrap {"[cluster]"} else {&prepared.options.namespace},"resource":if bootstrap {"customresourcedefinitions"} else {"helm-releases"},"name":prepared.options.release,"uid":prepared.selected.as_ref().map(|r|r.uid.as_str()).unwrap_or("absent"),"action":format!("helm-{}",prepared.request.name()),"plan_sha256":hash(prepared.canonical.as_bytes()),"timestamp_unix_ns":stamp.to_string()});
     if bootstrap {
-        value["crd_targets"] = json!(prepared.crds.definitions.iter().zip(&prepared.crd_seals).map(|(definition, seal)| json!({"name":definition.name,"action":match prepared.request {Request::UpgradeCrds{..}=>"update",Request::DeleteCrds{..}=>"delete",_=>if seal.is_some(){"retain"}else{"create"}},"uid":seal.as_ref().map(|binding|binding.uid.as_str())})).collect::<Vec<_>>());
+        value["crd_targets"] = json!(prepared.crds.definitions.iter().zip(&prepared.crd_seals).map(|(definition, seal)| json!({"name":definition.name,"action":match prepared.request {Request::UpgradeCrds{..}=>"update",Request::DeleteCrds{..}=>"delete",Request::MigrateCrds{..}=>"migrate-storage",_=>if seal.is_some(){"retain"}else{"create"}},"uid":seal.as_ref().map(|binding|binding.uid.as_str())})).collect::<Vec<_>>());
     }
     if bootstrap {
-        value["custom_instance_targets"]=json!(prepared.impact.iter().flat_map(|inventory|inventory.instances.iter().map(|instance|json!({"schema":inventory.schema,"namespace":instance.namespace,"name":instance.name,"uid":instance.uid,"resource_version":instance.resource_version,"action":if matches!(prepared.request,Request::DeleteCrds{..}){"delete"}else{"inspect-only"}}))).collect::<Vec<_>>());
+        value["custom_instance_targets"]=json!(prepared.impact.iter().flat_map(|inventory|inventory.instances.iter().map(|instance|json!({"schema":inventory.schema,"namespace":instance.namespace,"name":instance.name,"uid":instance.uid,"resource_version":instance.resource_version,"action":if matches!(prepared.request,Request::DeleteCrds{..}){"delete"}else if matches!(prepared.request,Request::MigrateCrds{..}){"rewrite-storage"}else{"inspect-only"}}))).collect::<Vec<_>>());
+    }
+    if let Some(plan) = &prepared.migration {
+        value["migration_controllers"] = json!(plan.entries().iter().filter_map(|entry| entry.controller.as_ref().map(|controller| json!({"api_version":controller.api.api_version,"name":controller.name,"schema":entry.desired.name,"schema_uid":entry.before.uid,"target_storage_version":entry.target_version}))).collect::<Vec<_>>());
     }
     safety::write_new(&path, format!("{value}\n").as_bytes())?;
     Ok(path)
@@ -2689,7 +2797,8 @@ async fn validate_final(gateway: &Gateway, prepared: &Prepared) -> Result<Proces
         }
         Request::InstallCrds { chart }
         | Request::UpgradeCrds { chart }
-        | Request::DeleteCrds { chart } => Some((chart, None)),
+        | Request::DeleteCrds { chart }
+        | Request::MigrateCrds { chart } => Some((chart, None)),
         _ => None,
     };
     if let Some((chart, values)) = input {
@@ -2721,6 +2830,24 @@ async fn validate_final(gateway: &Gateway, prepared: &Prepared) -> Result<Proces
         {
             return Err("verified chart signer changed after review; no write sent".into());
         }
+    }
+    if let Some(verification) = &prepared.sigstore {
+        verification.check()?;
+        crate::helm_sigstore::verify(verification).await?;
+    }
+    if let Some(plan) = &prepared.migration {
+        let observed = inspect_chart(
+            &safety::read_small(&context.root.join("chart.tgz"), MAX_CHART)?,
+            true,
+        )?;
+        if observed.canonical != prepared.crds.canonical {
+            return Err("packaged migration schema changed after review".into());
+        }
+        crate::helm_migration::revalidate(&client, plan).await?;
+        if prepared.created.elapsed() > REVIEW_LIFETIME {
+            return Err("migration review expired during validation".into());
+        }
+        return Ok(context);
     }
     if schema_request(&prepared.request) {
         let observed = inspect_chart(
@@ -2957,6 +3084,71 @@ pub async fn run(
     };
     let audit = start_audit(&prepared, &gateway.context)?;
     let operation_started = Instant::now();
+    if let Some(plan) = &prepared.migration {
+        let (client, _, _) = gateway.helm_lifecycle_access()?;
+        let result = tokio::select! {
+            result = tokio::time::timeout(Duration::from_secs(u64::from(prepared.options.seconds)), crate::helm_migration::execute(&client, plan)) => result.map_err(|_| "CRD migration deadline exceeded; changes or a submitted migration controller may still be active".to_owned()).and_then(|result| result),
+            _ = canceled(&mut cancel) => Err("CRD migration canceled; partial changes or submitted controllers may remain active".into()),
+        };
+        return match result {
+            Ok(report) => {
+                let complete = report.finalized == plan.entries().len();
+                safety::checked_path(&audit)?;
+                let mut file = fs::OpenOptions::new()
+                    .append(true)
+                    .open(&audit)
+                    .map_err(|_| "migration ran; cannot record migration report")?;
+                writeln!(
+                    file,
+                    "{}",
+                    json!({"stage":"migration-report","report":report})
+                )
+                .and_then(|_| file.sync_all())
+                .map_err(|_| "migration ran; cannot sync migration report")?;
+                finish_audit(
+                    &audit,
+                    if complete {
+                        "succeeded"
+                    } else {
+                        "staged-finalization-pending"
+                    },
+                )?;
+                Ok(Outcome {
+                    success: true,
+                    uncertain: false,
+                    summary: format!(
+                        "CRD migration {}: {} schema switches, {} instance rewrites, {} finalized schemas. {} No Helm release revision changed. Migration report: {}",
+                        if complete {
+                            "completed"
+                        } else {
+                            "STAGED / finalization pending"
+                        },
+                        report.switched,
+                        report.rewritten,
+                        report.finalized,
+                        if complete {
+                            "Controller completion and guarded storage status were verified."
+                        } else {
+                            "Historical storedVersions are retained; an authoritative StorageVersionMigration controller is required before retiring old versions."
+                        },
+                        serde_json::to_string(&report)
+                            .map_err(|_| "cannot encode migration report")?
+                    ),
+                })
+            }
+            Err(error) => {
+                finish_audit(&audit, "failed-or-unknown")?;
+                Ok(Outcome {
+                    success: false,
+                    uncertain: true,
+                    summary: format!(
+                        "CRD migration PARTIAL/UNKNOWN: {}. Inspect schemas, instances and controller objects before a fresh review; no automatic retry or rollback.",
+                        safety::safe_text(&error, 2048)
+                    ),
+                })
+            }
+        };
+    }
     if schema_request(&prepared.request) {
         let result = tokio::select! {result=tokio::time::timeout(Duration::from_secs(u64::from(prepared.options.seconds)),execute_crds(gateway,&prepared))=>result.map_err(|_|"CRD bootstrap deadline exceeded; definitions may already exist".to_owned()).and_then(|result|result),_=canceled(&mut cancel)=>Err("CRD bootstrap canceled; definitions may already exist".into())};
         let success = result.is_ok();
@@ -3663,6 +3855,7 @@ mod tests {
             allow_crds: false,
             registry: Default::default(),
             keyring: None,
+            sigstore_policy: None,
         }
     }
     #[test]
