@@ -1,0 +1,10 @@
+{
+  "profile": "kborg-validation",
+  "profile_deleted": true,
+  "container_removed": true,
+  "predelete_owned_extension_fixtures_absent_on_both_clusters": true,
+  "context_before": "docker-desktop",
+  "context_after": "docker-desktop",
+  "desktop_metrics_provider_available": true,
+  "scope": "Only the isolated task profile in repository-local MINIKUBE_HOME/KUBECONFIG was removed."
+}

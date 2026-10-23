@@ -1,0 +1,42 @@
+{
+  "passed": true,
+  "context": "kborg-v1",
+  "namespace": "kborg-forward-c60488401f66",
+  "binary_sha256": "11b3b9f57ebbb55962719eebad79b6e309b1fd022f5dff15311858da1d011c94",
+  "elapsed_seconds": 74.53,
+  "checks": [
+    "two independent reviewed listeners route to distinct live Pods",
+    "collision rejected without disrupting either listener",
+    "selected stop closes listener/active client and preserves other listener",
+    "cleaned port can be reviewed and reused",
+    "resource filter scope change closes all listeners and active clients",
+    "normal exit closes listener/active client and restores terminal"
+  ],
+  "captures": [
+    {
+      "name": "forward-review",
+      "path": "/Users/brunogarcia/Desktop/HyperMac/repos/kborg/docs/evidence/ui-v1-forward-pilot-minikube/forward-review.png",
+      "width": 140,
+      "height": 40
+    },
+    {
+      "name": "two-active-forwards",
+      "path": "/Users/brunogarcia/Desktop/HyperMac/repos/kborg/docs/evidence/ui-v1-forward-pilot-minikube/two-active-forwards.png",
+      "width": 140,
+      "height": 40
+    },
+    {
+      "name": "selected-forward-stopped",
+      "path": "/Users/brunogarcia/Desktop/HyperMac/repos/kborg/docs/evidence/ui-v1-forward-pilot-minikube/selected-forward-stopped.png",
+      "width": 140,
+      "height": 40
+    },
+    {
+      "name": "scope-change-stopped-all",
+      "path": "/Users/brunogarcia/Desktop/HyperMac/repos/kborg/docs/evidence/ui-v1-forward-pilot-minikube/scope-change-stopped-all.png",
+      "width": 140,
+      "height": 40
+    }
+  ],
+  "fixture_cleanup": true
+}

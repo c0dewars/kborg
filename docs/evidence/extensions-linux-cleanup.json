@@ -1,0 +1,8 @@
+{
+  "run_id": "a6673dab4e1d4a87aa6c8e994fd20b31",
+  "container": "kborg-extensions-build-a6673dab4e1d",
+  "volume": "kborg-extensions-build-a6673dab4e1d-scratch",
+  "container_removed": true,
+  "volume_removed": true,
+  "exit_code": 0
+}

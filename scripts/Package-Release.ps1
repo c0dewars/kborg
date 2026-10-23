@@ -5,8 +5,44 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path $PSScriptRoot -Parent
+$buildDirectory = $null
+function Assert-CleanSource {
+    $actualCommit = (& git rev-parse --verify HEAD | Out-String).Trim()
+    if ($LASTEXITCODE -ne 0 -or $actualCommit -cne $SourceCommit) { throw 'SourceCommit must equal the actual checked-out HEAD' }
+    $status = @(& git status --porcelain=v1 --untracked-files=all)
+    if ($LASTEXITCODE -ne 0 -or $status.Count) { throw 'Release packaging requires a clean checkout, including untracked files' }
+    # Ignored files are absent from git status but recursive packaging would copy
+    # them. Require every packaged input to be tracked, plain and unlinked.
+    $tracked = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    & git -c core.quotepath=false ls-files | ForEach-Object { [void]$tracked.Add($_) }
+    if ($LASTEXITCODE -ne 0) { throw 'Cannot read tracked source inventory' }
+    $inputs = @('README.md','LICENSE','THIRD_PARTY_NOTICES.md','SECURITY.md','docs','assets/kborg-logo.png','assets/LOGO.md','assets/upstream','assets/dependency-licenses')
+    foreach ($inputPath in $inputs) {
+        $root = Get-Item -LiteralPath (Join-Path $projectRoot $inputPath) -Force
+        $items = @($root)
+        if ($root.PSIsContainer) { $items += @(Get-ChildItem -LiteralPath $root.FullName -Recurse -Force) }
+        foreach ($item in $items) {
+            if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Linked package inputs are forbidden' }
+            if (!$item.PSIsContainer) {
+                $relative = [IO.Path]::GetRelativePath($projectRoot,$item.FullName).Replace('\','/')
+                if ($relative -match '[\x00-\x1f\x7f]' -or !$tracked.Contains($relative)) { throw 'Every package input must be a tracked plain file, including ignored inputs' }
+            }
+        }
+    }
+}
 Push-Location $projectRoot
 try {
+    Assert-CleanSource
+    $rustDetails = @(& rustc -vV)
+    if ($LASTEXITCODE -ne 0) { throw 'Cannot inspect Rust compiler' }
+    $rustHost = @($rustDetails | Where-Object { $_ -like 'host: *' })
+    if ($rustHost.Count -ne 1 -or $rustHost[0].Substring(6) -cne $Target) { throw 'Packaging requires the native Rust host target' }
+    $nativeArchitecture = [Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture.ToString().ToLowerInvariant()
+    $expectedArchitecture = if ($Target.StartsWith('aarch64-')) { 'arm64' } else { 'x64' }
+    if ($nativeArchitecture -cne $expectedArchitecture) { throw 'PowerShell process architecture must match the native target' }
+    foreach ($name in @('RUSTFLAGS','CARGO_ENCODED_RUSTFLAGS','RUSTC','RUSTC_WRAPPER','RUSTC_WORKSPACE_WRAPPER','CARGO_BUILD_RUSTC','CARGO_BUILD_RUSTC_WRAPPER','CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER','CARGO_BUILD_RUSTFLAGS')) {
+        if ([Environment]::GetEnvironmentVariable($name)) { throw "Release packaging refuses compiler override environment: $name" }
+    }
     $metadataText = & cargo metadata --locked --format-version 1
     if ($LASTEXITCODE -ne 0) { throw 'Dependency metadata failed' }
     $metadata = ($metadataText -join "`n") | ConvertFrom-Json
@@ -18,10 +54,20 @@ try {
     if (Test-Path -LiteralPath $stage) { throw 'Release stage exists; use a clean checkout' }
     New-Item -ItemType Directory -Path $stage,$packages -Force | Out-Null
     $binaryName = if ($Target -like '*windows*') { 'kborg.exe' } else { 'kborg' }
-    $binary = Join-Path $projectRoot "target/$Target/release/$binaryName"
-    if (!(Test-Path -LiteralPath $binary -PathType Leaf)) { throw 'Target binary is missing' }
-    & $binary --version
-    if ($LASTEXITCODE -ne 0) { throw 'Version smoke test failed' }
+    # Never attribute an arbitrary old target binary to this checkout. A unique
+    # empty target directory forces a fresh build with the inspected compiler.
+    $buildDirectory = Join-Path $projectRoot ("dist/build/" + [Guid]::NewGuid().ToString('N'))
+    if (Test-Path -LiteralPath $buildDirectory) { throw 'Fresh build directory unexpectedly exists' }
+    $buildStarted = [DateTime]::UtcNow.ToString('o')
+    & cargo build --release --locked --target $Target --target-dir $buildDirectory
+    if ($LASTEXITCODE -ne 0) { throw 'Fresh native release build failed' }
+    $buildFinished = [DateTime]::UtcNow.ToString('o')
+    Assert-CleanSource
+    $binary = Join-Path $buildDirectory "$Target/release/$binaryName"
+    if (!(Test-Path -LiteralPath $binary -PathType Leaf)) { throw 'Fresh target binary is missing' }
+    $binarySha256 = (Get-FileHash -LiteralPath $binary -Algorithm SHA256).Hash.ToLowerInvariant()
+    $versionText = @(& $binary --version)
+    if ($LASTEXITCODE -ne 0 -or $versionText.Count -ne 1 -or $versionText[0] -cne "KBorg $($package.version)") { throw 'Binary version must exactly match Cargo package version' }
     $demoText = & $binary --demo list pods --json
     if ($LASTEXITCODE -ne 0) { throw 'Offline JSON smoke test failed' }
     $demo = ($demoText -join "`n") | ConvertFrom-Json
@@ -45,6 +91,7 @@ try {
     if ($profile.schema_version -ne 1 -or $profile.profile -ne 'read-only' -or $profile.allow_exec -or $profile.allow_attach -or $profile.allow_forward) { throw 'Default configuration must remain read-only with capabilities disabled' }
     Remove-Item -LiteralPath $smokeConfig
     Copy-Item -LiteralPath $binary -Destination (Join-Path $stage $binaryName)
+    if ((Get-FileHash -LiteralPath (Join-Path $stage $binaryName) -Algorithm SHA256).Hash.ToLowerInvariant() -cne $binarySha256) { throw 'Built binary changed during packaging smoke checks' }
     foreach ($file in @('README.md','LICENSE','THIRD_PARTY_NOTICES.md','SECURITY.md','docs/RELEASE_NOTES.md')) {
         Copy-Item -LiteralPath (Join-Path $projectRoot $file) -Destination $stage
     }
@@ -138,8 +185,9 @@ try {
     }
     $sbom = [ordered]@{bomFormat='CycloneDX';specVersion='1.6';version=1;metadata=@{timestamp=[DateTime]::UtcNow.ToString('o');component=@{type='application';name='kborg';version=$package.version;'bom-ref'=$referenceMap[$package.id]}};components=$components;dependencies=$edges}
     $sbom | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath (Join-Path $stage 'SBOM.cdx.json') -Encoding utf8NoBOM
-    $build = [ordered]@{schema=1;version=$package.version;target=$Target;sourceCommit=$SourceCommit;rust=(& rustc --version);builtAtUtc=[DateTime]::UtcNow.ToString('o');binarySha256=(Get-FileHash -LiteralPath $binary -Algorithm SHA256).Hash.ToLowerInvariant();tests='native unit tests in CI; offline CLI smoke';signed=$false;productionCertified=$false}
+    $build = [ordered]@{schema=2;version=$package.version;target=$Target;sourceCommit=$SourceCommit;sourceTree=((& git rev-parse 'HEAD^{tree}' | Out-String).Trim());cleanCheckoutVerified=$true;freshNativeBuild=$true;rust=$rustDetails;buildStartedAtUtc=$buildStarted;buildFinishedAtUtc=$buildFinished;packagedAtUtc=[DateTime]::UtcNow.ToString('o');binarySha256=$binarySha256;tests=@{packagingSmoke=@('exact-version','demo-pods-json','theme-inventory','demo-metrics','four-shell-completions','default-read-only-config');nativeUnitTests='not run by this packager; consult source-specific acceptance evidence'};signed=$false;productionCertified=$false}
     $build | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $stage 'BUILD.json') -Encoding utf8NoBOM
+    Assert-CleanSource
     if ($Target -like '*windows*') {
         $archive = Join-Path $packages "$label.zip"
         if (Test-Path -LiteralPath $archive) { throw 'Archive exists' }
@@ -147,14 +195,25 @@ try {
     } else {
         $archive = Join-Path $packages "$label.tar.gz"
         if (Test-Path -LiteralPath $archive) { throw 'Archive exists' }
-        & tar -czf $archive -C (Split-Path $stage -Parent) $label
+        if ($IsMacOS) {
+            # AppleDouble records otherwise copy builder-specific extended
+            # attributes into the archive, including a second top-level entry.
+            & tar --no-mac-metadata --no-xattrs --no-acls --no-fflags -czf $archive -C (Split-Path $stage -Parent) $label
+        } else {
+            & tar -czf $archive -C (Split-Path $stage -Parent) $label
+        }
         if ($LASTEXITCODE -ne 0) { throw 'Archive creation failed' }
     }
     $checksum = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
     "$checksum  $(Split-Path $archive -Leaf)" | Set-Content -LiteralPath "$archive.sha256" -Encoding utf8NoBOM
     Copy-Item -LiteralPath (Join-Path $stage 'BUILD.json') -Destination (Join-Path $packages "$label.build.json")
     Copy-Item -LiteralPath (Join-Path $stage 'SBOM.cdx.json') -Destination (Join-Path $packages "$label.sbom.cdx.json")
-    $provenance = [ordered]@{schemaVersion=1;signed=$false;artifact=(Split-Path $archive -Leaf);sha256=$checksum;sourceRepository='https://github.com/c0dewars/kborg';sourceCommit=$SourceCommit;target=$Target;cargoLockSha256=(Get-FileHash -LiteralPath (Join-Path $projectRoot 'Cargo.lock') -Algorithm SHA256).Hash.ToLowerInvariant();builder='GitHub Actions native target job / local packaging';verification='Checksum and source record only; publisher signature and notarization remain external release gates'}
+    $provenance = [ordered]@{schemaVersion=2;signed=$false;artifact=(Split-Path $archive -Leaf);sha256=$checksum;sourceRepository='https://github.com/c0dewars/kborg';sourceCommit=$SourceCommit;target=$Target;cargoLockSha256=(Get-FileHash -LiteralPath (Join-Path $projectRoot 'Cargo.lock') -Algorithm SHA256).Hash.ToLowerInvariant();builder='Package-Release.ps1 fresh native build and local smoke checks';verification='Unsigned local record with clean HEAD checks before/after build and packaging; not authenticated provenance, bit-for-bit reproducibility or publisher verification'}
     $provenance | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $packages "$label.provenance.json") -Encoding utf8NoBOM
     Write-Output "Packaged $archive (unsigned)"
-} finally { Pop-Location }
+} finally {
+    if ($buildDirectory -and (Test-Path -LiteralPath $buildDirectory)) {
+        Remove-Item -LiteralPath $buildDirectory -Recurse -Force
+    }
+    Pop-Location
+}

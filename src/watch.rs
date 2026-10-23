@@ -113,10 +113,13 @@ impl Cache {
 pub struct WatchFeed {
     api: Api<DynamicObject>,
     kind: Kind,
+    selector: String,
+    fields: String,
     cache: Cache,
     rv: String,
     initialized: bool,
     stream: Option<Events>,
+    stream_started: Instant,
     stream_deadline: Instant,
     retry_at: Instant,
     failures: u32,
@@ -124,17 +127,29 @@ pub struct WatchFeed {
     terminal: Option<String>,
 }
 impl WatchFeed {
+    #[cfg(test)]
     pub(crate) fn new(api: Api<DynamicObject>, kind: Kind) -> Self {
+        Self::with_filters(api, kind, String::new(), String::new())
+    }
+    pub(crate) fn with_filters(
+        api: Api<DynamicObject>,
+        kind: Kind,
+        selector: String,
+        fields: String,
+    ) -> Self {
         let now = Instant::now();
         let terminal = (kind.kind == "Secret" || kind.plural == "secrets")
             .then(|| "Secret watches are forbidden".to_owned());
         Self {
             api,
             kind,
+            selector,
+            fields,
             cache: Cache::default(),
             rv: String::new(),
             initialized: false,
             stream: None,
+            stream_started: now,
             stream_deadline: now,
             retry_at: now,
             failures: 0,
@@ -220,6 +235,8 @@ impl WatchFeed {
         let mut seen = HashSet::new();
         for _ in 0..10 {
             let params = ListParams {
+                label_selector: (!self.selector.is_empty()).then(|| self.selector.clone()),
+                field_selector: (!self.fields.is_empty()).then(|| self.fields.clone()),
                 limit: Some(200),
                 continue_token: continuation.take(),
                 ..Default::default()
@@ -286,12 +303,17 @@ impl WatchFeed {
                 Err(message) => self.fail_closed(&message),
             };
         }
+        let mut recovering = false;
         if self.stream.is_none() {
             let params = WatchParams {
+                label_selector: (!self.selector.is_empty()).then(|| self.selector.clone()),
+                field_selector: (!self.fields.is_empty()).then(|| self.fields.clone()),
                 timeout: Some(8),
                 bookmarks: true,
                 ..Default::default()
             };
+            let started = Instant::now();
+            recovering = self.failures > 0;
             match timeout_at(
                 Instant::now() + Duration::from_secs(10),
                 self.api.watch(&params, &self.rv),
@@ -300,13 +322,20 @@ impl WatchFeed {
             {
                 Ok(Ok(stream)) => {
                     self.stream = Some(Box::pin(stream));
+                    self.stream_started = started;
                     self.stream_deadline = Instant::now() + WATCH_BUDGET;
                 }
                 Ok(Err(error)) => return self.api_failure(error),
                 Err(_) => return self.retry("watch connection timed out; reconnecting", false),
             }
         }
-        let mut batch_deadline = self.stream_deadline;
+        // Inspect queued control/error events before declaring a resume healthy.
+        let mut batch_deadline = if recovering {
+            self.stream_deadline
+                .min(Instant::now() + Duration::from_millis(100))
+        } else {
+            self.stream_deadline
+        };
         for index in 0..100 {
             let Some(stream) = self.stream.as_mut() else {
                 break;
@@ -314,7 +343,33 @@ impl WatchFeed {
             let event = match timeout_at(batch_deadline, stream.next()).await {
                 Ok(Some(Ok(event))) => event,
                 Ok(Some(Err(error))) => return self.api_failure(error),
-                Ok(None) => return self.retry("watch stream ended; reconnecting", false),
+                Ok(None) if self.stream_started.elapsed() >= Duration::from_secs(7) => {
+                    // The server normally closes the requested eight-second watch.
+                    // This is renewal, not a transport failure or stale LIST.
+                    self.stream = None;
+                    self.failures = 0;
+                    self.retry_at = Instant::now();
+                    return self.snapshot(
+                        false,
+                        "watch interval completed; renewing at retained resourceVersion",
+                    );
+                }
+                Ok(None) if index == 0 => {
+                    // An empty successful resourceVersion watch is also a valid
+                    // unchanged interval. Pace renewal to prevent empty-200 loops.
+                    self.stream = None;
+                    self.failures = 0;
+                    self.retry_at = Instant::now() + Duration::from_millis(500 + self.retry_jitter);
+                    return self.snapshot(
+                        false,
+                        "empty watch completed; resourceVersion cache retained",
+                    );
+                }
+                Ok(None) => return self.retry("watch stream ended early; reconnecting", false),
+                Err(_) if index == 0 && recovering => {
+                    self.failures = 0;
+                    return self.snapshot(false, "watch reconnected at retained resourceVersion");
+                }
                 Err(_) if index > 0 && batch_deadline < self.stream_deadline => break,
                 Err(_) => return self.retry("watch time budget ended; reconnecting", false),
             };
@@ -359,9 +414,34 @@ impl WatchFeed {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn quiet_watch_renewal_and_successful_resume_restore_live_without_event() {
+        runtime().block_on(async {
+            let (mut feed, requests) = feed(vec![(200, list("1")), (200, String::new())]);
+            assert!(!feed.next().await.stale);
+            feed.failures = 3;
+            let resumed = feed.next().await;
+            assert!(!resumed.stale);
+            assert_eq!(resumed.resource_version, "1");
+            assert_eq!(feed.failures, 0);
+            assert_eq!(requests.lock().unwrap_or_else(|e| panic!("{e}")).len(), 2);
+            feed.stream = Some(Box::pin(futures_util::stream::empty()));
+            feed.retry_at = Instant::now();
+            feed.stream_started = Instant::now() - Duration::from_secs(8);
+            let renewed = feed.next().await;
+            assert!(!renewed.stale);
+            assert!(!renewed.terminal);
+            assert_eq!(renewed.resource_version, "1");
+            assert!(renewed.message.contains("renewing"));
+            assert_eq!(feed.failures, 0);
+            assert!(feed.stream.is_none());
+            assert!(feed.retry_at <= Instant::now());
+        });
+    }
     use super::*;
     use kube::{Client, api::ApiResource};
     use std::sync::{Arc, Mutex};
+    use tower::Layer;
     fn kind() -> Kind {
         Kind {
             plural: "pods".into(),
@@ -369,6 +449,7 @@ mod tests {
             group: String::new(),
             version: "v1".into(),
             namespaced: true,
+            short_names: vec!["po".into()],
         }
     }
     fn object(name: &str, uid: &str, rv: &str) -> DynamicObject {
@@ -409,7 +490,10 @@ mod tests {
             }
         });
         let api = Api::namespaced_with(
-            Client::new(service, "default"),
+            Client::new(
+                crate::transport::BodyBudgetLayer::default().layer(service),
+                "default",
+            ),
             "default",
             &ApiResource::erase::<k8s_openapi::api::core::v1::Pod>(&()),
         );
@@ -417,6 +501,86 @@ mod tests {
     }
     fn runtime() -> tokio::runtime::Runtime {
         crate::cli::runtime().unwrap_or_else(|e| panic!("{e}"))
+    }
+    #[test]
+    fn selector_is_preserved_on_initial_list_watch_and_relist() {
+        runtime().block_on(async {
+            let (mut feed, requests) = feed(vec![
+                (200, list("1")),
+                (410, String::new()),
+                (200, list("2")),
+            ]);
+            feed.selector = "app=web,tier!=batch".into();
+            feed.fields = "spec.nodeName=worker".into();
+            assert!(!feed.next().await.stale);
+            assert!(feed.next().await.stale);
+            assert!(!feed.next().await.stale);
+            let paths = requests.lock().unwrap_or_else(|e| panic!("{e}"));
+            assert_eq!(paths.len(), 3);
+            assert!(
+                paths
+                    .iter()
+                    .all(|path| path.contains("labelSelector=app%3Dweb%2Ctier%21%3Dbatch")),
+                "{paths:?}"
+            );
+            assert!(
+                paths
+                    .iter()
+                    .all(|path| path.contains("fieldSelector=spec.nodeName%3Dworker")),
+                "{paths:?}"
+            );
+        });
+    }
+
+    #[test]
+    fn http_watch_denials_clear_cached_objects_even_with_empty_or_malformed_bodies() {
+        runtime().block_on(async {
+            for code in [401,403] {
+                for body in [String::new(), "{malformed CANARY".into(), json!({"kind":"Status","apiVersion":"v1","code":200,"reason":"CANARY"}).to_string()] {
+                    let initial = json!({"apiVersion":"v1","kind":"PodList","metadata":{"resourceVersion":"1"},"items":[object("a","a","1")]}).to_string();
+                    let (mut feed,requests) = feed(vec![(200,initial),(code,body)]);
+                    assert_eq!(feed.next().await.objects.len(),1);
+                    let denied = feed.next().await;
+                    assert!(denied.terminal && denied.stale);
+                    assert!(denied.objects.is_empty());
+                    assert!(denied.resource_version.is_empty());
+                    assert!(!denied.message.contains("CANARY"));
+                    assert!(feed.next().await.terminal);
+                    assert_eq!(requests.lock().unwrap_or_else(|error|panic!("{error}")).len(),2);
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn http_watch_expiry_relists_and_server_failure_retries_with_retained_version() {
+        runtime().block_on(async {
+            let initial = || json!({"apiVersion":"v1","kind":"PodList","metadata":{"resourceVersion":"1"},"items":[object("a","a","1")]}).to_string();
+            let (mut expired,requests) = feed(vec![(200,initial()),(410,String::new()),(200,list("9"))]);
+            assert_eq!(expired.next().await.objects.len(),1);
+            let stale = expired.next().await;
+            assert!(stale.stale && !stale.terminal);
+            assert!(stale.objects.is_empty() && stale.resource_version.is_empty());
+            expired.retry_at = Instant::now();
+            let rebuilt = expired.next().await;
+            assert!(!rebuilt.stale);
+            assert_eq!(rebuilt.resource_version,"9");
+            assert_eq!(requests.lock().unwrap_or_else(|error|panic!("{error}")).len(),3);
+
+            let (mut retrying,requests) = feed(vec![(200,initial()),(503,"non-JSON CANARY".into()),(200,String::new())]);
+            assert_eq!(retrying.next().await.objects.len(),1);
+            let stale = retrying.next().await;
+            assert!(stale.stale && !stale.terminal);
+            assert_eq!(stale.objects.len(),1);
+            assert_eq!(stale.resource_version,"1");
+            assert!(retrying.initialized && retrying.retry_at > Instant::now());
+            assert!(!stale.message.contains("CANARY"));
+            retrying.retry_at = Instant::now();
+            retrying.next().await;
+            let paths = requests.lock().unwrap_or_else(|error|panic!("{error}"));
+            assert_eq!(paths.len(),3);
+            assert!(paths[2].contains("resourceVersion=1"));
+        });
     }
     #[test]
     fn list_watch_delete_uid_replacement_and_bookmark_reconnect() {

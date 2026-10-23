@@ -1,0 +1,47 @@
+{
+  "schema": 1,
+  "passed": true,
+  "checks": [
+    {
+      "case": "wrong-commit",
+      "passed": true
+    },
+    {
+      "case": "dirty-tracked",
+      "passed": true
+    },
+    {
+      "case": "untracked-file",
+      "passed": true
+    },
+    {
+      "case": "ignored-packaged-file",
+      "passed": true
+    },
+    {
+      "case": "linked-packaged-file",
+      "passed": true
+    },
+    {
+      "case": "wrong-native-host",
+      "passed": true
+    },
+    {
+      "case": "fresh-build-version-mismatch",
+      "passed": true
+    },
+    {
+      "case": "trusted-digest-match",
+      "passed": true
+    },
+    {
+      "case": "digest-mismatch",
+      "passed": true
+    }
+  ],
+  "packager_sha256": "dcfee4bb04076d6eba20a44ef21d36bdc16e8a0c8d20837d9a9953d17ac08c36",
+  "verifier_sha256": "48bf18846f92d1fbe284d229a621a2a145109bce78f6a9937a10cd07f1f67554",
+  "scope": "Negative source/native-build/version preflight with synthetic Git/tool fixtures and real PowerShell; digest verification with synthetic bytes. Does not claim a native release build or publisher authenticity.",
+  "archived_from": "docs/evidence/mac-v1-package-negative-tests.json",
+  "archive_scope": "Historical 4c136425f0620efdf153354a2db5db4026a8ab02 package and pre-export-fix source; superseded, not current release evidence."
+}

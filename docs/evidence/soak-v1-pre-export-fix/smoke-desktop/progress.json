@@ -1,0 +1,44 @@
+{
+  "state": "passed",
+  "context": "docker-desktop",
+  "namespace": "kborg-soak-d9ca89818386",
+  "binary_sha256": "3711c0fffb3cfe87cb6babd67ab7b6ff3233d83881df62e8a5c7b057043173d7",
+  "requested_seconds": 60,
+  "elapsed_seconds": 65.488,
+  "updated_utc": "2026-10-23T12:22:42.372671+00:00",
+  "samples": 12,
+  "mutation_count": 4,
+  "fault": null,
+  "processes": {
+    "resource": {
+      "pid": 38171,
+      "alive": false,
+      "output_bytes": 71573,
+      "records": 17,
+      "observed_counts": [
+        1,
+        2
+      ],
+      "stale_records": 0
+    },
+    "dashboard": {
+      "pid": 38172,
+      "alive": false,
+      "output_bytes": 20940,
+      "records": 44,
+      "observed_counts": [
+        1,
+        2
+      ],
+      "stale_records": 4
+    },
+    "tui": {
+      "pid": 38173,
+      "alive": false,
+      "output_bytes": 496050,
+      "records": 0,
+      "observed_counts": [],
+      "stale_records": 0
+    }
+  }
+}

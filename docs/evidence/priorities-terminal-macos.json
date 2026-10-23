@@ -1,0 +1,85 @@
+{
+  "schema": 1,
+  "platform": "Darwin",
+  "architecture": "arm64",
+  "binary": "/Users/brunogarcia/Desktop/HyperMac/repos/kborg/target/release/kborg",
+  "binary_sha256": "03bb57e54b9db3d243a8a04b490e97432376550a468cdcdbb4ce54b37e38a544",
+  "elapsed_seconds": 17.607,
+  "child_cpu_seconds": 0.037853,
+  "peak_rss_bytes": 9781248,
+  "idle_output_bytes_over_2_seconds": 0,
+  "terminal_restored": true,
+  "screens": [
+    {
+      "name": "demo-pods",
+      "width": 120,
+      "height": 32
+    },
+    {
+      "name": "object-overview",
+      "width": 120,
+      "height": 32
+    },
+    {
+      "name": "json",
+      "width": 120,
+      "height": 32
+    },
+    {
+      "name": "actions",
+      "width": 120,
+      "height": 32
+    },
+    {
+      "name": "deployments",
+      "width": 120,
+      "height": 32
+    },
+    {
+      "name": "sorted-pods",
+      "width": 120,
+      "height": 32
+    },
+    {
+      "name": "metrics",
+      "width": 120,
+      "height": 32
+    },
+    {
+      "name": "allocations",
+      "width": 120,
+      "height": 32
+    },
+    {
+      "name": "logs",
+      "width": 120,
+      "height": 32
+    },
+    {
+      "name": "log-detail",
+      "width": 120,
+      "height": 32
+    },
+    {
+      "name": "live-overview",
+      "width": 120,
+      "height": 32
+    },
+    {
+      "name": "themes",
+      "width": 120,
+      "height": 32
+    },
+    {
+      "name": "create-theme",
+      "width": 120,
+      "height": 32
+    },
+    {
+      "name": "narrow",
+      "width": 48,
+      "height": 12
+    }
+  ],
+  "scope": "native PTY, offline samples, ASCII truecolor; not a real-terminal/platform matrix"
+}

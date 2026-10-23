@@ -1,0 +1,440 @@
+{
+  "passed": true,
+  "binary_sha256": "36f6eeecba162df7e687e55425eacec19b9542a37347e9cea3a95e75caf32def",
+  "evidence_kind": "PTY byte/input matrix; real isolated tmux server",
+  "profiles": [
+    {
+      "name": "truecolor",
+      "passed": true,
+      "term": "xterm-256color",
+      "color_depth": "rgb",
+      "locale": "en_US.UTF-8",
+      "mouse": true,
+      "resize_sizes": [
+        [
+          80,
+          24
+        ],
+        [
+          48,
+          16
+        ],
+        [
+          28,
+          10
+        ],
+        [
+          20,
+          8
+        ],
+        [
+          120,
+          34
+        ]
+      ],
+      "checks": [
+        "quiet resource header",
+        "SGR mouse help hit target",
+        "help and cancelled command return to resources",
+        "dashboard survives minimum, undersize and recovery resizes",
+        "saved picker keeps delete hint; cancellation preserves selection",
+        "rgb color output",
+        "locale border fallback",
+        "normal exit restores modes and termios"
+      ],
+      "screenshots": [
+        "/Users/brunogarcia/Desktop/HyperMac/repos/kborg/docs/evidence/ui-mac-v1-package/truecolor-resources.png",
+        "/Users/brunogarcia/Desktop/HyperMac/repos/kborg/docs/evidence/ui-mac-v1-package/truecolor-saved-picker.png"
+      ]
+    },
+    {
+      "name": "256-color",
+      "passed": true,
+      "term": "xterm-256color",
+      "color_depth": "indexed",
+      "locale": "en_US.UTF-8",
+      "mouse": false,
+      "resize_sizes": [
+        [
+          80,
+          24
+        ],
+        [
+          48,
+          16
+        ],
+        [
+          28,
+          10
+        ],
+        [
+          20,
+          8
+        ],
+        [
+          120,
+          34
+        ]
+      ],
+      "checks": [
+        "quiet resource header",
+        "help and cancelled command return to resources",
+        "dashboard survives minimum, undersize and recovery resizes",
+        "saved picker keeps delete hint; cancellation preserves selection",
+        "indexed color output",
+        "locale border fallback",
+        "normal exit restores modes and termios"
+      ],
+      "screenshots": []
+    },
+    {
+      "name": "basic-16",
+      "passed": true,
+      "term": "xterm",
+      "color_depth": "basic",
+      "locale": "en_US.UTF-8",
+      "mouse": false,
+      "resize_sizes": [
+        [
+          80,
+          24
+        ],
+        [
+          48,
+          16
+        ],
+        [
+          28,
+          10
+        ],
+        [
+          20,
+          8
+        ],
+        [
+          120,
+          34
+        ]
+      ],
+      "checks": [
+        "quiet resource header",
+        "help and cancelled command return to resources",
+        "dashboard survives minimum, undersize and recovery resizes",
+        "saved picker keeps delete hint; cancellation preserves selection",
+        "basic color output",
+        "locale border fallback",
+        "normal exit restores modes and termios"
+      ],
+      "screenshots": []
+    },
+    {
+      "name": "screen-256",
+      "passed": true,
+      "term": "screen-256color",
+      "color_depth": "indexed",
+      "locale": "en_US.UTF-8",
+      "mouse": false,
+      "resize_sizes": [
+        [
+          80,
+          24
+        ],
+        [
+          48,
+          16
+        ],
+        [
+          28,
+          10
+        ],
+        [
+          20,
+          8
+        ],
+        [
+          120,
+          34
+        ]
+      ],
+      "checks": [
+        "quiet resource header",
+        "help and cancelled command return to resources",
+        "dashboard survives minimum, undersize and recovery resizes",
+        "saved picker keeps delete hint; cancellation preserves selection",
+        "indexed color output",
+        "locale border fallback",
+        "normal exit restores modes and termios"
+      ],
+      "screenshots": []
+    },
+    {
+      "name": "tmux-256",
+      "passed": true,
+      "term": "tmux-256color",
+      "color_depth": "indexed",
+      "locale": "en_US.UTF-8",
+      "mouse": false,
+      "resize_sizes": [
+        [
+          80,
+          24
+        ],
+        [
+          48,
+          16
+        ],
+        [
+          28,
+          10
+        ],
+        [
+          20,
+          8
+        ],
+        [
+          120,
+          34
+        ]
+      ],
+      "checks": [
+        "quiet resource header",
+        "help and cancelled command return to resources",
+        "dashboard survives minimum, undersize and recovery resizes",
+        "saved picker keeps delete hint; cancellation preserves selection",
+        "indexed color output",
+        "locale border fallback",
+        "normal exit restores modes and termios"
+      ],
+      "screenshots": []
+    },
+    {
+      "name": "ascii-c-locale",
+      "passed": true,
+      "term": "xterm-256color",
+      "color_depth": "rgb",
+      "locale": "C",
+      "mouse": false,
+      "resize_sizes": [
+        [
+          80,
+          24
+        ],
+        [
+          48,
+          16
+        ],
+        [
+          28,
+          10
+        ],
+        [
+          20,
+          8
+        ],
+        [
+          120,
+          34
+        ]
+      ],
+      "checks": [
+        "quiet resource header",
+        "help and cancelled command return to resources",
+        "dashboard survives minimum, undersize and recovery resizes",
+        "saved picker keeps delete hint; cancellation preserves selection",
+        "rgb color output",
+        "locale border fallback",
+        "normal exit restores modes and termios"
+      ],
+      "screenshots": [
+        "/Users/brunogarcia/Desktop/HyperMac/repos/kborg/docs/evidence/ui-mac-v1-package/ascii-c-locale-resources.png"
+      ]
+    },
+    {
+      "name": "no-color-env",
+      "passed": true,
+      "term": "xterm-256color",
+      "color_depth": "none",
+      "locale": "en_US.UTF-8",
+      "mouse": false,
+      "resize_sizes": [
+        [
+          80,
+          24
+        ],
+        [
+          48,
+          16
+        ],
+        [
+          28,
+          10
+        ],
+        [
+          20,
+          8
+        ],
+        [
+          120,
+          34
+        ]
+      ],
+      "checks": [
+        "quiet resource header",
+        "help and cancelled command return to resources",
+        "dashboard survives minimum, undersize and recovery resizes",
+        "saved picker keeps delete hint; cancellation preserves selection",
+        "none color output",
+        "locale border fallback",
+        "normal exit restores modes and termios"
+      ],
+      "screenshots": [
+        "/Users/brunogarcia/Desktop/HyperMac/repos/kborg/docs/evidence/ui-mac-v1-package/no-color-env-resources.png"
+      ]
+    },
+    {
+      "name": "color-never",
+      "passed": true,
+      "term": "xterm-256color",
+      "color_depth": "none",
+      "locale": "en_US.UTF-8",
+      "mouse": false,
+      "resize_sizes": [
+        [
+          80,
+          24
+        ],
+        [
+          48,
+          16
+        ],
+        [
+          28,
+          10
+        ],
+        [
+          20,
+          8
+        ],
+        [
+          120,
+          34
+        ]
+      ],
+      "checks": [
+        "quiet resource header",
+        "help and cancelled command return to resources",
+        "dashboard survives minimum, undersize and recovery resizes",
+        "saved picker keeps delete hint; cancellation preserves selection",
+        "none color output",
+        "locale border fallback",
+        "normal exit restores modes and termios"
+      ],
+      "screenshots": []
+    },
+    {
+      "name": "explicit-color-overrides-env",
+      "passed": true,
+      "term": "xterm-256color",
+      "color_depth": "rgb",
+      "locale": "en_US.UTF-8",
+      "mouse": false,
+      "resize_sizes": [
+        [
+          80,
+          24
+        ],
+        [
+          48,
+          16
+        ],
+        [
+          28,
+          10
+        ],
+        [
+          20,
+          8
+        ],
+        [
+          120,
+          34
+        ]
+      ],
+      "checks": [
+        "quiet resource header",
+        "help and cancelled command return to resources",
+        "dashboard survives minimum, undersize and recovery resizes",
+        "saved picker keeps delete hint; cancellation preserves selection",
+        "rgb color output",
+        "locale border fallback",
+        "normal exit restores modes and termios"
+      ],
+      "screenshots": []
+    },
+    {
+      "name": "term-unset",
+      "passed": true,
+      "term": null,
+      "color_depth": "basic",
+      "locale": "C",
+      "mouse": false,
+      "resize_sizes": [
+        [
+          80,
+          24
+        ],
+        [
+          48,
+          16
+        ],
+        [
+          28,
+          10
+        ],
+        [
+          20,
+          8
+        ],
+        [
+          120,
+          34
+        ]
+      ],
+      "checks": [
+        "quiet resource header",
+        "help and cancelled command return to resources",
+        "dashboard survives minimum, undersize and recovery resizes",
+        "saved picker keeps delete hint; cancellation preserves selection",
+        "basic color output",
+        "locale border fallback",
+        "normal exit restores modes and termios"
+      ],
+      "screenshots": []
+    }
+  ],
+  "term_dumb": {
+    "passed": true,
+    "interactive_refused_before_terminal_mutation": true,
+    "cli_json_works": true
+  },
+  "tmux": {
+    "tested": true,
+    "passed": true,
+    "version": "tmux 3.8",
+    "checks": [
+      "private real tmux server",
+      "resource and dashboard navigation",
+      "resize and contextual help",
+      "Ctrl-C returns to shell",
+      "alternate screen/cursor/mouse restored"
+    ],
+    "native_emulator_attached": false,
+    "socket_removed": true
+  },
+  "limits": [
+    "PTY screenshots use the shared cell renderer; they are not native emulator screenshots",
+    "No remote SSH server tested",
+    "No screen-reader or font accessibility certification",
+    "Forced SIGKILL cannot execute application cleanup"
+  ]
+}

@@ -1,0 +1,13 @@
+{
+  "profile": "kborg-validation",
+  "profile_deleted": true,
+  "container_removed": true,
+  "predelete_owned_trust_fixtures_absent_on_both_clusters": true,
+  "context_before": "docker-desktop",
+  "context_after": "docker-desktop",
+  "desktop_kubeconfig_explicit": true,
+  "desktop_metrics_provider_available": true,
+  "desktop_metrics_apiservice_available": true,
+  "desktop_metrics_apiservice_tls_verified": true,
+  "scope": "Only isolated task profile in repository-local MINIKUBE_HOME/KUBECONFIG was removed after exact container ownership and fixture absence checks. Retained Docker Desktop provider checks use the explicit user kubeconfig, unaffected by ambient KUBECONFIG."
+}

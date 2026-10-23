@@ -1,0 +1,2 @@
+    Checking kborg v0.3.0 (/Users/brunogarcia/Desktop/HyperMac/repos/kborg)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 2.61s

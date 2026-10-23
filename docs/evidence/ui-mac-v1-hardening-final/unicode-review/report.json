@@ -1,0 +1,20 @@
+{
+  "passed": true,
+  "binary_sha256": "32a6b514bce9ab3edf247248c91e84abbce363b82980a06a6b440e9450bd4cd5",
+  "context": "docker-desktop",
+  "namespace": "kborg-terminal-756c192bc5",
+  "checks": [
+    "distinct Unicode and literal escape spelling visibly preserved in actual live review",
+    "undersize review rejects Enter before target confirmation",
+    "Escape returns to resource scope with no forward session created",
+    "normal exit restores original terminal settings"
+  ],
+  "screenshots": [
+    "/Users/brunogarcia/Desktop/HyperMac/repos/kborg/docs/evidence/ui-mac-v1-hardening-final/unicode-review/unicode-forward-review.png",
+    "/Users/brunogarcia/Desktop/HyperMac/repos/kborg/docs/evidence/ui-mac-v1-hardening-final/unicode-review/unicode-review-narrow-blocked.png",
+    "/Users/brunogarcia/Desktop/HyperMac/repos/kborg/docs/evidence/ui-mac-v1-hardening-final/unicode-review/unicode-review-cancelled.png"
+  ],
+  "fixture_cleanup": true,
+  "native_emulator": false,
+  "port_forward_started": false
+}

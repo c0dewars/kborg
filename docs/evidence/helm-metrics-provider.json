@@ -1,0 +1,83 @@
+{
+  "schema": 1,
+  "target": "docker-desktop",
+  "context": "docker-desktop",
+  "helper": "scripts/setup-desktop-metrics.py",
+  "idempotent_upgrade": {
+    "preflight": {
+      "resources": [
+        "ServiceAccount/kborg-metrics-server",
+        "Secret/kborg-metrics-server",
+        "ConfigMap/kborg-metrics-server-kubelet-trust",
+        "ClusterRole/system:kborg-metrics-server-aggregated-reader",
+        "ClusterRole/system:kborg-metrics-server",
+        "ClusterRoleBinding/kborg-metrics-server:system:auth-delegator",
+        "ClusterRoleBinding/system:kborg-metrics-server",
+        "RoleBinding/kborg-metrics-server-auth-reader",
+        "Service/kborg-metrics-server",
+        "Deployment/kborg-metrics-server",
+        "APIService/v1beta1.metrics.k8s.io"
+      ],
+      "chart_sha256": "c2ca1185c01e6e7f53dd1b7d131f0c9b3fa50e003ed068b784563a1b5a3422a1",
+      "image": "v0.9.0@sha256:d9862115e7c7881280d3d75ca26bda8ffc0fc213315979575bf23ce9826205c0",
+      "kubelet_certificate_sha256": "8f8f930fc275c5888f482a67e6906bc32e4f93bf8165c89a5cdf5192df0e1088",
+      "renew_serving_certificate": false,
+      "tls_verification_configured": true,
+      "both_tls_hops_verified": false,
+      "install": true
+    },
+    "verified": {
+      "both_tls_hops_verified": true,
+      "node_sample_received": true,
+      "release": "kborg-metrics-server",
+      "namespace": "kborg-system"
+    }
+  },
+  "kubelet_public_certificates": [
+    {
+      "role": "leaf",
+      "der_sha256": "77d3543018f33b9011946e61d7d3a5890185f4d1424dd58fdfc6738a1fd30eb7",
+      "expires": "Oct 10 07:04:36 2027 GMT"
+    },
+    {
+      "role": "issuer",
+      "der_sha256": "7ee308b6ceaecbda8cde4b952b59eca4f88b3e0c42193aa0d9f1b680fe7e684a",
+      "expires": "Oct 10 07:04:36 2027 GMT"
+    }
+  ],
+  "serving_certificate_renewal": {
+    "verified": true,
+    "before_public_ca_sha256": "f3f44f72139ffd348c2dd801cde3f952a6a2317293438a1f31a4b3a7bacd23f3",
+    "after_public_ca_sha256": "b194d4a6c7aa53fa6d3918b9fff6cfff5fecd1de88a8b0fe905d97bf125a1537",
+    "preflight": {
+      "resources": [
+        "ServiceAccount/kborg-metrics-server",
+        "Secret/kborg-metrics-server",
+        "ConfigMap/kborg-metrics-server-kubelet-trust",
+        "ClusterRole/system:kborg-metrics-server-aggregated-reader",
+        "ClusterRole/system:kborg-metrics-server",
+        "ClusterRoleBinding/kborg-metrics-server:system:auth-delegator",
+        "ClusterRoleBinding/system:kborg-metrics-server",
+        "RoleBinding/kborg-metrics-server-auth-reader",
+        "Service/kborg-metrics-server",
+        "Deployment/kborg-metrics-server",
+        "APIService/v1beta1.metrics.k8s.io"
+      ],
+      "chart_sha256": "c2ca1185c01e6e7f53dd1b7d131f0c9b3fa50e003ed068b784563a1b5a3422a1",
+      "image": "v0.9.0@sha256:d9862115e7c7881280d3d75ca26bda8ffc0fc213315979575bf23ce9826205c0",
+      "kubelet_certificate_sha256": "8f8f930fc275c5888f482a67e6906bc32e4f93bf8165c89a5cdf5192df0e1088",
+      "renew_serving_certificate": true,
+      "tls_verification_configured": true,
+      "both_tls_hops_verified": false,
+      "install": true
+    },
+    "verified_health": {
+      "both_tls_hops_verified": true,
+      "node_sample_received": true,
+      "release": "kborg-metrics-server",
+      "namespace": "kborg-system"
+    }
+  },
+  "helper_sha256": "296e3fe6c44fd1bf14ca2becd5285f61a1d61dd46823bbcabf5ea5116bbc1234",
+  "kubernetes": "v1.36.1"
+}

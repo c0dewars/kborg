@@ -1,0 +1,508 @@
+   Compiling libc v0.2.190
+   Compiling proc-macro2 v1.0.107
+   Compiling unicode-ident v1.0.26
+   Compiling quote v1.0.47
+   Compiling cfg-if v1.0.5
+   Compiling shlex v2.0.1
+   Compiling syn v3.0.6
+   Compiling find-msvc-tools v0.1.14
+   Compiling cc v1.6.0
+   Compiling memchr v2.8.3
+   Compiling log v0.4.34
+   Compiling bytes v1.12.1
+   Compiling errno v0.3.14
+   Compiling itoa v1.0.18
+   Compiling pin-project-lite v0.2.17
+   Compiling signal-hook-registry v1.4.8
+   Compiling version_check v0.9.5
+   Compiling mio v1.2.4
+   Compiling futures-core v0.3.34
+   Compiling once_cell v1.21.4
+   Compiling tokio-macros v2.7.2
+   Compiling http v1.5.0
+   Compiling syn v2.0.119
+   Compiling socket2 v0.6.5
+   Compiling futures-sink v0.3.34
+   Compiling serde_core v1.0.229
+   Compiling tokio v1.53.2
+   Compiling getrandom v0.3.4
+   Compiling zerocopy v0.8.62
+   Compiling smallvec v1.15.2
+   Compiling futures-channel v0.3.34
+   Compiling generic-array v0.14.7
+   Compiling psm v0.1.24
+   Compiling ring v0.17.14
+   Compiling futures-io v0.3.34
+   Compiling futures-task v0.3.34
+   Compiling zeroize v1.9.1
+   Compiling httparse v1.10.1
+   Compiling slab v0.4.12
+   Compiling futures-util v0.3.34
+   Compiling stacker v0.1.25
+   Compiling typenum v1.20.1
+   Compiling autocfg v1.5.1
+   Compiling rustversion v1.0.23
+   Compiling zmij v1.0.23
+   Compiling num-traits v0.2.19
+   Compiling rustls-pki-types v1.15.1
+   Compiling tracing-attributes v0.1.31
+   Compiling http-body v1.1.0
+   Compiling tracing-core v0.1.36
+   Compiling getrandom v0.2.17
+   Compiling scopeguard v1.2.0
+   Compiling untrusted v0.9.0
+   Compiling thiserror v2.0.21
+   Compiling tracing v0.1.44
+   Compiling thiserror-impl v2.0.21
+   Compiling serde v1.0.229
+   Compiling try-lock v0.2.5
+   Compiling serde_json v1.0.151
+   Compiling base64 v0.22.1
+   Compiling rustls v0.23.46
+   Compiling ucd-trie v0.1.7
+   Compiling tower-service v0.3.3
+   Compiling pest v2.9.3
+   Compiling want v0.3.2
+   Compiling rustls-webpki v0.103.16
+   Compiling encoding_rs v0.8.42
+   Compiling ppv-lite86 v0.2.21
+   Compiling block-buffer v0.10.4
+   Compiling crypto-common v0.1.7
+   Compiling rand_core v0.9.5
+   Compiling serde_derive v1.0.229
+   Compiling atomic-waker v1.1.2
+   Compiling subtle v2.6.1
+   Compiling hyper v1.12.0
+   Compiling rand_chacha v0.9.0
+   Compiling digest v0.10.7
+   Compiling pest_meta v2.9.3
+   Compiling ahash v0.8.12
+   Compiling aho-corasick v1.1.5
+   Compiling cpufeatures v0.2.17
+   Compiling regex-syntax v0.8.11
+   Compiling k8s-openapi v0.28.0
+   Compiling multiversion_no_op v1.0.0
+   Compiling bitflags v2.13.2
+   Compiling simdutf8 v0.1.5
+   Compiling openssl-probe v0.2.1
+   Compiling jiff-core v0.1.1
+   Compiling rustls-native-certs v0.8.4
+   Compiling jiff v0.2.38
+   Compiling regex-automata v0.4.18
+   Compiling sha1 v0.10.7
+   Compiling pest_generator v2.9.3
+   Compiling rand v0.9.5
+   Compiling hyper-util v0.1.21
+   Compiling ordered-float v2.10.1
+   Compiling tokio-util v0.7.20
+   Compiling derive_more-impl v2.1.1
+   Compiling percent-encoding v2.3.2
+   Compiling parking_lot_core v0.9.12
+   Compiling unicode-width v0.2.2
+   Compiling tower-layer v0.3.3
+   Compiling arraydeque v0.5.1
+   Compiling sync_wrapper v1.0.2
+   Compiling anstyle v1.0.14
+   Compiling signal-hook v0.3.18
+   Compiling data-encoding v2.11.1
+   Compiling annotate-snippets v0.12.16
+   Compiling tungstenite v0.29.0
+   Compiling tower v0.5.3
+   Compiling granit-parser v0.0.7
+   Compiling derive_more v2.1.1
+   Compiling form_urlencoded v1.2.2
+   Compiling serde-value v0.7.0
+   Compiling pest_derive v2.9.3
+   Compiling regex v1.13.1
+   Compiling encoding_rs_io v0.1.8
+   Compiling tokio-rustls v0.26.6
+   Compiling mime v0.3.17
+   Compiling nohash-hasher v0.2.0
+   Compiling rustix v1.1.5
+   Compiling crc32fast v1.5.3
+   Compiling serde-saphyr v0.0.29
+   Compiling tower-http v0.6.11
+   Compiling hyper-rustls v0.27.10
+   Compiling jsonpath-rust v1.0.11
+   Compiling tokio-tungstenite v0.29.0
+   Compiling hyper-timeout v0.5.2
+   Compiling rustls-platform-verifier v0.7.1
+   Compiling pem v3.0.6
+   Compiling lock_api v0.4.14
+   Compiling http-body-util v0.1.5
+   Compiling futures v0.3.34
+   Compiling secrecy v0.10.3
+   Compiling simd-adler32 v0.3.10
+   Compiling adler2 v2.0.1
+   Compiling litrs v1.0.0
+   Compiling either v1.19.0
+   Compiling linux-raw-sys v0.12.1
+   Compiling document-features v0.2.12
+   Compiling kube-core v4.2.0
+   Compiling kube-client v4.2.0
+   Compiling miniz_oxide v0.9.1
+   Compiling parking_lot v0.12.5
+   Compiling signal-hook-mio v0.2.5
+   Compiling flate2 v1.1.10
+   Compiling crossterm v0.29.0
+   Compiling kube v4.2.0
+   Compiling kborg v0.3.0 (/build/work)
+    Finished `test` profile [unoptimized] target(s) in 39.72s
+     Running unittests src/lib.rs (target/debug/deps/kborg-8fc9752b019c303a)
+
+running 303 tests
+test advice::tests::preview_is_minimized_host_bound_and_never_executable ... ok
+test aliases::tests::upstream_mapping_and_chains_preserve_quoted_selector ... ok
+test allocations::tests::absent_zero_malformed_and_overflowing_denominators_do_not_create_percentages ... ok
+test allocations::tests::default_machine_output_omits_optional_comparisons ... ok
+test allocations::tests::name_only_provider_results_are_qualified_and_uid_or_creation_replacements_are_suppressed ... ok
+test allocations::tests::namespace_container_identity_and_resource_bounds_are_enforced_before_projection ... ok
+test allocations::tests::node_capacity_and_allocatable_are_separate_snapshot_bases ... ok
+test allocations::tests::pod_container_comparisons_have_exact_bases_percentages_and_no_init_aggregation ... ok
+test audit::tests::crash_partial_outcome_is_unknown_not_success ... ok
+test audit::tests::durable_success_is_not_pending ... ok
+test audit::tests::pending_helm_operations_keep_the_action_without_echoing_untrusted_fields ... ok
+test auth::tests::credential_versions_material_expiry_and_errors_are_strict_and_secret_free ... ok
+test auth::tests::expiration_and_forbidden_transport_clear_bearer_and_prevent_future_sends ... ok
+test auth::tests::helper_configuration_rejects_interactive_controls_unpinned_tls_and_secret_environment ... ok
+test auth::tests::policy_confirmation_expiry_scripts_symlinks_and_implicit_path_are_rejected ... ok
+test auth::tests::process_fixture ... ignored
+test auth::tests::reviewed_native_policy_binds_rotation_context_endpoint_ca_argv_and_environment ... ok
+test auth::tests::supervised_helpers_use_minimal_environment_and_bound_flood_timeout_descendants ... ok
+test cli::tests::downstream_close_is_normal_but_other_write_failures_are_errors ... ok
+test cli::tests::flags_preserve_explicit_scope_and_default_read_only ... ok
+test cli::tests::helm_and_merged_log_flags_have_explicit_scopes ... ok
+test cli::tests::label_and_log_ranges_validate_before_connecting ... ok
+test cli::tests::lifecycle_and_workload_scopes_validate_before_connecting ... ok
+test cli::tests::pinned_oci_and_helm_extension_flags_validate_before_connecting ... ok
+test cli::tests::refuses_unknown_flags ... ok
+test cli::tests::tool_argv_preserves_literal_flags_and_capabilities_stay_explicit ... ok
+test config::tests::files_constrain_capabilities_and_cli_scope_wins ... ok
+test config::tests::helm_extension_configuration_constrains_but_never_enables_capabilities ... ok
+test config::tests::helm_write_permission_requires_both_cli_opt_in_and_operator_config ... ok
+test config::tests::rejects_executable_unknown_and_future_schema_fields ... ok
+test copilot::tests::login_environment_removes_common_credentials_and_injection_options ... ok
+test copilot::tests::restricts_hosts_and_minimizes_sensitive_context ... ok
+test edit::tests::admission_metadata_surprises_are_rejected ... ok
+test edit::tests::conservative_references_and_diff ... ok
+test edit::tests::daemonset_admission_accepts_only_the_native_template_counter_transition ... ok
+test edit::tests::editor_prefills_only_known_fields_and_absent_budget_stays_unchanged ... ok
+test edit::tests::gitops_and_admission_fail_closed ... ok
+test edit::tests::independent_admission_metadata_changes_are_not_silently_approved ... ok
+test edit::tests::resource_admission_permits_only_equivalent_quantity_spellings ... ok
+test edit::tests::resource_edits_preserve_unreviewed_data_and_require_exact_bounded_quantities ... ok
+test edit::tests::restart_preserves_template_metadata_and_explains_on_delete_strategy ... ok
+test edit::tests::unified_workload_edits_preserve_other_fields_and_emit_only_reviewed_patch ... ok
+test extensions::tests::approval_expiry_invalid_paths_scripts_symlinks_and_controls_never_register ... ok
+test extensions::tests::concurrent_registry_mutations_are_bounded_by_nonblocking_native_file_lock ... ok
+test extensions::tests::executable_updates_invalidate_loaded_and_prepared_registration_even_if_mtime_is_restored ... ok
+test extensions::tests::registering_lists_and_removes_data_without_executing_or_granting_capabilities ... ok
+test extensions::tests::registry_bounds_schema_private_permissions_and_duplicate_fields_are_enforced ... ok
+test gateway::discovery::tests::mock_aggregate_and_request_budgets_stop_before_extra_work ... ok
+test gateway::discovery::tests::mock_discovery_success_has_fixed_paths_and_excludes_secrets ... ok
+test gateway::discovery::tests::mock_forbidden_malformed_oversize_and_deadline_stop ... ok
+test gateway::discovery::tests::preferred_path_validation_blocks_injection_duplicates_and_group_overflow ... ok
+test gateway::discovery::tests::preserves_server_short_and_singular_names_and_k9s_defaults ... ok
+test gateway::discovery::tests::resource_limits_and_mismatch_never_return_truncated_success ... ok
+test gateway::tests::all_operation_capabilities_require_write_and_safe_namespace ... ok
+test gateway::tests::atomic_container_edit_uses_workload_api_and_rejects_unreviewed_admission ... ok
+test gateway::tests::cronjob_logs_follow_controller_uid_chain_and_exclude_unrelated_matching_pods ... ok
+test gateway::tests::demo_covers_every_browsable_kind_with_correct_scope_and_version ... ok
+test gateway::tests::demo_never_reads_missing_credentials_and_readonly_fails_closed ... ok
+test gateway::tests::duplicate_kubeconfig_names_are_rejected_before_selection ... ok
+test gateway::tests::image_edit_uses_narrow_patch_preconditions_and_rejects_stale_server_state ... ok
+test gateway::tests::log_ranges_reach_the_api_and_unbound_reads_keep_log_only_permissions ... ok
+test gateway::tests::malicious_auth_and_insecure_tls_are_rejected_before_network ... ok
+test gateway::tests::merged_logs_gate_before_pod_reads_and_reject_unbound_identity ... ok
+test gateway::tests::offline_details_and_logs_respect_exact_namespace_and_target ... ok
+test gateway::tests::offline_image_edit_is_reviewed_and_updates_the_sample ... ok
+test gateway::tests::offline_resource_edit_is_sealed_and_preserves_container_fields ... ok
+test gateway::tests::oversized_api_body_fails_before_json_decode ... ok
+test gateway::tests::prepared_review_cannot_be_changed_after_dry_run ... ok
+test gateway::tests::repeated_pagination_token_stops_before_an_unbounded_loop ... ok
+test gateway::tests::summaries_report_init_readiness_deletion_and_node_health ... ok
+test gateway::tests::workload_logs_capture_real_selector_complete_membership_and_connection_identity ... ok
+test gateway::tests::workload_logs_reject_partial_foreign_namespace_selector_escapes_and_stale_workload ... ok
+test handoff::tests::argv_is_passed_literally_without_shell_interpretation ... ok
+test handoff::tests::capability_confirmation_and_expiry_prevent_execution ... ok
+test handoff::tests::descendants_cannot_keep_output_pipes_open_after_leader_exits ... ok
+test handoff::tests::executable_change_and_symlink_are_rejected ... ok
+test handoff::tests::floods_and_sleeping_children_are_bounded ... ok
+test handoff::tests::input_redacts_values_and_sanitizes_terminal_and_bidi_controls ... ok
+test handoff::tests::literal_arguments_redacted_input_and_minimal_environment_cross_process ... ok
+test handoff::tests::process_fixture ... ignored
+test helm::tests::custom_list_suffixed_resources_are_kept_and_only_known_envelopes_expand ... ok
+test helm::tests::decompression_crc_and_aggregate_budgets_are_enforced ... ok
+test helm::tests::denied_driver_is_incomplete_evidence_and_never_reflects_secret_server_message ... ok
+test helm::tests::lifecycle_hook_projection_binds_native_storage_uid_rv_and_actual_execution_metadata ... ok
+test helm::tests::ownership_type_revision_scope_uid_and_payload_consistency_are_mandatory ... ok
+test helm::tests::paginated_storage_uses_helm_selectors_and_rejects_repeated_tokens_without_secret_errors ... ok
+test helm::tests::public_reads_keep_drivers_separate_and_values_explicit_and_reject_replacements ... ok
+test helm::tests::secret_and_configmap_storage_decode_only_safe_metadata_for_gzip_and_legacy ... ok
+test helm::tests::shared_lookup_requires_complete_unambiguous_inventory_and_uses_latest_revision ... ok
+test helm_crds::tests::live_schema_rejects_webhooks_cluster_scope_and_foreign_finalizers ... ok
+test helm_crds::tests::resolve_is_narrow_and_recheck_rejects_changed_schema ... ok
+test helm_extensions::tests::crd_schema_comparison_accepts_only_known_defaults_and_rejects_nested_additions ... ok
+test helm_extensions::tests::crds_are_create_only_namespaced_schema_bound_and_gate_custom_api ... ok
+test helm_extensions::tests::crds_reject_cluster_webhook_identity_schema_and_ownership_hazards ... ok
+test helm_extensions::tests::hook_identity_collision_defaults_and_exact_desired_arrays ... ok
+test helm_extensions::tests::hook_json_must_match_manifest_and_policy_retention_is_explicit ... ok
+test helm_extensions::tests::hook_order_events_default_deletion_and_full_seal ... ok
+test helm_extensions::tests::hooks_reject_scope_unknown_metadata_and_hidden_output ... ok
+test helm_extensions::tests::stored_hook_equal_weight_name_ties_preserve_authoritative_array_order ... ok
+test helm_extensions::tests::stored_hook_omitted_defaults_cannot_change_the_reviewed_execution_policy ... ok
+test helm_lifecycle::tests::argv_never_fetches_dependencies_runs_hooks_or_discloses_credentials ... ok
+test helm_lifecycle::tests::crd_bootstrap_dry_runs_create_retains_existing_and_rejects_admission_drift ... ok
+test helm_lifecycle::tests::crd_execution_creates_only_missing_and_rejects_live_admission_drift ... ok
+test helm_lifecycle::tests::demo_lifecycle_requires_individual_capabilities_confirmation_and_current_session ... ok
+test helm_lifecycle::tests::hook_preflight_rejects_foreign_collision_requires_delete_rights_and_seals_uid ... ok
+test helm_lifecycle::tests::native_cancellation_and_output_budget_stop_processes_and_drop_workspace ... ok
+test helm_lifecycle::tests::native_process_has_private_environment_and_suppresses_failure_diagnostics ... ok
+test helm_lifecycle::tests::native_resource_preflight_enforces_total_bytes_and_captures_replacement ... ok
+test helm_lifecycle::tests::packaged_chart_scan_rejects_dynamic_delimiters_nested_helpers_crds_and_archive_attacks ... ok
+test helm_lifecycle::tests::private_static_projection_drops_original_paths_and_external_auth_and_is_cleaned ... ok
+test helm_lifecycle::tests::process_fixture_environment ... ignored, subprocess boundary fixture
+test helm_lifecycle::tests::process_fixture_failure ... ignored, subprocess boundary fixture
+test helm_lifecycle::tests::process_fixture_flood ... ignored, subprocess boundary fixture
+test helm_lifecycle::tests::process_fixture_sleep ... ignored, subprocess boundary fixture
+test helm_lifecycle::tests::replaced_source_fifo_is_rejected_without_blocking_validation ... ok
+test helm_lifecycle::tests::resource_plan_has_explicit_scope_identities_and_redacted_secrets ... ok
+test helm_lifecycle::tests::server_admission_is_dry_run_for_create_update_delete_and_suppresses_error_body ... ok
+test helm_lifecycle::tests::uninstall_waits_for_exact_uid_disappearance_and_keeps_stored_keep_resources ... ok
+test helm_oci::tests::anonymous_and_private_token_exchange_are_scope_bound_and_never_redirect_credentials ... ok
+test helm_oci::tests::bounded_bodies_descriptor_urls_and_cancellation_cannot_leave_partial_files ... ok
+test helm_oci::tests::corrupt_manifest_chart_and_provenance_leave_no_chart_or_remote_diagnostics ... ok
+test helm_oci::tests::credential_and_ca_files_are_explicit_private_bounded_and_host_bound ... ok
+test helm_oci::tests::immutable_acquisition_verifies_all_descriptors_and_never_overwrites ... ok
+test helm_oci::tests::pinned_reference_has_one_canonical_scope_and_rejects_mutable_or_ambiguous_inputs ... ok
+test helm_oci::tests::redirect_policy_strips_cross_origin_credentials_and_rejects_unsafe_routes ... ok
+test insights::tests::cycles_are_bounded_and_health_does_not_invent_service_readiness ... ok
+test insights::tests::health_marks_unobserved_rollouts_pressure_and_pending_jobs ... ok
+test insights::tests::omitted_zero_rollout_counters_do_not_report_health ... ok
+test insights::tests::pod_drilldown_preserves_expressions_and_refuses_empty_selectors ... ok
+test insights::tests::relationships_respect_uid_namespace_and_nonempty_service_selectors ... ok
+test inspect::tests::deep_values_are_rejected ... ok
+test inspect::tests::hostile_strings_never_contain_terminal_controls ... ok
+test inspect::tests::quotes_ambiguous_strings_and_redacts_sensitive_values ... ok
+test logs::tests::follows_beyond_old_total_limit_and_stops_floods ... ok
+test logs::tests::head_and_tail_preserve_the_requested_end_and_snapshot_bounds ... ok
+test logs::tests::invalid_utf8_and_expired_session_are_safe ... ok
+test logs::tests::maximum_line_and_empty_lines_are_supported ... ok
+test logs::tests::merged_cancel_and_shared_quiet_deadline_drop_every_pending_reader ... ok
+test logs::tests::merged_line_byte_and_total_budgets_are_global_and_fatal ... ok
+test logs::tests::merged_open_concurrency_is_four_and_never_fetches_init_or_ephemeral_logs ... ok
+test logs::tests::merged_previous_failure_is_source_specific_and_post_open_replacement_is_rejected ... ok
+test logs::tests::merged_reconnect_replacement_stops_and_drops_every_source ... ok
+test logs::tests::merged_scope_source_count_and_uid_are_validated_before_reading_logs ... ok
+test logs::tests::merged_snapshot_orders_and_shares_head_tail_line_and_display_limits ... ok
+test logs::tests::merged_sources_rotate_and_preserve_timestamp_and_application_identity ... ok
+test logs::tests::multi_pod_global_flood_guard_and_drop_cancel_all_sources ... ok
+test logs::tests::multi_pod_open_checks_every_uid_after_open_before_delivering_any_source ... ok
+test logs::tests::multi_pod_partial_source_errors_survive_without_hiding_other_pod_data ... ok
+test logs::tests::multi_pod_streams_are_attributed_fair_and_have_one_global_tail ... ok
+test logs::tests::quiet_multi_pod_follow_verifies_pod_and_workload_uids_without_stream_activity ... ok
+test logs::tests::range_shortcuts_produce_distinct_bounded_server_requests ... ok
+test logs::tests::reconnect_stops_on_replacement_denial_missing_timestamp_and_original_budgets ... ok
+test logs::tests::rolling_cache_evicts_old_data_and_keeps_utf8_and_sanitization ... ok
+test logs::tests::sanitizes_controls_and_preserves_utf8_across_chunks ... ok
+test logs::tests::timestamps_toggle_locally_without_hiding_application_text ... ok
+test logs::tests::transport_resume_floors_since_time_checks_uid_and_labels_overlap_and_gaps ... ok
+test logs::tests::truncated_notice_survives_the_rolling_ui_pipeline ... ok
+test logs::tests::validates_lifetime_and_quiet_stream_deadline ... ok
+test logs::tests::workload_guard_deletion_is_fatal_and_transient_verification_is_bounded ... ok
+test logs::tests::workload_membership_is_complete_connection_bound_and_caps_pods_and_sources ... ok
+test metrics::tests::decode_rejects_malformed_shapes_and_out_of_scope_data ... ok
+test metrics::tests::demo_is_deterministic_and_scoped ... ok
+test metrics::tests::distinguishes_unavailable_and_forbidden ... ok
+test metrics::tests::history_bounds_identities_samples_and_observation_retention ... ok
+test metrics::tests::history_errors_missing_rows_and_backward_measurements_are_gaps ... ok
+test metrics::tests::history_evicts_absent_identities_and_keeps_display_and_json_projection_safe ... ok
+test metrics::tests::history_resets_context_namespace_scope_source_and_object_generation ... ok
+test metrics::tests::history_timestamps_are_exact_and_duplicates_do_not_refresh_sample_age ... ok
+test metrics::tests::mock_interop_namespace_and_container_row_limits ... ok
+test metrics::tests::mock_interop_object_page_and_byte_limits ... ok
+test metrics::tests::mock_interop_pagination_rejects_repeats_and_inconsistency ... ok
+test metrics::tests::mock_interop_pods_nodes_and_projection ... ok
+test metrics::tests::mock_interop_status_and_malformed_samples_suppress_payloads ... ok
+test metrics::tests::optional_resource_reads_are_explicit_and_forbidden_or_invalid_denominators_retain_usage ... ok
+test metrics::tests::quantities_are_exact_and_checked ... ok
+test metrics::tests::validates_measurement_time_and_dimensions ... ok
+test navigation_views::tests::directory_lists_only_one_level_and_never_follows_symlinks ... ok
+test navigation_views::tests::local_previews_redact_all_documents_and_bound_parser_work ... ok
+test navigation_views::tests::rbac_evidence_binds_service_account_namespace_and_does_not_infer_groups ... ok
+test navigation_views::tests::rbac_output_is_bounded_even_for_unicode_rule_values ... ok
+test ops::tests::forwarding_can_cancel_after_bind_and_releases_listener ... ok
+test ops::tests::output_bounds_and_terminal_sanitizing ... ok
+test ops::tests::rejects_invisible_arguments_and_truncated_reviews ... ok
+test ops::tests::restrictive_request_validation ... ok
+test overview::tests::live_overview_bounds_contexts_and_keeps_scope_isolated ... ok
+test overview::tests::rejects_ambiguous_and_unbounded_scope ... ok
+test overview::tests::snapshots_are_read_only_and_errors_are_not_zeroes ... ok
+test overview::tests::unhealthy_includes_readiness_gates_terminating_and_unknown_status ... ok
+test pager::tests::both_views_redact_and_escape_terminal_controls_without_raw_secret_paths ... ok
+test pager::tests::navigation_search_and_format_toggle_are_bounded ... ok
+test policy::tests::approval_expires_and_success_cannot_replay ... ok
+test policy::tests::approval_is_single_use_and_target_bound ... ok
+test policy::tests::atomic_container_edit_is_scoped_and_binds_every_reviewed_field ... ok
+test policy::tests::image_approval_binds_values_and_debug_omits_values ... ok
+test policy::tests::read_only_rejects_all_writes ... ok
+test policy::tests::restricts_scope_and_scale ... ok
+test policy::tests::workload_operations_respect_family_write_and_namespace_boundaries ... ok
+test safety::tests::approval_preview_rejects_long_aliases_and_never_omits_effects ... ok
+test safety::tests::atomic_repeated_replacement_and_leftover_stage_preserve_settings ... ok
+test safety::tests::blocks_path_ids ... ok
+test safety::tests::failed_stage_preserves_existing_destination ... ok
+test safety::tests::new_storage_has_private_unix_modes ... ok
+test safety::tests::removes_nested_literals ... ok
+test safety::tests::sanitizes_terminal_and_bidi_controls ... ok
+test screendump::tests::persistent_snapshot_roundtrip_redacts_and_rejects_paths ... ok
+test selectors::tests::kubernetes_set_and_absence_semantics ... ok
+test session::tests::lifetime_and_keyboard_controls_are_explicit ... ok
+test session::tests::removes_terminal_side_effects_and_keeps_only_safe_sgr_and_text ... ok
+test session::tests::split_unicode_escape_sequences_and_floods_keep_fixed_parser_storage ... ok
+test themes::tests::all_builtins_meet_fixed_palette_targets ... ok
+test themes::tests::basic_palette_uses_all_sixteen_colors_and_actual_basic_sgr ... ok
+test themes::tests::cloning_uses_the_session_palette_and_validates_name_and_fixed_colors ... ok
+test themes::tests::declared_terminal_depth_controls_color_encoding ... ok
+test themes::tests::indexed_palette_preserves_cube_and_grayscale_and_chooses_the_nearest_entry ... ok
+test themes::tests::native_windows_fallback_uses_named_host_palette_colors ... ok
+test themes::tests::rejects_duplicate_keys_and_hooks ... ok
+test themes::tests::rejects_low_contrast_and_custom_inheritance ... ok
+test themes::tests::replacement_retains_original_backup_and_refuses_backup_overwrite_or_builtin ... ok
+test transport::tests::only_explicit_pod_log_follow_receives_stream_budget ... ok
+test transport::tests::ordinary_and_successful_watch_responses_are_unchanged ... ok
+test transport::tests::quiet_object_body_stops_but_log_body_obeys_external_deadline ... ok
+test transport::tests::rejected_watch_uses_http_status_without_polling_remote_body ... ok
+test tui::helm_ui::tests::chart_crds_are_separate_capability_gated_forms_without_values ... ok
+test tui::helm_ui::tests::duplicate_drivers_require_explicit_selection ... ok
+test tui::helm_ui::tests::familiar_list_and_history_keys_capture_selected_revision ... ok
+test tui::helm_ui::tests::filter_cancel_and_compact_frames_are_bounded ... ok
+test tui::helm_ui::tests::forms_validate_explicit_targets_and_keep_active_path_tail_visible ... ok
+test tui::helm_ui::tests::pinned_oci_form_preserves_source_and_explicit_extension_policy ... ok
+test tui::helm_ui::tests::review_requires_every_painted_line_and_resets_for_resize_and_epoch ... ok
+test tui::layout_tests::chart_crd_command_requires_explicit_flag_and_propagates_registry_policy ... ok
+test tui::layout_tests::closed_metrics_view_does_not_reopen_on_late_reply ... ok
+test tui::layout_tests::commands_navigate_aliases_scopes_and_sort_without_issuing_mutations ... ok
+test tui::layout_tests::confirmation_wrap_preserves_complete_target_and_effect ... ok
+test tui::layout_tests::custom_kind_collisions_use_inspection_instead_of_builtin_drilldowns ... ok
+test tui::layout_tests::destination_only_resource_command_waits_for_destination_discovery ... ok
+test tui::layout_tests::drilldown_uses_node_fields_and_workload_labels_and_escape_restores_scope ... ok
+test tui::layout_tests::escape_cancels_log_modal_and_scope_change_rejects_old_logs ... ok
+test tui::layout_tests::explicit_core_gvr_is_unambiguous_and_discovered_aliases_are_usable ... ok
+test tui::layout_tests::familiar_commands_complete_recall_and_keep_scoped_back_history ... ok
+test tui::layout_tests::full_width_frame_shows_health_and_centered_actions_without_clear ... ok
+test tui::layout_tests::group_log_title_keeps_range_visible_before_long_workload_identity ... ok
+test tui::layout_tests::helm_install_inherits_visible_release_table_scope ... ok
+test tui::layout_tests::helm_lifecycle_gates_cancel_review_stale_scope_and_unknown_outcome ... ok
+test tui::layout_tests::helm_reads_require_capability_and_late_results_do_not_reopen_views ... ok
+test tui::layout_tests::helm_status_tracks_current_draft_review_and_execution ... ok
+test tui::layout_tests::history_restores_destination_crd_catalog_and_keeps_unavailable_entries ... ok
+test tui::layout_tests::human_overview_uses_redacted_object_fields_and_json_remains_accessible ... ok
+test tui::layout_tests::image_form_captures_target_uid_and_readonly_never_opens_it ... ok
+test tui::layout_tests::late_log_snapshot_is_rejected_and_static_marks_keep_original_lines ... ok
+test tui::layout_tests::live_context_overview_updates_and_close_rejects_late_feed ... ok
+test tui::layout_tests::live_filter_keeps_table_visible_and_cancel_restores_selected_uid ... ok
+test tui::layout_tests::log_follow_defaults_to_newest_window_and_end_restores_tail ... ok
+test tui::layout_tests::log_mailbox_is_bounded_and_cancel_discards_obsolete_producer ... ok
+test tui::layout_tests::long_context_does_not_hide_namespace_identity_and_actions_explain_capabilities ... ok
+test tui::layout_tests::metrics_extra_resource_reads_require_explicit_uppercase_key ... ok
+test tui::layout_tests::metrics_wrapping_preserves_long_identity_usage_and_measurement_time ... ok
+test tui::layout_tests::missing_metrics_does_not_invalidate_resource_data ... ok
+test tui::layout_tests::namespace_changed_during_connect_is_not_overwritten_and_old_session_is_rejected ... ok
+test tui::layout_tests::obsolete_watch_is_dropped_and_revocation_clears_the_view ... ok
+test tui::layout_tests::overview_input_accepts_long_names_and_four_full_utf8_names ... ok
+test tui::layout_tests::overview_input_enforces_byte_boundary_and_keeps_active_tail_visible ... ok
+test tui::layout_tests::pod_log_defaults_and_source_toggle_preserve_captured_identity ... ok
+test tui::layout_tests::pod_shell_picker_preserves_captured_identity_and_capabilities ... ok
+test tui::layout_tests::producer_burst_coalesces_without_waiting_for_ui_consumption ... ok
+test tui::layout_tests::queued_forward_cannot_recreate_canceled_or_different_scope_session ... ok
+test tui::layout_tests::queued_helm_execution_rejects_stale_epoch_before_running ... ok
+test tui::layout_tests::readiness_restarts_age_and_sort_use_real_fields_and_keep_uid ... ok
+test tui::layout_tests::reauthentication_keeps_context_namespace_and_resource_identity ... ok
+test tui::layout_tests::resize_reflows_details_and_confirmation_cannot_approve_hidden_review ... ok
+test tui::layout_tests::resource_budget_form_captures_uid_and_validates_before_preparation ... ok
+test tui::layout_tests::resource_table_uses_every_column_and_mouse_never_changes_resource ... ok
+test tui::layout_tests::responsive_frames_preserve_identity_mode_and_bounds ... ok
+test tui::layout_tests::table_metrics_sort_exact_usage_and_missing_rows_last_preserving_uid ... ok
+test tui::layout_tests::theme_creation_captures_preview_palette_and_cancel_restores_previous_theme ... ok
+test tui::layout_tests::unavailable_helm_queue_never_leaves_a_running_operation_modal ... ok
+test tui::layout_tests::watch_insertion_preserves_identity_and_scale_form_captures_name_and_uid ... ok
+test tui::layout_tests::workload_logs_capture_once_and_range_reload_retains_exact_pod_membership ... ok
+test tui::layout_tests::write_outcome_survives_epoch_and_watch_updates_until_acknowledged ... ok
+test tui::nav::tests::fuzzy_search_is_case_insensitive_subsequence ... ok
+test tui::nav::tests::resource_grammar_keeps_context_case_and_selector_values ... ok
+test tui::table_metrics::tests::aggregates_exactly_and_rejects_partial_duplicate_overflow_and_replacement ... ok
+test tui::table_metrics::tests::compact_table_quantities_keep_units_and_uid_marker_inside_columns ... ok
+test tui::table_metrics::tests::missing_uid_requires_entire_window_after_creation_and_cache_expires ... ok
+test tui::table_metrics::tests::parses_go_duration_without_float_rounding ... ok
+test ui_logs::tests::filters_are_bounded_compiled_on_enter_and_cancel_restores_prior_filter ... ok
+test ui_logs::tests::head_starts_at_the_first_retained_row_and_tail_resumes_the_latest ... ok
+test ui_logs::tests::pause_freezes_view_while_new_logs_collect_and_end_resumes ... ok
+test ui_logs::tests::render_bounds_controls_and_empty_narrow_views ... ok
+test ui_logs::tests::source_toggle_clears_paused_old_data_and_preserves_view_preferences ... ok
+test ui_logs::tests::timestamp_wrap_horizontal_lock_and_ranges_preserve_their_own_semantics ... ok
+test watch::tests::cache_limits_fail_before_growth_and_preserve_old_incarnation ... ok
+test watch::tests::direct_secret_constructor_never_fetches_and_cancel_keeps_scope_state ... ok
+test watch::tests::expired_watch_rebuilds_and_authorization_revocation_clears_and_stops ... ok
+test watch::tests::http_watch_denials_clear_cached_objects_even_with_empty_or_malformed_bodies ... ok
+test watch::tests::http_watch_expiry_relists_and_server_failure_retries_with_retained_version ... ok
+test watch::tests::inconsistent_paginated_list_never_publishes_partial_cache ... ok
+test watch::tests::list_watch_delete_uid_replacement_and_bookmark_reconnect ... ok
+test watch::tests::malformed_response_fails_closed_and_oversize_response_rebuilds ... ok
+test watch::tests::namespace_escape_and_incomplete_list_are_terminal ... ok
+test watch::tests::pull_feed_coalesces_at_most_one_hundred_events_without_a_queue ... ok
+test watch::tests::quiet_watch_renewal_and_successful_resume_restore_live_without_event ... ok
+test watch::tests::selector_is_preserved_on_initial_list_watch_and_relist ... ok
+test watch::tests::unsupported_or_removed_watch_stops_and_never_refetches ... ok
+
+test result: ok. 297 passed; 0 failed; 6 ignored; 0 measured; 0 filtered out; finished in 14.89s
+
+     Running unittests src/main.rs (target/debug/deps/kborg-32e45a52127872be)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/auth_helper_live.rs (target/debug/deps/auth_helper_live-e6be29155c67f99f)
+
+running 1 test
+test reviewed_native_exec_credentials_connect_revoke_reconnect_and_invalidate_trust ... ignored, requires uniquely owned Docker Desktop reader fixtures; scripts/test-local.py
+
+test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/cli_output.rs (target/debug/deps/cli_output-2a793125b6beaee6)
+
+running 1 test
+test closed_downstream_exits_cleanly_for_every_read_output_family ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s
+
+     Running tests/docker_desktop.rs (target/debug/deps/docker_desktop-5eaf6489be02470b)
+
+running 2 tests
+test isolated_cluster_acceptance ... ignored, requires isolated Docker Desktop fixtures; run scripts/Test-DockerDesktop.ps1
+test long_follow_crosses_old_byte_cap_and_a_quiet_network_interval ... ignored, requires uniquely owned local fixtures; scripts/test-local.py
+
+test result: ok. 0 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/native_operations.rs (target/debug/deps/native_operations-cd77260eae0d4e5c)
+
+running 1 test
+test isolated_native_operations ... ignored, owned local fixture only; scripts/Test-NativeOperations.ps1
+
+test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/watch_metrics_acceptance.rs (target/debug/deps/watch_metrics_acceptance-d951c6865196e54a)
+
+running 3 tests
+test desktop_optional_metrics_api_unavailable_is_safe ... ignored, requires own scoped Docker Desktop fixtures; scripts/Test-WatchMetrics.ps1
+test desktop_watch_lifecycle_and_authorization ... ignored, requires own scoped Docker Desktop fixtures; scripts/Test-WatchMetrics.ps1
+test independent_metrics_quantity_contract ... ok
+
+test result: ok. 1 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests kborg
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s

@@ -1,0 +1,12 @@
+{
+  "schema": 1,
+  "timestamp_utc": "2026-10-10T11:17:43.866284+00:00",
+  "context": "docker-desktop",
+  "namespace": "*",
+  "command": "read-only list pods --json",
+  "exit_code": 0,
+  "pod_count": 9,
+  "binary_sha256": "03bb57e54b9db3d243a8a04b490e97432376550a468cdcdbb4ce54b37e38a544",
+  "raw_objects_retained": false,
+  "credentials_retained": false
+}

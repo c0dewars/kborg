@@ -1,0 +1,38 @@
+{
+  "passed": true,
+  "context": "kborg-v1",
+  "binary_sha256": "237d61adc9b08c743acea055addf9b80d4c2b222d407c42e92a1899cbe5973c4",
+  "checks": [
+    "editor cancel preserves live resource",
+    "invalid YAML retains buffer",
+    "full painted diff and exact target required",
+    "real JSON Patch preserves hidden fields and metadata"
+  ],
+  "captures": [
+    {
+      "name": "yaml-editor",
+      "path": "/Users/brunogarcia/Desktop/HyperMac/repos/kborg/docs/evidence/ui-v1-iteration2/yaml-minikube/yaml-editor.png",
+      "width": 140,
+      "height": 40
+    },
+    {
+      "name": "yaml-invalid-retained",
+      "path": "/Users/brunogarcia/Desktop/HyperMac/repos/kborg/docs/evidence/ui-v1-iteration2/yaml-minikube/yaml-invalid-retained.png",
+      "width": 140,
+      "height": 40
+    },
+    {
+      "name": "yaml-reviewed-diff",
+      "path": "/Users/brunogarcia/Desktop/HyperMac/repos/kborg/docs/evidence/ui-v1-iteration2/yaml-minikube/yaml-reviewed-diff.png",
+      "width": 140,
+      "height": 40
+    },
+    {
+      "name": "yaml-applied",
+      "path": "/Users/brunogarcia/Desktop/HyperMac/repos/kborg/docs/evidence/ui-v1-iteration2/yaml-minikube/yaml-applied.png",
+      "width": 140,
+      "height": 40
+    }
+  ],
+  "fixture_cleanup": true
+}

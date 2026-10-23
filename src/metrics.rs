@@ -3,7 +3,10 @@ use crate::{Result, gateway::Gateway, safety};
 use kube::api::ListParams;
 use serde::Serialize;
 use serde_json::{Value, json};
-use std::{collections::HashSet, time::Duration};
+use std::{
+    collections::{BTreeMap, HashSet, VecDeque},
+    time::{Duration, Instant},
+};
 
 const MAX_OBJECTS: usize = 1000;
 const MAX_ROWS: usize = 1000;
@@ -35,6 +38,9 @@ pub struct MetricsSnapshot {
     pub source: &'static str,
     pub items: Vec<MetricsRow>,
     pub truncated: bool,
+    /// Present only for the explicit additional resource-read workflow.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub allocation_status: Option<String>,
 }
 #[derive(Debug, Serialize)]
 pub struct MetricsRow {
@@ -51,13 +57,22 @@ pub struct MetricsRow {
     pub memory_bytes: u64,
     /// Sub-base-unit quantities are rounded upward, as Kubernetes quantities are.
     pub rounded_up: bool,
+    /// Retained only for detecting replacement of a named object in local history.
+    /// This does not change the versioned machine-output projection.
+    #[serde(skip)]
+    pub identity_uid: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub allocations: Option<crate::allocations::ResourceComparison>,
 }
 impl MetricsSnapshot {
     pub fn text(&self) -> String {
         let mut output = format!(
-            "Metrics API {} | {} | measurements include timestamp and window\nNAMESPACE/NAME  CONTAINER  CPU(m)  MEMORY(bytes)  TIMESTAMP  WINDOW\n",
+            "Metrics API {} | {} | measurements include timestamp and window\nNAMESPACE/NAME  CONTAINER  CPU(m)  MEMORY(bytes; exact size)  TIMESTAMP  WINDOW\n",
             self.api_version, self.source
         );
+        if let Some(status) = &self.allocation_status {
+            output.push_str(&format!("Resource comparisons: {status}\n"));
+        }
         for row in &self.items {
             let target = row
                 .namespace
@@ -65,11 +80,12 @@ impl MetricsSnapshot {
                 .map(|ns| format!("{ns}/{}", row.name))
                 .unwrap_or_else(|| row.name.clone());
             output.push_str(&format!(
-                "{}  {}  {}  {}  {}  {}{}\n",
+                "{}  {}  {}  {} ({})  {}  {}{}\n",
                 target,
                 row.container.as_deref().unwrap_or("-"),
                 row.cpu_millicores,
                 row.memory_bytes,
+                format_memory(row.memory_bytes),
                 row.timestamp,
                 row.window,
                 if row.rounded_up {
@@ -78,9 +94,12 @@ impl MetricsSnapshot {
                     ""
                 }
             ));
+            if let Some(allocations) = &row.allocations {
+                output.push_str(&allocations.text());
+            }
         }
         if self.items.is_empty() {
-            output.push_str("No metrics samples returned.\n");
+            output.push_str("No metrics samples returned; missing samples do not mean zero usage.\nNew containers may need a collection window. Inspect pod/node status and events while waiting.\n");
         }
         if self.truncated {
             output.push_str(
@@ -91,6 +110,401 @@ impl MetricsSnapshot {
     }
 }
 
+/// Session-local history bounds. No samples are persisted or collected in the background.
+pub const HISTORY_MAX_IDENTITIES: usize = 64;
+pub const HISTORY_MAX_SAMPLES: usize = 60;
+pub const HISTORY_RETENTION: Duration = Duration::from_secs(10 * 60);
+const HISTORY_CHART_WIDTH: usize = 36;
+
+#[derive(Debug, PartialEq, Eq)]
+struct HistorySelection {
+    context: String,
+    scope: MetricsScope,
+    namespace: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct MetricsIdentity {
+    namespace: Option<String>,
+    name: String,
+    container: Option<String>,
+}
+impl MetricsIdentity {
+    fn from_row(row: &MetricsRow) -> Self {
+        Self {
+            namespace: row.namespace.clone(),
+            name: row.name.clone(),
+            container: row.container.clone(),
+        }
+    }
+    fn label(&self) -> String {
+        let target = self
+            .namespace
+            .as_ref()
+            .map(|ns| format!("{ns}/{}", self.name))
+            .unwrap_or_else(|| self.name.clone());
+        match &self.container {
+            Some(container) => format!("{target} [{container}]"),
+            None => target,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct HistoryUsage {
+    cpu_nanocores: u64,
+    memory_bytes: u64,
+}
+#[derive(Debug)]
+struct HistoryPoint {
+    observed_at: Instant,
+    usage: Option<HistoryUsage>,
+}
+#[derive(Debug)]
+struct HistorySeries {
+    uid: Option<String>,
+    latest_measurement: Option<(i64, String)>,
+    last_seen: Instant,
+    points: VecDeque<HistoryPoint>,
+}
+impl HistorySeries {
+    fn push(&mut self, now: Instant, usage: Option<HistoryUsage>) {
+        // Do not allow a delayed result to reorder a series, or an error to
+        // manufacture more than one gap at the same observation instant.
+        if let Some(last) = self.points.back()
+            && (now < last.observed_at || (now == last.observed_at && usage.is_none()))
+        {
+            return;
+        }
+        if self.points.len() == HISTORY_MAX_SAMPLES {
+            self.points.pop_front();
+        }
+        self.points.push_back(HistoryPoint {
+            observed_at: now,
+            usage,
+        });
+    }
+    fn prune(&mut self, now: Instant) {
+        while self.points.front().is_some_and(|point| {
+            now.saturating_duration_since(point.observed_at) > HISTORY_RETENTION
+        }) {
+            self.points.pop_front();
+        }
+    }
+}
+
+/// A bounded, read-only history of actual Metrics API measurements.
+///
+/// Identity is namespace/name/container. A supplied object UID detects name
+/// reuse; if the API omits UID, no replacement guarantee is implied. Duplicate
+/// measurement timestamps do not become new samples. Errors, missing rows and
+/// backward timestamps produce gaps, never zeros or carried-forward values.
+#[derive(Debug, Default)]
+pub struct MetricsHistory {
+    selection: Option<HistorySelection>,
+    source: Option<&'static str>,
+    series: BTreeMap<MetricsIdentity, HistorySeries>,
+    limited: bool,
+}
+impl MetricsHistory {
+    pub fn clear(&mut self) {
+        *self = Self::default();
+    }
+
+    fn select(&mut self, context: &str, scope: MetricsScope, namespace: &str) -> bool {
+        if context.is_empty()
+            || context.len() > 4096
+            || safety::safe_text(context, 4096) != context
+            || validate_namespace(namespace).is_err()
+        {
+            self.clear();
+            return false;
+        }
+        let selection = HistorySelection {
+            context: context.into(),
+            scope,
+            namespace: (scope == MetricsScope::Pods).then(|| namespace.into()),
+        };
+        if self.selection.as_ref() != Some(&selection) {
+            self.clear();
+            self.selection = Some(selection);
+        }
+        true
+    }
+
+    pub fn record(&mut self, context: &str, snapshot: &MetricsSnapshot, now: Instant) {
+        let namespace = snapshot.namespace.as_deref().unwrap_or("*");
+        if !self.select(context, snapshot.scope, namespace) {
+            return;
+        }
+        if self.source.is_some_and(|source| source != snapshot.source) {
+            self.series.clear();
+        }
+        self.source = Some(snapshot.source);
+        let incoming: BTreeMap<_, _> = snapshot
+            .items
+            .iter()
+            .take(MAX_ROWS)
+            .filter(|row| valid_history_identity(row, snapshot.scope, namespace))
+            .map(|row| (MetricsIdentity::from_row(row), row))
+            .collect();
+        self.limited = snapshot.truncated || incoming.len() > HISTORY_MAX_IDENTITIES;
+        for (identity, series) in &mut self.series {
+            series.prune(now);
+            if !incoming.contains_key(identity) {
+                series.push(now, None);
+            }
+        }
+        // Prefer identities already being tracked. If the scope is larger than
+        // the cap, a reordered API response cannot churn the retained charts.
+        for (identity, row) in &incoming {
+            if !self.series.contains_key(identity) {
+                continue;
+            }
+            self.record_row(identity, row, now);
+        }
+        for (identity, row) in &incoming {
+            if self.series.contains_key(identity) {
+                continue;
+            }
+            if self.series.len() >= HISTORY_MAX_IDENTITIES {
+                let evict = self
+                    .series
+                    .iter()
+                    .filter(|(key, _)| !incoming.contains_key(*key))
+                    .min_by_key(|(_, series)| series.last_seen)
+                    .map(|(key, _)| key.clone());
+                match evict {
+                    Some(key) => {
+                        self.series.remove(&key);
+                    }
+                    None => {
+                        self.limited = true;
+                        continue;
+                    }
+                }
+            }
+            self.series.insert(
+                identity.clone(),
+                HistorySeries {
+                    uid: row.identity_uid.clone(),
+                    latest_measurement: None,
+                    last_seen: now,
+                    points: VecDeque::new(),
+                },
+            );
+            self.record_row(identity, row, now);
+        }
+        self.series.retain(|_, series| {
+            now.saturating_duration_since(series.last_seen) <= HISTORY_RETENTION
+        });
+    }
+
+    fn record_row(&mut self, identity: &MetricsIdentity, row: &MetricsRow, now: Instant) {
+        let Some(series) = self.series.get_mut(identity) else {
+            return;
+        };
+        if now < series.last_seen {
+            return;
+        }
+        // A change to a known UID, or upgrading an unknown identity to a known
+        // one, starts a fresh series rather than mixing object generations.
+        if row.identity_uid.is_some() && row.identity_uid != series.uid {
+            series.points.clear();
+            series.latest_measurement = None;
+            series.uid = row.identity_uid.clone();
+        }
+        series.last_seen = now;
+        let Some(measurement) = timestamp_key(&row.timestamp) else {
+            series.push(now, None);
+            return;
+        };
+        if let Some(previous) = &series.latest_measurement {
+            if &measurement == previous {
+                return;
+            }
+            if &measurement < previous {
+                series.push(now, None);
+                return;
+            }
+        }
+        series.latest_measurement = Some(measurement);
+        series.push(
+            now,
+            Some(HistoryUsage {
+                cpu_nanocores: row.cpu_nanocores,
+                memory_bytes: row.memory_bytes,
+            }),
+        );
+    }
+
+    pub fn record_error(
+        &mut self,
+        context: &str,
+        scope: MetricsScope,
+        namespace: &str,
+        now: Instant,
+    ) {
+        if !self.select(context, scope, namespace) {
+            return;
+        }
+        for series in self.series.values_mut() {
+            series.prune(now);
+            series.push(now, None);
+        }
+        self.series.retain(|_, series| {
+            now.saturating_duration_since(series.last_seen) <= HISTORY_RETENTION
+        });
+    }
+
+    pub fn text(&self, now: Instant) -> String {
+        let mut output = format!(
+            "\nSESSION HISTORY | last 10 min | at most {HISTORY_MAX_IDENTITIES} identities x {HISTORY_MAX_SAMPLES} slots\nRefresh with m. Graphs run oldest -> newest; '-' = missing/error.\nEach chart scales from 0 to its observed maximum, not a usage percentage.\nRepeated measurement timestamps are not new samples.\n"
+        );
+        let mut rendered = 0;
+        for (identity, series) in &self.series {
+            let points: Vec<_> = series
+                .points
+                .iter()
+                .filter(|point| {
+                    now.saturating_duration_since(point.observed_at) <= HISTORY_RETENTION
+                })
+                .collect();
+            let values: Vec<_> = points
+                .iter()
+                .filter_map(|point| point.usage.as_ref())
+                .collect();
+            let Some(latest) = values.last() else {
+                continue;
+            };
+            rendered += 1;
+            output.push_str(&format!("\n{}\n", identity.label()));
+            let gap = points.last().is_some_and(|point| point.usage.is_none());
+            for (label, cpu) in [("CPU", true), ("MEM", false)] {
+                let quantity = |usage: &HistoryUsage| {
+                    if cpu {
+                        usage.cpu_nanocores
+                    } else {
+                        usage.memory_bytes
+                    }
+                };
+                let min = values
+                    .iter()
+                    .map(|usage| quantity(usage))
+                    .min()
+                    .unwrap_or(0);
+                let max = values
+                    .iter()
+                    .map(|usage| quantity(usage))
+                    .max()
+                    .unwrap_or(0);
+                let format = |value| {
+                    if cpu {
+                        format!("{}m", format_millicores(value))
+                    } else {
+                        format_memory(value)
+                    }
+                };
+                let chart = history_chart(&points, cpu, max);
+                output.push_str(&format!(
+                    " {label} |{chart:<width$}| {} {}\n     min {} / max {}\n",
+                    if gap { "gap; last" } else { "latest" },
+                    format(quantity(latest)),
+                    format(min),
+                    format(max),
+                    width = HISTORY_CHART_WIDTH
+                ));
+            }
+        }
+        if rendered == 0 {
+            output.push_str("No history measurements in the retention window.\n");
+        }
+        if self.limited {
+            output.push_str(
+                "History is bounded; at most 64 resource/container identities are tracked.\n",
+            );
+        }
+        output
+    }
+}
+
+fn history_chart(points: &[&HistoryPoint], cpu: bool, maximum: u64) -> String {
+    const LEVELS: &[u8] = b".:=+*#@";
+    points
+        .iter()
+        .skip(points.len().saturating_sub(HISTORY_CHART_WIDTH))
+        .map(|point| match &point.usage {
+            None => '-',
+            Some(usage) => {
+                let value = if cpu {
+                    usage.cpu_nanocores
+                } else {
+                    usage.memory_bytes
+                };
+                let level = if maximum == 0 {
+                    0
+                } else {
+                    (u128::from(value) * (LEVELS.len() - 1) as u128 / u128::from(maximum)) as usize
+                };
+                char::from(LEVELS[level.min(LEVELS.len() - 1)])
+            }
+        })
+        .collect()
+}
+
+fn valid_history_identity(row: &MetricsRow, scope: MetricsScope, namespace: &str) -> bool {
+    !row.name.is_empty()
+        && row.name.len() <= 253
+        && row
+            .name
+            .bytes()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-' || c == b'.')
+        && row
+            .identity_uid
+            .as_deref()
+            .is_none_or(|uid| uid.len() <= 128 && safety::safe_text(uid, 128) == uid)
+        && match scope {
+            MetricsScope::Pods => {
+                row.namespace
+                    .as_deref()
+                    .is_some_and(|ns| safety::valid_id(ns) && (namespace == "*" || namespace == ns))
+                    && row.container.as_deref().is_some_and(safety::valid_id)
+            }
+            MetricsScope::Nodes => row.namespace.is_none() && row.container.is_none(),
+        }
+}
+
+pub(crate) fn format_millicores(nanocores: u64) -> String {
+    let fractional = nanocores % 1_000_000;
+    if fractional == 0 {
+        (nanocores / 1_000_000).to_string()
+    } else {
+        format!("{}.{fractional:06}", nanocores / 1_000_000)
+            .trim_end_matches('0')
+            .to_string()
+    }
+}
+
+/// Human-readable memory using an exact integral binary unit, without float rounding.
+pub(crate) fn format_memory(bytes: u64) -> String {
+    if bytes != 0 {
+        for (unit, shift) in [
+            ("Ei", 60),
+            ("Pi", 50),
+            ("Ti", 40),
+            ("Gi", 30),
+            ("Mi", 20),
+            ("Ki", 10),
+        ] {
+            let divisor = 1u64 << shift;
+            if bytes.is_multiple_of(divisor) {
+                return format!("{}{unit}", bytes / divisor);
+            }
+        }
+    }
+    format!("{bytes}B")
+}
+
 pub async fn collect(gateway: &Gateway, scope: MetricsScope, ns: &str) -> Result<MetricsSnapshot> {
     validate_namespace(ns)?;
     if gateway.is_demo() {
@@ -98,6 +512,32 @@ pub async fn collect(gateway: &Gateway, scope: MetricsScope, ns: &str) -> Result
     }
     let api = gateway.metrics_api(scope, ns)?;
     collect_api(api, scope, ns).await
+}
+
+/// Explicit opt-in: usage first, then one separately bounded current resource
+/// read. A denied/failed denominator read retains the valid usage snapshot.
+pub async fn collect_with_allocations(
+    gateway: &Gateway,
+    scope: MetricsScope,
+    ns: &str,
+) -> Result<MetricsSnapshot> {
+    let mut snapshot = collect(gateway, scope, ns).await?;
+    let resource = if scope == MetricsScope::Pods {
+        "pods"
+    } else {
+        "nodes"
+    };
+    let objects = tokio::time::timeout(BUDGET, gateway.list(resource, ns)).await;
+    match objects {
+        Ok(Ok(objects)) => {
+            if let Err(error) = crate::allocations::enrich(&mut snapshot, &objects) {
+                snapshot.allocation_status = Some(format!("Resource denominator snapshot unavailable: {}. Usage retained.", safety::safe_text(&error, 256)));
+            }
+        }
+        Ok(Err(error)) => snapshot.allocation_status = Some(format!("Additional resource read failed: {}. Usage retained; no denominators inferred.", safety::safe_text(&error, 256))),
+        Err(_) => snapshot.allocation_status = Some("Additional resource read exceeded 15-second budget. Usage retained; no denominators inferred.".into()),
+    }
+    Ok(snapshot)
 }
 
 async fn collect_api(
@@ -193,6 +633,7 @@ fn empty(scope: MetricsScope, ns: &str, source: &'static str) -> MetricsSnapshot
         source,
         items: Vec::new(),
         truncated: false,
+        allocation_status: None,
     }
 }
 fn metrics_error(error: kube::Error) -> String {
@@ -203,9 +644,11 @@ fn metrics_error(error: kube::Error) -> String {
 }
 fn status_error(code: u16) -> String {
     match code {
-        404 => "Metrics API unavailable: metrics.k8s.io/v1beta1 is not served; no metrics server is installed automatically".into(),
-        403 => "Metrics API read forbidden: RBAC does not permit listing the selected pod or node metrics".into(),
-        401 => "Metrics API authentication failed".into(),
+        404 => "Metrics API unavailable: metrics.k8s.io/v1beta1 is not served. An administrator must configure a working metrics provider; none is installed automatically. Pod/node status and events remain available without metrics.".into(),
+        403 => "Metrics API read forbidden: request narrowly scoped RBAC list permission on pods.metrics.k8s.io in the selected namespace or nodes.metrics.k8s.io for node metrics. Core pod/node read permission alone does not grant metrics access.".into(),
+        401 => "Metrics API authentication failed; reconnect with valid credentials before retrying.".into(),
+        429 => "Metrics API is rate limited (HTTP 429); wait before refreshing. No zero-usage samples were recorded.".into(),
+        503 => "Metrics API unavailable: its registered provider is not ready (HTTP 503). Check provider/APIService health and wait for a collection window; no zero-usage samples were recorded.".into(),
         _ => format!("Metrics API read failed (HTTP {code}; details suppressed)"),
     }
 }
@@ -239,6 +682,11 @@ fn decode_rows(value: &Value, scope: MetricsScope, ns: &str) -> Result<Vec<Metri
     };
     let timestamp = bounded_text(value, "timestamp", 64)?;
     let window = bounded_text(value, "window", 64)?;
+    let identity_uid = match meta.get("uid") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(uid)) if uid.is_empty() => None,
+        Some(_) => Some(bounded_text(meta, "uid", 128)?),
+    };
     if !valid_timestamp(&timestamp) || !valid_window(&window) {
         return Err("malformed metrics timestamp or window".into());
     }
@@ -247,14 +695,7 @@ fn decode_rows(value: &Value, scope: MetricsScope, ns: &str) -> Result<Vec<Metri
         let memory_raw = bounded_text(usage, "memory", 128)?;
         let (cpu_nanocores, cpu_rounded) = normalize_cpu_quantity(&cpu_raw)?;
         let (memory_bytes, memory_rounded) = normalize_memory_quantity(&memory_raw)?;
-        let fractional = cpu_nanocores % 1_000_000;
-        let cpu_millicores = if fractional == 0 {
-            (cpu_nanocores / 1_000_000).to_string()
-        } else {
-            format!("{}.{:06}", cpu_nanocores / 1_000_000, fractional)
-                .trim_end_matches('0')
-                .to_string()
-        };
+        let cpu_millicores = format_millicores(cpu_nanocores);
         Ok(MetricsRow {
             name: name.clone(),
             namespace: namespace.clone(),
@@ -267,6 +708,8 @@ fn decode_rows(value: &Value, scope: MetricsScope, ns: &str) -> Result<Vec<Metri
             cpu_millicores,
             memory_bytes,
             rounded_up: cpu_rounded || memory_rounded,
+            identity_uid: identity_uid.clone(),
+            allocations: None,
         })
     };
     match scope {
@@ -374,6 +817,50 @@ fn valid_timestamp(text: &str) -> bool {
     }
     matches!((number(zone+1,zone+3),number(zone+4,zone+6)),(Some(h),Some(m)) if h<=23 && m<=59)
 }
+
+/// Comparable RFC3339 time, including explicit offsets and arbitrary bounded
+/// fractional precision. Only the display quantities use base-unit rounding.
+pub(crate) fn timestamp_key(text: &str) -> Option<(i64, String)> {
+    if text.len() > 64 || !valid_timestamp(text) {
+        return None;
+    }
+    let number = |start, end| text.get(start..end)?.parse::<i64>().ok();
+    let year = number(0, 4)?;
+    let month = usize::try_from(number(5, 7)?).ok()?;
+    let day = number(8, 10)?;
+    let before_month = [0i64, 0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334];
+    let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+    // Absolute Gregorian days since year zero; only differences/order matter.
+    let days = 365 * year + (year + 3) / 4 - (year + 99) / 100
+        + (year + 399) / 400
+        + before_month[month]
+        + i64::from(month > 2 && leap)
+        + day
+        - 1;
+    let mut seconds =
+        days * 86_400 + number(11, 13)? * 3600 + number(14, 16)? * 60 + number(17, 19)?;
+    let mut zone = 19;
+    let fraction = if text.as_bytes().get(zone) == Some(&b'.') {
+        zone += 1;
+        let start = zone;
+        while text.as_bytes().get(zone).is_some_and(u8::is_ascii_digit) {
+            zone += 1;
+        }
+        text[start..zone].trim_end_matches('0').to_string()
+    } else {
+        String::new()
+    };
+    if text.get(zone..) != Some("Z") {
+        let offset = number(zone + 1, zone + 3)? * 3600 + number(zone + 4, zone + 6)? * 60;
+        seconds += if text.as_bytes()[zone] == b'+' {
+            -offset
+        } else {
+            offset
+        };
+    }
+    Some((seconds, fraction))
+}
+
 fn valid_window(text: &str) -> bool {
     // Go duration syntax used by Metrics API metav1.Duration; require a positive window.
     let mut rest = text;
@@ -509,10 +996,10 @@ pub fn demo(scope: MetricsScope, ns: &str) -> Result<MetricsSnapshot> {
     let mut snapshot = empty(scope, ns, "demo (deterministic sample)");
     let value = match scope {
         MetricsScope::Pods => {
-            json!({"metadata":{"name":"api-7d4f9","namespace":"demo"},"timestamp":"2026-01-01T00:00:00Z","window":"30s","containers":[{"name":"api","usage":{"cpu":"125m","memory":"64Mi"}}]})
+            json!({"metadata":{"name":"api-7d4f9","namespace":"demo","uid":"demo-Pod-api-7d4f9"},"timestamp":"2026-10-10T07:00:30Z","window":"30s","containers":[{"name":"app","usage":{"cpu":"125m","memory":"64Mi"}}]})
         }
         MetricsScope::Nodes => {
-            json!({"metadata":{"name":"demo-node"},"timestamp":"2026-01-01T00:00:00Z","window":"30s","usage":{"cpu":"750m","memory":"1Gi"}})
+            json!({"metadata":{"name":"demo-node","uid":"demo-Node-demo-node"},"timestamp":"2026-10-10T07:00:30Z","window":"30s","usage":{"cpu":"750m","memory":"1Gi"}})
         }
     };
     if scope == MetricsScope::Nodes || ns == "*" || ns == "demo" {
@@ -524,6 +1011,327 @@ pub fn demo(scope: MetricsScope, ns: &str) -> Result<MetricsSnapshot> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn history_snapshot(
+        scope: MetricsScope,
+        namespace: &str,
+        name: &str,
+        timestamp: &str,
+        cpu: &str,
+        memory: &str,
+        uid: Option<&str>,
+    ) -> MetricsSnapshot {
+        let mut value = sample(scope, name);
+        value["timestamp"] = json!(timestamp);
+        if scope == MetricsScope::Pods {
+            value["metadata"]["namespace"] = json!(namespace);
+            value["containers"][0]["usage"] = json!({"cpu":cpu,"memory":memory});
+        } else {
+            value["usage"] = json!({"cpu":cpu,"memory":memory});
+        }
+        if let Some(uid) = uid {
+            value["metadata"]["uid"] = json!(uid);
+        }
+        let mut snapshot = empty(scope, namespace, "cluster");
+        snapshot.items = decode_rows(&value, scope, namespace).unwrap_or_else(|e| panic!("{e}"));
+        snapshot
+    }
+    #[test]
+    fn history_bounds_identities_samples_and_observation_retention() {
+        let started = Instant::now();
+        let mut history = MetricsHistory::default();
+        let mut snapshot = empty(MetricsScope::Nodes, "*", "cluster");
+        for i in 0..HISTORY_MAX_IDENTITIES + 10 {
+            snapshot.items.extend(
+                history_snapshot(
+                    MetricsScope::Nodes,
+                    "*",
+                    &format!("node-{i:03}"),
+                    "2026-01-01T00:00:00Z",
+                    "1m",
+                    "1Mi",
+                    None,
+                )
+                .items,
+            );
+        }
+        history.record("cluster-a", &snapshot, started);
+        assert_eq!(history.series.len(), HISTORY_MAX_IDENTITIES);
+        assert!(history.limited);
+        let identities: Vec<_> = history.series.keys().cloned().collect();
+        snapshot.items.reverse();
+        for i in 1..90 {
+            for row in &mut snapshot.items {
+                row.timestamp = format!("2026-01-01T00:{:02}:{:02}Z", i / 60, i % 60);
+            }
+            history.record("cluster-a", &snapshot, started + Duration::from_secs(i));
+        }
+        assert_eq!(
+            history.series.keys().cloned().collect::<Vec<_>>(),
+            identities
+        );
+        assert!(
+            history
+                .series
+                .values()
+                .all(|s| s.points.len() == HISTORY_MAX_SAMPLES)
+        );
+        let expired = started + HISTORY_RETENTION + Duration::from_secs(90);
+        assert!(history.text(expired).contains("No history measurements"));
+        history.record_error("cluster-a", MetricsScope::Nodes, "*", expired);
+        assert!(history.series.is_empty());
+    }
+    #[test]
+    fn history_resets_context_namespace_scope_source_and_object_generation() {
+        let now = Instant::now();
+        let mut history = MetricsHistory::default();
+        let first = history_snapshot(
+            MetricsScope::Pods,
+            "demo",
+            "api",
+            "2026-01-01T00:00:00Z",
+            "1m",
+            "1Mi",
+            Some("uid-1"),
+        );
+        history.record("cluster-a", &first, now);
+        let replaced = history_snapshot(
+            MetricsScope::Pods,
+            "demo",
+            "api",
+            "2026-01-01T00:00:01Z",
+            "2m",
+            "2Mi",
+            Some("uid-2"),
+        );
+        history.record("cluster-a", &replaced, now + Duration::from_secs(1));
+        assert_eq!(
+            history.series.values().next().map(|s| s.points.len()),
+            Some(1)
+        );
+        assert!(
+            !history
+                .text(now + Duration::from_secs(1))
+                .contains("min 1m")
+        );
+        history.record("cluster-b", &first, now + Duration::from_secs(2));
+        assert_eq!(
+            history.series.values().next().map(|s| s.points.len()),
+            Some(1)
+        );
+        let other = history_snapshot(
+            MetricsScope::Pods,
+            "other",
+            "api",
+            "2026-01-01T00:00:03Z",
+            "3m",
+            "3Mi",
+            None,
+        );
+        history.record("cluster-b", &other, now + Duration::from_secs(3));
+        assert_eq!(history.series.len(), 1);
+        assert!(
+            history
+                .text(now + Duration::from_secs(3))
+                .contains("other/api")
+        );
+        let mut node = history_snapshot(
+            MetricsScope::Nodes,
+            "*",
+            "node",
+            "2026-01-01T00:00:04Z",
+            "4m",
+            "4Mi",
+            None,
+        );
+        history.record("cluster-b", &node, now + Duration::from_secs(4));
+        assert_eq!(history.series.len(), 1);
+        assert!(
+            !history
+                .text(now + Duration::from_secs(4))
+                .contains("other/api")
+        );
+        node.source = "demo (deterministic sample)";
+        node.items[0].timestamp = "2026-01-01T00:00:05Z".into();
+        history.record("cluster-b", &node, now + Duration::from_secs(5));
+        assert_eq!(
+            history.series.values().next().map(|s| s.points.len()),
+            Some(1)
+        );
+        // A namespace selection has no bearing on cluster-wide node metrics.
+        history.record_error(
+            "cluster-b",
+            MetricsScope::Nodes,
+            "other",
+            now + Duration::from_secs(6),
+        );
+        assert_eq!(history.series.len(), 1);
+        history.clear();
+        assert!(history.series.is_empty());
+    }
+    #[test]
+    fn history_errors_missing_rows_and_backward_measurements_are_gaps() {
+        let now = Instant::now();
+        let mut history = MetricsHistory::default();
+        let first = history_snapshot(
+            MetricsScope::Pods,
+            "demo",
+            "api",
+            "2026-01-01T00:00:01Z",
+            "1.000001m",
+            "67108865",
+            None,
+        );
+        history.record("cluster-a", &first, now);
+        history.record_error(
+            "cluster-a",
+            MetricsScope::Pods,
+            "demo",
+            now + Duration::from_secs(1),
+        );
+        // Recovery still serving the old measurement does not silently fill a gap.
+        history.record("cluster-a", &first, now + Duration::from_secs(2));
+        let text = history.text(now + Duration::from_secs(2));
+        assert!(text.contains("@-"));
+        assert!(text.contains("gap; last 1.000001m"));
+        assert!(text.contains("gap; last 67108865B"));
+        assert!(text.contains("min 1.000001m / max 1.000001m"));
+        assert_eq!(
+            history.series.values().next().map(|s| s.points.len()),
+            Some(2)
+        );
+        let missing = empty(MetricsScope::Pods, "demo", "cluster");
+        history.record("cluster-a", &missing, now + Duration::from_secs(3));
+        let older = history_snapshot(
+            MetricsScope::Pods,
+            "demo",
+            "api",
+            "2026-01-01T00:00:00Z",
+            "999m",
+            "999Mi",
+            None,
+        );
+        history.record("cluster-a", &older, now + Duration::from_secs(4));
+        assert!(history.text(now + Duration::from_secs(4)).contains("@---"));
+        assert!(!history.text(now + Duration::from_secs(4)).contains("999"));
+        let recovered = history_snapshot(
+            MetricsScope::Pods,
+            "demo",
+            "api",
+            "2026-01-01T00:00:02Z",
+            "2m",
+            "2Mi",
+            None,
+        );
+        history.record("cluster-a", &recovered, now + Duration::from_secs(5));
+        assert!(
+            history
+                .text(now + Duration::from_secs(5))
+                .contains("latest 2m")
+        );
+        assert!(
+            history
+                .text(now + Duration::from_secs(5))
+                .contains("latest 2Mi")
+        );
+    }
+    #[test]
+    fn history_timestamps_are_exact_and_duplicates_do_not_refresh_sample_age() {
+        assert_eq!(
+            timestamp_key("2026-01-01T00:00:00.10Z"),
+            timestamp_key("2026-01-01T01:00:00.1+01:00")
+        );
+        assert!(
+            timestamp_key("2026-01-01T00:00:00.10000000000000000001Z")
+                > timestamp_key("2026-01-01T00:00:00.1Z")
+        );
+        let now = Instant::now();
+        let mut history = MetricsHistory::default();
+        let first = history_snapshot(
+            MetricsScope::Nodes,
+            "*",
+            "node",
+            "2026-01-01T00:00:00Z",
+            "0",
+            "0",
+            None,
+        );
+        history.record("cluster-a", &first, now);
+        history.record("cluster-a", &first, now + Duration::from_secs(30));
+        assert_eq!(
+            history.series.values().next().map(|s| s.points.len()),
+            Some(1)
+        );
+        assert!(history.text(now).contains("|."));
+        assert!(!history.text(now).contains("gap; last"));
+        let after_retention = now + HISTORY_RETENTION + Duration::from_secs(1);
+        history.record("cluster-a", &first, after_retention);
+        assert!(
+            history
+                .text(after_retention)
+                .contains("No history measurements")
+        );
+        // A local result received before the most recent observation is ignored.
+        history.record("cluster-a", &first, now);
+        assert!(
+            history
+                .text(after_retention)
+                .contains("No history measurements")
+        );
+    }
+    #[test]
+    fn history_evicts_absent_identities_and_keeps_display_and_json_projection_safe() {
+        let now = Instant::now();
+        let mut history = MetricsHistory::default();
+        let mut many = empty(MetricsScope::Nodes, "*", "cluster");
+        for i in 0..HISTORY_MAX_IDENTITIES {
+            many.items.extend(
+                history_snapshot(
+                    MetricsScope::Nodes,
+                    "*",
+                    &format!("node-{i}"),
+                    "2026-01-01T00:00:00Z",
+                    "1m",
+                    "1Mi",
+                    None,
+                )
+                .items,
+            );
+        }
+        history.record("cluster-a", &many, now);
+        let next = history_snapshot(
+            MetricsScope::Nodes,
+            "*",
+            "replacement",
+            "2026-01-01T00:00:01Z",
+            "18446744073.709551615",
+            "18446744073709551615",
+            Some("CANARY-UID"),
+        );
+        history.record("cluster-a", &next, now + Duration::from_secs(1));
+        assert_eq!(history.series.len(), HISTORY_MAX_IDENTITIES);
+        assert!(
+            history
+                .text(now + Duration::from_secs(1))
+                .contains("replacement")
+        );
+        assert!(
+            history
+                .text(now + Duration::from_secs(1))
+                .contains("18446744073709.551615m")
+        );
+        let machine = serde_json::to_string(&next).unwrap_or_else(|e| panic!("{e}"));
+        assert!(!machine.contains("identity_uid"));
+        assert!(!machine.contains("CANARY-UID"));
+        let mut unsafe_snapshot = next;
+        unsafe_snapshot.items[0].name = "node\x1b[2J".into();
+        history.clear();
+        history.record("cluster-a", &unsafe_snapshot, now);
+        assert!(history.series.is_empty());
+        assert!(!history.text(now).contains('\x1b'));
+        assert_eq!(format_memory(67_108_864), "64Mi");
+        assert_eq!(format_memory(1_610_612_736), "1536Mi");
+        assert_eq!(format_memory(1), "1B");
+    }
     #[test]
     fn quantities_are_exact_and_checked() {
         for (raw, base, expected) in [
@@ -695,6 +1503,40 @@ mod tests {
         });
         let recorded = requests.lock().unwrap_or_else(|e| panic!("{e}")).clone();
         (result, recorded)
+    }
+    #[test]
+    fn optional_resource_reads_are_explicit_and_forbidden_or_invalid_denominators_retain_usage() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap_or_else(|error| panic!("{error}"));
+        runtime.block_on(async {
+            let usage = page(MetricsScope::Pods, vec![sample(MetricsScope::Pods, "sample")], "", "1");
+            let resource = json!({"apiVersion":"v1","kind":"PodList","metadata":{},"items":[{"metadata":{"name":"sample","namespace":"demo","uid":"resource-uid","creationTimestamp":"2025-12-31T23:59:00Z"},"spec":{"containers":[{"name":"api","resources":{"requests":{"cpu":"125m","memory":"1Mi"},"limits":{"cpu":"1","memory":"2Mi"}}}]}}]});
+            for response in [
+                (200, resource.clone()),
+                (403, json!({"apiVersion":"v1","kind":"Status","status":"Failure","reason":"Forbidden","message":"CANARY credential detail","code":403})),
+                (200, json!({"apiVersion":"v1","kind":"PodList","metadata":{},"items":[{"metadata":{"name":"sample","namespace":"other"}}]})),
+            ] {
+                let (api, requests) = mock_api(MetricsScope::Pods, "demo", vec![(200, usage.clone()), response]);
+                let gateway = Gateway::for_test_client(api.into_client(), "demo");
+                let snapshot = collect_with_allocations(&gateway, MetricsScope::Pods, "demo").await.unwrap_or_else(|error| panic!("{error}"));
+                assert_eq!(snapshot.items.len(), 1);
+                assert_eq!(snapshot.items[0].cpu_nanocores, 1_000_000);
+                assert_eq!(snapshot.items[0].memory_bytes, 1_048_576);
+                assert!(snapshot.allocation_status.is_some());
+                assert!(!snapshot.text().contains("CANARY"));
+                let paths = requests.lock().unwrap_or_else(|error| panic!("{error}"));
+                assert_eq!(paths.len(), 2);
+                assert!(paths[0].starts_with("/apis/metrics.k8s.io/v1beta1/namespaces/demo/pods"));
+                assert!(paths[1].starts_with("/api/v1/namespaces/demo/pods"));
+            }
+            let (api, requests) = mock_api(MetricsScope::Pods, "demo", vec![(200, usage)]);
+            let gateway = Gateway::for_test_client(api.into_client(), "demo");
+            let snapshot = collect(&gateway, MetricsScope::Pods, "demo").await.unwrap_or_else(|error| panic!("{error}"));
+            assert!(snapshot.allocation_status.is_none() && snapshot.items[0].allocations.is_none());
+            assert_eq!(requests.lock().unwrap_or_else(|error| panic!("{error}")).len(), 1);
+        });
     }
     #[test]
     fn mock_interop_pods_nodes_and_projection() {

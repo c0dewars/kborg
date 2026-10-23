@@ -1,0 +1,52 @@
+{
+  "schema": 1,
+  "timestamp_utc": "2026-10-22T22:48:19Z",
+  "verifier": {
+    "version": "v3.1.3",
+    "sha256": "5cf948c2f4dfe59687bdd0b8523709067383e03982cc543475c8a7dc70e92a76",
+    "source": "https://github.com/sigstore/cosign/releases/tag/v3.1.3",
+    "release_asset_sha256_checked": true
+  },
+  "public_key_fixture": {
+    "upstream_sdk": "sigstore-go v1.2.2",
+    "charts_verified": 2,
+    "genuine_signature_and_transparency_proof_verified": true,
+    "authority": "ephemeral upstream virtual service plus official Rekor signing/checkpoint APIs",
+    "public_service_signing_request": false,
+    "private_signing_keys_written": false,
+    "personal_keys_or_login": false,
+    "public_file_sha256": {
+      "first.tgz": "60748b21bd09da857269b251a3b22f3d2ccdde015cab75e481917cf50a638077",
+      "second.tgz": "91513578da6869ea9890f051b515871f85952abf0118df0d215141e0a8261295",
+      "chart-0.sigstore.json": "9b024e11af57233fb4d292a18d8f01203368e4bb673d655df5c0dbe5c95a1c81",
+      "chart-1.sigstore.json": "5872fe47afe7937440bfd1214ab8eab047d0609d84b371d146cdf67c67e6d741",
+      "chart-0.pub": "b732673329be40c541575728b42c947d8d8461ba62d110a1dd474631ad9d8bd9",
+      "chart-1.pub": "ab56702cf1bd58bcfb357d256e75c53a1d5de2396853a4fe447db86c47219d32",
+      "trusted-root.json": "e95d78f181a7bd20735110d0f137ef17be08e6ce70be0644c9f75f5d70654689",
+      "wrong-root.json": "bfde63393ad8cb994e09f8bd0be8489859b3eb389cff0d0bb160885e11dce5c2"
+    }
+  },
+  "exact_identity_fixture": {
+    "subject": "official Cosign3.1.3 release checksums, not a Helm chart",
+    "source_sha256": {
+      "chart.tgz": "aec2a6f68d307b09ae196e388dc691a146fa8bdba7fcce9ca4ca41b918adfa63",
+      "bundle.json": "976bcb216e45ed0274e464e2e16d81e84cc85a69b3ed6e3488c1e7cda116379a",
+      "trusted-root.json": "6494e21ea73fa7ee769f85f57d5a3e6a08725eae1e38c755fc3517c9e6bc0b66"
+    },
+    "identity_and_issuer_verified": true,
+    "wrong_identity_and_issuer_refused": true,
+    "no_login_or_signing_request": true
+  },
+  "compiled_module_crypto_acceptance": {
+    "passed": true,
+    "correct_public_key_and_log_proof": true,
+    "wrong_public_key_refused": true,
+    "wrong_trust_root_refused": true,
+    "tampered_cryptographic_signature_refused": true,
+    "exact_identity_and_issuer_verified": true,
+    "wrong_identity_refused": true,
+    "wrong_issuer_refused": true,
+    "no_insecure_verifier_flags": true
+  },
+  "scope": "Cryptographic fixture evidence; final Helm lifecycle cluster acceptance is separate. Official exact-identity artifact is a signed checksum document, not a Helm chart."
+}

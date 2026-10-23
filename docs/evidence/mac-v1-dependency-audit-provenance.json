@@ -1,0 +1,26 @@
+{
+  "checked_at_utc": "2026-10-23T12:12:11.851637+00:00",
+  "cargo_audit": "0.22.2",
+  "command": [
+    ".local/tools/audit/bin/cargo-audit",
+    "audit",
+    "--file",
+    "Cargo.lock",
+    "--json",
+    "--db",
+    ".local/tools/rustsec-advisory-db"
+  ],
+  "lockfile_sha256": "6707a4b7efbb1f53c2d78595de335675a5b451758b8fa3b76ba6d84e18493a8e",
+  "advisory_origin": "https://github.com/RustSec/advisory-db.git",
+  "advisory_revision": "f7b2f6bc663452200bbe639ebb75e0c762b3422b",
+  "audit_exit_code": 0,
+  "packages": 203,
+  "vulnerabilities": 0,
+  "warnings": 0,
+  "advisory_ignores": [],
+  "platform_filters": {
+    "target_arch": [],
+    "target_os": []
+  },
+  "report": "docs/evidence/mac-v1-cargo-audit.json"
+}

@@ -1,0 +1,5 @@
+Final frozen source: 2a333066f438ed2ea720d9f4932c273982b3a423
+Command: cargo clippy --locked --offline --all-targets -- -D warnings
+Exit status: 0
+    Checking kborg v0.3.0 (/Users/brunogarcia/Desktop/HyperMac/repos/kborg)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 2.84s

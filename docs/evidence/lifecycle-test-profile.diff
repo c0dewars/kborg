@@ -1,0 +1,9 @@
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -37 +37,2 @@
+-# as registered tools. Full DWARF for generated Kubernetes types exceeds it on GNU.
++# as registered tools. Generated Kubernetes types and fixture code exceed it
++# on GNU when DWARF is enabled; production release settings are unchanged.
+@@ -39 +40 @@
+-debug = 1
++debug = 0

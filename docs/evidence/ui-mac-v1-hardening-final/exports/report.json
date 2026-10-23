@@ -1,0 +1,45 @@
+{
+  "passed": true,
+  "binary_sha256": "32a6b514bce9ab3edf247248c91e84abbce363b82980a06a6b440e9450bd4cd5",
+  "scope": "Actual offline demo terminal and explicit local exports; no cluster writes",
+  "checks": [
+    "Enter at 20x100 creates no file when only the resize notice is painted",
+    "restoring width retains the unsaved export review and destination",
+    "resource export cancel writes no file",
+    "resource YAML explicit save and private permissions",
+    "log export contains source identity and retained window",
+    "Helm export selected metadata only",
+    "terminal restored"
+  ],
+  "screens": [
+    {
+      "name": "resource-export-review",
+      "path": "/Users/brunogarcia/Desktop/HyperMac/repos/kborg/docs/evidence/ui-mac-v1-hardening-final/exports/resource-export-review.png"
+    },
+    {
+      "name": "resource-export-too-narrow",
+      "path": "/Users/brunogarcia/Desktop/HyperMac/repos/kborg/docs/evidence/ui-mac-v1-hardening-final/exports/resource-export-too-narrow.png"
+    },
+    {
+      "name": "resource-export-review-restored",
+      "path": "/Users/brunogarcia/Desktop/HyperMac/repos/kborg/docs/evidence/ui-mac-v1-hardening-final/exports/resource-export-review-restored.png"
+    },
+    {
+      "name": "resource-export-saved",
+      "path": "/Users/brunogarcia/Desktop/HyperMac/repos/kborg/docs/evidence/ui-mac-v1-hardening-final/exports/resource-export-saved.png"
+    },
+    {
+      "name": "log-error-filter",
+      "path": "/Users/brunogarcia/Desktop/HyperMac/repos/kborg/docs/evidence/ui-mac-v1-hardening-final/exports/log-error-filter.png"
+    },
+    {
+      "name": "log-export-review",
+      "path": "/Users/brunogarcia/Desktop/HyperMac/repos/kborg/docs/evidence/ui-mac-v1-hardening-final/exports/log-export-review.png"
+    },
+    {
+      "name": "helm-export-review",
+      "path": "/Users/brunogarcia/Desktop/HyperMac/repos/kborg/docs/evidence/ui-mac-v1-hardening-final/exports/helm-export-review.png"
+    }
+  ],
+  "temporary_files_removed": true
+}
