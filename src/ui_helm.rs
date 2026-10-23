@@ -622,11 +622,17 @@ pub struct Review {
     pub offset: usize,
     pub epoch: u64,
     width: usize,
+    text: String,
+    display_valid: bool,
     viewed: std::collections::BTreeSet<usize>,
 }
 impl Review {
     pub fn new(prepared: Box<crate::helm_lifecycle::Prepared>, epoch: u64) -> Self {
+        let display = safety::review_display(&Self::presentation(&prepared));
         Self {
+            display_valid: display.is_ok(),
+            text: display
+                .unwrap_or_else(|error| format!("REVIEW BLOCKED\n\n{error}\n\nEsc returns.")),
             prepared,
             typed: String::new(),
             offset: 0,
@@ -635,8 +641,8 @@ impl Review {
             viewed: Default::default(),
         }
     }
-    fn wrapped(&self, width: usize) -> Vec<String> {
-        let overview = self.prepared.overview();
+    fn presentation(prepared: &crate::helm_lifecycle::Prepared) -> String {
+        let overview = prepared.overview();
         let mut introduction = vec![
             "01 Configure    /    02 REVIEW    /    03 Execute".into(),
             String::new(),
@@ -648,7 +654,7 @@ impl Review {
             format!("CONNECTION  {}  |  {}", overview.context, overview.endpoint),
             format!("TRUST       {}", overview.trust),
             String::new(),
-            if self.prepared.is_demo() {
+            if prepared.is_demo() {
                 "CHANGE PLAN  Simulated plan / no cluster writes".into()
             } else {
                 format!(
@@ -671,8 +677,10 @@ impl Review {
             String::new(),
             "FULL REVIEW".into(),
         ]);
-        let text = format!("{}\n{}", introduction.join("\n"), self.prepared.summary());
-        super::wrap_text(&text, width.saturating_sub(2).max(1))
+        format!("{}\n{}", introduction.join("\n"), prepared.summary())
+    }
+    fn wrapped(&self, width: usize) -> Vec<String> {
+        super::wrap_text(&self.text, width.saturating_sub(2).max(1))
             .lines()
             .map(|line| format!("  {line}"))
             .collect()
@@ -727,6 +735,7 @@ impl Review {
     pub fn can_execute(&self, width: u16, height: u16, epoch: u64) -> bool {
         width >= 28
             && height >= 10
+            && self.display_valid
             && self.epoch == epoch
             && self.remaining(usize::from(width.saturating_sub(2))) == 0
             && self.typed == self.prepared.confirmation()
@@ -1094,6 +1103,33 @@ mod tests {
         })?;
         Ok(Review::new(Box::new(prepared), 7))
     }
+    #[test]
+    fn helm_review_uses_escaped_text_for_both_layout_and_approval() -> Result<()> {
+        let mut review = demo_review()?;
+        // Exercise the same cached presentation path with hostile manifest text.
+        review.text = safety::review_display("spec: 東京\\u{e9}")?;
+        review.typed = review.prepared.confirmation();
+        let lines = review.lines(26, 100);
+        assert!(lines.iter().all(|line| line.is_ascii() && line.len() <= 26));
+        assert!(
+            lines
+                .iter()
+                .map(|line| line.trim_start())
+                .collect::<String>()
+                .contains("\\u{6771}\\u{4eac}\\\\u{e9}")
+        );
+        review.mark_drawn(26, 2);
+        assert!(!review.can_execute(28, 10, 7));
+        while review.remaining(26) > 0 {
+            review.key(KeyCode::PageDown, 26, 2);
+            review.mark_drawn(26, 2);
+        }
+        assert!(review.can_execute(28, 10, 7));
+        review.display_valid = false;
+        assert!(!review.can_execute(28, 10, 7));
+        Ok(())
+    }
+
     #[test]
     fn review_requires_every_painted_line_and_resets_for_resize_and_epoch() -> Result<()> {
         let mut review = demo_review()?;

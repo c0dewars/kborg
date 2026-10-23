@@ -6,17 +6,21 @@ pub struct Review {
     pub epoch: u64,
     pub confirmation: String,
     text: String,
+    display_valid: bool,
     offset: usize,
     width: usize,
     viewed: BTreeSet<usize>,
 }
 impl Review {
     pub fn new(text: String, confirmation: String, epoch: u64) -> Self {
+        let display = crate::safety::review_display(&text);
         Self {
             typed: String::new(),
             epoch,
             confirmation,
-            text,
+            display_valid: display.is_ok(),
+            text: display
+                .unwrap_or_else(|error| format!("REVIEW BLOCKED\n\n{error}\n\nEsc returns.")),
             offset: 0,
             width: 0,
             viewed: BTreeSet::new(),
@@ -72,6 +76,7 @@ impl Review {
     pub fn ready(&self, width: u16, height: u16, epoch: u64) -> bool {
         width >= 28
             && height >= 10
+            && self.display_valid
             && self.epoch == epoch
             && self.remaining(usize::from(width - 2)) == 0
             && self.typed == self.confirmation
@@ -100,6 +105,34 @@ impl Review {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn unicode_review_accounts_for_every_escaped_cell_and_overflow_blocks_approval() {
+        let mut review = Review::new("context: 東京\\u{e9}".into(), "ns/app".into(), 3);
+        review.typed = "ns/app".into();
+        let expected = crate::safety::review_display("context: 東京\\u{e9}")
+            .unwrap_or_else(|error| panic!("{error}"));
+        let lines = review.wrapped(26);
+        assert!(lines.iter().all(|line| line.is_ascii() && line.len() <= 26));
+        assert_eq!(lines.concat(), expected.replace('\n', ""));
+        review.mark_drawn(26, 2);
+        assert!(!review.ready(28, 10, 3));
+        while review.remaining(26) > 0 {
+            review.key(KeyCode::PageDown, 26, 2);
+            review.mark_drawn(26, 2);
+        }
+        assert!(review.ready(28, 10, 3));
+        let mut excessive = Review::new("é".repeat(200_000), "ns/app".into(), 3);
+        excessive.typed = "ns/app".into();
+        excessive.mark_drawn(200, 200);
+        assert!(
+            excessive
+                .lines(200, 200)
+                .concat()
+                .contains("REVIEW BLOCKED")
+        );
+        assert!(!excessive.ready(202, 208, 3));
+    }
+
     #[test]
     fn wrapping_preserves_every_review_character_and_prefers_word_boundaries() {
         let text = "Node identity and scheduling stay bound. VeryLongUnbrokenIdentityValue";
