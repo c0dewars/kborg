@@ -195,7 +195,13 @@ try {
     } else {
         $archive = Join-Path $packages "$label.tar.gz"
         if (Test-Path -LiteralPath $archive) { throw 'Archive exists' }
-        & tar -czf $archive -C (Split-Path $stage -Parent) $label
+        if ($IsMacOS) {
+            # AppleDouble records otherwise copy builder-specific extended
+            # attributes into the archive, including a second top-level entry.
+            & tar --no-mac-metadata --no-xattrs --no-acls --no-fflags -czf $archive -C (Split-Path $stage -Parent) $label
+        } else {
+            & tar -czf $archive -C (Split-Path $stage -Parent) $label
+        }
         if ($LASTEXITCODE -ne 0) { throw 'Archive creation failed' }
     }
     $checksum = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
