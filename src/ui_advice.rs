@@ -8,15 +8,19 @@ pub struct Review {
     pub typed: String,
     pub epoch: u64,
     text: String,
+    display_valid: bool,
     offset: usize,
     width: usize,
     viewed: BTreeSet<usize>,
 }
 impl Review {
     pub fn new(prepared: Option<PreparedAdvice>, text: String, epoch: u64) -> Self {
+        let display = crate::safety::review_display(&text);
         Self {
             prepared,
-            text,
+            display_valid: display.is_ok(),
+            text: display
+                .unwrap_or_else(|error| format!("REVIEW BLOCKED\n\n{error}\n\nEsc returns.")),
             epoch,
             typed: String::new(),
             offset: 0,
@@ -56,6 +60,7 @@ impl Review {
     pub fn can_send(&self, width: u16, height: u16, epoch: u64) -> bool {
         width >= 28
             && height >= 10
+            && self.display_valid
             && epoch == self.epoch
             && self.remaining(usize::from(width.saturating_sub(2))) == 0
             && self
@@ -93,6 +98,22 @@ impl Review {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn transfer_review_escapes_before_wrapping_and_refuses_excessive_display() {
+        let review = Review::new(None, "preview: 東京\\u{e9}".into(), 7);
+        let shown = review.lines(1000, 100).join("\n");
+        assert!(shown.is_ascii());
+        assert!(shown.contains("\\u{6771}\\u{4eac}\\\\u{e9}"));
+        let mut excessive = Review::new(None, "é".repeat(200_000), 7);
+        excessive.mark_drawn(1000, 100);
+        assert!(!excessive.display_valid && !excessive.can_send(1002, 108, 7));
+        assert!(
+            excessive
+                .lines(1000, 100)
+                .join("\n")
+                .contains("REVIEW BLOCKED")
+        );
+    }
     #[test]
     fn jumping_to_end_or_resizing_never_approves_unpainted_transfer() {
         let mut review = Review::new(

@@ -3033,9 +3033,16 @@ impl App {
                 KeyCode::Esc => self.close_subview(),
                 KeyCode::Enter => {
                     let (width, height) = terminal::size().unwrap_or((80, 24));
-                    if wrap_text(&draft.review(), usize::from(width.saturating_sub(2)))
-                        .lines()
-                        .count()
+                    let review = safety::review_display(&draft.review());
+                    if let Err(error) = review {
+                        self.status = error;
+                        self.modal = Modal::Export(draft);
+                    } else if wrap_text(
+                        &review.unwrap_or_default(),
+                        usize::from(width.saturating_sub(2)),
+                    )
+                    .lines()
+                    .count()
                         > usize::from(height.saturating_sub(8))
                     {
                         self.status="Enlarge the terminal to review the full export destination before saving.".into();
@@ -6299,7 +6306,7 @@ fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
                 Modal::YamlEditor(editor)=>editor.viewport(usize::from(rect.width.saturating_sub(2)),height),
                 Modal::WriteReview(review)=>review.view.lines(usize::from(rect.width.saturating_sub(2)),height),
                 Modal::WriteRunning=>vec!["Applying the approved operation...".into(),"Wait for the outcome before navigating or quitting.".into(),"No automatic retries. If interrupted, inspect cluster state.".into()],
-                Modal::Export(draft)=>wrap_text(&draft.review(),usize::from(rect.width.saturating_sub(2))).lines().map(str::to_owned).collect(),
+                Modal::Export(draft)=>wrap_text(&safety::review_display(&draft.review()).unwrap_or_else(|error| format!("REVIEW BLOCKED\n\n{error}\n\nEsc returns.")),usize::from(rect.width.saturating_sub(2))).lines().map(str::to_owned).collect(),
                 Modal::AdviceReview(review)=>review.lines(usize::from(rect.width.saturating_sub(2)),height),
                 Modal::AdviceLoading=>vec!["Reading selected status and preparing the minimized preview...".into(),"No inference request is sent until you review and approve.".into()],
                 Modal::AdviceRunning=>vec!["COPILOT ADVISORY / read-only".into(),String::new(),"Waiting for the bounded Copilot response...".into(),"Ctrl-C cancels; wait for process and connection cleanup.".into(),"No commands or Kubernetes changes are authorized.".into()],
@@ -6409,7 +6416,12 @@ fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
                     " Enter continue to server dry-run/review | Esc cancel".into(),
                 ],
                 Modal::Picker(label, list, index) => {
-                    std::iter::once(format!(" {label} | arrows / Enter select / Esc cancel"))
+                    let help = if *label == selections_ui::PICKER_LABEL {
+                        " Enter open | d remove | Esc back".into()
+                    } else {
+                        format!(" {label} | arrows / Enter select / Esc cancel")
+                    };
+                    std::iter::once(help)
                         .chain(
                             list.iter()
                                 .enumerate()
@@ -6640,8 +6652,14 @@ fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
     out.flush().map_err(|_| "draw failed".into())
 }
 
+fn confirmation_display(summary: &str, text: &str) -> Result<String> {
+    safety::review_display(&format!(
+        "{summary}\nCONFIRM > {text}_\nEnter execute | Esc cancel"
+    ))
+}
 fn confirmation_lines(summary: &str, text: &str, width: u16) -> Vec<String> {
-    let content = format!("{summary}\nCONFIRM > {text}_\nEnter execute | Esc cancel");
+    let content = confirmation_display(summary, text)
+        .unwrap_or_else(|error| format!("REVIEW BLOCKED\n\n{error}\n\nEsc returns."));
     let available = usize::from(width).saturating_sub(2).max(1);
     content
         .lines()
@@ -6658,7 +6676,8 @@ fn confirmation_lines(summary: &str, text: &str, width: u16) -> Vec<String> {
         .collect()
 }
 fn confirmation_fits(summary: &str, text: &str, width: u16, height: u16) -> bool {
-    width >= 28
+    confirmation_display(summary, text).is_ok()
+        && width >= 28
         && height >= 10
         && confirmation_lines(summary, text, width.saturating_sub(1)).len()
             <= usize::from(height.saturating_sub(8))
@@ -9044,6 +9063,27 @@ mod layout_tests {
         }
     }
     #[test]
+    fn mutation_and_session_reviews_never_approve_lossy_unicode_or_overflow() -> Result<()> {
+        let summary = "context: 東京\\u{e9}\nDirect argv: [\"echo\",\"é\"]";
+        let lines = confirmation_lines(summary, "test/api", 79);
+        let displayed = lines.iter().map(|line| &line[1..]).collect::<String>();
+        assert!(displayed.is_ascii());
+        assert!(displayed.contains("\\u{6771}\\u{4eac}\\\\u{e9}"));
+        assert!(displayed.contains("\\u{e9}"));
+        assert!(!confirmation_fits(summary, "test/api", 28, 10));
+        assert!(confirmation_fits(summary, "test/api", 120, 40));
+        assert!(!confirmation_fits(
+            &"é".repeat(200_000),
+            "test/api",
+            65535,
+            65535
+        ));
+        // Real data cell rendering cannot silently replace the escaped characters.
+        assert_eq!(display(&displayed, displayed.len()), displayed);
+        Ok(())
+    }
+
+    #[test]
     fn confirmation_wrap_preserves_complete_target_and_effect() {
         let summary = format!(
             "target: {}/sample\n{}",
@@ -9328,5 +9368,23 @@ mod layout_tests {
         });
         app.changed();
         assert!(app.selection_ui.focus.is_none());
+    }
+
+    #[test]
+    fn saved_picker_keeps_its_actions_when_watch_status_changes() {
+        let (mut app, _, _) = harness();
+        app.modal = Modal::Picker(
+            selections_ui::PICKER_LABEL,
+            vec!["Local workspace | Dashboard | 1 context".into()],
+            0,
+        );
+        app.status = "Watch updated: 12 resources".into();
+        for (width, height) in [(120, 34), (48, 16)] {
+            let mut frame = Vec::new();
+            render(&app, width, height, &mut frame).unwrap_or_else(|error| panic!("{error}"));
+            let frame = String::from_utf8(frame).unwrap_or_else(|error| panic!("{error}"));
+            assert!(frame.contains("Enter open | d remove | Esc back"));
+            assert!(frame.contains("Watch updated"));
+        }
     }
 }
