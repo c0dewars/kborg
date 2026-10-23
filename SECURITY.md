@@ -8,8 +8,15 @@ Before production: independent sensitive-code review, dependency advisories/lice
 
 See docs/REMAINING_WORK.md and the linked current acceptance report for requirements and known limitations. Client safeguards do not constrain a hostile same-user process. The API server and organizational controls are authoritative.
 
-Helm storage access is separately opt-in with `--allow-helm`. General Secret
-browsing remains unavailable, but Helm metadata/history and selected values are
+Secret inspection is off by default. `--allow-secret-reveal` enables `:secrets`,
+which lists names, types, key names and sizes for one namespace and decodes a
+single key only on an explicit `x`, for 30 seconds; values are never exported,
+copied or written to disk. The listing still transfers Secret payloads into
+process memory, so grant `list secrets` only where that is acceptable. Ctrl-K
+force kill is separately opt-in with `--write --allow-force-kill`.
+
+Helm storage access is separately opt-in with `--allow-helm`. Generic Secret
+YAML/describe views remain unavailable, but Helm metadata/history and selected values are
 read from Kubernetes Secret or ConfigMap storage. Kubernetes RBAC cannot restrict
 Secret list permission by label selector; the API identity must be scoped
 accordingly. Browsing never exports raw release payloads, notes, chart files or

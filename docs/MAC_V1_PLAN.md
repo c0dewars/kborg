@@ -32,7 +32,7 @@ Reference inspected: [mpiorowski/k10s](https://github.com/mpiorowski/k10s/tree/1
 | Unified live workload tail | Implemented (opt-in) | `:logs-live` / `logs --follow --dynamic-membership` recapture membership every 10s with the fixed-capture inventory rules; every join, departure and refused join is announced; replacements are a departure plus a join; joins open all-or-nothing after UID checks; 8 Pods/32 sources and the shared byte/rate budget stay global. Live Docker Desktop scale-up/delete check passed; long rollout soak not yet run |
 | In-app dashboard legend | Implemented | `?` explains controls, evidence and freshness without closing independent watches |
 
-Implemented in this batch: opted-in dynamic log membership and direct warning-to-event drilldown (dashboard `w`, then Enter). Next feature: optional dashboard log panes. Release hardening below remains required; dashboard acceptance does not imply full k10s parity.
+Implemented in this batch: opted-in dynamic log membership and direct warning-to-event drilldown (dashboard `w`, then Enter). Implemented next: dashboard log panes (`w`, then `L`), opt-in Secret key listing with per-key reveal (`:secrets`, `--allow-secret-reveal`) and reviewed zero-grace Pod kill (Ctrl-K, `--allow-force-kill`). Release hardening below remains required; dashboard acceptance does not imply full k10s parity.
 
 ## Release gates after workflows
 

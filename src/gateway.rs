@@ -42,6 +42,8 @@ pub struct Connection {
     pub allow_port_forward: bool,
     pub allow_node_maintenance: bool,
     pub allow_yaml_edit: bool,
+    pub allow_force_kill: bool,
+    pub allow_secret_reveal: bool,
     pub allow_auth_helper: bool,
     pub auth_helper_policy: Option<PathBuf>,
 }
@@ -432,6 +434,8 @@ pub struct Gateway {
     operation_capabilities: [bool; 3],
     allow_node_maintenance: bool,
     allow_yaml_edit: bool,
+    allow_force_kill: bool,
+    allow_secret_reveal: bool,
     demo: Vec<Value>,
     pub kinds: Vec<Kind>,
 }
@@ -476,6 +480,8 @@ impl Gateway {
                 lifecycle_connection: None,
                 allow_node_maintenance: options.allow_node_maintenance,
                 allow_yaml_edit: options.allow_yaml_edit,
+                allow_force_kill: options.allow_force_kill,
+                allow_secret_reveal: options.allow_secret_reveal,
                 operation_capabilities: [
                     options.allow_exec,
                     options.allow_attach,
@@ -640,6 +646,8 @@ impl Gateway {
             lifecycle_connection,
             allow_node_maintenance: options.allow_node_maintenance,
             allow_yaml_edit: options.allow_yaml_edit,
+            allow_force_kill: options.allow_force_kill,
+            allow_secret_reveal: options.allow_secret_reveal,
             operation_capabilities: [
                 options.allow_exec,
                 options.allow_attach,
@@ -711,6 +719,8 @@ impl Gateway {
             operation_capabilities: [false; 3],
             allow_node_maintenance: false,
             allow_yaml_edit: false,
+            allow_force_kill: false,
+            allow_secret_reveal: false,
             demo: Vec::new(),
             kinds: kinds(),
         }
@@ -844,6 +854,100 @@ impl Gateway {
         } else {
             Api::all_with(client, &k.ar())
         })
+    }
+    fn secret_api(&self, ns: &str) -> Result<Option<Api<k8s_openapi::api::core::v1::Secret>>> {
+        if !self.allow_secret_reveal {
+            return Err("Secret inspection requires --allow-secret-reveal".into());
+        }
+        if ns == "*" || !safety::valid_id(ns) {
+            return Err("Secret inspection requires one explicit namespace".into());
+        }
+        if self.is_demo() {
+            return Ok(None);
+        }
+        let client = self.client.clone().ok_or("offline backend")?;
+        Ok(Some(Api::namespaced(client, ns)))
+    }
+    /// Secret names, types and key sizes for one namespace. Values are dropped
+    /// before this returns.
+    pub async fn secret_index(&self, ns: &str) -> Result<crate::secrets::SecretIndex> {
+        let Some(api) = self.secret_api(ns)? else {
+            let data = crate::secrets::demo_data();
+            return Ok(crate::secrets::SecretIndex {
+                namespace: ns.into(),
+                items: vec![crate::secrets::entry(
+                    "api-credentials",
+                    "demo-secret-uid",
+                    Some("Opaque"),
+                    Some(&data),
+                )],
+                truncated: false,
+            });
+        };
+        let params = ListParams::default().limit(crate::secrets::MAX_SECRETS as u32);
+        let list = tokio::time::timeout(OPERATION_BUDGET, api.list(&params))
+            .await
+            .map_err(|_| "Secret list timed out")?
+            .map_err(api_error)?;
+        let truncated = list
+            .metadata
+            .continue_
+            .as_deref()
+            .is_some_and(|c| !c.is_empty());
+        let items = list
+            .items
+            .iter()
+            .map(|secret| {
+                let data = secret.data.as_ref().map(|data| {
+                    data.iter()
+                        .map(|(key, value)| (key.clone(), value.0.clone()))
+                        .collect()
+                });
+                crate::secrets::entry(
+                    secret.metadata.name.as_deref().unwrap_or(""),
+                    secret.metadata.uid.as_deref().unwrap_or(""),
+                    secret.type_.as_deref(),
+                    data.as_ref(),
+                )
+            })
+            .collect();
+        Ok(crate::secrets::SecretIndex {
+            namespace: ns.into(),
+            items,
+            truncated,
+        })
+    }
+    /// Fetches one key of one Secret, refusing a replacement with another UID.
+    pub async fn secret_value(
+        &self,
+        ns: &str,
+        name: &str,
+        uid: &str,
+        key: &str,
+    ) -> Result<crate::secrets::Revealed> {
+        crate::secrets::validate_request(ns, name, key)?;
+        let Some(api) = self.secret_api(ns)? else {
+            if name != "api-credentials" || uid != "demo-secret-uid" {
+                return Err("Secret not found".into());
+            }
+            return crate::secrets::demo_data()
+                .get(key)
+                .map(|bytes| crate::secrets::reveal(bytes))
+                .ok_or_else(|| "Secret key not found".into());
+        };
+        let secret = tokio::time::timeout(OPERATION_BUDGET, api.get(name))
+            .await
+            .map_err(|_| "Secret read timed out")?
+            .map_err(api_error)?;
+        if secret.metadata.uid.as_deref() != Some(uid) {
+            return Err("Secret was replaced; reopen :secrets".into());
+        }
+        secret
+            .data
+            .as_ref()
+            .and_then(|data| data.get(key))
+            .map(|bytes| crate::secrets::reveal(&bytes.0))
+            .ok_or_else(|| "Secret key not found".into())
     }
     pub async fn discover(&mut self) -> Result<Vec<Kind>> {
         if let Some(client) = &self.client {
@@ -1820,6 +1924,9 @@ impl Gateway {
         if !self.policy.writable {
             return Err("READ ONLY: mutations are disabled; opt in with --write".into());
         }
+        if action == Action::Kill && !self.allow_force_kill {
+            return Err("Force kill requires --write --allow-force-kill".into());
+        }
         let object = self.raw_get(key, ns, name).await?;
         let kind = self.find(key)?;
         if !matches!(
@@ -1876,7 +1983,7 @@ impl Gateway {
                 crate::edit::expected_container(&object, container, edit)?;
                 json!({"metadata":{"uid":target.uid,"resourceVersion":target.version},"spec":crate::edit::container_patch_spec(&object, container, Some(&edit.image), edit.resources.as_ref())?})
             }
-            Action::Delete => Value::Null,
+            Action::Delete | Action::Kill => Value::Null,
         };
         let effect = match &action {
             Action::Scale(n) => format!("scale replicas {} -> {n}", object["spec"]["replicas"]),
@@ -1894,6 +2001,7 @@ impl Gateway {
             Action::Delete => {
                 "delete object; background cascading; server default grace period; no force".into()
             }
+            Action::Kill => "FORCE KILL Pod: gracePeriodSeconds=0; the API object is removed at once without waiting for container shutdown; the kubelet may still be stopping processes and a controller may create a replacement".into(),
         };
         let summary = format!(
             "{}\nserver: {}\ncontext: {}\ntarget: {}/{} ({})\nUID: {}\nresourceVersion: {}\n{}\nType {}/{} to execute. Approval expires after 60 seconds.",
@@ -1976,13 +2084,14 @@ impl Gateway {
                 uid: Some(prepared.target.uid.clone()),
                 resource_version: Some(prepared.target.version.clone()),
             }),
+            grace_period_seconds: (prepared.action == Action::Kill).then_some(0),
             ..DeleteParams::background()
         }
     }
     async fn perform(&self, prepared: &Prepared, dry_run: bool) -> Result<Value> {
         let api = self.api(&prepared.kind, &prepared.target.namespace)?;
         match &prepared.action {
-            Action::Delete => {
+            Action::Delete | Action::Kill => {
                 api.delete(
                     &prepared.target.name,
                     &Self::delete_params(prepared, dry_run),
@@ -2053,7 +2162,7 @@ impl Gateway {
         approval.consume(&prepared.target, &prepared.action)?;
         if self.is_demo() {
             match prepared.action {
-                Action::Delete => self
+                Action::Delete | Action::Kill => self
                     .demo
                     .retain(|v| v["metadata"]["uid"] != prepared.target.uid),
                 Action::Scale(n) => {
@@ -2942,6 +3051,51 @@ mod tests {
                     .await
                     .is_err()
             );
+        });
+    }
+    #[test]
+    fn force_kill_is_pod_only_opt_in_and_uses_zero_grace() {
+        let rt = runtime().unwrap_or_else(|e| panic!("{e}"));
+        rt.block_on(async {
+            let mut g = Gateway::connect(Connection {
+                demo: true,
+                writable: true,
+                ..Default::default()
+            })
+            .await
+            .unwrap_or_else(|e| panic!("{e}"));
+            let name = "api-7d4f9".to_owned();
+            assert!(g.get("pods", "demo", &name).await.is_ok());
+            assert!(
+                g.prepare("pods", "demo", &name, Action::Kill)
+                    .await
+                    .is_err()
+            );
+            g.allow_force_kill = true;
+            assert!(
+                g.prepare("deployments", "demo", "api", Action::Kill)
+                    .await
+                    .is_err()
+            );
+            let prepared = g
+                .prepare("pods", "demo", &name, Action::Kill)
+                .await
+                .unwrap_or_else(|e| panic!("{e}"));
+            assert!(prepared.summary.contains("FORCE KILL"));
+            assert_eq!(
+                Gateway::delete_params(&prepared, false).grace_period_seconds,
+                Some(0)
+            );
+            let approval = Approval::confirm(
+                prepared.target.clone(),
+                prepared.action.clone(),
+                &format!("demo/{name}"),
+            )
+            .unwrap_or_else(|e| panic!("{e}"));
+            g.execute(prepared, approval)
+                .await
+                .unwrap_or_else(|e| panic!("{e}"));
+            assert!(g.get("pods", "demo", &name).await.is_err());
         });
     }
     #[test]

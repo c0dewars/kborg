@@ -42,6 +42,7 @@ KBorg 0.3 — Kubernetes operations, under your control
   kborg set-image [RESOURCE] NAME CONTAINER IMAGE   Reviewed image change
   kborg set-resources [RESOURCE] NAME CONTAINER CPU_REQ MEM_REQ CPU_LIMIT MEM_LIMIT
   kborg delete RESOURCE NAME      Guarded deletion; no force
+  kborg kill POD                  Reviewed zero-grace Pod kill (--write --allow-force-kill)
   kborg cordon NODE               Review and disable node scheduling
   kborg uncordon NODE             Review and enable node scheduling
   kborg drain NODE [SECONDS]      Reviewed eviction; default 120s, maximum 300s
@@ -77,6 +78,8 @@ Options (put KBorg flags before exec's -- separator):
   --copilot-policy ABS                         Dedicated Copilot advisory configuration
   --allow-yaml-edit                            General reviewed spec edits
   --allow-node-maintenance                     Reviewed cordon/uncordon/drain
+  --allow-force-kill                           Reviewed Pod kill with zero grace period
+  --allow-secret-reveal                        :secrets key list and per-key reveal (TUI)
   --allow-logs       --allow-exec   --allow-attach   --allow-forward
   --poll            --theme ID     --color=never    --json       --yaml
   --no-mouse        --follow          --previous     --no-splash      --demo       --help

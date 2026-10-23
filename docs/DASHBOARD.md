@@ -10,12 +10,15 @@ Press `D` from a resource table to open the current context and namespace. The h
 | Enter | Open current Pods in the focused context and displayed namespace |
 | `w` | Select the next recent warning in the focused card; cycling past the last clears it |
 | Enter on a warning | Open Events for that exact Pod name and UID in its namespace |
-| Esc on a warning | Clear the warning selection without closing the dashboard |
+| `L` on a warning | Follow that exact Pod's logs (all ordinary containers) in a pane under the cards; `L` again closes it |
+| Esc on a warning | Close an open log pane first, then clear the warning selection without closing the dashboard |
 | `c` | Choose one to four explicit context names, comma separated; Ctrl-U clears the input |
 | `s` | Name and save the dashboard's context group and namespace |
 | `B` | Open saved selections |
 | `?` | Show the dashboard keymap and evidence legend; watches keep running |
 | Esc | Close help, or close the dashboard and cancel its watches |
+
+The log pane opens its own read-only connection to the focused card's context, so it works for any card, not only the connected one. It requires `--allow-logs`, follows the warning's Pod name and UID with the normal follow budget and shared byte/rate limits, and stops when it is closed, when Enter opens Pods or Events, or when the dashboard closes. Only one log session runs at a time, so opening the pane ends any other log view.
 
 All cards use the selected namespace. Change namespace in the normal resource view before opening the dashboard, or reopen an explicitly saved dashboard scope. Wide terminals show a grid; narrow terminals retain the focused card and numbered navigation. A wide single-context view places health and warnings side by side.
 
