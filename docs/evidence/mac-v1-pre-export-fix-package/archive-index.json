@@ -1,0 +1,21 @@
+{
+  "schema": 1,
+  "source_commit": "4c136425f0620efdf153354a2db5db4026a8ab02",
+  "superseded_reason": "Export review minimum-size and unknown-terminal-size approval correction in the following candidate",
+  "artifact": "dist/mac-v1-4c13642/kborg-0.3.0-aarch64-apple-darwin.tar.gz",
+  "artifact_sha256": "df58d05a9b6d75a3e731de6926dc336d89e543b70d3407d26581a19b8aa8e828",
+  "binary_sha256": "407756918342d97eca923c214a34340fc5764bd5c09377db01f149b5ff81812e",
+  "files": {
+    "mac-v1-hardening-source.json": "f3ec9b8002afa7c575eda8e7868259365b1bd5a315bc84c1d353e6f99534d901",
+    "mac-v1-package-acceptance.json": "d96945b637d09a558dab96ccd99e3cfa2e78213287105878e9acd38c096dbb1d",
+    "mac-v1-package-build.txt": "ecdc2496be7f4f4a5e638053a0febb37919b0ce96066eb7039f930411b9cf44b",
+    "mac-v1-package-negative-tests.json": "e3b18d18daf48fb9681c4c5cb46feeb3fc0f1d332d8e0d63ba8236955f334d7a",
+    "mac-v1-package-terminal-compatibility.json": "5e47e3cb47ef9e0575a0df45fec1a526294e2589c924ba6b4b0313907d4198ca",
+    "mac-v1-package-terminal.json": "3fb6f1da166726b3a4a47a9583670f05dc61f2840f52c70a120250fd7242132c",
+    "mac-v1-package-transport-faults.json": "87b00b988dbfdd827d482dd0b4b69b93a2ede0d93680fe5580671c4d76902fad",
+    "ui-mac-v1-package/ascii-c-locale-resources.png": "03ddecc046198f52e6d44b12371014d63f2bba0c106b951158b61ffafd4d3418",
+    "ui-mac-v1-package/no-color-env-resources.png": "e062f40481321ec3fe0908639b2d1e96688ed2213cb5dbf828179c2e864d2c7f",
+    "ui-mac-v1-package/truecolor-resources.png": "b8267d0e314f2b4c3af8e4060e085b78c72399068f64525272c6c08f80f3ce3f",
+    "ui-mac-v1-package/truecolor-saved-picker.png": "d17a1f747713b9d03dd3f3ff67598cfc9653877ce2d07432ba9bc4133b542121"
+  }
+}

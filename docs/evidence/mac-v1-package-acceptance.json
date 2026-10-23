@@ -1,0 +1,61 @@
+{
+  "schema": 1,
+  "passed": true,
+  "validated_at_utc": "2026-10-23T12:55:29.556327+00:00",
+  "source_commit": "2a333066f438ed2ea720d9f4932c273982b3a423",
+  "source_scope": "Code candidate validation artifact; includes historical committed docs, not the completed current-batch report. Unpublished and unsigned.",
+  "target": "aarch64-apple-darwin",
+  "archive": "/Users/brunogarcia/Desktop/HyperMac/repos/kborg/dist/mac-v1-2a33306/kborg-0.3.0-aarch64-apple-darwin.tar.gz",
+  "archive_bytes": 40890887,
+  "archive_sha256": "808bdac2525c77caaa33d43ccb1ab4288816954efc62e5ab476da37c8aa1f270",
+  "binary_sha256": "36f6eeecba162df7e687e55425eacec19b9542a37347e9cea3a95e75caf32def",
+  "soak_binary_sha256": "32a6b514bce9ab3edf247248c91e84abbce363b82980a06a6b440e9450bd4cd5",
+  "same_binary_as_soak": false,
+  "frozen_source_manifest": "docs/evidence/mac-v1-hardening-source.json",
+  "source_files_matching_manifest": 70,
+  "dependency_packages": 203,
+  "license_notice_files": 396,
+  "checks": [
+    "Archive SHA-256 matches retained checksum and unsigned provenance",
+    "BUILD target/version/source match clean code candidate",
+    "Metadata distinguishes packaging smoke from external unit-test evidence",
+    "Archive entries are bounded regular files/directories under one relative root; executable mode retained",
+    "Internal/external BUILD and SBOM agree; executable hash verified",
+    "CycloneDX dependency references resolve uniquely",
+    "Every dependency notice coverage entry and notice hash verified",
+    "Extracted executable passed version/demo/theme/default-private-read-only-config smoke"
+  ],
+  "limits": [
+    "Unsigned local records and checksums do not authenticate a publisher",
+    "Fresh build and package checks do not prove bit-for-bit reproducibility",
+    "No signing, notarization, publication or installation into a global binary directory performed"
+  ],
+  "extracted_test_binary": "/Users/brunogarcia/Desktop/HyperMac/repos/kborg/.local/package-runtime-2a33306/kborg",
+  "exact_binary_regressions": {
+    "completed_at_utc": "2026-10-23T12:58:55.465522+00:00",
+    "binary_sha256": "36f6eeecba162df7e687e55425eacec19b9542a37347e9cea3a95e75caf32def",
+    "terminal_states": {
+      "passed": 63,
+      "terminal_restored": true,
+      "report": "docs/evidence/mac-v1-package-terminal.json"
+    },
+    "terminal_compatibility": {
+      "profiles_passed": 10,
+      "term_dumb_passed": true,
+      "isolated_tmux_passed": true,
+      "report": "docs/evidence/mac-v1-package-terminal-compatibility.json"
+    },
+    "synthetic_tls_faults": {
+      "passed": 9,
+      "report": "docs/evidence/mac-v1-package-transport-faults.json"
+    },
+    "local_exports": {
+      "passed": 7,
+      "temporary_files_removed": true,
+      "report": "docs/evidence/ui-mac-v1-package/exports/report.json"
+    },
+    "scope": "Exact executable extracted from this unsigned candidate archive. Offline PTY scenarios, local create-only export fixtures, isolated real tmux and synthetic HTTPS faults. Different executable hash from separate two-hour live-cluster soak, despite all 70 frozen source hashes matching."
+  },
+  "historical_pre_export_fix_report": "docs/evidence/mac-v1-pre-export-fix-package/mac-v1-package-acceptance.json",
+  "runner_note": "Initial compatibility command used system Python without Pillow and exited before acceptance; rerun using the existing repo-local Pillow environment passed. No application change."
+}

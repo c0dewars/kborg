@@ -1,0 +1,91 @@
+{
+  "schema": 1,
+  "reviewed_at_utc": "2026-10-23T12:54:10.444235+00:00",
+  "baseline_commit": "6339cc9c5ce4cc363406b1a0688b4b4f92ecfadf",
+  "review_type": "Internal adversarial source and regression review; not independent external certification",
+  "findings": [
+    {
+      "id": "MAC-REVIEW-001",
+      "severity": "medium",
+      "status": "fixed",
+      "title": "Unicode values could become ambiguous in ASCII-only approval cells",
+      "before": "Non-ASCII characters were replaced with ?, while review coverage counted original characters. Distinct Unicode context or manifest strings could become indistinguishable.",
+      "after": "All TUI approval presentations escape before wrapping and painted-line accounting; literal backslashes double; expanded output over 1 MiB blocks approval; original operation bytes remain unchanged.",
+      "coverage": [
+        "legacy mutation and shell/forward confirmation",
+        "YAML and node maintenance review",
+        "Helm review",
+        "local export destination review",
+        "Copilot diagnostic transfer review"
+      ]
+    },
+    {
+      "id": "MAC-PACKAGE-001",
+      "severity": "medium",
+      "status": "fixed and validated with clean-checkout native candidate package",
+      "title": "Package source labels and unit-test claims were unchecked",
+      "before": "Caller-supplied SourceCommit and a preexisting binary were combined with an unconditional native-CI-tests claim.",
+      "after": "Clean HEAD and tracked regular package inputs are checked; unique fresh native build, exact version and copied-binary hash are required; metadata reports only actual packaging smoke checks. macOS tar also excludes host extended metadata and AppleDouble sidecars.",
+      "limitations": "Unsigned local source/build record; no publisher authentication or bit-for-bit reproducibility claim."
+    },
+    {
+      "id": "MAC-REVIEW-002",
+      "severity": "low",
+      "status": "fixed and validated by actual handler regressions and before/after native PTY runs",
+      "title": "Undersized export review could be approved without being displayed",
+      "before": "At width below 28 the renderer suppresses all modals, but export Enter checked only wrapped line count. A 20x100 terminal could persist a captured local snapshot without displaying its review. Four approval handlers also assumed 80x24 when terminal-size lookup failed.",
+      "after": "Export approval requires at least 28x10 and complete wrapped content fit. YAML/node, export, Helm and Copilot Enter handlers now fail closed on terminal-size lookup failure; existing mutation/session handlers already did.",
+      "impact": "Unreviewed private local snapshot persistence; no overwrite, remote mutation or arbitrary destination bypass was demonstrated.",
+      "evidence": "docs/evidence/mac-v1-export-approval-regression.json",
+      "regression": "approval_enter_requires_known_painted_dimensions_before_export_or_dispatch",
+      "corrected_source_commit": "2a333066f438ed2ea720d9f4932c273982b3a423",
+      "packaged_binary_evidence": "docs/evidence/ui-mac-v1-package/exports/report.json"
+    }
+  ],
+  "focused_review_tests_passed": 32,
+  "security_boundary_tests_passed": 96,
+  "security_boundary_tests_failed": 0,
+  "security_boundary_test_environment": "macOS ARM64; controlled loopback fixtures; serial test threads; no live Kubernetes writes or Copilot account requests",
+  "source_sha256": {
+    "src/safety.rs": "2900dde9d231d3aa7ff5800bcd09d3232891cf9448d666988cbfd4c7d5c5c942",
+    "src/tui.rs": "e84c58ef60950121cd8113d3e1efdd2d8dd07fb1a8bf9169f7dbf63664480180",
+    "src/ui_review.rs": "ede121f237b13f2cd39f1f0b1f1c65d205b9a6a014189dcee6023f5efdd24eab",
+    "src/ui_advice.rs": "87cdd3cc48fd59fb8dedbf1d453c21ce75366d5dd3993636b9e571956e90c399",
+    "src/ui_helm.rs": "e2a2f2f0262d48af19cd3a7d14f9072e2f151df118a191f2f4fb71ac52bc4521",
+    "src/selections.rs": "eb83b99623e1876b712b70f40f3499db9132642204b6ad0b5bde9a6535562b95",
+    "src/ui_selections.rs": "bd9fc0817c391c68c82c550b925b6d15df27749f22651320179911ac75dc738d",
+    "src/dashboard_health.rs": "b464e500cc9ffa19615dee0424100dc7d426208834d5d6372f1b63036cae87d5",
+    "src/overview.rs": "b838266d564fa7d23e354fc5623037df8162662f2c956e22be78597b9f222127",
+    "src/watch.rs": "1655d76c17d0e1dbbdfcdeed63eecb98270df0701f1c3fe3fd2575912ee5f3dc",
+    "src/transport.rs": "5ac1be0dc57a6995222db7cbf8a673e191c4aef2317907c4de2abc550db9c16d",
+    "src/ops.rs": "dbf222e396ca1487e2d89f1c6208b64136568e2916dfbd4277773060579290f9",
+    "src/node_maintenance.rs": "11c803f5d8e957468b566fad580cdaf4199dc45384ac77502050843103902857",
+    "src/manifest_edit.rs": "ea79c9e5e4c7cc9412c81f11a617a840338bca5717a22ceb2954be6162a99068",
+    "src/exports.rs": "d23c080ad88ab8905dc2fb518098c17e25313239ae66793ecbfbf874abe8d818"
+  },
+  "dependency_audit_provenance": "docs/evidence/mac-v1-dependency-audit-provenance.json",
+  "security_regression_log": "docs/evidence/mac-v1-security-regressions.txt",
+  "open_release_gates": [
+    "Independent external security assessment and organizational pilot",
+    "Publisher signing and Apple notarization",
+    "Secure operational RBAC, admission policy and protected external audit deployment",
+    "Longer live-cluster and broad native-terminal acceptance beyond local evidence"
+  ],
+  "remaining_model_limits": [
+    "Same-user filesystem/executable replacement races are reduced, not universally excluded",
+    "Kubernetes subresource operations and native Helm writes retain documented name-recreation races",
+    "Known-field redaction does not classify arbitrary confidential custom data",
+    "Loopback forwarding is accessible to other local users",
+    "Long-lived watches have bounded caches, not a complete cluster-health guarantee"
+  ],
+  "packaging_negative_tests_passed": 9,
+  "packaging_negative_test_report": "docs/evidence/mac-v1-package-negative-tests.json",
+  "packaging_acceptance_report": "docs/evidence/mac-v1-package-acceptance.json",
+  "packaging_acceptance_scope": "Unsigned corrected code candidate 2a333066f438ed2ea720d9f4932c273982b3a423; eight archive/content checks, 203 dependencies/396 notice files; exact executable 36f6eeecba162df7e687e55425eacec19b9542a37347e9cea3a95e75caf32def passed 63 PTY states, 10 compatibility profiles plus tmux, nine synthetic TLS fault cases and seven local-export checks. Soak executable 32a6b514bce9ab3edf247248c91e84abbce363b82980a06a6b440e9450bd4cd5 differs; all 70 frozen source hashes match. Candidate contains historical committed documentation; final full-documentation package is separate.",
+  "approval_dimension_review": {
+    "layout_tests_passed": 64,
+    "layout_tests_failed": 0,
+    "regression_report": "docs/evidence/mac-v1-export-approval-regression.json",
+    "cross_review": "YAML/node, Helm, Copilot and legacy mutation/session already enforce >=28x10; paged review accounting occurs after successful output flush and matches actual width-2 by height-8 content bounds. No equivalent second minimum-size mismatch found."
+  }
+}

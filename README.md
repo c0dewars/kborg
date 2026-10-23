@@ -9,7 +9,7 @@
 
 Familiar `:pods`, `:nodes`, `:deploy` navigation. A full-width table, a quiet header with `?` help, continuous borders, and 20 themes. Built in Rust, with a native Kubernetes client and a CLI alongside the terminal UI.
 
-**Development release 0.3.0, targeting Mac + Docker Desktop v1.** See the [current acceptance report](docs/DASHBOARD_ACCEPTANCE.md) for what was tested and the [remaining-work register](docs/REMAINING_WORK.md) for open release gates. Packages are currently unsigned.
+**Development release 0.3.0, targeting Mac + Docker Desktop v1.** See the [current acceptance report](docs/MAC_V1_HARDENING_ACCEPTANCE.md) for what was tested and the [remaining-work register](docs/REMAINING_WORK.md) for open release gates. Packages are currently unsigned.
 
 ## Features
 
@@ -117,13 +117,14 @@ The edit command requires an interactive terminal for confirmation. [CLI help](d
 | Guide | Contents |
 |---|---|
 | [v1 plan](docs/MAC_V1_PLAN.md) | Milestones and features inspired by k10s |
-| [Dashboard acceptance](docs/DASHBOARD_ACCEPTANCE.md) | Current tests, screenshots and limits |
+| [Mac v1 hardening](docs/MAC_V1_HARDENING_ACCEPTANCE.md) | Soak, terminal compatibility, security and current screenshots |
+| [Dashboard acceptance](docs/DASHBOARD_ACCEPTANCE.md) | Dashboard and saved-selection implementation evidence |
 | [Dashboard guide](docs/DASHBOARD.md) | Health meanings, freshness and card controls |
 | [Saved selections](docs/SAVED_SELECTIONS.md) | Explicit persistence and revalidation |
 | [Operator acceptance](docs/MAC_V1_ACCEPTANCE.md) | YAML, node, export and forwarding evidence |
 | [Operations](docs/OPERATIONS.md) | Configuration, installation, update, rollback and recovery |
 | [Copilot](docs/COPILOT_INTEGRATION.md) | Optional account setup, privacy and platform limits |
-| [Security review](docs/TRUST_SECURITY_REVIEW.md) | Trust boundaries and outstanding assessment work |
+| [Security review](docs/MAC_V1_SECURITY_REVIEW.md) | Current findings, fixes and outstanding assessment work |
 | [Remaining work](docs/REMAINING_WORK.md) | Implemented, partial and unsupported capabilities |
 
 No telemetry is enabled. Known sensitive API fields are masked, but logs and custom resource fields can contain confidential data. Exports are explicit private files. Local audit records support reconciliation and are not a tamper-proof external audit service.

@@ -1,0 +1,125 @@
+{
+  "schema": 1,
+  "passed": true,
+  "started_utc": "2026-10-23T12:21:33.646213+00:00",
+  "context": "docker-desktop",
+  "namespace": "kborg-soak-d9ca89818386",
+  "run_id": "7e4a633f207e49aab325d98aa8708923",
+  "requested_seconds": 60,
+  "binary_sha256": "3711c0fffb3cfe87cb6babd67ab7b6ff3233d83881df62e8a5c7b057043173d7",
+  "harness_sha256": "34f1fc5706d0c79d149871e2ec5095d658faa02cb5e4587f37f9f48455c48301",
+  "checks": [
+    "Three continuous read-only processes converged in the explicit fixture namespace",
+    "Continuous requested duration completed without process exit or panic",
+    "Owned periodic Pod additions/deletions reached resource and dashboard watches and final TUI counts",
+    "RSS stayed below 256 MiB per process and quarter-median growth below 64 MiB",
+    "Average CPU stayed below 25% of one core per process after the first 30 seconds",
+    "Output and JSON-record budgets held without retaining raw transcripts",
+    "Dashboard closed and quit successfully with exact terminal attributes restored"
+  ],
+  "captures": [
+    {
+      "name": "soak-start-dashboard",
+      "path": "/Users/brunogarcia/Desktop/HyperMac/repos/kborg/docs/evidence/soak-v1-pre-export-fix/smoke-desktop/soak-start-dashboard.png",
+      "columns": 120,
+      "rows": 32
+    },
+    {
+      "name": "soak-final-dashboard",
+      "path": "/Users/brunogarcia/Desktop/HyperMac/repos/kborg/docs/evidence/soak-v1-pre-export-fix/smoke-desktop/soak-final-dashboard.png",
+      "columns": 120,
+      "rows": 32
+    }
+  ],
+  "mutations": [
+    {
+      "elapsed_seconds": 5.31,
+      "expected_pods": 2
+    },
+    {
+      "elapsed_seconds": 20.697,
+      "expected_pods": 1
+    },
+    {
+      "elapsed_seconds": 36.056,
+      "expected_pods": 2
+    },
+    {
+      "elapsed_seconds": 51.439,
+      "expected_pods": 1
+    }
+  ],
+  "fault": null,
+  "limits": {
+    "rss_per_process_kib": 262144,
+    "rss_growth_kib": 65536,
+    "total_output_per_process_bytes": 536870912,
+    "json_record_bytes": 16777216,
+    "average_cpu_core_percent_after_30_seconds": 25
+  },
+  "claims_excluded": [
+    "429 throttling",
+    "credential/token rotation",
+    "certificate rotation",
+    "organizational production pilot",
+    "native terminal font rendering"
+  ],
+  "configured_current_context_before": "docker-desktop",
+  "kubernetes_version": "v1.36.1",
+  "fixture_namespace_uid": "75cd0428-2a72-4367-80b4-702e22e39f8d",
+  "issued_token_remaining_seconds_at_start": 660,
+  "continuous_started_utc": "2026-10-23T12:21:36.884167+00:00",
+  "actual_continuous_seconds": 60.013,
+  "continuous_finished_utc": "2026-10-23T12:22:36.897230+00:00",
+  "processes": {
+    "resource": {
+      "samples": 12,
+      "rss_peak_kib": 13136,
+      "rss_early_quarter_median_kib": 12720,
+      "rss_late_quarter_median_kib": 13136,
+      "rss_growth_kib": 416,
+      "cpu_peak_percent": 0.0,
+      "cpu_last_sample_seconds": 0.02,
+      "output_bytes": 71573,
+      "records": 17,
+      "observed_counts": [
+        1,
+        2
+      ],
+      "stale_records": 0
+    },
+    "dashboard": {
+      "samples": 12,
+      "rss_peak_kib": 13440,
+      "rss_early_quarter_median_kib": 13104,
+      "rss_late_quarter_median_kib": 13408,
+      "rss_growth_kib": 304,
+      "cpu_peak_percent": 0.1,
+      "cpu_last_sample_seconds": 0.02,
+      "output_bytes": 20940,
+      "records": 44,
+      "observed_counts": [
+        1,
+        2
+      ],
+      "stale_records": 4
+    },
+    "tui": {
+      "samples": 12,
+      "rss_peak_kib": 15040,
+      "rss_early_quarter_median_kib": 15008,
+      "rss_late_quarter_median_kib": 15040,
+      "rss_growth_kib": 32,
+      "cpu_peak_percent": 0.2,
+      "cpu_last_sample_seconds": 0.08,
+      "output_bytes": 482223,
+      "records": 0,
+      "observed_counts": [],
+      "stale_records": 0
+    }
+  },
+  "configured_current_context_after": "docker-desktop",
+  "fixture_cleanup": true,
+  "finished_utc": "2026-10-23T12:22:42.370944+00:00",
+  "archive_note": "Historical pre-export-fix smoke; capture paths updated after evidence relocation."
+}

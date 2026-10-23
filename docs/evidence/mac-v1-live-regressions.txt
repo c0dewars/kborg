@@ -1,0 +1,4 @@
+desktop: acceptance passed
+watch: acceptance passed
+native: acceptance passed
+All selected suites passed; owned fixtures and credentials removed.

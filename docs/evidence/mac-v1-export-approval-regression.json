@@ -1,0 +1,47 @@
+{
+  "finding": "MAC-REVIEW-002",
+  "scope": "Isolated offline demo PTY; no cluster access; temporary exports directory removed",
+  "before": {
+    "binary": "target/release/kborg",
+    "binary_sha256": "3711c0fffb3cfe87cb6babd67ab7b6ff3233d83881df62e8a5c7b057043173d7",
+    "command": "python scripts/capture-v1-exports-ui.py --binary target/release/kborg --screenshots .local/export-narrow-before-fix",
+    "expected_failure_observed": true,
+    "exit_code": 1,
+    "assertion": "unpainted 20x100 review created an export"
+  },
+  "corrected_source_commit": "2a33306",
+  "focused_tests": {
+    "command": "cargo test --locked --offline tui::layout_tests -- --test-threads=1",
+    "passed": 64,
+    "failed": 0,
+    "new_regression": "approval_enter_requires_known_painted_dimensions_before_export_or_dispatch",
+    "behavior": [
+      "20x100 and 27x100 render only resize notice; Enter creates no file and retains review",
+      "120x9 renders only resize notice; Enter creates no file",
+      "terminal-size error blocks export without creating destination",
+      "120x34 paints review and explicit Enter saves owned fixture",
+      "terminal-size error blocks fully reviewed and confirmed Helm dispatch without task or inflight operation"
+    ]
+  },
+  "format_passed": true,
+  "clippy": {
+    "command": "cargo clippy --locked --offline --all-targets -- -D warnings",
+    "exit_code": 0
+  },
+  "after": {
+    "passed": true,
+    "binary": "target/aarch64-apple-darwin/release/kborg",
+    "binary_sha256": "32a6b514bce9ab3edf247248c91e84abbce363b82980a06a6b440e9450bd4cd5",
+    "checks": [
+      "Enter at 20x100 creates no file when only the resize notice is painted",
+      "restoring width retains the unsaved export review and destination",
+      "resource export cancel writes no file",
+      "resource YAML explicit save and private permissions",
+      "log export contains source identity and retained window",
+      "Helm export selected metadata only",
+      "terminal restored"
+    ],
+    "report": "ui-mac-v1-hardening-final/exports/report.json",
+    "temporary_files_removed": true
+  }
+}

@@ -1,0 +1,35 @@
+{
+  "scope": "Harness development failures, not accepted product soak results",
+  "cases": [
+    {
+      "context": "docker-desktop",
+      "started_utc": "2026-10-23T12:18:05.400670+00:00",
+      "binary_sha256": "803777f8e773ab741e6535a438246f7f7dbe5ae1554516d3595741b5500530dc",
+      "harness_sha256": "c34bdcce0dc33f998d7e333be07417443f50fb668cedaff22401a11fbec1d947",
+      "actual_continuous_seconds": 35.956,
+      "failure": {
+        "type": "RuntimeError",
+        "message": "owned fixture kubectl operation failed: create"
+      },
+      "fixture_cleanup": true
+    },
+    {
+      "context": "kborg-soak-v1",
+      "started_utc": "2026-10-23T12:18:02.245375+00:00",
+      "binary_sha256": "803777f8e773ab741e6535a438246f7f7dbe5ae1554516d3595741b5500530dc",
+      "harness_sha256": "c34bdcce0dc33f998d7e333be07417443f50fb668cedaff22401a11fbec1d947",
+      "actual_continuous_seconds": 35.92,
+      "failure": {
+        "type": "RuntimeError",
+        "message": "owned fixture kubectl operation failed: create"
+      },
+      "fixture_cleanup": true
+    }
+  ],
+  "corrections": [
+    "Permit empty namespace only in initial connecting state without health/counts",
+    "Continuously drain final PTY output while awaiting quit instead of blocking on process.wait",
+    "Delete owned pending Pod with explicit zero grace and observe convergence; bounded asynchronous deletion avoids kubectl wait races",
+    "Close PTY descriptors before reaping failed children; persist failure evidence before cleanup"
+  ]
+}
