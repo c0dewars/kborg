@@ -193,6 +193,7 @@ mod tests {
             previous: false,
             all_containers: false,
             dynamic_membership: false,
+            dashboard: Vec::new(),
             helm_storage: None,
             helm_tool: None,
             helm_values: None,

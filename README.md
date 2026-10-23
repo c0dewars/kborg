@@ -22,7 +22,7 @@ Familiar `:pods`, `:nodes`, `:deploy` navigation. A full-width table, a quiet he
 - **Keep several connections open.** Up to eight independently managed loopback port forwards, with per-session review, status and stop controls.
 - **Manage Helm releases.** Reviewed install, upgrade, rollback, uninstall and tests for supported packaged charts, including OCI tags/digests, optional OpenPGP/Sigstore verification and scoped CRD workflows.
 - **Make it yours.** Rosé Pine, Flexoki, Catppuccin, Tokyo Night, Nord, Dracula, Gruvbox, Solarized and accessible KBorg palettes, plus custom themes.
-- **Optional Copilot advice.** Explicit GitHub account selection and a minimized diagnostic preview before an approved advisory request on supported macOS ARM64 setups.
+- **Optional Copilot advice.** Explicit GitHub account selection and a minimized diagnostic preview before an approved advisory request on supported macOS ARM64 setups, for GitHub.com, GHE.com tenants and GitHub Enterprise Server 3.22+.
 
 ## Quick start
 

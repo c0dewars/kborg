@@ -44,6 +44,8 @@ pub struct Options {
     pub all_containers: bool,
     /// Explicit opt-in: announced Pod joins/departures for followed workload logs.
     pub dynamic_membership: bool,
+    /// `--contexts a,b`: open the TUI directly in the dashboard (k10s style).
+    pub dashboard: Vec<String>,
     pub helm_storage: Option<crate::helm::Storage>,
     pub helm_tool: Option<PathBuf>,
     pub helm_values: Option<PathBuf>,
@@ -79,6 +81,7 @@ fn parse(args: Vec<String>) -> Result<Options> {
         previous: false,
         all_containers: false,
         dynamic_membership: false,
+        dashboard: Vec::new(),
         helm_storage: None,
         helm_tool: None,
         helm_values: None,
@@ -108,6 +111,19 @@ fn parse(args: Vec<String>) -> Result<Options> {
             "--previous" => opts.previous = true,
             "--all-containers" => opts.all_containers = true,
             "--dynamic-membership" => opts.dynamic_membership = true,
+            "--contexts" => {
+                let names: Vec<String> = args
+                    .next()
+                    .ok_or("--contexts needs a comma-separated list")?
+                    .split(',')
+                    .map(|name| name.trim().to_owned())
+                    .collect();
+                if names.len() > 4 {
+                    return Err("--contexts opens the dashboard with 1..4 contexts".into());
+                }
+                crate::overview::validate(&names)?;
+                opts.dashboard = names;
+            }
             "--allow-helm" => opts.connection.allow_helm = true,
             "--allow-helm-write" => opts.connection.allow_helm_write = true,
             "--allow-yaml-edit" => opts.connection.allow_yaml_edit = true,

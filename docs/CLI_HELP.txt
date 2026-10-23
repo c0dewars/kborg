@@ -24,6 +24,7 @@ KBorg 0.3 — Kubernetes operations, under your control
   kborg logs POD --all-containers Merged ordinary-container logs with source prefixes
   kborg logs deploy/NAME          Fixed workload Pod membership, all ordinary containers
   kborg logs --selector LABELS    Fixed namespace Pod membership, shared log limits
+  kborg --contexts A,B[,C,D]      Open the TUI directly in the multi-cluster dashboard
   kborg logs ... --follow --dynamic-membership
                                   Opt in to announced Pod joins/departures (10s refresh)
   kborg helm [list]               Native Helm releases (--allow-helm)
