@@ -1,0 +1,76 @@
+{
+  "passed": true,
+  "live": false,
+  "contexts": [
+    "demo"
+  ],
+  "namespace": "demo",
+  "theme": "rose-pine",
+  "binary_sha256": "66154a91a3e5f3028f7c3053c1d624403bc12c670de3daf3fa23005190bdef0a",
+  "checks": [
+    "quiet header has no colon-command menu",
+    "contextual help returns to live dashboard",
+    "explicit context cards and numbered focus",
+    "responsive grid preserves focused context",
+    "explicit local dashboard save and picker",
+    "Enter drills into focused context Pods",
+    "clean exit restores terminal state"
+  ],
+  "screens": [
+    {
+      "name": "resources-clean-header",
+      "path": "/Users/brunogarcia/Desktop/HyperMac/repos/kborg/docs/evidence/ui-dashboard-iteration1/resources-clean-header.png",
+      "width": 120,
+      "height": 34
+    },
+    {
+      "name": "dashboard-single-context",
+      "path": "/Users/brunogarcia/Desktop/HyperMac/repos/kborg/docs/evidence/ui-dashboard-iteration1/dashboard-single-context.png",
+      "width": 120,
+      "height": 34
+    },
+    {
+      "name": "dashboard-keymap",
+      "path": "/Users/brunogarcia/Desktop/HyperMac/repos/kborg/docs/evidence/ui-dashboard-iteration1/dashboard-keymap.png",
+      "width": 120,
+      "height": 34
+    },
+    {
+      "name": "dashboard-context-cards",
+      "path": "/Users/brunogarcia/Desktop/HyperMac/repos/kborg/docs/evidence/ui-dashboard-iteration1/dashboard-context-cards.png",
+      "width": 120,
+      "height": 34
+    },
+    {
+      "name": "dashboard-numbered-focus",
+      "path": "/Users/brunogarcia/Desktop/HyperMac/repos/kborg/docs/evidence/ui-dashboard-iteration1/dashboard-numbered-focus.png",
+      "width": 120,
+      "height": 34
+    },
+    {
+      "name": "dashboard-80x24",
+      "path": "/Users/brunogarcia/Desktop/HyperMac/repos/kborg/docs/evidence/ui-dashboard-iteration1/dashboard-80x24.png",
+      "width": 80,
+      "height": 24
+    },
+    {
+      "name": "dashboard-narrow-focus",
+      "path": "/Users/brunogarcia/Desktop/HyperMac/repos/kborg/docs/evidence/ui-dashboard-iteration1/dashboard-narrow-focus.png",
+      "width": 48,
+      "height": 16
+    },
+    {
+      "name": "dashboard-saved-selection",
+      "path": "/Users/brunogarcia/Desktop/HyperMac/repos/kborg/docs/evidence/ui-dashboard-iteration1/dashboard-saved-selection.png",
+      "width": 120,
+      "height": 34
+    },
+    {
+      "name": "dashboard-drilled-pods",
+      "path": "/Users/brunogarcia/Desktop/HyperMac/repos/kborg/docs/evidence/ui-dashboard-iteration1/dashboard-drilled-pods.png",
+      "width": 120,
+      "height": 34
+    }
+  ],
+  "terminal_restored": true
+}

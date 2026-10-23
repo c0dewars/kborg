@@ -15,19 +15,23 @@ use crossterm::{
     execute, queue,
     style::{self, Color},
     terminal::{
-        self, ClearType, DisableLineWrap, EnableLineWrap, EnterAlternateScreen,
-        LeaveAlternateScreen,
+        self, BeginSynchronizedUpdate, ClearType, DisableLineWrap, EnableLineWrap,
+        EndSynchronizedUpdate, EnterAlternateScreen, LeaveAlternateScreen,
     },
 };
 use serde_json::Value;
 #[path = "ui_advice.rs"]
 mod advice_ui;
+#[path = "ui_dashboard.rs"]
+mod dashboard_ui;
 #[path = "ui_helm.rs"]
 mod helm_ui;
 #[path = "ui_navigation.rs"]
 mod nav;
 #[path = "ui_review.rs"]
 mod review_ui;
+#[path = "ui_selections.rs"]
+mod selections_ui;
 #[path = "ui_metrics.rs"]
 mod table_metrics;
 #[path = "ui_topbar.rs"]
@@ -71,6 +75,7 @@ impl Terminal {
             let _ = terminal::disable_raw_mode();
             let _ = execute!(
                 io::stdout(),
+                EndSynchronizedUpdate,
                 LeaveAlternateScreen,
                 DisableBracketedPaste,
                 EnableLineWrap,
@@ -88,6 +93,7 @@ impl Drop for Terminal {
         let _ = terminal::disable_raw_mode();
         let _ = execute!(
             io::stdout(),
+            EndSynchronizedUpdate,
             LeaveAlternateScreen,
             DisableBracketedPaste,
             EnableLineWrap,
@@ -819,7 +825,7 @@ enum Modal {
     Filter(String, String, Option<String>, usize),
     Detail(String, usize),
     Overview(Box<Value>, usize),
-    LiveOverview(String, usize),
+    LiveOverview(dashboard_ui::Dashboard),
     Metrics(String, usize),
     Follow(Box<crate::ui_logs::LogView>),
     Containers(LogTarget, Vec<String>, usize),
@@ -1004,6 +1010,7 @@ struct App {
     table_metrics: table_metrics::TableMetrics,
     metrics_resources: bool,
     overview: Option<crate::overview::OverviewFeed>,
+    selection_ui: selections_ui::State,
     pending_session: Option<(Box<crate::ops::ReviewedOperation>, String)>,
     worker: Worker,
 }
@@ -1018,18 +1025,21 @@ impl App {
             .map_err(|_| "clipboard request failed".into())
     }
     fn mouse(&mut self, mouse: MouseEvent, width: u16, height: u16) {
-        if matches!(self.modal, Modal::None)
+        if matches!(self.modal, Modal::None | Modal::LiveOverview(..))
             && !self.write_inflight
             && mouse.row == 0
             && matches!(
                 mouse.kind,
                 MouseEventKind::Down(crossterm::event::MouseButton::Left)
             )
-            && let Some(command) = topbar::command_at(width, mouse.column)
+            && topbar::help_at(width, mouse.column)
         {
-            if let Err(error) = self.command(command) {
+            if let Err(error) = self.key(KeyCode::Char('?')) {
                 self.status = error;
             }
+            return;
+        }
+        if !matches!(self.modal, Modal::None) {
             return;
         }
         let layout = Layout::new(width, height);
@@ -1329,6 +1339,8 @@ impl App {
             ("a" | "alias" | "aliases", []) => self.aliases(),
             ("actions", []) => self.modal = Modal::Picker("Actions", self.action_menu(), 0),
             ("export", []) => self.request_export(),
+            ("save", []) => self.save_resource_selection()?,
+            ("selections", []) => self.open_saved_selections()?,
             ("edit"|"yaml-edit",[])=>self.yaml_editor(),
             ("edit-container",[])=>self.editor(),
             ("cordon",[])=>self.node_maintenance(crate::node_maintenance::Request::Cordon),
@@ -1779,6 +1791,9 @@ impl App {
     }
     fn changed(&mut self) {
         self.worker.forward.cancel();
+        self.selection_ui.restoring = None;
+        self.selection_ui.focus = None;
+        self.selection_ui.draft = None;
         self.epoch += 1;
         self.items.clear();
         self.selected = 0;
@@ -1931,6 +1946,11 @@ impl App {
                     .into();
                     if !self.options.connection.demo {
                         self.send(Task::Discover);
+                        if self.selection_ui.restoring.is_some() {
+                            self.refresh = false;
+                        }
+                    } else {
+                        self.finish_saved_selection_restore();
                     }
                 }
                 Reply::Items(value) => {
@@ -2069,10 +2089,9 @@ impl App {
                     if matches!(self.modal, Modal::LiveOverview(..)) {
                         match feed.snapshot() {
                             Ok(rows) => {
-                                self.modal = Modal::LiveOverview(
-                                    crate::overview::live_text(&rows).replace('\t', " | "),
-                                    0,
-                                );
+                                if let Modal::LiveOverview(dashboard) = &mut self.modal {
+                                    dashboard.update(rows);
+                                }
                                 self.overview = Some(feed);
                             }
                             Err(error) => {
@@ -2158,8 +2177,11 @@ impl App {
                     self.kinds = k;
                     if let Ok(index) = self.resolve_resource(&resource) {
                         self.kind_index = index;
+                        let restoring = self.selection_ui.restoring.take();
                         self.changed();
+                        self.selection_ui.restoring = restoring;
                         self.status="API discovery complete; all discovered aliases available (Secrets excluded).".into();
+                        self.finish_saved_selection_restore();
                     } else {
                         self.desired_resource = Some(resource.clone());
                         self.watch_blocked = true;
@@ -2173,7 +2195,12 @@ impl App {
                     self.status =
                         format!("Discovery unavailable: {error} | built-in resources retained");
                     self.sticky_status = true;
-                    if self.desired_resource.is_none() {
+                    if self.selection_ui.restoring.take().is_some() {
+                        self.refresh = false;
+                        self.watch_blocked = true;
+                        self.status =
+                            format!("Saved selection could not revalidate discovery: {error}");
+                    } else if self.desired_resource.is_none() {
                         self.refresh = true;
                         self.watch_blocked = false;
                     }
@@ -2301,11 +2328,8 @@ impl App {
         if let Some(feed) = &self.overview {
             match feed.take_update() {
                 Ok(Some(rows)) => {
-                    if let Modal::LiveOverview(_, offset) = &self.modal {
-                        self.modal = Modal::LiveOverview(
-                            crate::overview::live_text(&rows).replace('\t', " | "),
-                            *offset,
-                        );
+                    if let Modal::LiveOverview(dashboard) = &mut self.modal {
+                        dashboard.update(rows);
                         changed = true;
                     }
                 }
@@ -2317,7 +2341,64 @@ impl App {
                 }
             }
         }
+        changed |= self.finish_saved_workload_focus();
         changed
+    }
+    fn open_dashboard(&mut self, names: Vec<String>) -> Result<()> {
+        crate::overview::validate(&names)?;
+        if names.len() > 4 {
+            return Err("The dashboard supports up to 4 explicit contexts.".into());
+        }
+        if self.busy {
+            self.status = "Wait for the current request before opening the dashboard.".into();
+            return Ok(());
+        }
+        self.overview = None;
+        let mut connection = self.options.connection.clone();
+        connection.namespace = self.namespace.clone();
+        self.modal = Modal::LiveOverview(dashboard_ui::Dashboard::new(
+            &names,
+            self.options.connection.demo,
+        ));
+        self.send(Task::Overview(connection, names));
+        Ok(())
+    }
+    fn open_dashboard_pods(&mut self, dashboard: dashboard_ui::Dashboard) -> Result<()> {
+        let Some(selected) = dashboard.selected() else {
+            self.modal = Modal::LiveOverview(dashboard);
+            return Ok(());
+        };
+        if self.busy {
+            self.status = "Wait for the current request before opening Pods.".into();
+            self.modal = Modal::LiveOverview(dashboard);
+            return Ok(());
+        }
+        let context = selected.context.clone();
+        let namespace = if selected.namespace.is_empty() {
+            self.namespace.clone()
+        } else {
+            selected.namespace.clone()
+        };
+        self.push_view();
+        self.overview = None;
+        self.filter.clear();
+        self.selector.clear();
+        self.field_selector.clear();
+        self.namespace = namespace;
+        self.desired_resource = Some("v1/pods".into());
+        if context == self.context {
+            if let Ok(index) = self.resolve_resource("v1/pods") {
+                self.kind_index = index;
+                self.desired_resource = None;
+            }
+            self.changed();
+        } else {
+            self.options.connection.context = Some(context);
+            self.connect();
+        }
+        self.namespace_override = true;
+        self.status = "Opening selected context Pods.".into();
+        Ok(())
     }
     fn theme_picker(&mut self) -> Result<()> {
         let all = themes::all()?;
@@ -3791,9 +3872,22 @@ impl App {
                 }
             }
             Modal::Input(label, mut text) => match code {
-                KeyCode::Esc => {}
+                KeyCode::Esc => {
+                    if matches!(
+                        label,
+                        selections_ui::SAVE_LABEL | selections_ui::DELETE_LABEL
+                    ) {
+                        self.selection_ui.draft = None;
+                        self.selection_ui.deleting = None;
+                        self.restore_selection_view();
+                    }
+                }
                 KeyCode::Enter => {
-                    if label == "Command" {
+                    if label == selections_ui::SAVE_LABEL {
+                        self.commit_selection_name(&text);
+                    } else if label == selections_ui::DELETE_LABEL {
+                        self.delete_selection_name(&text);
+                    } else if label == "Command" {
                         return self.command(&text);
                     } else if label == "Filter" {
                         self.filter = text;
@@ -3806,15 +3900,7 @@ impl App {
                         } else if let Err(error) = crate::overview::validate(&names) {
                             self.status = error;
                         } else {
-                            self.modal = Modal::LiveOverview(
-                                "Connecting independent context watches...".into(),
-                                0,
-                            );
-                            let mut connection = self.options.connection.clone();
-                            if self.namespace_override {
-                                connection.namespace = self.namespace.clone();
-                            }
-                            self.send(Task::Overview(connection, names));
+                            self.open_dashboard(names)?;
                         }
                     } else if label == "Namespace" {
                         if text == "*" || safety::valid_id(&text) {
@@ -3866,13 +3952,47 @@ impl App {
                     self.modal = Modal::Overview(object, offset);
                 }
             },
-            Modal::LiveOverview(text, offset) => match code {
-                KeyCode::Esc | KeyCode::Char('q') => self.overview = None,
-                _ => {
-                    self.modal =
-                        Modal::LiveOverview(text.clone(), scroll_offset(&text, offset, code))
+            Modal::LiveOverview(mut dashboard) => {
+                dashboard.notice = None;
+                match code {
+                    KeyCode::Char('?') => dashboard.help = !dashboard.help,
+                    KeyCode::Esc if dashboard.help => dashboard.help = false,
+                    KeyCode::Esc | KeyCode::Char('q') => {
+                        self.overview = None;
+                        return Ok(false);
+                    }
+                    KeyCode::Enter if !dashboard.help => {
+                        self.open_dashboard_pods(dashboard)?;
+                        return Ok(false);
+                    }
+                    KeyCode::Char('c') if !dashboard.help => {
+                        self.overview = None;
+                        self.modal = Modal::Input(
+                            OVERVIEW_CONTEXTS_LABEL,
+                            dashboard
+                                .rows
+                                .iter()
+                                .map(|row| row.context.as_str())
+                                .collect::<Vec<_>>()
+                                .join(","),
+                        );
+                        return Ok(false);
+                    }
+                    KeyCode::Char('s') if !dashboard.help => {
+                        self.modal = Modal::LiveOverview(dashboard);
+                        self.save_dashboard_selection()?;
+                        return Ok(false);
+                    }
+                    KeyCode::Char('B') if !dashboard.help => {
+                        self.modal = Modal::LiveOverview(dashboard);
+                        self.open_saved_selections()?;
+                        return Ok(false);
+                    }
+                    _ if !dashboard.help => dashboard.key(code),
+                    _ => {}
                 }
-            },
+                self.modal = Modal::LiveOverview(dashboard);
+            }
             Modal::SessionContainers(n, name, uid, names, index, attach) => match code {
                 KeyCode::Esc => {}
                 KeyCode::Down | KeyCode::Char('j') => {
@@ -3960,7 +4080,14 @@ impl App {
                 }
             },
             Modal::Picker(label, list, mut index) => match code {
-                KeyCode::Esc => {}
+                KeyCode::Esc => {
+                    if label == selections_ui::PICKER_LABEL {
+                        self.restore_selection_view();
+                    }
+                }
+                KeyCode::Delete | KeyCode::Char('d') if label == selections_ui::PICKER_LABEL => {
+                    self.confirm_selection_delete(index);
+                }
                 KeyCode::Down | KeyCode::Char('j') => {
                     index = (index + 1).min(list.len().saturating_sub(1));
                     self.modal = Modal::Picker(label, list, index);
@@ -3997,6 +4124,13 @@ impl App {
                         } else if label == "Aliases" {
                             if let Some(resource) = value.split_whitespace().next() {
                                 return self.command(resource);
+                            }
+                        } else if label == selections_ui::PICKER_LABEL {
+                            if let Some(selection) = self.selection_ui.records.get(index).cloned()
+                                && let Err(error) = self.open_selection(selection)
+                            {
+                                self.status = error;
+                                self.modal = Modal::Picker(label, list, index);
                             }
                         } else if label == "Saved resources" {
                             if let Some(record) = self.saved.get(index) {
@@ -4285,7 +4419,10 @@ impl App {
                 KeyCode::Char('t') => {
                     self.status = "File transfer is unavailable. Use :themes for appearance.".into()
                 }
+                KeyCode::Char('b') => self.save_resource_selection()?,
+                KeyCode::Char('B') => self.open_saved_selections()?,
                 KeyCode::Char('?') => self.modal = Modal::Help(0),
+                KeyCode::Char('D') => self.open_dashboard(vec![self.context.clone()])?,
                 KeyCode::Char('u') => {
                     self.node_maintenance(crate::node_maintenance::Request::Uncordon)
                 }
@@ -4525,6 +4662,12 @@ impl App {
                     KeyCode::Char('n') => return self.key(KeyCode::Down),
                     _ => return Ok(false),
                 }
+            }
+            if let Modal::Input(_, text) = &mut self.modal {
+                if code == KeyCode::Char('u') {
+                    text.clear();
+                }
+                return Ok(false);
             }
             if let Modal::Editor(draft) = &mut self.modal {
                 if matches!(code, KeyCode::Char('u' | 'w')) {
@@ -4946,10 +5089,10 @@ fn resource_label(kind: &Kind) -> String {
         }
     }
 }
-const TUI_HELP: &str = "NAVIGATE LIKE K9S\n  :pod :pods :po           Singular, plural or discovered short name\n  :pod NAMESPACE          Resource in namespace; all means all namespaces\n  :pod /api|web           Resource plus regex filter\n  :pod app=api,tier=web    Server-side label selector\n  :pod @CONTEXT           Switch context; context names retain their case\n  :ctx / :ctx NAME        Context picker (Pod view) / direct switch (same view)\n  :ns / :ns NAME          Namespace picker / direct switch (Pod view)\n  Ctrl-A / :aliases       Resource alias picker; Enter navigates\n  :pulses / :pu           Read-only cluster health snapshot\n  :xray po|svc|dp [NS]    Ownership and service relationship snapshot\n  :screendump / :sd       Browse saved redacted resource snapshots\n  :can u:NAME             Read-only RBAC subject view\n  :dir PATH               Browse local YAML directory; no apply\n  :helm [NAMESPACE]       Native release metadata (--allow-helm)\n  :history RELEASE        Selected release revision history\n  :q :q! :qa :Q :quit     Quit (in-flight mutations must finish)\n\nCOMMAND PROMPT\n  : / Tab                 Open prompt; Tab completes; Shift-Tab reverses\n  Up / Down               Recall in-session command history\n  Left Right Home End     Edit at cursor; Ctrl-U clears\n  Enter / Esc             Run command / cancel without changing view\n  [ / ] / -               Previous / next / last view\n  Esc                     Close view or return to previous resource\n\nFILTER\n  /PATTERN                Case-insensitive regex over namespace/name/status\n  /!PATTERN               Inverse regex\n  /-f PATTERN             Fuzzy subsequence match\n  /-l LABEL_SELECTOR      Apply server-side label selector on Enter\n  Enter / Esc             Keep / restore previous filter and selected UID\n\nRESOURCE TABLE\n  j k / arrows            Move; PgUp PgDown Home End page\n  Enter                   Drill into containers, related Pods or namespace\n  d                       Describe selected object (redacted overview)\n  y / v                   View redacted YAML; J views JSON\n  c / n                   Copy name / namespace via terminal OSC52 clipboard\n  w / 0                   Warp to selected namespace / all namespaces\n  N / A / S / R           Sort by name / age / status / readiness\n  C / M                   Sort Pods/Nodes by CPU / memory, highest first\n  CPU/MEM snapshots refresh every 15s while the table is visible; - means\n  unknown, never zero. ~ indicates Metrics API omitted UID; creation checked.\n  Table CPU/MEM labels are rounded; d or m shows exact measured quantities.\n  Space / Ctrl-Space      Mark / mark range (visual only; no bulk mutations)\n  Ctrl-Backslash          Clear marks\n  Ctrl-S / :export        Save visible snapshot / selected resource YAML\n  Ctrl-R / :discover      Refresh / API discovery; r restarts workloads\n  l / p                   Follow logs / previous logs (--allow-logs)\n  Pod s / a / f / F       Shell / attach / forwards / new forward\n  Workload s / r          Scale Deployment-StatefulSet / reviewed restart\n  e / :edit-container     YAML spec editor / focused container editor\n  Ctrl-D                  Reviewed deletion; Ctrl-K force kill disabled\n  o                       Show selected Pod's Node\n\nHELM AND LOGS\n  Helm Enter / r          Release revision history\n  History Enter / v       Explicit selected revision stored values\n  Helm i / u / t / c      Install / upgrade / test / separately install chart CRDs\n  History r / Ctrl-D      Rollback selected revision / uninstall current release\n  Helm lifecycle needs --write --allow-helm --allow-helm-write and --helm-tool.\n  Sources: local .tgz or explicit OCI :TAG / @sha256:DIGEST.
+const TUI_HELP: &str = "NAVIGATE LIKE K9S\n  :pod :pods :po           Singular, plural or discovered short name\n  :pod NAMESPACE          Resource in namespace; all means all namespaces\n  :pod /api|web           Resource plus regex filter\n  :pod app=api,tier=web    Server-side label selector\n  :pod @CONTEXT           Switch context; context names retain their case\n  :ctx / :ctx NAME        Context picker (Pod view) / direct switch (same view)\n  :ns / :ns NAME          Namespace picker / direct switch (Pod view)\n  Ctrl-A / :aliases       Resource alias picker; Enter navigates\n  :pulses / :pu           Read-only cluster health snapshot\n  :xray po|svc|dp [NS]    Ownership and service relationship snapshot\n  :screendump / :sd       Browse saved redacted resource snapshots\n  :can u:NAME             Read-only RBAC subject view\n  :dir PATH               Browse local YAML directory; no apply\n  :helm [NAMESPACE]       Native release metadata (--allow-helm)\n  :history RELEASE        Selected release revision history\n  :q :q! :qa :Q :quit     Quit (in-flight mutations must finish)\n\nCOMMAND PROMPT\n  : / Tab                 Open prompt; Tab completes; Shift-Tab reverses\n  Up / Down               Recall in-session command history\n  Left Right Home End     Edit at cursor; Ctrl-U clears\n  Enter / Esc             Run command / cancel without changing view\n  [ / ] / -               Previous / next / last view\n  Esc                     Close view or return to previous resource\n\nFILTER\n  /PATTERN                Case-insensitive regex over namespace/name/status\n  /!PATTERN               Inverse regex\n  /-f PATTERN             Fuzzy subsequence match\n  /-l LABEL_SELECTOR      Apply server-side label selector on Enter\n  Enter / Esc             Keep / restore previous filter and selected UID\n\nRESOURCE TABLE\n  j k / arrows            Move; PgUp PgDown Home End page\n  Enter                   Drill into containers, related Pods or namespace\n  d                       Describe selected object (redacted overview)\n  D                       Dashboard for current context and namespace\n  b / B                   Save current selection / open saved selections\n  y / v                   View redacted YAML; J views JSON\n  c / n                   Copy name / namespace via terminal OSC52 clipboard\n  w / 0                   Warp to selected namespace / all namespaces\n  N / A / S / R           Sort by name / age / status / readiness\n  C / M                   Sort Pods/Nodes by CPU / memory, highest first\n  CPU/MEM snapshots refresh every 15s while the table is visible; - means\n  unknown, never zero. ~ indicates Metrics API omitted UID; creation checked.\n  Table CPU/MEM labels are rounded; d or m shows exact measured quantities.\n  Space / Ctrl-Space      Mark / mark range (visual only; no bulk mutations)\n  Ctrl-Backslash          Clear marks\n  Ctrl-S / :export        Save visible snapshot / selected resource YAML\n  Ctrl-R / :discover      Refresh / API discovery; r restarts workloads\n  l / p                   Follow logs / previous logs (--allow-logs)\n  Pod s / a / f / F       Shell / attach / forwards / new forward\n  Workload s / r          Scale Deployment-StatefulSet / reviewed restart\n  e / :edit-container     YAML spec editor / focused container editor\n  Ctrl-D                  Reviewed deletion; Ctrl-K force kill disabled\n  o                       Show selected Pod's Node\n\nHELM AND LOGS\n  Helm Enter / r          Release revision history\n  History Enter / v       Explicit selected revision stored values\n  Helm i / u / t / c      Install / upgrade / test / separately install chart CRDs\n  History r / Ctrl-D      Rollback selected revision / uninstall current release\n  Helm lifecycle needs --write --allow-helm --allow-helm-write and --helm-tool.\n  Sources: local .tgz or explicit OCI :TAG / @sha256:DIGEST.
   --helm-keyring requires native Helm provenance verification during prepare.\n  Hooks/CRDs require --allow-helm-hooks / --allow-helm-crds; default OFF.\n  :helm-crds prepares create-only Namespaced CRDs, retained on uninstall.
   :helm-test runs stored tests; :helm-crds-upgrade reviews schema changes.
-  :helm-crds-delete is explicit, checks live instances and needs stronger approval.\n  :helm-crds-migrate reviews storage rewrites; controller proof gates finalization.\n  :copilot previews selected diagnostics; explicit policy and transfer approval to send.\n  Every review line must be painted before exact namespace/release approval.\n  Helm d / m / y          Metadata / resource identities / metadata YAML\n  Helm Ctrl-R / /         Refresh / filter; Esc returns to previous view\n  Log a                   Toggle all ordinary containers / preferred container\n  Workload l / p          Fixed captured Pod membership / previous logs\n  :logs LABEL_SELECTOR    Explicit namespace-scoped multi-Pod log capture\n  Group reloads keep the same Pod UIDs; close and reopen to capture new Pods.\n  Log 0..6                Tail / head / last 1m,5m,15m,30m,1h\n  Log s w t f             Autoscroll / wrap / timestamps / fullscreen\n  Log e / W / Ctrl-S      Error matches / warning matches / local export\n  Pod l honors the default-container annotation, otherwise merges multiple\n  ordinary containers. Each merged line carries a namespace/Pod/container.\n\nKBORG COMMANDS\n  :actions                Discover actions with capability reasons\n  :scale :image :restart  Explicit reviewed workload operations\n  :metrics [resources]    Metrics / opt into requests-limit comparisons\n  :overview               Live overview of up to four explicit contexts\n  :themes                 Theme preview and custom palette creation\n\nLIMITS AND SAFETY\n  Context, namespace and mode remain visible; DEMO is sample data.\n  STALE and TRUNCATED indicate incomplete data. Regex uses bounded Rust regex\n  syntax; look-around and backreferences are unavailable. Secrets excluded.\n  e edits existing namespaced non-Secret spec fields with --allow-yaml-edit.\n  Hidden values, metadata and status are preserved; no resource creation.\n  :edit-container retains focused image/resource forms.\n  Node c/u/r reviews cordon/uncordon/drain with --allow-node-maintenance.\n  Pod file transfer, node shell, benchmarks and scans remain unavailable.\n  Helm release reads need --allow-helm. Values are stored overrides with\n  known fields redacted; custom keys can remain confidential. Complete\n  review is mandatory for lifecycle changes. Raw storage, chart files and notes are excluded.\n  Visual marks never authorize bulk writes. Every mutation requires --write\n  plus one-use approval; shell/attach/forward need separate capabilities.";
+  :helm-crds-delete is explicit, checks live instances and needs stronger approval.\n  :helm-crds-migrate reviews storage rewrites; controller proof gates finalization.\n  :copilot previews selected diagnostics; explicit policy and transfer approval to send.\n  Every review line must be painted before exact namespace/release approval.\n  Helm d / m / y          Metadata / resource identities / metadata YAML\n  Helm Ctrl-R / /         Refresh / filter; Esc returns to previous view\n  Log a                   Toggle all ordinary containers / preferred container\n  Workload l / p          Fixed captured Pod membership / previous logs\n  :logs LABEL_SELECTOR    Explicit namespace-scoped multi-Pod log capture\n  Group reloads keep the same Pod UIDs; close and reopen to capture new Pods.\n  Log 0..6                Tail / head / last 1m,5m,15m,30m,1h\n  Log s w t f             Autoscroll / wrap / timestamps / fullscreen\n  Log e / W / Ctrl-S      Error matches / warning matches / local export\n  Pod l honors the default-container annotation, otherwise merges multiple\n  ordinary containers. Each merged line carries a namespace/Pod/container.\n\nKBORG COMMANDS\n  :actions                Discover actions with capability reasons\n  :scale :image :restart  Explicit reviewed workload operations\n  :metrics [resources]    Metrics / opt into requests-limit comparisons\n  :overview               Dashboard of up to four explicit contexts\n  Dashboard 1..4 / Enter   Focus a context / open its Pods\n  Dashboard c / s / B      Choose contexts / save / open saved selections\n  Dashboard ?             Contextual keymap and health evidence meaning\n  :themes                 Theme preview and custom palette creation\n\nLIMITS AND SAFETY\n  Context, namespace and mode remain visible; DEMO is sample data.\n  STALE and TRUNCATED indicate incomplete data. Regex uses bounded Rust regex\n  syntax; look-around and backreferences are unavailable. Secrets excluded.\n  e edits existing namespaced non-Secret spec fields with --allow-yaml-edit.\n  Hidden values, metadata and status are preserved; no resource creation.\n  :edit-container retains focused image/resource forms.\n  Node c/u/r reviews cordon/uncordon/drain with --allow-node-maintenance.\n  Pod file transfer, node shell, benchmarks and scans remain unavailable.\n  Helm release reads need --allow-helm. Values are stored overrides with\n  known fields redacted; custom keys can remain confidential. Complete\n  review is mandatory for lifecycle changes. Raw storage, chart files and notes are excluded.\n  Visual marks never authorize bulk writes. Every mutation requires --write\n  plus one-use approval; shell/attach/forward need separate capabilities.";
 
 #[derive(Clone, Copy, Debug)]
 struct Rect {
@@ -5382,7 +5525,11 @@ fn render_write_footer(
 fn draw(app: &mut App) -> Result<()> {
     let (w, h) = terminal::size().map_err(|_| "cannot read terminal size")?;
     let mut frame = Vec::new();
+    // Keep complete frames atomic on supporting terminals. Older terminals ignore
+    // this standard private mode; no feature or input behavior depends on it.
+    queue!(&mut frame, BeginSynchronizedUpdate).map_err(|_| "draw failed")?;
     render(app, w, h, &mut frame)?;
+    queue!(&mut frame, EndSynchronizedUpdate).map_err(|_| "draw failed")?;
     let mut out = io::stdout().lock();
     out.write_all(&frame)
         .and_then(|_| out.flush())
@@ -5650,37 +5797,24 @@ fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
         color("selection_background"),
     )
     .map_err(|_| "draw failed")?;
-    let active = match &app.modal {
-        Modal::Helm(..) | Modal::HelmForm(..) | Modal::HelmReview(..) => "helm".to_owned(),
-        Modal::ForwardView | Modal::ForwardForm(..) => "pf".to_owned(),
-        Modal::Themes(..) => "themes".to_owned(),
-        Modal::Help(..) => "help".to_owned(),
-        _ => match app.kind().as_str() {
-            "deployments" | "deployments.apps" => "deploy".into(),
-            "services" => "svc".into(),
-            kind => kind.to_owned(),
-        },
+    let title = match &app.modal {
+        Modal::LiveOverview(..) => "Dashboard".to_owned(),
+        Modal::Helm(..) | Modal::HelmForm(..) | Modal::HelmReview(..) => "Helm releases".to_owned(),
+        Modal::ForwardView | Modal::ForwardForm(..) => "Port forwards".to_owned(),
+        Modal::Themes(..) => "Appearance".to_owned(),
+        Modal::Help(..) => "Keymap".to_owned(),
+        _ => app
+            .kinds
+            .get(app.kind_index)
+            .map(resource_label)
+            .unwrap_or_else(|| app.kind()),
     };
-    for item in topbar::items(if w >= 64 { w } else { 0 }) {
-        let selected = item.command == active;
-        cell(
-            out,
-            item.x,
-            0,
-            item.width,
-            &format!(" {} ", item.label),
-            if selected {
-                color("selection_text")
-            } else {
-                color("muted")
-            },
-            if selected {
-                color("selection_background")
-            } else {
-                surface
-            },
-        )
-        .map_err(|_| "draw failed")?;
+    if w >= 64 {
+        cell(out, 10, 0, w.saturating_sub(16), &title, fg, surface).map_err(|_| "draw failed")?;
+        cell(out, w - 4, 0, 4, " ? ", color("accent"), surface).map_err(|_| "draw failed")?;
+    }
+    if let Modal::LiveOverview(dashboard) = &app.modal {
+        return dashboard_ui::render(app, dashboard, w, h, out);
     }
     row(out, 1, w, "", fg, bg).map_err(|_| "draw failed")?;
     let mode_color = if app.options.connection.writable && !app.options.connection.demo {
@@ -6004,47 +6138,9 @@ fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
         surface,
     )
     .map_err(|_| "draw failed")?;
-    let actions: &[(&str, &str)] = if w >= 100 {
-        &[
-            ("Enter", "open"),
-            ("d", "describe"),
-            ("y", "YAML"),
-            ("e", "edit"),
-            ("l", "logs"),
-            ("s", "shell"),
-            ("?", "help"),
-        ]
-    } else {
-        &[
-            ("d", "describe"),
-            ("y", "YAML"),
-            ("l", "logs"),
-            ("?", "help"),
-        ]
-    };
-    key_hints(
-        out,
-        h - 2,
-        w,
-        actions,
-        [color("accent"), color("muted"), bg],
-    )
-    .map_err(|_| "draw failed")?;
-    key_hints(
-        out,
-        h - 1,
-        w,
-        &[
-            (":", "command"),
-            ("/", "filter"),
-            (":ctx", "context"),
-            (":ns", "namespace"),
-            ("Ctrl-A", "aliases"),
-            (":q", "quit"),
-        ],
-        [color("accent"), color("muted"), bg],
-    )
-    .map_err(|_| "draw failed")?;
+    // Keep the everyday workspace quiet. The complete keyboard map lives behind ?.
+    row(out, h - 2, w, "", color("muted"), bg).map_err(|_| "draw failed")?;
+    row(out, h - 1, w, "", color("muted"), bg).map_err(|_| "draw failed")?;
     match &app.modal {
         Modal::None => {}
         Modal::Input("Command", text) => {
@@ -6242,9 +6338,9 @@ fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
                 Modal::Directory(directory,index)=>std::iter::once(format!("{}{}",directory.path.display(),if directory.truncated{" [TRUNCATED]"}else{""})).chain(std::iter::once("Read-only; Enter directory or redacted manifest preview".into())).chain(directory.entries.iter().enumerate().skip(index.saturating_sub(height.saturating_sub(3))).map(|(i,entry)|format!("{} {}{}",if i==*index{">"}else{" "},entry.name,if entry.directory{"/"}else{""}))).collect(),
                 Modal::ForwardView=>app.worker.forward.lines(app.forward_selected,usize::from(rect.width.saturating_sub(2)),height),
                 Modal::ForwardForm(namespace,pod,_,fields,index)=>{let mut lines=vec![format!("Pod {namespace}/{pod}"),"Tab field / Ctrl-U clear / Enter review / Esc cancel".into(),String::new()];for(i,label)in["Local port (1024..65535)","Remote port (1..65535)","Duration seconds (1..300)"].iter().enumerate(){lines.push(format!("{} {label}: {}{}",if i==*index{">"}else{" "},fields[i],if i==*index{"_"}else{""}));}lines},
+                Modal::LiveOverview(_) => Vec::new(),
                 Modal::Detail(text, offset)
-                | Modal::Metrics(text, offset)
-                | Modal::LiveOverview(text, offset) => {
+                | Modal::Metrics(text, offset) => {
                     let wrapped = wrap_text(text, usize::from(rect.width.saturating_sub(2)));
                     let offset = (*offset).min(wrapped.lines().count().saturating_sub(1));
                     wrapped.lines().skip(offset).map(str::to_owned).collect()
@@ -6443,7 +6539,7 @@ fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
             } else if matches!(modal, Modal::Input("Command", _)) {
                 "Esc cancel | Enter run | :pods :deploy :svc :nodes | :ns NAME | :sort FIELD"
             } else if matches!(modal, Modal::LiveOverview(..)) {
-                "Esc stops all context watches | PgUp/PgDown scroll"
+                "1..4 focus | Enter Pods | ? keymap | Esc back"
             } else if matches!(modal, Modal::Overview(..)) {
                 "Esc close | J redacted JSON | y YAML | PgUp/PgDown scroll"
             } else if matches!(modal, Modal::AdviceRunning) {
@@ -6675,6 +6771,7 @@ pub fn run(options: Options) -> Result<()> {
         table_metrics: Default::default(),
         metrics_resources: false,
         overview: None,
+        selection_ui: Default::default(),
         pending_session: None,
         worker,
     };
@@ -6823,7 +6920,10 @@ pub fn run(options: Options) -> Result<()> {
                     }
                 }
                 Event::Resize(_, _) => dirty = true,
-                Event::Mouse(mouse) if matches!(app.modal, Modal::None) && !app.write_inflight => {
+                Event::Mouse(mouse)
+                    if matches!(app.modal, Modal::None | Modal::LiveOverview(..))
+                        && !app.write_inflight =>
+                {
                     let (w, h) = terminal::size().map_err(|_| "terminal size failed")?;
                     app.mouse(mouse, w, h);
                     dirty = true;
@@ -7054,6 +7154,7 @@ mod layout_tests {
                 table_metrics: Default::default(),
                 metrics_resources: false,
                 overview: None,
+                selection_ui: Default::default(),
                 pending_session: None,
                 worker: Worker {
                     tx,
@@ -8634,14 +8735,16 @@ mod layout_tests {
             })
         };
         let (mut app, replies, _commands) = harness();
-        app.modal = Modal::LiveOverview("Connecting...".into(), 0);
+        app.modal = Modal::LiveOverview(dashboard_ui::Dashboard::new(&["demo".into()], true));
         assert!(replies.send((12, Reply::Overview(create()?))).is_ok());
         app.receive();
         assert!(app.overview.is_some());
         let frame = screen(&app, 80, 24).join("\n");
         assert!(frame.contains("demo"));
-        assert!(frame.contains("CONTEXT | NAMESPACE | PODS | UNHEALTHY | STATE"));
-        assert!(!frame.contains("CONTEXTNAMESPACE"));
+        assert!(frame.contains("2 Pods"));
+        assert!(frame.contains("NEEDS ATTENTION"));
+        assert!(frame.contains("WARNINGS / LAST 15m"));
+        assert!(!frame.contains(":pods"));
         app.key(KeyCode::Esc)?;
         assert!(app.overview.is_none());
         assert!(replies.send((12, Reply::Overview(create()?))).is_ok());
@@ -8690,6 +8793,50 @@ mod layout_tests {
         assert!(app.key(KeyCode::Enter).is_ok());
         assert!(commands.try_recv().is_err());
         assert!(app.status.contains("up to 4"));
+    }
+    #[test]
+    fn dashboard_focus_help_and_drill_preserve_explicit_scope() {
+        let (mut app, _replies, mut commands) = harness();
+        app.namespace = "selected-space".into();
+        app.namespace_override = false;
+        assert!(app.key(KeyCode::Char('D')).is_ok());
+        match commands.try_recv() {
+            Ok((_, Task::Overview(connection, names))) => {
+                assert_eq!(connection.namespace, "selected-space");
+                assert_eq!(names, vec![app.context.clone()]);
+            }
+            _ => panic!("dashboard did not open independent reads"),
+        }
+        app.busy = false;
+        app.command_epoch = None;
+        app.modal = Modal::LiveOverview(dashboard_ui::Dashboard::new(
+            &["local".into(), "other cluster".into()],
+            false,
+        ));
+        assert!(app.key(KeyCode::Char('2')).is_ok());
+        assert!(app.key(KeyCode::Char('?')).is_ok());
+        assert!(
+            matches!(&app.modal, Modal::LiveOverview(dashboard) if dashboard.help && dashboard.selected == 1)
+        );
+        assert!(screen(&app, 100, 28).join("\n").contains("DASHBOARD KEYS"));
+        assert!(app.key(KeyCode::Esc).is_ok());
+        assert!(
+            matches!(&app.modal, Modal::LiveOverview(dashboard) if !dashboard.help && dashboard.selected == 1)
+        );
+        app.filter = "old-filter".into();
+        app.selector = "app=old".into();
+        assert!(app.key(KeyCode::Enter).is_ok());
+        match commands.try_recv() {
+            Ok((_, Task::Connect(connection))) => {
+                assert_eq!(connection.context.as_deref(), Some("other cluster"));
+            }
+            _ => panic!("focused context was not opened"),
+        }
+        assert_eq!(app.namespace, "selected-space");
+        assert!(app.namespace_override);
+        assert!(app.filter.is_empty() && app.selector.is_empty());
+        assert_eq!(app.desired_resource.as_deref(), Some("v1/pods"));
+        assert!(app.overview.is_none());
     }
     #[test]
     fn overview_input_enforces_byte_boundary_and_keeps_active_tail_visible() {
@@ -9110,5 +9257,76 @@ mod layout_tests {
         assert_eq!(app.namespace, "test");
         assert_eq!(app.kind(), "configmaps");
         assert!(app.refresh && !app.watch_blocked);
+    }
+    #[test]
+    fn saved_selection_rejects_mode_mismatch_without_changing_scope() -> Result<()> {
+        let (mut app, _, _) = harness();
+        let before = (app.epoch, app.namespace.clone(), app.context.clone());
+        let saved = crate::selections::Selection {
+            name: "Offline dashboard".into(),
+            demo: !app.options.connection.demo,
+            target: crate::selections::Target::Dashboard {
+                contexts: vec!["demo".into()],
+                namespace: "demo".into(),
+            },
+        };
+        assert!(app.open_selection(saved).is_err());
+        assert_eq!(
+            before,
+            (app.epoch, app.namespace.clone(), app.context.clone())
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn saved_scope_must_exist_in_destination_catalog_before_refresh() {
+        let (mut app, _, _) = harness();
+        app.selection_ui.restoring = Some(crate::selections::Selection {
+            name: "Unavailable custom kind".into(),
+            demo: true,
+            target: crate::selections::Target::Resource {
+                context: "demo".into(),
+                namespace: "test".into(),
+                kind: "widgets.example.test".into(),
+                label_selector: String::new(),
+                workload: None,
+            },
+        });
+        app.finish_saved_selection_restore();
+        assert!(!app.refresh && app.watch_blocked);
+        assert!(app.status.contains("unavailable"));
+    }
+
+    #[test]
+    fn saved_workload_waits_for_fresh_list_and_rejects_replacement_uid() {
+        let (mut app, _, _) = harness();
+        app.selection_ui.focus = Some(crate::selections::Workload {
+            namespace: "test".into(),
+            name: "api".into(),
+            uid: "old-uid".into(),
+        });
+        app.items =
+            vec![serde_json::json!({"metadata":{"namespace":"test","name":"api","uid":"new-uid"}})];
+        app.stale = true;
+        assert!(!app.finish_saved_workload_focus());
+        assert!(app.selection_ui.focus.is_some());
+        app.stale = false;
+        assert!(app.finish_saved_workload_focus());
+        assert!(
+            matches!(app.modal, Modal::Detail(ref text, _) if text.contains("SAVED WORKLOAD UNAVAILABLE"))
+        );
+        assert!(!app.write_inflight);
+    }
+
+    #[test]
+    fn scope_change_clears_pending_saved_workload_identity() {
+        let (mut app, _, _) = harness();
+        app.selection_ui.focus = Some(crate::selections::Workload {
+            namespace: "test".into(),
+            name: "api".into(),
+            uid: "old-uid".into(),
+        });
+        app.changed();
+        assert!(app.selection_ui.focus.is_none());
     }
 }

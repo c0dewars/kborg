@@ -78,3 +78,10 @@ The broader release gates, platform coverage and external integrations remain in
 `e` opens the existing-resource YAML spec editor; Ctrl-S prepares the diff and full painted review. `:edit-container` retains the focused image/resource form. Node `c/u/r` reviews cordon/uncordon/drain. `--write` and each separate capability are required. `:export` prepares selected redacted resource YAML; log/Helm Ctrl-S opens a private export preview. Log `e` and `W` toggle word-based error/warning filters; `w` remains wrap. These labels identify text matches, not inferred severity or diagnosis.
 
 The compact top menu preserves command names and accepts mouse navigation. Exact supported scopes, bounds, cancellation and remaining gaps are in [Mac v1 operations](MAC_V1_OPERATIONS.md).
+
+
+## Dashboard and saved selections
+
+The persistent header displays the view title and `?`, without colon-command labels. Typed commands and completions remain supported. `D` opens the current context dashboard; card `1..4`/arrows focus, Enter opens the focused context's Pods, `c` chooses contexts and `?` shows the legend. These dashboard keys are KBorg additions, scoped to that view.
+
+Resource `b` or dashboard `s` explicitly saves navigation; `B` and `:selections` reopen it, and resource `:save` is the command equivalent. Reopen checks active kubeconfig membership, destination resource discovery and any saved workload UID. Credentials, cached filters and operation approvals are not restored. See [dashboard guide](DASHBOARD.md) and [acceptance](DASHBOARD_ACCEPTANCE.md).

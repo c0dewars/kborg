@@ -8,9 +8,11 @@ Reviewed 2026-10-23. A v1 release means the documented Mac workflow is installab
 2. Node cordon/uncordon/drain: isolated capability, exact identity and scheduling-content checks, Kubernetes eviction API, disruption-budget enforcement and partial-state reporting.
 3. Exports: retained filtered logs, selected redacted resource YAML, selected Helm metadata/resource references; private files and no overwrites.
 4. Multiple forwards: eight independent loopback sessions, collision prevention, selected cancellation and complete scope/exit cleanup.
-5. UI: compact clickable command menu, stable three-row header, continuous frames, visible mode, log severity text filters and clearer editor/review screens.
+5. UI: quiet header with only `?` help, stable identity/status, continuous frames, visible mode, log severity text filters and clearer editor/review screens. Familiar commands remain available through the keyboard.
+6. Dashboard cards: independent context health and warning evidence, responsive layout, numbered focus and a contextual legend.
+7. Saved selections: opt-in context groups and resource/workload scopes, private bounded storage and destination/UID revalidation.
 
-Acceptance and screenshots: [current report](MAC_V1_ACCEPTANCE.md). Exact limits: [operations](MAC_V1_OPERATIONS.md).
+Acceptance and screenshots: [current report](DASHBOARD_ACCEPTANCE.md). Exact limits: [operations](MAC_V1_OPERATIONS.md).
 
 ## k10s comparison and next implementation batches
 
@@ -18,16 +20,16 @@ Reference inspected: [mpiorowski/k10s](https://github.com/mpiorowski/k10s/tree/1
 
 | Feature | KBorg status | Planned implementation and acceptance |
 |---|---|---|
-| Compact top command menu | Implemented this batch | Preserve k9s commands and responsive identity/mode; mouse and keyboard tests |
+| Quiet top header | Implemented to user preference | Visible command labels removed; `?` opens keymap, while typed k9s navigation remains |
 | Error/warning log emphasis | Implemented this batch | Word-based highlighting and combinable filters; preserve wrapping key and export timestamps; no inferred diagnosis |
-| Dynamic multi-cluster grid and numbered focus | Next | Extend independent overview feeds into responsive cluster cards; number keys scoped to overview only; one slow/forbidden cluster must not block another |
-| Stable health/warnings/log sections | Next | Fixed section heights and independent freshness indicators; no shifting controls when events arrive |
-| OOM/restart/recent-warning summary | Next | Explicitly bounded event/status collection, evidence links and freshness; distinguish unknown from zero; drill into affected Pods/events |
-| Saved context/workload selections | Next | Save opt-in non-secret preferences; revalidate context membership and identity on reopen; never persist authorization to write or send AI data |
+| Multi-context grid and numbered focus | Implemented | Up to four explicit contexts, responsive cards and context-scoped number keys; slow/forbidden peers stay independent |
+| Stable health/warning sections | Implemented | Independent Pod/Event states and stable sections; live logs remain a separate view |
+| OOM/restart/recent-warning summary | Implemented within documented scope | Current/last container OOM evidence, current restart counters, 15-minute Warning Event records tied to current Pod UIDs; Enter opens the context Pod list |
+| Saved context/workload selections | Implemented | Explicit bounded private preferences; revalidate active kubeconfig, destination resource catalog and workload UID; no stored operation approvals |
 | Unified live workload tail | Later | Explicit dynamic membership opt-in, visible join/leave events, UID replacement protection, concurrency/memory budgets and rollout tests |
-| In-app dashboard legend | Next | Contextual explanation of metrics, text matches, retention and freshness; accessible without leaving overview |
+| In-app dashboard legend | Implemented | `?` explains controls, evidence and freshness without closing independent watches |
 
-Next batch order: dashboard cards/focus and health evidence, then saved selections and legend, then dynamic log membership. These features are planned; they are not included in the completed-feature list until accepted.
+Next feature batch: explicitly opted-in dynamic log membership, then direct warning-to-event drilldown and optional dashboard log panes. Release hardening below remains required; dashboard acceptance does not imply full k10s parity.
 
 ## Release gates after workflows
 

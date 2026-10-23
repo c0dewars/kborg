@@ -20,7 +20,7 @@ animations and ANSI styling never enter machine output.
 | `metrics pods\|nodes --json` | `api_version`, `scope`, `namespace`, `source`, `items`, `truncated`; exact quantity details described below |
 | `overview CONTEXT... --follow --json` | JSONL arrays of the complete selected1..4 context summary set; errors use null counts; independent watches stop on scope close |
 | `extensions list --json` | Array of data-only registrations: id,absolute executable,literal arguments,SHA-256 |
-| `overview CONTEXT... --json` | Array of independent context summaries: `demo`, `context`, `namespace`, `pods`, `unhealthy`, `truncated`, `error` |
+| `overview CONTEXT... --json` | Array of independent context summaries: `demo`, `context`, `namespace`, `pods`, `unhealthy`, `truncated`, `error`, plus additive `state`, `observed_unix_seconds` and `health` evidence fields; see [health semantics](DASHBOARD_HEALTH.md) |
 | `logs POD [CONTAINER] --json` | Object with `logs` (sanitized string) and `bounded: true` |
 | `logs POD CONTAINER --follow --json` | JSONL objects containing `line` (sanitized string); follow remains opt-in and time/byte bounded |
 | `logs RESOURCE/NAME --json` or `logs --selector LABELS --json` | Object with `logs`, `bounded: true`, `container_scope: all-ordinary`, `pod_scope: fixed-membership`, and `membership` described below |

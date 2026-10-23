@@ -30,6 +30,8 @@ class Screen:
         self.fg, self.bg = (205, 214, 244), (30, 30, 46)
         self.cells = [[(" ", self.fg, self.bg) for _ in range(width)] for _ in range(height)]
         self.pending = ""
+        self.synchronized = False
+        self.displayed_cells = None
         self.decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
 
     def feed(self, text):
@@ -45,7 +47,14 @@ class Screen:
                     break
                 raw, command = match.groups()
                 values = [int(value) if value else 0 for value in raw.lstrip("?").split(";")]
-                if command in ("H", "f"):
+                if raw == "?2026" and command == "h":
+                    if not self.synchronized:
+                        self.displayed_cells = [row[:] for row in self.cells]
+                    self.synchronized = True
+                elif raw == "?2026" and command == "l":
+                    self.synchronized = False
+                    self.displayed_cells = None
+                elif command in ("H", "f"):
                     self.y = max(0, (values[0] or 1) - 1)
                     self.x = max(0, (values[1] if len(values) > 1 and values[1] else 1) - 1)
                 elif command == "J" and values[0] == 2:
@@ -80,8 +89,11 @@ class Screen:
             position += 1
         self.pending = self.pending[position:]
 
+    def visible_cells(self):
+        return self.displayed_cells if self.synchronized else self.cells
+
     def text(self):
-        return "\n".join("".join(cell[0] for cell in row) for row in self.cells)
+        return "\n".join("".join(cell[0] for cell in row) for row in self.visible_cells())
 
     @staticmethod
     def _box_glyph(draw, char, left, top, width, height, color):
@@ -125,9 +137,10 @@ class Screen:
         font = ImageFont.truetype(font_path, 17) if Path(font_path).exists() else ImageFont.load_default()
         cell_width = int(font.getlength("M") + .5)
         cell_height = 24
-        picture = Image.new("RGB", (self.width * cell_width + 32, self.height * cell_height + 32), self.cells[0][0][2])
+        cells = self.visible_cells()
+        picture = Image.new("RGB", (self.width * cell_width + 32, self.height * cell_height + 32), cells[0][0][2])
         draw = ImageDraw.Draw(picture)
-        for y, row in enumerate(self.cells):
+        for y, row in enumerate(cells):
             for x, (char, fg, bg) in enumerate(row):
                 left, top = 16 + x * cell_width, 16 + y * cell_height
                 draw.rectangle((left, top, left + cell_width - 1, top + cell_height - 1), fill=bg)
@@ -574,7 +587,7 @@ def main():
             keys(b"\x1b")
             keys(b":overview\r")
             keys(b"\r", 1)
-            capture("live-overview", ["LIVE", "demo", "UNHEALTHY"])
+            capture("live-overview", ["CONTEXT OVERVIEW", "demo", "WARNINGS"])
             keys(b"\x1b")
             keys(b":themes\r")
             capture("themes", ["Themes", "Catppuccin Mocha"])
