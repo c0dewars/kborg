@@ -10,6 +10,8 @@ Press `D` from a resource table to open the current context and namespace. The h
 | Enter | Open current Pods in the focused context and displayed namespace |
 | `w` | Select the next recent warning in the focused card; cycling past the last clears it |
 | Enter on a warning | Open Events for that exact Pod name and UID in its namespace |
+| `t` | Tail workloads across clusters: list Deployments and StatefulSets from every card's cluster, Space selects up to six, Enter starts; `t` or Esc closes the tail |
+| `e` / `W` in a pane | Show only error / warning lines in the open log pane |
 | `L` on a warning | Follow that exact Pod's logs (all ordinary containers) in a pane under the cards; `L` again closes it |
 | Esc on a warning | Close an open log pane first, then clear the warning selection without closing the dashboard |
 | `c` | Choose one to four explicit context names, comma separated; Ctrl-U clears the input |
@@ -23,6 +25,10 @@ The log pane opens its own read-only connection to the focused card's context, s
 Expanded cards also show `NODES ready/total` (with cordoned Nodes and cluster CPU/memory as a percentage of summed allocatable when the Metrics API answers) and `APPS` with Deployment/StatefulSet counts and up to four named degraded workloads. A workload is degraded when it wants replicas that are not available or ready, or its rollout reports `ProgressDeadlineExceeded`; scaled-to-zero workloads are not. These come from a separate 15-second read-only poll per card, so a slow or denied read never delays the Pod and Event watches. Nodes are cluster-scoped and often denied to namespace-scoped identities; the card then shows `NODES DENIED` rather than zero.
 
 `kborg --contexts a,b` opens the TUI directly in this dashboard for one to four contexts.
+
+### Cross-cluster workload tail
+
+`t` lists Deployments and StatefulSets (up to 200 per cluster) from every card's context in the dashboard namespace. Select up to six with Space, or press Enter on one. Each selected workload is followed over its own read-only connection with dynamic membership, so rollouts announce Pod joins and departures as in `:logs-live`. Lines from every cluster are merged in source timestamp order through a one-second reorder window and tagged with their context, after the timestamp so the log view's timestamp toggle still applies. The combined membership is capped at 24 Pods; a selection over the cap is refused rather than truncated. A source that cannot be opened is reported in the pane while the others continue. `e` and `W` filter to error or warning lines. Requires `--allow-logs`; only one log session runs at a time.
 
 All cards use the selected namespace. Change namespace in the normal resource view before opening the dashboard, or reopen an explicitly saved dashboard scope. Wide terminals show a grid; narrow terminals retain the focused card and numbered navigation. A wide single-context view places health and warnings side by side.
 

@@ -11,13 +11,129 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-/// Live logs for one exact warning Pod, followed over its own read-only connection.
+/// Live logs in the dashboard: one exact warning Pod, or a cross-cluster
+/// workload tail, each followed over read-only connections.
 pub(super) struct LogPane {
-    pub context: String,
-    pub namespace: String,
-    pub pod: String,
+    /// Exact Pod UID for a warning pane; empty for a workload tail.
     pub uid: String,
+    pub title: String,
     pub view: Box<crate::ui_logs::LogView>,
+}
+
+/// `t`: choose workloads from every card's cluster for one merged tail.
+pub(super) struct TailPicker {
+    pub entries: Vec<crate::workload_tail::WorkloadRef>,
+    pub errors: Vec<String>,
+    pub checked: std::collections::BTreeSet<usize>,
+    pub cursor: usize,
+    pub loading: bool,
+    pub notice: Option<String>,
+}
+
+pub(super) enum PickerOutcome {
+    Stay,
+    Cancel,
+    Start(Vec<crate::workload_tail::WorkloadRef>),
+}
+
+impl TailPicker {
+    pub fn loading() -> Self {
+        Self {
+            entries: Vec::new(),
+            errors: Vec::new(),
+            checked: Default::default(),
+            cursor: 0,
+            loading: true,
+            notice: None,
+        }
+    }
+    pub fn key(&mut self, code: KeyCode) -> PickerOutcome {
+        self.notice = None;
+        match code {
+            KeyCode::Esc | KeyCode::Char('q' | 't') => return PickerOutcome::Cancel,
+            KeyCode::Down | KeyCode::Char('j') => {
+                self.cursor = (self.cursor + 1).min(self.entries.len().saturating_sub(1))
+            }
+            KeyCode::Up | KeyCode::Char('k') => self.cursor = self.cursor.saturating_sub(1),
+            KeyCode::Char(' ') if !self.entries.is_empty() => {
+                if !self.checked.remove(&self.cursor) {
+                    if self.checked.len() >= crate::workload_tail::MAX_SOURCES {
+                        self.notice = Some(format!(
+                            "At most {} workloads per tail.",
+                            crate::workload_tail::MAX_SOURCES
+                        ));
+                    } else {
+                        self.checked.insert(self.cursor);
+                    }
+                }
+            }
+            KeyCode::Enter => {
+                let chosen = if self.checked.is_empty() {
+                    self.entries.get(self.cursor).cloned().into_iter().collect()
+                } else {
+                    self.checked
+                        .iter()
+                        .filter_map(|index| self.entries.get(*index).cloned())
+                        .collect::<Vec<_>>()
+                };
+                if !chosen.is_empty() {
+                    return PickerOutcome::Start(chosen);
+                }
+            }
+            _ => {}
+        }
+        PickerOutcome::Stay
+    }
+    fn lines(&self, height: usize) -> Vec<(String, &'static str)> {
+        let mut lines = vec![(
+            format!(
+                "Space select (max {})   Enter tail selected   Esc cancel   {} selected",
+                crate::workload_tail::MAX_SOURCES,
+                self.checked.len()
+            ),
+            "muted",
+        )];
+        if self.loading {
+            lines.push((
+                "Listing Deployments and StatefulSets in every card's cluster...".into(),
+                "text",
+            ));
+        }
+        for error in &self.errors {
+            lines.push((error.clone(), "warning"));
+        }
+        if !self.loading && self.entries.is_empty() {
+            lines.push((
+                "No Deployments or StatefulSets found in the dashboard namespace.".into(),
+                "muted",
+            ));
+        }
+        let room = height.saturating_sub(lines.len() + usize::from(self.notice.is_some()));
+        let start = self.cursor.saturating_sub(room.saturating_sub(1));
+        for (index, entry) in self.entries.iter().enumerate().skip(start).take(room) {
+            lines.push((
+                format!(
+                    "{} [{}] {}",
+                    if index == self.cursor { ">" } else { " " },
+                    if self.checked.contains(&index) {
+                        "x"
+                    } else {
+                        " "
+                    },
+                    entry.label()
+                ),
+                if index == self.cursor {
+                    "accent"
+                } else {
+                    "text"
+                },
+            ));
+        }
+        if let Some(notice) = &self.notice {
+            lines.push((notice.clone(), "warning"));
+        }
+        lines
+    }
 }
 
 pub(super) struct Dashboard {
@@ -28,6 +144,7 @@ pub(super) struct Dashboard {
     pub help: bool,
     pub notice: Option<(String, bool)>,
     pub logs: Option<LogPane>,
+    pub picker: Option<TailPicker>,
     /// k10s focus mode: pressing the focused card's number again shows it alone.
     pub focus: bool,
 }
@@ -44,6 +161,7 @@ impl Dashboard {
             help: false,
             notice: None,
             logs: None,
+            picker: None,
             focus: false,
         }
     }
@@ -239,14 +357,38 @@ fn pane_height(height: u16) -> u16 {
         .min(height.saturating_sub(4))
 }
 
+fn picker_pane(app: &App, picker: &TailPicker, rect: Rect, out: &mut impl Write) -> Result<()> {
+    let color = |role| ui_color(app, role);
+    let bg = color("background");
+    panel(
+        out,
+        rect,
+        "TAIL WORKLOADS ACROSS CLUSTERS",
+        true,
+        color("accent"),
+        bg,
+    )
+    .map_err(|_| "draw failed")?;
+    let height = usize::from(rect.height.saturating_sub(2));
+    for (index, (text, role)) in picker.lines(height).iter().take(height).enumerate() {
+        cell(
+            out,
+            rect.x + 1,
+            rect.y + 1 + index as u16,
+            rect.width.saturating_sub(2),
+            text,
+            color(role),
+            bg,
+        )
+        .map_err(|_| "draw failed")?;
+    }
+    Ok(())
+}
+
 fn log_pane(app: &App, pane: &LogPane, rect: Rect, out: &mut impl Write) -> Result<()> {
     let color = |role| ui_color(app, role);
     let bg = color("background");
-    let title = format!(
-        "LOGS {} / {}/{} (exact UID)",
-        pane.context, pane.namespace, pane.pod
-    );
-    panel(out, rect, &title, true, color("accent"), bg).map_err(|_| "draw failed")?;
+    panel(out, rect, &pane.title, true, color("accent"), bg).map_err(|_| "draw failed")?;
     let inner = usize::from(rect.width.saturating_sub(2));
     let lines = pane
         .view
@@ -625,6 +767,8 @@ pub(super) fn render(
             "w                Select next recent warning",
             "Enter on warning Open that Pod's Events (exact UID)",
             "L on warning     Follow that Pod's logs in a pane (exact UID)",
+            "t                Tail chosen workloads across every card's cluster",
+            "e / W in a pane  Show only error / warning lines",
             "Esc on warning   Close the log pane, then clear the selection",
             "c                Choose up to four context names",
             "s                Save these contexts and namespace",
@@ -657,10 +801,8 @@ pub(super) fn render(
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_or(0, |time| time.as_secs());
-        let pane = dashboard
-            .logs
-            .as_ref()
-            .map(|pane| (pane, pane_height(height)));
+        let pane = (dashboard.logs.is_some() || dashboard.picker.is_some())
+            .then(|| ((), pane_height(height)));
         let card_height = height.saturating_sub(pane.map_or(0, |(_, h)| h + 1));
         let mut cards_bottom = 4;
         if card_height >= 12 || pane.is_none() {
@@ -684,19 +826,19 @@ pub(super) fn render(
         }
         // The pane starts directly under the cards and fills down to the
         // status rows, so a short single card leaves no blank band.
-        if let Some((pane, _)) = pane {
+        if pane.is_some() {
             let pane_y = cards_bottom.min(height.saturating_sub(9));
-            log_pane(
-                app,
-                pane,
-                Rect {
-                    x: 0,
-                    y: pane_y,
-                    width,
-                    height: height.saturating_sub(3).saturating_sub(pane_y),
-                },
-                out,
-            )?;
+            let rect = Rect {
+                x: 0,
+                y: pane_y,
+                width,
+                height: height.saturating_sub(3).saturating_sub(pane_y),
+            };
+            if let Some(picker) = &dashboard.picker {
+                picker_pane(app, picker, rect, out)?;
+            } else if let Some(pane) = &dashboard.logs {
+                log_pane(app, pane, rect, out)?;
+            }
         }
     }
     if let Some((notice, warning)) = &dashboard.notice {
@@ -738,12 +880,20 @@ pub(super) fn render(
         width,
         if dashboard.help {
             " ? keymap   Esc back"
+        } else if dashboard.picker.is_some() {
+            " Space select   Enter tail   Esc cancel"
+        } else if dashboard
+            .logs
+            .as_ref()
+            .is_some_and(|pane| pane.uid.is_empty())
+        {
+            " t close tail   e errors   W warnings   Esc close tail"
         } else if dashboard.logs.is_some() {
             " L close logs   w next warning   Enter Events   Esc close logs"
         } else if dashboard.warning.is_some() {
             " w next warning   Enter Events   L live logs   Esc clear"
         } else {
-            " 1..4 focus   Enter Pods   w warnings   ? keymap   Esc back"
+            " 1..4 focus   Enter Pods   w warnings   t tail workloads   ? keymap   Esc back"
         },
         color("accent"),
         bg,

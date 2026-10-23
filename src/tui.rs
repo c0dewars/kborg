@@ -128,6 +128,15 @@ enum Task {
     Containers(LogTarget, u64),
     Logs(LogTarget, u64, crate::logs::ReadOptions),
     Follow(LogTarget, u64, u32, crate::logs::ReadOptions),
+    /// Dashboard `t`: list workloads per (context, read-only connection).
+    DashboardWorkloads(Vec<(String, Box<Connection>)>),
+    /// Cross-cluster workload tail: sources, generation, seconds, range.
+    DashboardTail(
+        Vec<crate::workload_tail::TailSource>,
+        u64,
+        u32,
+        crate::logs::ReadOptions,
+    ),
     /// Dashboard pane: connection, namespace, Pod, UID, generation, seconds, range.
     DashboardLogs(
         Box<Connection>,
@@ -187,6 +196,7 @@ enum Reply {
     Drill(Box<Value>),
     Directory(crate::navigation_views::Directory),
     Secrets(crate::secrets::SecretIndex),
+    DashboardWorkloads(Vec<(String, Result<Vec<crate::workload_tail::WorkloadRef>>)>),
     SecretValue(String, String, Result<crate::secrets::Revealed>),
     Helm(u64, Result<helm_ui::Response>),
     HelmPrepared(u64, Result<Box<crate::helm_lifecycle::Prepared>>),
@@ -708,6 +718,24 @@ fn worker() -> Worker {
                         let result=if let Some(gateway)=gateway.as_ref(){match tokio::time::timeout(Duration::from_secs(23),helm_ui::read(gateway,request)).await{Ok(result)=>result,Err(_)=>Err("Helm read deadline exceeded; metadata may be incomplete. Retry explicitly.".into())}}else{Err("Not connected; select a context before reading Helm releases.".into())};
                         Reply::Helm(generation,result)
                     }
+                    Task::DashboardWorkloads(contexts)=>{
+                        let lists=futures_util::future::join_all(contexts.into_iter().map(|(context,connection)| async move {
+                            let result=crate::workload_tail::list_workloads(*connection,context.clone()).await;
+                            (context,result)
+                        })).await;
+                        Reply::DashboardWorkloads(lists)
+                    }
+                    Task::DashboardTail(sources,generation,seconds,read)=>{
+                        let opened=crate::workload_tail::open_all(sources,crate::logs::FollowOptions{seconds},read).await;
+                        let mailbox=log_results.clone();
+                        let job=tokio::spawn(async move {
+                            crate::workload_tail::stream(opened,|line| mailbox.append(generation,line)).await;
+                        });
+                        if let Ok(mut handle)=log_results.abort.lock() {
+                            if log_results.generation.load(std::sync::atomic::Ordering::SeqCst)==generation {*handle=Some(job.abort_handle());} else {job.abort();}
+                        } else {job.abort();}
+                        Reply::Following
+                    }
                     Task::DashboardLogs(connection,namespace,pod,uid,generation,seconds,read)=>{
                         let opened=async {
                             let pane=tokio::time::timeout(Duration::from_secs(20),Gateway::connect(*connection)).await.map_err(|_|"connection timed out".to_owned())??;
@@ -825,7 +853,7 @@ fn worker() -> Worker {
                                         Reply::Prepared(Box::new(prepared))
                                     },
                                     Task::Execute(p,a) => Reply::Notice(g.execute(*p,a).await?),
-                                    Task::YamlPrepare(..) | Task::YamlExecute(..) | Task::NodeExecute(..) | Task::DashboardLogs(..) | Task::Connect(_) | Task::Watch(..) | Task::Metrics(..) | Task::RunSession(..) | Task::RunForward(..) | Task::Directory(_) | Task::Manifest(_) | Task::Helm(..) | Task::HelmPrepare(..) | Task::HelmExecute(..) | Task::AdvicePrepare(..) | Task::AdviceExecute(..) => return Err("invalid worker task".into()),
+                                    Task::YamlPrepare(..) | Task::YamlExecute(..) | Task::NodeExecute(..) | Task::DashboardLogs(..) | Task::DashboardWorkloads(..) | Task::DashboardTail(..) | Task::Connect(_) | Task::Watch(..) | Task::Metrics(..) | Task::RunSession(..) | Task::RunForward(..) | Task::Directory(_) | Task::Manifest(_) | Task::Helm(..) | Task::HelmPrepare(..) | Task::HelmExecute(..) | Task::AdvicePrepare(..) | Task::AdviceExecute(..) => return Err("invalid worker task".into()),
                                 })
                             };
                             match tokio::time::timeout(Duration::from_secs(25), future).await {
@@ -1716,6 +1744,113 @@ impl App {
     }
     /// Dashboard `L`: follow the selected warning's exact Pod in a pane, over a
     /// separate read-only connection to that card's context.
+    /// A read-only log connection for one dashboard context: every write,
+    /// interactive and Secret capability is cleared.
+    fn pane_connection(&self, context: &str, namespace: &str) -> Connection {
+        let mut connection = self.options.connection.clone();
+        if !connection.demo {
+            connection.context = Some(context.into());
+        }
+        connection.namespace = namespace.into();
+        connection.writable = false;
+        connection.allow_exec = false;
+        connection.allow_attach = false;
+        connection.allow_port_forward = false;
+        connection.allow_node_maintenance = false;
+        connection.allow_yaml_edit = false;
+        connection.allow_force_kill = false;
+        connection.allow_secret_reveal = false;
+        connection.allow_helm_write = false;
+        connection.allow_helm_hooks = false;
+        connection.allow_helm_crds = false;
+        connection
+    }
+    /// Dashboard `t`: list workloads from every card's cluster, or close a
+    /// running cross-cluster tail.
+    fn dashboard_tail(&mut self, dashboard: &mut dashboard_ui::Dashboard) {
+        if dashboard.logs.take().is_some() {
+            self.worker.logs.cancel();
+            return;
+        }
+        if !self.options.connection.demo && !self.options.connection.logs {
+            dashboard.set_notice("Workload tails require --allow-logs.".into(), true);
+            return;
+        }
+        if self.busy {
+            dashboard.set_notice(
+                "Wait for the current request before opening a tail.".into(),
+                true,
+            );
+            return;
+        }
+        let contexts = dashboard
+            .rows
+            .iter()
+            .map(|row| {
+                let namespace = if row.namespace.is_empty() {
+                    self.namespace.clone()
+                } else {
+                    row.namespace.clone()
+                };
+                (
+                    row.context.clone(),
+                    Box::new(self.pane_connection(&row.context, &namespace)),
+                )
+            })
+            .collect::<Vec<_>>();
+        dashboard.picker = Some(dashboard_ui::TailPicker::loading());
+        self.send(Task::DashboardWorkloads(contexts));
+    }
+    fn start_dashboard_tail(
+        &mut self,
+        dashboard: &mut dashboard_ui::Dashboard,
+        chosen: Vec<crate::workload_tail::WorkloadRef>,
+    ) {
+        if self.busy {
+            dashboard.set_notice(
+                "Wait for the current request before opening a tail.".into(),
+                true,
+            );
+            return;
+        }
+        let sources = chosen
+            .iter()
+            .map(|workload| crate::workload_tail::TailSource {
+                connection: self.pane_connection(&workload.context, &workload.namespace),
+                workload: workload.clone(),
+            })
+            .collect::<Vec<_>>();
+        let clusters = chosen
+            .iter()
+            .map(|w| w.context.as_str())
+            .collect::<std::collections::BTreeSet<_>>()
+            .len();
+        self.subviews
+            .retain(|modal| !matches!(modal, Modal::Follow(_) | Modal::Containers(..)));
+        let generation = self.worker.logs.cancel();
+        let read = crate::logs::ReadOptions {
+            head: false,
+            ..self.options.log_read
+        };
+        let mut view = crate::ui_logs::LogView::new("Connecting to workloads...".into(), read);
+        view.following = true;
+        dashboard.logs = Some(dashboard_ui::LogPane {
+            title: format!(
+                "TAIL {} workload{} across {clusters} cluster{} (timestamp order)",
+                chosen.len(),
+                if chosen.len() == 1 { "" } else { "s" },
+                if clusters == 1 { "" } else { "s" }
+            ),
+            uid: String::new(),
+            view: Box::new(view),
+        });
+        self.send(Task::DashboardTail(
+            sources,
+            generation,
+            self.options.log_seconds,
+            read,
+        ));
+    }
     fn dashboard_logs(&mut self, dashboard: &mut dashboard_ui::Dashboard) {
         let selected = dashboard
             .selected_warning()
@@ -1754,22 +1889,7 @@ impl App {
         let Some(context) = dashboard.selected().map(|row| row.context.clone()) else {
             return;
         };
-        let mut connection = self.options.connection.clone();
-        if !connection.demo {
-            connection.context = Some(context.clone());
-        }
-        connection.namespace = namespace.clone();
-        connection.writable = false;
-        connection.allow_exec = false;
-        connection.allow_attach = false;
-        connection.allow_port_forward = false;
-        connection.allow_node_maintenance = false;
-        connection.allow_yaml_edit = false;
-        connection.allow_force_kill = false;
-        connection.allow_secret_reveal = false;
-        connection.allow_helm_write = false;
-        connection.allow_helm_hooks = false;
-        connection.allow_helm_crds = false;
+        let connection = self.pane_connection(&context, &namespace);
         self.subviews
             .retain(|modal| !matches!(modal, Modal::Follow(_) | Modal::Containers(..)));
         let generation = self.worker.logs.cancel();
@@ -1780,9 +1900,7 @@ impl App {
         let mut view = crate::ui_logs::LogView::new("Connecting to logs...".into(), read);
         view.following = true;
         dashboard.logs = Some(dashboard_ui::LogPane {
-            context,
-            namespace: namespace.clone(),
-            pod: pod.clone(),
+            title: format!("LOGS {context} / {namespace}/{pod} (exact UID)"),
             uid: uid.clone(),
             view: Box::new(view),
         });
@@ -2248,6 +2366,20 @@ impl App {
                         self.push_subview(modal);
                     }
                     self.modal = Modal::Secrets(Box::new(crate::ui_secrets::View::new(index)));
+                }
+                Reply::DashboardWorkloads(lists) => {
+                    if let Modal::LiveOverview(dashboard) = &mut self.modal
+                        && let Some(picker) = dashboard.picker.as_mut()
+                        && picker.loading
+                    {
+                        picker.loading = false;
+                        for (context, result) in lists {
+                            match result {
+                                Ok(found) => picker.entries.extend(found),
+                                Err(error) => picker.errors.push(format!("{context}: {error}")),
+                            }
+                        }
+                    }
                 }
                 Reply::SecretValue(uid, key, value) => {
                     if let Modal::Secrets(view) = &mut self.modal {
@@ -4239,6 +4371,23 @@ impl App {
             },
             Modal::LiveOverview(mut dashboard) => {
                 dashboard.notice = None;
+                if let Some(picker) = dashboard.picker.as_mut() {
+                    match picker.key(code) {
+                        dashboard_ui::PickerOutcome::Stay => {}
+                        dashboard_ui::PickerOutcome::Cancel => dashboard.picker = None,
+                        dashboard_ui::PickerOutcome::Start(chosen) => {
+                            dashboard.picker = None;
+                            self.start_dashboard_tail(&mut dashboard, chosen);
+                        }
+                    }
+                    self.modal = Modal::LiveOverview(dashboard);
+                    return Ok(false);
+                }
+                if let (Some(pane), KeyCode::Char('e' | 'W')) = (dashboard.logs.as_mut(), code) {
+                    pane.view.key(code);
+                    self.modal = Modal::LiveOverview(dashboard);
+                    return Ok(false);
+                }
                 match code {
                     KeyCode::Char('?') => dashboard.help = !dashboard.help,
                     KeyCode::Esc if dashboard.help => dashboard.help = false,
@@ -4255,6 +4404,7 @@ impl App {
                         return Ok(false);
                     }
                     KeyCode::Char('L') if !dashboard.help => self.dashboard_logs(&mut dashboard),
+                    KeyCode::Char('t') if !dashboard.help => self.dashboard_tail(&mut dashboard),
                     KeyCode::Enter if !dashboard.help => {
                         if dashboard.logs.take().is_some() {
                             self.worker.logs.cancel();
@@ -9360,6 +9510,90 @@ mod layout_tests {
         assert!(
             matches!(&app.modal, Modal::LiveOverview(d) if d.logs.is_none() && d.warning.is_some())
         );
+        assert!(!app.worker.logs.append(generation, "late"));
+        Ok(())
+    }
+    #[test]
+    fn dashboard_tail_lists_every_cluster_read_only_and_merges_selected_workloads() -> Result<()> {
+        let (mut app, replies, mut commands) = harness();
+        app.options.connection.logs = true;
+        app.options.connection.writable = true;
+        app.namespace = "shop".into();
+        let names = vec!["east".to_owned(), "west".to_owned()];
+        app.modal = Modal::LiveOverview(dashboard_ui::Dashboard::new(&names, false));
+        app.key(KeyCode::Char('t'))?;
+        match commands.try_recv() {
+            Ok((_, Task::DashboardWorkloads(contexts))) => {
+                assert_eq!(contexts.len(), 2);
+                for (context, connection) in &contexts {
+                    assert_eq!(connection.context.as_deref(), Some(context.as_str()));
+                    assert!(!connection.writable && !connection.allow_exec);
+                    assert_eq!(connection.namespace, "shop");
+                }
+            }
+            _ => return Err("workload listing not requested".into()),
+        }
+        let workload = |context: &str, name: &str| crate::workload_tail::WorkloadRef {
+            context: context.into(),
+            resource: "deployments".into(),
+            namespace: "shop".into(),
+            name: name.into(),
+            uid: format!("uid-{context}-{name}"),
+        };
+        replies
+            .send((
+                app.epoch,
+                Reply::DashboardWorkloads(vec![
+                    ("east".into(), Ok(vec![workload("east", "api")])),
+                    ("west".into(), Ok(vec![workload("west", "api")])),
+                ]),
+            ))
+            .map_err(|_| "reply closed")?;
+        app.receive();
+        assert!(
+            screen(&app, 120, 40)
+                .join("\n")
+                .contains("west/shop/deploy/api")
+        );
+        app.key(KeyCode::Char(' '))?;
+        app.key(KeyCode::Down)?;
+        app.key(KeyCode::Char(' '))?;
+        app.key(KeyCode::Enter)?;
+        let generation = match commands.try_recv() {
+            Ok((_, Task::DashboardTail(sources, generation, _, _))) => {
+                assert_eq!(
+                    sources
+                        .iter()
+                        .map(|s| s.workload.context.as_str())
+                        .collect::<Vec<_>>(),
+                    ["east", "west"]
+                );
+                assert!(sources.iter().all(|s| !s.connection.writable
+                    && s.connection.context.as_deref() == Some(s.workload.context.as_str())));
+                generation
+            }
+            _ => return Err("tail not started".into()),
+        };
+        replies
+            .send((app.epoch, Reply::Following))
+            .map_err(|_| "reply closed")?;
+        app.receive();
+        assert!(app.worker.logs.append(
+            generation,
+            "2026-10-24T10:00:00Z [east] [shop/api-1:app] ERROR boom"
+        ));
+        assert!(app.worker.logs.append(
+            generation,
+            "2026-10-24T10:00:01Z [west] [shop/api-2:app] INFO ok"
+        ));
+        app.receive();
+        let text = screen(&app, 120, 40).join("\n");
+        assert!(text.contains("TAIL 2 workloads across 2 clusters") && text.contains("[west]"));
+        app.key(KeyCode::Char('e'))?;
+        let text = screen(&app, 120, 40).join("\n");
+        assert!(text.contains("ERROR boom") && !text.contains("INFO ok"));
+        app.key(KeyCode::Char('t'))?;
+        assert!(matches!(&app.modal, Modal::LiveOverview(d) if d.logs.is_none()));
         assert!(!app.worker.logs.append(generation, "late"));
         Ok(())
     }
