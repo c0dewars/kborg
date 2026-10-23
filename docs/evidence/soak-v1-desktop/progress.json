@@ -4,17 +4,17 @@
   "namespace": "kborg-soak-0f0b21f0af23",
   "binary_sha256": "32a6b514bce9ab3edf247248c91e84abbce363b82980a06a6b440e9450bd4cd5",
   "requested_seconds": 7200,
-  "elapsed_seconds": 3918.97,
-  "updated_utc": "2026-10-23T14:01:17.975668+00:00",
-  "samples": 261,
-  "mutation_count": 65,
+  "elapsed_seconds": 3949.137,
+  "updated_utc": "2026-10-23T14:01:48.142950+00:00",
+  "samples": 263,
+  "mutation_count": 66,
   "fault": null,
   "processes": {
     "resource": {
       "pid": 50014,
       "alive": true,
-      "output_bytes": 5071183,
-      "records": 1221,
+      "output_bytes": 5104111,
+      "records": 1230,
       "observed_counts": [
         1,
         2
@@ -24,8 +24,8 @@
     "dashboard": {
       "pid": 50015,
       "alive": true,
-      "output_bytes": 1314464,
-      "records": 2566,
+      "output_bytes": 1324724,
+      "records": 2586,
       "observed_counts": [
         1,
         2
@@ -35,7 +35,7 @@
     "tui": {
       "pid": 50020,
       "alive": true,
-      "output_bytes": 28710299,
+      "output_bytes": 28924887,
       "records": 0,
       "observed_counts": [],
       "stale_records": 0
