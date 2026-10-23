@@ -8,6 +8,7 @@ pub mod safety;
 pub mod themes;
 pub mod tui;
 pub mod watch;
+pub mod workload_tail;
 
 pub type Result<T> = std::result::Result<T, String>;
 

@@ -80,6 +80,7 @@ These flags make actions available. Each mutation still requires its own review 
 | Dashboard `w`, then `Enter` | Select a recent warning, open that exact Pod's Events |
 | `:logs-live [SELECTOR]` | Follow workload logs with announced Pod joins and departures |
 | Dashboard `w`, then `L` | Follow that warning Pod's logs in a pane under the cards |
+| Dashboard `t` | Tail chosen workloads across every dashboard cluster, merged in timestamp order |
 | `:secrets` (`--allow-secret-reveal`) | List Secret keys; `x` reveals one value for 30 seconds |
 | Ctrl-K (`--write --allow-force-kill`) | Reviewed zero-grace Pod kill |
 | `:themes`, `?`, `:q` | Themes, help, quit |
