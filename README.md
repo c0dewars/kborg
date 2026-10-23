@@ -14,7 +14,8 @@ Familiar `:pods`, `:nodes`, `:deploy` navigation. A full-width table, a quiet he
 ## Features
 
 - **Browse your cluster.** Built-in resource types, API discovery, CRDs, context and namespace switching, filters, sorting, resource inspection, and live watches.
-- **See workload health.** Responsive cards for up to four contexts, readiness and restart summaries, UID-linked recent warnings, Pod/Node CPU and memory, bounded metrics history and ownership trees.
+- **See workload health.** A k10s-style dashboard for up to four clusters: Pod readiness, restarts, OOM kills, UID-linked recent warnings, Node readiness with CPU/memory, and degraded Deployments/StatefulSets by name. Full-screen focus per cluster, plus Pod/Node metrics tables, bounded history and ownership trees.
+- **Tail across clusters.** Pick workloads from every dashboard cluster and follow them in one pane, merged in timestamp order and tagged by cluster, with error/warning filters.
 - **Work with logs.** Container, workload and selector logs; merged source labels; search, timestamps, wrapping, error/warning text filters, and explicit local export.
 - **Save your workspace.** Explicitly save context groups, namespace/resource scopes and selected workload identities; revalidate them when reopening.
 - **Edit with a review.** An in-memory YAML spec editor, readable diffs, server dry-run, identity checks, and exact target confirmation. Hidden fields are preserved. Focused image, resource-budget, scale and restart forms remain available.
@@ -46,7 +47,7 @@ Connect to Docker Desktop Kubernetes:
 ./scripts/start-local.sh --context docker-desktop --allow-logs --no-splash
 ```
 
-Browsing is read-only by default. It uses your kubeconfig directly; Helm, kubectl, Python, Node.js and an AI account are not needed for ordinary browsing. Metrics require a working Metrics API; see [Docker Desktop metrics](docs/DESKTOP_METRICS.md).
+Browsing is read-only by default. It uses your kubeconfig directly; Helm, kubectl, Python, Node.js and an AI account are not needed for ordinary browsing. Metrics require a working Metrics API; see [Metrics](#metrics-cpu-and-memory).
 
 Enable the v1 operator workflows explicitly:
 
@@ -56,6 +57,29 @@ Enable the v1 operator workflows explicitly:
 ```
 
 These flags make actions available. Each mutation still requires its own review and confirmation; server-side RBAC and admission remain authoritative.
+
+Open straight into the multi-cluster dashboard (up to four contexts):
+
+```sh
+./target/release/kborg --contexts docker-desktop,staging --allow-logs
+```
+
+## Metrics (CPU and memory)
+
+CPU/memory columns, `:metrics`, and the dashboard's Node usage need the Kubernetes Metrics API (metrics-server). Check whether a cluster has it:
+
+```sh
+kubectl --context docker-desktop top nodes
+./target/release/kborg --context docker-desktop metrics nodes
+```
+
+If `kubectl top` fails, install a provider:
+
+- **Docker Desktop:** run the pinned, TLS-verified helper described in [Docker Desktop metrics](docs/DESKTOP_METRICS.md).
+- **minikube:** `minikube addons enable metrics-server`, then wait a minute for the first samples. This addon uses `--kubelet-insecure-tls`, which is acceptable for a disposable local cluster only.
+- **Other clusters:** the upstream [metrics-server](https://github.com/kubernetes-sigs/metrics-server#installation) manifests or Helm chart.
+
+Without a provider KBorg keeps working and shows `-` or `metrics UNAVAILABLE`, never zeros.
 
 ## Navigation
 
@@ -76,7 +100,7 @@ These flags make actions available. Each mutation still requires its own review 
 | `:export`, resource `Ctrl-S` | Export selected redacted YAML, save visible resource snapshot |
 | `:helm`, `:pulses`, `:xray po`, `:overview` | Releases, health, relationships, multiple contexts |
 | `D`, `b`, `B` | Dashboard, save current selection, reopen saved selections |
-| Dashboard `1..4`, `Enter`, `c`, `s` | Focus card, open Pods, choose contexts, save dashboard |
+| Dashboard `1..4`, `Enter`, `c`, `s` | Focus card (same number again: full screen), open Pods, choose contexts, save dashboard |
 | Dashboard `w`, then `Enter` | Select a recent warning, open that exact Pod's Events |
 | `:logs-live [SELECTOR]` | Follow workload logs with announced Pod joins and departures |
 | Dashboard `w`, then `L` | Follow that warning Pod's logs in a pane under the cards |
@@ -85,7 +109,7 @@ These flags make actions available. Each mutation still requires its own review 
 | Ctrl-K (`--write --allow-force-kill`) | Reviewed zero-grace Pod kill |
 | `:themes`, `?`, `:q` | Themes, help, quit |
 
-The header keeps only `?` for the keymap; it also supports mouse clicks. Familiar `:` commands remain available when you type them. The [compatibility map](docs/K9S_COMPATIBILITY.md) records exact behavior and remaining k9s differences.
+The header keeps only `?` for the keymap; it also supports mouse clicks. The bottom row lists the keys for what is selected, and only the ones your session can actually use: for example `l logs` appears only with `--allow-logs`, and `s shell` only with `--write --allow-exec`. `?` always opens the complete keymap. Familiar `:` commands remain available when you type them. The [compatibility map](docs/K9S_COMPATIBILITY.md) records exact behavior and remaining k9s differences.
 
 ## Reviewed changes
 
@@ -104,7 +128,32 @@ Choose `:themes` to preview and save a palette, or use `--theme rose-pine` for o
 ./target/release/kborg theme new my-theme --base rose-pine
 ```
 
-See the [theme guide](docs/themes.md) for custom palettes and contrast validation.
+See the [theme guide](docs/themes.md) for custom palettes and contrast validation. Every built-in theme is tested for WCAG AA contrast (4.5:1) on each surface the UI paints, including dashboard cards and selected rows; where an upstream color falls short, KBorg nudges its lightness while keeping its hue.
+
+## Running in Ghostty
+
+KBorg works in [Ghostty](https://ghostty.org) without extra setup. Ghostty sets `COLORTERM=truecolor`, and KBorg also recognizes `TERM=xterm-ghostty` directly, so themes render in full color even over SSH. KBorg does not use terminfo.
+
+From a Ghostty window:
+
+```sh
+cd kborg
+cargo build --release --locked
+./target/release/kborg --context docker-desktop --allow-logs
+```
+
+Or open a dedicated Ghostty window for KBorg (macOS launches Ghostty through `open`):
+
+```sh
+open -na Ghostty.app --args -e "$PWD/target/release/kborg" --context docker-desktop --allow-logs
+```
+
+Notes:
+
+- Ghostty's own shortcuts use Cmd on macOS, so KBorg's Ctrl keys (Ctrl-D, Ctrl-K, Ctrl-S, Ctrl-R) reach KBorg.
+- `c` / `n` copy names through OSC 52; Ghostty allows clipboard writes by default (`clipboard-write = allow`).
+- Over SSH to a host without Ghostty's terminfo, other tools may complain; KBorg does not, but you can run it with `TERM=xterm-256color COLORTERM=truecolor` for consistency.
+- Pick a KBorg theme that matches your Ghostty theme (for example Ghostty `Catppuccin Mocha` with `--theme catppuccin-mocha`), or `--theme terminal` to use Ghostty's palette directly.
 
 ## CLI
 

@@ -5872,6 +5872,82 @@ fn panel(
     )
 }
 
+/// The actions that actually work for the selected resource type with the
+/// capabilities this session was started with. Disabled actions are omitted
+/// so the row never advertises a key that would only print a refusal.
+fn table_hints(app: &App) -> Vec<(&'static str, &'static str)> {
+    let connection = &app.options.connection;
+    let kind = app.kind();
+    let write = connection.writable;
+    let logs = connection.logs || connection.demo;
+    let mut hints = vec![("?", "all keys")];
+    let drill = match kind.as_str() {
+        "pods" => Some("containers"),
+        "nodes" | "namespaces" => Some("pods"),
+        kind if supports_group_logs(kind) => Some("pods"),
+        _ => None,
+    };
+    if let Some(drill) = drill {
+        hints.push(("Enter", drill));
+    }
+    match kind.as_str() {
+        "pods" => {
+            if logs {
+                hints.push(("l", "logs"));
+            }
+            if write && connection.allow_exec {
+                hints.push(("s", "shell"));
+            }
+            if write && connection.allow_port_forward {
+                hints.push(("F", "forward"));
+            }
+        }
+        "nodes" => {
+            if write && connection.allow_node_maintenance {
+                hints.extend([("c", "cordon"), ("u", "uncordon"), ("r", "drain")]);
+            }
+        }
+        kind if supports_group_logs(kind) => {
+            if logs {
+                hints.push(("l", "logs"));
+            }
+            if write && ["deployments.apps", "statefulsets.apps"].contains(&kind) {
+                hints.push(("s", "scale"));
+            }
+            if write && crate::edit::supports_resource(kind) {
+                hints.push(("r", "restart"));
+            }
+        }
+        _ => {}
+    }
+    hints.extend([
+        ("d", "describe"),
+        ("y", "yaml"),
+        ("/", "filter"),
+        (":", "command"),
+    ]);
+    if write && connection.allow_yaml_edit {
+        hints.push(("e", "edit"));
+    }
+    let deletable = matches!(
+        kind.as_str(),
+        "pods"
+            | "deployments.apps"
+            | "statefulsets.apps"
+            | "daemonsets.apps"
+            | "services"
+            | "jobs.batch"
+            | "cronjobs.batch"
+    );
+    if write && deletable {
+        hints.push(("Ctrl-D", "delete"));
+    }
+    if write && connection.allow_force_kill && kind == "pods" {
+        hints.push(("Ctrl-K", "kill"));
+    }
+    hints.push(("D", "dashboard"));
+    hints
+}
 fn key_hints(
     out: &mut impl Write,
     y: u16,
@@ -6625,7 +6701,16 @@ fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
     row(out, h - 2, w, "", color("muted"), bg).map_err(|_| "draw failed")?;
     row(out, h - 1, w, "", color("muted"), bg).map_err(|_| "draw failed")?;
     match &app.modal {
-        Modal::None => {}
+        Modal::None => {
+            key_hints(
+                out,
+                h - 1,
+                w,
+                &table_hints(app),
+                [color("accent"), color("muted"), bg],
+            )
+            .map_err(|_| "draw failed")?;
+        }
         Modal::Input("Command", text) => {
             let suggestions = app.suggestions(
                 app.completion
@@ -7052,6 +7137,26 @@ fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
                 table.help()
             } else if matches!(modal, Modal::HelmDocument(..)) {
                 "Stored revision read | PgUp/PgDown scroll | Esc back"
+            } else if matches!(modal, Modal::Secrets(..)) {
+                "Enter open keys | x reveal or hide one key (30s) | j k move | Esc back"
+            } else if matches!(modal, Modal::PodContainers(..)) {
+                "Enter logs | s shell | a attach | d describe | j k move | Esc back"
+            } else if matches!(
+                modal,
+                Modal::Picker(..)
+                    | Modal::Containers(..)
+                    | Modal::SessionContainers(..)
+                    | Modal::EditContainers(..)
+            ) {
+                "Enter choose | j k move | Esc cancel"
+            } else if matches!(modal, Modal::Directory(..)) {
+                "Enter open | j k move | Esc back"
+            } else if matches!(modal, Modal::ForwardView) {
+                "F new forward | s stop selected | j k move | Esc back"
+            } else if matches!(modal, Modal::Themes(..)) {
+                "Arrows preview | Enter save | N new custom theme | Esc restore"
+            } else if matches!(modal, Modal::Detail(..) | Modal::Help(..)) {
+                "PgUp PgDown scroll | : command | Esc close"
             } else if matches!(modal, Modal::Metrics(..)) {
                 "Esc close | m refresh | M requests/limits (extra reads) | PgUp/PgDown"
             } else {
@@ -9595,6 +9700,80 @@ mod layout_tests {
         app.key(KeyCode::Char('t'))?;
         assert!(matches!(&app.modal, Modal::LiveOverview(d) if d.logs.is_none()));
         assert!(!app.worker.logs.append(generation, "late"));
+        Ok(())
+    }
+    /// Every foreground the UI paints, on every surface it paints it on:
+    /// plain background, the 3% header surface, 6% raised rows and the 2%/5%
+    /// dashboard card tints. Status and hint text must stay at WCAG AA 4.5:1;
+    /// selection text is checked on its own background.
+    #[test]
+    fn every_builtin_theme_keeps_rendered_text_legible_on_every_surface() {
+        let mut failures = Vec::new();
+        for theme in themes::all().unwrap_or_default() {
+            if theme.terminal {
+                continue;
+            }
+            let background = theme.get("background");
+            let text = theme.get("text");
+            for (surface, tint) in [
+                ("background", 0),
+                ("card", 2),
+                ("header", 3),
+                ("focused card", 5),
+                ("raised", 6),
+            ] {
+                let base = blend(background, text, tint);
+                for role in ["text", "muted", "accent", "success", "warning", "danger"] {
+                    let ratio = themes::contrast(theme.get(role), base);
+                    if ratio < 4.5 {
+                        failures.push(format!("{} {role} on {surface}: {ratio:.2}", theme.id));
+                    }
+                }
+            }
+            let ratio = themes::contrast(
+                theme.get("selection_text"),
+                theme.get("selection_background"),
+            );
+            if ratio < 4.5 {
+                failures.push(format!("{} selection: {ratio:.2}", theme.id));
+            }
+        }
+        assert!(failures.is_empty(), "{failures:#?}");
+    }
+    #[test]
+    fn table_hints_show_only_actions_that_work_for_this_kind_and_session() -> Result<()> {
+        let (mut app, _replies, _commands) = harness();
+        let keys = |app: &App| {
+            table_hints(app)
+                .into_iter()
+                .map(|(key, _)| key)
+                .collect::<Vec<_>>()
+        };
+        app.desired_resource = Some("pods".into());
+        let read_only = keys(&app);
+        assert!(read_only.contains(&"?") && read_only.contains(&"Enter"));
+        for hidden in ["l", "s", "Ctrl-D", "Ctrl-K", "e"] {
+            assert!(!read_only.contains(&hidden), "{hidden}");
+        }
+        app.options.connection.logs = true;
+        app.options.connection.writable = true;
+        app.options.connection.allow_exec = true;
+        app.options.connection.allow_force_kill = true;
+        let pods = keys(&app);
+        for shown in ["l", "s", "Ctrl-D", "Ctrl-K"] {
+            assert!(pods.contains(&shown), "{shown}");
+        }
+        app.desired_resource = Some("deployments.apps".into());
+        let deployments = table_hints(&app);
+        assert!(deployments.contains(&("s", "scale")) && deployments.contains(&("r", "restart")));
+        assert!(!deployments.iter().any(|(key, _)| *key == "Ctrl-K"));
+        app.desired_resource = Some("nodes".into());
+        assert!(!keys(&app).contains(&"c"));
+        app.options.connection.allow_node_maintenance = true;
+        assert!(table_hints(&app).contains(&("c", "cordon")));
+        app.modal = Modal::None;
+        let bottom = screen(&app, 120, 24).pop().unwrap_or_default();
+        assert!(bottom.contains("? all keys") && bottom.contains("c cordon"));
         Ok(())
     }
     #[test]
