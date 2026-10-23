@@ -15,10 +15,14 @@ pub mod audit;
 pub mod completions;
 pub mod config;
 pub mod edit;
+pub mod exports;
 pub mod inspect;
 pub mod logs;
+pub mod manifest_edit;
+pub mod node_maintenance;
 pub mod ops;
 pub mod overview;
+pub mod ui_yaml;
 
 pub mod handoff;
 

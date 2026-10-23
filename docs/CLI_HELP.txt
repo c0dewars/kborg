@@ -16,6 +16,8 @@ KBorg 0.3 — Kubernetes operations, under your control
   kborg metrics pods|nodes        CPU/memory/history; --metrics-resources comparisons
   kborg list RESOURCE             Bounded resource table; --json for pipelines
   kborg get RESOURCE NAME         Redacted JSON; --yaml for YAML inspection
+  kborg yaml-template RESOURCE NAME   Safe editable spec template with UID/version
+  kborg yaml-edit RESOURCE NAME FILE  Reviewed spec patch (--write --allow-yaml-edit)
   kborg view RESOURCE NAME --interactive  Native searchable JSON/YAML pager
   kborg view RESOURCE NAME --tool ABS [--tool-arg ARG]  Reviewed tool view
   kborg logs POD [CONTAINER]      --allow-logs; optional --follow or --previous
@@ -38,6 +40,9 @@ KBorg 0.3 — Kubernetes operations, under your control
   kborg set-image [RESOURCE] NAME CONTAINER IMAGE   Reviewed image change
   kborg set-resources [RESOURCE] NAME CONTAINER CPU_REQ MEM_REQ CPU_LIMIT MEM_LIMIT
   kborg delete RESOURCE NAME      Guarded deletion; no force
+  kborg cordon NODE               Review and disable node scheduling
+  kborg uncordon NODE             Review and enable node scheduling
+  kborg drain NODE [SECONDS]      Reviewed eviction; default 120s, maximum 300s
   kborg exec POD CONTAINER -- COMMAND [ARG...]   Reviewed exec; --interactive enables stdin/TTY
   kborg attach POD CONTAINER      Output-only; --interactive enables stdin/TTY
   kborg forward POD LOCAL REMOTE SECONDS   Loopback only, up to 300 seconds
@@ -68,6 +73,8 @@ Options (put KBorg flags before exec's -- separator):
   --helm-keyring ABS                           Require trusted OpenPGP chart provenance
   --helm-sigstore-policy ABS                   Require pinned Cosign chart-blob verification
   --copilot-policy ABS                         Dedicated Copilot advisory configuration
+  --allow-yaml-edit                            General reviewed spec edits
+  --allow-node-maintenance                     Reviewed cordon/uncordon/drain
   --allow-logs       --allow-exec   --allow-attach   --allow-forward
   --poll            --theme ID     --color=never    --json       --yaml
   --no-mouse        --follow          --previous     --no-splash      --demo       --help

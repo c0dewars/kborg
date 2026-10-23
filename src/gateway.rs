@@ -40,6 +40,8 @@ pub struct Connection {
     pub allow_exec: bool,
     pub allow_attach: bool,
     pub allow_port_forward: bool,
+    pub allow_node_maintenance: bool,
+    pub allow_yaml_edit: bool,
     pub allow_auth_helper: bool,
     pub auth_helper_policy: Option<PathBuf>,
 }
@@ -428,6 +430,8 @@ pub struct Gateway {
     allow_helm_crds: bool,
     lifecycle_connection: Option<crate::helm_lifecycle::StaticConnection>,
     operation_capabilities: [bool; 3],
+    allow_node_maintenance: bool,
+    allow_yaml_edit: bool,
     demo: Vec<Value>,
     pub kinds: Vec<Kind>,
 }
@@ -470,6 +474,8 @@ impl Gateway {
                 allow_helm_hooks: options.allow_helm_hooks,
                 allow_helm_crds: options.allow_helm_crds,
                 lifecycle_connection: None,
+                allow_node_maintenance: options.allow_node_maintenance,
+                allow_yaml_edit: options.allow_yaml_edit,
                 operation_capabilities: [
                     options.allow_exec,
                     options.allow_attach,
@@ -632,6 +638,8 @@ impl Gateway {
             allow_helm_hooks: options.allow_helm_hooks,
             allow_helm_crds: options.allow_helm_crds,
             lifecycle_connection,
+            allow_node_maintenance: options.allow_node_maintenance,
+            allow_yaml_edit: options.allow_yaml_edit,
             operation_capabilities: [
                 options.allow_exec,
                 options.allow_attach,
@@ -701,6 +709,8 @@ impl Gateway {
             allow_helm_crds: false,
             lifecycle_connection: None,
             operation_capabilities: [false; 3],
+            allow_node_maintenance: false,
+            allow_yaml_edit: false,
             demo: Vec::new(),
             kinds: kinds(),
         }
@@ -1565,8 +1575,199 @@ impl Gateway {
             .ok_or("remote operations are unavailable in demo mode")?;
         Ok(Api::namespaced(client, namespace))
     }
+    pub(crate) fn node_maintenance_access(&self) -> Result<Client> {
+        if !self.policy.writable || !self.allow_node_maintenance {
+            return Err("node maintenance requires --write --allow-node-maintenance".into());
+        }
+        self.client
+            .clone()
+            .ok_or_else(|| "node maintenance requires a real selected cluster".into())
+    }
+    #[cfg(test)]
+    pub(crate) fn for_node_maintenance_test_client(client: Client) -> Self {
+        let mut gateway = Self::for_test_client(client, "default");
+        gateway.policy.writable = true;
+        gateway.allow_node_maintenance = true;
+        gateway
+    }
     pub(crate) fn operation_session(&self) -> &str {
         &self.session
+    }
+    /// A safe editing projection backed by an unredacted, private baseline.
+    pub async fn yaml_draft(
+        &self,
+        key: &str,
+        ns: &str,
+        name: &str,
+    ) -> Result<crate::manifest_edit::Draft> {
+        let kind = self.find(key)?.clone();
+        if !kind.namespaced || kind.kind.eq_ignore_ascii_case("Secret") {
+            return Err("YAML editing supports namespaced non-Secret spec resources".into());
+        }
+        let original = self.raw_get(key, ns, name).await?;
+        crate::manifest_edit::Draft::new(original, kind, self.session.clone())
+    }
+    fn yaml_edit_access(&self) -> Result<()> {
+        if !self.policy.writable || !self.allow_yaml_edit {
+            return Err("YAML edits require --write --allow-yaml-edit".into());
+        }
+        Ok(())
+    }
+    pub async fn prepare_yaml(
+        &self,
+        draft: &crate::manifest_edit::Draft,
+        edited: &str,
+    ) -> Result<crate::manifest_edit::PreparedYaml> {
+        self.yaml_edit_access()?;
+        if draft.session != self.session {
+            return Err("session changed; reopen the YAML editor".into());
+        }
+        let current = self
+            .raw_get(&draft.resource(), draft.namespace(), draft.name())
+            .await?;
+        draft.unchanged(&current)?;
+        let (patch, expected_spec, diff) = draft.changes(edited)?;
+        let summary = format!(
+            "REVIEW YAML SPEC EDIT\nContext: {}\nServer: {}\nResource: {} {}/{}\nUID: {}\nResourceVersion: {}\n\n{}\n\nOnly the listed spec paths change. Hidden values, metadata and status are preserved.\nSpec edits may start workloads or change networking; server RBAC and admission still apply.\n{}\nType {}/{} to apply. Review expires after 60 seconds.",
+            self.context,
+            self.server,
+            draft.resource(),
+            draft.namespace(),
+            draft.name(),
+            draft.original["metadata"]["uid"].as_str().unwrap_or(""),
+            draft.original["metadata"]["resourceVersion"]
+                .as_str()
+                .unwrap_or(""),
+            diff,
+            if self.is_demo() {
+                "Demo validation only; no cluster contacted."
+            } else {
+                "Server dry-run passed. Admission may behave differently on the real write."
+            },
+            draft.namespace(),
+            draft.name()
+        );
+        let prepared =
+            crate::manifest_edit::PreparedYaml::new(draft.clone(), patch, expected_spec, summary)?;
+        if !self.is_demo() {
+            let response =
+                tokio::time::timeout(OPERATION_BUDGET, self.perform_yaml(&prepared, true))
+                    .await
+                    .map_err(|_| "YAML dry-run timed out")??;
+            crate::manifest_edit::check_admission(
+                &response,
+                &prepared.expected_spec,
+                &draft.original,
+            )?;
+        }
+        Ok(prepared)
+    }
+    async fn perform_yaml(
+        &self,
+        prepared: &crate::manifest_edit::PreparedYaml,
+        dry_run: bool,
+    ) -> Result<Value> {
+        let draft = &prepared.draft;
+        let api = self.api(&draft.kind, draft.namespace())?;
+        let url = format!(
+            "{}/{}?fieldValidation=Strict{}",
+            api.resource_url(),
+            draft.name(),
+            if dry_run { "&dryRun=All" } else { "" }
+        );
+        let request = http::Request::builder()
+            .method("PATCH")
+            .uri(url)
+            .header("Content-Type", "application/json-patch+json")
+            .body(
+                serde_json::to_vec(&prepared.patch)
+                    .map_err(|_| "cannot encode reviewed YAML patch")?,
+            )
+            .map_err(|_| "cannot construct YAML patch request")?;
+        self.client
+            .as_ref()
+            .ok_or("offline backend")?
+            .request::<Value>(request)
+            .await
+            .map_err(api_error)
+    }
+    pub async fn execute_yaml(
+        &mut self,
+        prepared: crate::manifest_edit::PreparedYaml,
+        typed: &str,
+    ) -> Result<String> {
+        self.yaml_edit_access()?;
+        if prepared.draft.session != self.session
+            || prepared.created.elapsed() > Duration::from_secs(60)
+        {
+            return Err("YAML review expired or session changed; prepare and review again".into());
+        }
+        if typed != prepared.confirmation() {
+            return Err("confirmation must exactly match namespace/name".into());
+        }
+        let draft = &prepared.draft;
+        let current = self
+            .raw_get(&draft.resource(), draft.namespace(), draft.name())
+            .await?;
+        draft.unchanged(&current)?;
+        if self.is_demo() {
+            for object in &mut self.demo {
+                if object["metadata"]["uid"] == draft.original["metadata"]["uid"] {
+                    object["spec"] = prepared.expected_spec.clone();
+                    object["metadata"]["resourceVersion"] = json!(format!(
+                        "{}y",
+                        draft.original["metadata"]["resourceVersion"]
+                            .as_str()
+                            .unwrap_or("")
+                    ));
+                }
+            }
+            return Ok("Demo YAML edit applied; no cluster contacted".into());
+        }
+        let response = tokio::time::timeout(OPERATION_BUDGET, self.perform_yaml(&prepared, true))
+            .await
+            .map_err(|_| "YAML revalidation timed out; no write sent")??;
+        crate::manifest_edit::check_admission(&response, &prepared.expected_spec, &draft.original)?;
+        if prepared.created.elapsed() > Duration::from_secs(60) {
+            return Err("YAML review expired during revalidation; review again".into());
+        }
+        let target = Target {
+            session: self.session.clone(),
+            resource: draft.resource(),
+            namespace: draft.namespace().into(),
+            name: draft.name().into(),
+            uid: draft.original["metadata"]["uid"]
+                .as_str()
+                .unwrap_or("")
+                .into(),
+            version: draft.original["metadata"]["resourceVersion"]
+                .as_str()
+                .unwrap_or("")
+                .into(),
+        };
+        let audit = start_operation_audit(&target, "yaml-edit", &self.context)?;
+        let result =
+            match tokio::time::timeout(OPERATION_BUDGET, self.perform_yaml(&prepared, false)).await
+            {
+                Ok(result) => result,
+                Err(_) => Err(
+                    "YAML outcome UNKNOWN after timeout; inspect server state before retrying"
+                        .into(),
+                ),
+            };
+        let result = result.and_then(|response| {
+            crate::manifest_edit::check_applied(&response, &prepared.expected_spec, &draft.original)
+        });
+        finish_audit(
+            &audit,
+            if result.is_ok() {
+                "succeeded"
+            } else {
+                "failed-or-unknown"
+            },
+        )?;
+        result?;
+        Ok("YAML edit accepted by API server; inspect current state and rollout. No automatic retry.".into())
     }
     pub async fn prepare(
         &self,
@@ -1888,6 +2089,9 @@ impl Gateway {
     }
 }
 fn start_audit(prepared: &Prepared, context: &str) -> Result<PathBuf> {
+    start_operation_audit(&prepared.target, prepared.action.operation_name(), context)
+}
+fn start_operation_audit(target: &Target, action: &str, context: &str) -> Result<PathBuf> {
     let dir = safety::config_dir()?.join("audit");
     safety::checked_path(&dir)?;
     if dir.exists()
@@ -1904,7 +2108,7 @@ fn start_audit(prepared: &Prepared, context: &str) -> Result<PathBuf> {
         .map_err(|_| "clock error")?
         .as_nanos();
     let path = dir.join(format!("{stamp}-{}.jsonl", std::process::id()));
-    let record = json!({"schema_version":1,"stage":"intent","context":context,"namespace":prepared.target.namespace,"resource":prepared.target.resource,"name":prepared.target.name,"uid":prepared.target.uid,"resourceVersion":prepared.target.version,"action":prepared.action.operation_name(),"timestamp_unix_ns":stamp.to_string()});
+    let record = json!({"schema_version":1,"stage":"intent","context":context,"namespace":target.namespace,"resource":target.resource,"name":target.name,"uid":target.uid,"resourceVersion":target.version,"action":action,"timestamp_unix_ns":stamp.to_string()});
     safety::write_new(&path, format!("{record}\n").as_bytes())?;
     Ok(path)
 }
@@ -2909,5 +3113,98 @@ mod tests {
             .is_err()
         );
         std::fs::remove_file(path).unwrap_or_else(|e| panic!("{e}"));
+    }
+}
+
+#[cfg(test)]
+mod yaml_gateway_tests {
+    use super::*;
+    #[test]
+    fn yaml_patch_contains_only_reviewed_paths_and_atomic_uid_version_tests() -> Result<()> {
+        crate::cli::runtime()?.block_on(async {
+            use std::sync::{Arc, atomic::{AtomicBool, AtomicUsize, Ordering}};
+            let stale = Arc::new(AtomicBool::new(false));
+            let poisoned = Arc::new(AtomicBool::new(false));
+            let patches = Arc::new(AtomicUsize::new(0));
+            let (stale_server, poison_server, counted) = (stale.clone(), poisoned.clone(), patches.clone());
+            let service = tower::service_fn(move |request: http::Request<kube::client::Body>| {
+                let stale = stale_server.load(Ordering::SeqCst);
+                let poison = poison_server.load(Ordering::SeqCst);
+                let counted = counted.clone();
+                async move {
+                    use http_body_util::BodyExt;
+                    assert_eq!(request.uri().path(), "/apis/apps/v1/namespaces/test/deployments/api");
+                    let mut response = json!({"apiVersion":"apps/v1","kind":"Deployment","metadata":{"name":"api","namespace":"test","uid":"u1","resourceVersion":if stale {"2"} else {"1"}},"spec":{"replicas":1,"template":{"spec":{"containers":[{"name":"api","image":"nginx:1","env":[{"name":"TOKEN","value":"private-yaml-canary"}]}]}}}});
+                    let mut status = http::StatusCode::OK;
+                    if request.method() == http::Method::PATCH {
+                        counted.fetch_add(1, Ordering::SeqCst);
+                        let dry = request.uri().query().is_some_and(|q| q.contains("dryRun=All"));
+                        assert!(request.uri().query().is_some_and(|q| q.contains("fieldValidation=Strict")));
+                        assert_eq!(request.headers()["content-type"], "application/json-patch+json");
+                        let bytes = request.into_body().collect().await.unwrap_or_else(|e| panic!("{e}")).to_bytes();
+                        let patch: Value = serde_json::from_slice(&bytes).unwrap_or_else(|e| panic!("{e}"));
+                        assert_eq!(patch, json!([
+                            {"op":"test","path":"/metadata/uid","value":"u1"},
+                            {"op":"test","path":"/metadata/resourceVersion","value":"1"},
+                            {"op":"replace","path":"/spec/replicas","value":2}
+                        ]));
+                        assert!(!String::from_utf8_lossy(&bytes).contains("private-yaml-canary"));
+                        if dry {
+                            response["spec"]["replicas"] = json!(2);
+                            if poison { response["spec"]["template"]["spec"]["containers"][0]["image"] = json!("unreviewed:1"); }
+                        } else {
+                            status = http::StatusCode::CONFLICT;
+                            response = json!({"apiVersion":"v1","kind":"Status","status":"Failure","reason":"Conflict","code":409});
+                        }
+                    }
+                    Ok::<_,std::convert::Infallible>(http::Response::builder().status(status).body(http_body_util::Full::new(bytes::Bytes::from(response.to_string()))).unwrap_or_else(|e| panic!("{e}")))
+                }
+            });
+            let mut gateway = Gateway::for_test_client(Client::new(service, "test"), "test");
+            gateway.policy.writable = true;
+            gateway.allow_yaml_edit = true;
+            let draft = gateway.yaml_draft("deployments", "test", "api").await?;
+            let edited = draft.text().replace("\"replicas\": 1", "\"replicas\": 2");
+            let prepared = gateway.prepare_yaml(&draft, &edited).await?;
+            assert!(!prepared.summary().contains("private-yaml-canary"));
+            assert!(gateway.perform_yaml(&prepared, false).await.is_err());
+            assert!(gateway.execute_yaml(prepared, "test/wrong").await.is_err());
+            poisoned.store(true, Ordering::SeqCst);
+            assert!(gateway.prepare_yaml(&draft, &edited).await.is_err());
+            stale.store(true, Ordering::SeqCst);
+            let previous_count = patches.load(Ordering::SeqCst);
+            assert!(gateway.prepare_yaml(&draft, &edited).await.is_err());
+            assert_eq!(patches.load(Ordering::SeqCst), previous_count);
+            Ok(())
+        })
+    }
+    #[test]
+    fn yaml_demo_requires_separate_capability_and_expires_reviews() -> Result<()> {
+        crate::cli::runtime()?.block_on(async {
+            let mut gateway = Gateway::connect(Connection {
+                demo: true,
+                writable: true,
+                ..Default::default()
+            })
+            .await?;
+            let draft = gateway.yaml_draft("deployments", "demo", "api").await?;
+            let mut edited: Value =
+                serde_saphyr::from_str(draft.text()).map_err(|_| "fixture YAML")?;
+            edited["spec"]["replicas"] = json!(4);
+            let text = serde_json::to_string(&edited).map_err(|_| "fixture JSON")?;
+            assert!(gateway.prepare_yaml(&draft, &text).await.is_err());
+            gateway.allow_yaml_edit = true;
+            let mut expired = gateway.prepare_yaml(&draft, &text).await?;
+            expired.created = std::time::Instant::now() - Duration::from_secs(61);
+            assert!(gateway.execute_yaml(expired, "demo/api").await.is_err());
+            let prepared = gateway.prepare_yaml(&draft, &text).await?;
+            gateway.execute_yaml(prepared, "demo/api").await?;
+            assert_eq!(
+                gateway.get("deployments", "demo", "api").await?["spec"]["replicas"],
+                4
+            );
+            assert!(gateway.prepare_yaml(&draft, &text).await.is_err());
+            Ok(())
+        })
     }
 }

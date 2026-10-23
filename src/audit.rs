@@ -49,6 +49,11 @@ fn parse(id: String, bytes: &[u8]) -> Result<Option<Pending>> {
     } else if matches!(
         action,
         "helm-install"
+            | "yaml-edit"
+            | "node-cordon"
+            | "node-uncordon"
+            | "node-drain"
+            | "node-drain-evict"
             | "helm-upgrade"
             | "helm-rollback"
             | "helm-uninstall"

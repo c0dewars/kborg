@@ -9,6 +9,35 @@ use std::cell::Cell;
 const FILTER_BYTES: usize = 512;
 const MARK: &str = "[---------------- KBorg log mark ----------------]";
 
+fn control_line(line: &str) -> bool {
+    line.starts_with("[Rolling buffer:")
+        || line.starts_with("[Log stream ")
+        || line.starts_with("[Stopped:")
+        || line == MARK
+}
+/// Deliberately a text hint, never a diagnosis of application health.
+pub fn severity(line: &str) -> Option<&'static str> {
+    let words = line
+        .split(|c: char| !c.is_ascii_alphabetic())
+        .map(str::to_ascii_lowercase)
+        .collect::<Vec<_>>();
+    if words.iter().any(|word| {
+        matches!(
+            word.as_str(),
+            "error" | "err" | "fatal" | "panic" | "failed" | "failure" | "exception"
+        )
+    }) {
+        Some("error")
+    } else if words
+        .iter()
+        .any(|word| matches!(word.as_str(), "warn" | "warning"))
+    {
+        Some("warning")
+    } else {
+        None
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LogAction {
     None,
@@ -88,6 +117,8 @@ pub struct LogView {
     notice: Option<String>,
     all_containers: bool,
     show_help: bool,
+    errors_only: bool,
+    warnings_only: bool,
     // Only viewport geometry is cached during immutable rendering, to make a
     // later PageUp/PageDown correspond to the viewport actually shown.
     viewport: Cell<(usize, usize)>,
@@ -114,6 +145,8 @@ impl LogView {
             notice: None,
             all_containers: false,
             show_help: false,
+            errors_only: false,
+            warnings_only: false,
             viewport: Cell::new((80, 20)),
         }
     }
@@ -151,7 +184,7 @@ impl LogView {
     }
     pub fn title(&self) -> String {
         format!(
-            "{} | {} | {} | scroll:{} | time:{} wrap:{} col:{}{}",
+            "{} | {} | {} | scroll:{} | time:{} wrap:{} col:{}{}{}",
             if self.previous {
                 "Previous logs"
             } else {
@@ -172,17 +205,60 @@ impl LogView {
             } else {
                 format!(" | /{}", safety::safe_text(&self.filter, 80))
             },
+            match (self.errors_only, self.warnings_only) {
+                (true, true) => " | ERR+WARN",
+                (true, false) => " | ERR",
+                (false, true) => " | WARN",
+                _ => "",
+            },
         )
     }
     pub fn help(&self) -> &'static str {
         if self.draft.is_some() {
             "Enter apply | Esc cancel | regex, !inverse, -f fuzzy"
         } else {
-            "/ or Enter filter | s scroll | t time | w wrap | f fullscreen | 0-6 range | ? help | Esc back"
+            "/ filter | e errors W warnings | s scroll | t time | w wrap | Ctrl-S export | Esc back"
+        }
+    }
+    pub fn severity_badge(&self) -> &'static str {
+        match (self.errors_only, self.warnings_only) {
+            (true, true) => " [ERR+WARN]",
+            (true, false) => " [ERR]",
+            (false, true) => " [WARN]",
+            _ => "",
         }
     }
     fn source(&self) -> &str {
         self.paused.as_deref().unwrap_or(&self.text)
+    }
+    fn severity_matches(&self, line: &str) -> bool {
+        let severity = severity(line);
+        (!self.errors_only && !self.warnings_only)
+            || (self.errors_only && severity == Some("error"))
+            || (self.warnings_only && severity == Some("warning"))
+    }
+    /// Capture the entire retained filtered window, before wrapping or horizontal
+    /// clipping. Keep timestamps and source attribution in the exported record.
+    pub fn export_text(&self) -> String {
+        let mut text = format!(
+            "# KBorg captured log window\n# {}\n# Filters: errors={} warnings={}\n# Application logs may contain confidential data.\n",
+            self.title(),
+            self.errors_only,
+            self.warnings_only
+        );
+        for line in self.source().lines() {
+            let shown = if self.show_timestamps {
+                line
+            } else {
+                logs::without_timestamp(line)
+            };
+            if control_line(line) || (self.compiled.matches(shown) && self.severity_matches(shown))
+            {
+                text.push_str(line);
+                text.push('\n');
+            }
+        }
+        text
     }
     fn selected_lines(&self) -> Vec<&str> {
         self.source()
@@ -195,11 +271,9 @@ impl LogView {
                 };
                 // Keep local retention and stream-control notices visible even when
                 // a filter would hide them. Ordinary application records are matched.
-                let control = line.starts_with("[Rolling buffer:")
-                    || line.starts_with("[Log stream ")
-                    || line.starts_with("[Stopped:")
-                    || line == MARK;
-                (control || self.compiled.matches(shown)).then_some(shown)
+                (control_line(line)
+                    || (self.compiled.matches(shown) && self.severity_matches(shown)))
+                .then_some(shown)
             })
             .collect()
     }
@@ -273,6 +347,14 @@ impl LogView {
             KeyCode::Esc | KeyCode::Char('q') => return LogAction::Close,
             KeyCode::Enter | KeyCode::Char('/') => self.draft = Some(self.filter.clone()),
             KeyCode::Char('?') => self.show_help = !self.show_help,
+            KeyCode::Char('e') => {
+                self.errors_only = !self.errors_only;
+                self.offset = 0;
+            }
+            KeyCode::Char('W') => {
+                self.warnings_only = !self.warnings_only;
+                self.offset = 0;
+            }
             KeyCode::Char('s') => {
                 if self.autoscroll {
                     self.pause()
@@ -461,6 +543,21 @@ fn bounded_text(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn severity_filters_combine_without_losing_export_timestamps_or_paused_window() {
+        let mut view=LogView::new("2026-10-23T10:00:00Z INFO ok\n2026-10-23T10:00:01Z ERROR failed\n2026-10-23T10:00:02Z WARN retry\n[Stopped: bounded]\n".into(),ReadOptions::default());
+        view.key(KeyCode::Char('e'));
+        let text = view.export_text();
+        assert!(text.contains("2026-10-23T10:00:01Z ERROR failed"));
+        assert!(!text.contains("INFO ok") && !text.contains("WARN retry"));
+        assert!(text.contains("[Stopped: bounded]"));
+        view.key(KeyCode::Char('W'));
+        assert!(view.export_text().contains("WARN retry"));
+        view.key(KeyCode::Char('s'));
+        view.update("ERROR new\n".into());
+        assert!(!view.export_text().contains("ERROR new"));
+        assert_eq!(severity("information about warningless errors"), None);
+    }
     fn view() -> LogView {
         LogView::new(
             (0..40)

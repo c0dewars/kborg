@@ -1,0 +1,23 @@
+{
+  "schema": 1,
+  "context": "kborg-v1",
+  "node": "kborg-v1-m02",
+  "mode": "owned-worker",
+  "node_uid": "4896da0e-dabd-401a-81a2-7befed0082e9",
+  "passed": true,
+  "checks": [
+    "cordon full review/dry-run/cancel preserved node spec",
+    "reviewed cordon and uncordon confirmed through live Node API",
+    "PDB denial preserved Pod, left node cordoned, returned failure",
+    "policy/v1 eviction removed reviewed UID; final inventory retained system/daemon Pods",
+    "explicit reviewed uncordon restored scheduling and fixture became Ready"
+  ],
+  "fixture_cleanup": true,
+  "node_restored": true,
+  "binary_sha256": "357fdd264de7da5d151fcb0b2e560313d556888fae39754579f30b4aa040fe8e",
+  "source_sha256": {
+    "src/node_maintenance.rs": "11c803f5d8e957468b566fad580cdaf4199dc45384ac77502050843103902857",
+    "scripts/test-node-maintenance.py": "adab530ab48ff02fb9faf483f8249b79fa09afde2126bba98449e6c261059cf2"
+  },
+  "audit_settings": ".local/node-acceptance-a9b7ac648d8b"
+}

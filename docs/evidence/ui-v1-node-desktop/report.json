@@ -1,0 +1,34 @@
+{
+  "passed": true,
+  "binary_sha256": "357fdd264de7da5d151fcb0b2e560313d556888fae39754579f30b4aa040fe8e",
+  "context": "docker-desktop",
+  "node": "desktop-control-plane",
+  "node_spec_unchanged": true,
+  "terminal_restored": true,
+  "captures": [
+    {
+      "name": "nodes",
+      "path": "/Users/brunogarcia/Desktop/HyperMac/repos/kborg/docs/evidence/ui-v1-node-desktop/nodes.png",
+      "width": 120,
+      "height": 34
+    },
+    {
+      "name": "cordon-review",
+      "path": "/Users/brunogarcia/Desktop/HyperMac/repos/kborg/docs/evidence/ui-v1-node-desktop/cordon-review.png",
+      "width": 120,
+      "height": 34
+    },
+    {
+      "name": "cordon-review-complete",
+      "path": "/Users/brunogarcia/Desktop/HyperMac/repos/kborg/docs/evidence/ui-v1-node-desktop/cordon-review-complete.png",
+      "width": 120,
+      "height": 34
+    },
+    {
+      "name": "cordon-cancelled",
+      "path": "/Users/brunogarcia/Desktop/HyperMac/repos/kborg/docs/evidence/ui-v1-node-desktop/cordon-cancelled.png",
+      "width": 120,
+      "height": 34
+    }
+  ]
+}

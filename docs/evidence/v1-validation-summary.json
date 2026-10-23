@@ -1,0 +1,106 @@
+{
+  "date": "2026-10-23",
+  "platform": "macOS arm64",
+  "status": "passed within documented scope",
+  "binary_sha256": "357fdd264de7da5d151fcb0b2e560313d556888fae39754579f30b4aa040fe8e",
+  "source_manifest": "docs/evidence/v1-build-source.json",
+  "source_manifest_matches": true,
+  "source_file_count": 66,
+  "cli_help_matches_ignoring_final_blank_line": true,
+  "build": "docs/evidence/v1-release-macos.txt",
+  "format_check": {
+    "passed": true,
+    "log": "docs/evidence/v1-fmt-macos.txt"
+  },
+  "clippy": {
+    "passed": true,
+    "all_targets": true,
+    "deny_warnings": true,
+    "log": "docs/evidence/v1-clippy-macos.txt"
+  },
+  "rust_tests": {
+    "passed": 380,
+    "failed": 0,
+    "ignored": 18,
+    "threads": 1,
+    "log": "docs/evidence/v1-tests-macos.txt"
+  },
+  "reports": [
+    {
+      "path": "docs/evidence/ui-v1-final/yaml-desktop/report.json",
+      "sha256": "28f9eb741bfae44a61b5562244e82f13ef879a217a0b1b2298429b7d2283bfd2",
+      "checks": 6,
+      "screens": 4
+    },
+    {
+      "path": "docs/evidence/ui-v1-final/yaml-minikube/report.json",
+      "sha256": "88cf6a0170ce5fc316b6df748624addffeabdaabdbf3f570ca9907e33bd601ed",
+      "checks": 6,
+      "screens": 4
+    },
+    {
+      "path": "docs/evidence/ui-v1-final/forwards-desktop/report.json",
+      "sha256": "469b5bb58c919676b824ed62c4eedc9e08d6797d1adc3322d5eb5a64f0221ca9",
+      "checks": 9,
+      "screens": 10
+    },
+    {
+      "path": "docs/evidence/ui-v1-final/forwards-minikube/report.json",
+      "sha256": "bf5b3daac3de1d0588f0a384e40cea53ae7b5e3be37030de7b9c262674d89fe3",
+      "checks": 9,
+      "screens": 10
+    },
+    {
+      "path": "docs/evidence/v1-node-desktop.json",
+      "sha256": "0697a2b6d623141f313b8047bac30cdd23daf32bec150b3cc6b6500ceaf48214",
+      "checks": 2,
+      "screens": 0
+    },
+    {
+      "path": "docs/evidence/v1-node-minikube.json",
+      "sha256": "9075298cd97df3e2522135e7650ef1ae691dc3679850f2c8efb18727069fcfc3",
+      "checks": 5,
+      "screens": 0
+    },
+    {
+      "path": "docs/evidence/ui-v1-node-desktop/report.json",
+      "sha256": "0b1d5a7c8a902dd94598d35b9ef5dcb91b6ea0ffc8fa5732fd9ad7927a7f604b",
+      "checks": 0,
+      "screens": 4
+    },
+    {
+      "path": "docs/evidence/ui-v1-final/exports/report.json",
+      "sha256": "bc38bacf453052bfad69db0c19eaf492090665168f76f80536b50d4045a9b249",
+      "checks": 5,
+      "screens": 5
+    },
+    {
+      "path": "docs/evidence/ui-v1-final/rose-pine/report.json",
+      "sha256": "dd9e7b023d93646e4f0da2daecd7855db0ea31bed8e5577379f314ee02ccc2d6",
+      "checks": 0,
+      "screens": 10
+    },
+    {
+      "path": "docs/evidence/v1-terminal-macos.json",
+      "sha256": "dacc0554c4050c598558c99bfb20a4b640f3702d7e5dbd40103333684d9b2e25",
+      "checks": 0,
+      "screens": 63
+    }
+  ],
+  "dependency_audit": {
+    "cached_database": true,
+    "packages": 203,
+    "advisories": 1349,
+    "vulnerabilities": 0,
+    "warnings": 0,
+    "report": "docs/evidence/v1-dependency-audit.json"
+  },
+  "cleanup": "docs/evidence/v1-cleanup.json",
+  "limitations": [
+    "An earlier parallel Rust run encountered snapshot-lock contention; final suite used one test thread.",
+    "Desktop node maintenance used review/dry-run/cancel only; live node changes used the owned minikube worker.",
+    "Screenshots are actual PTY captures; no broad real-terminal/accessibility matrix.",
+    "Prior Helm trust/CRD/Copilot live acceptance was not rerun.",
+    "Unsigned development release; roadmap and release gates remain open."
+  ]
+}
