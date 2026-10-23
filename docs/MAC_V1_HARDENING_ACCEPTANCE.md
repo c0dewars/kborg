@@ -28,7 +28,7 @@ The native package executable is separately identified as `36f6eeecba162df7e687e
 
 ## Continuous cluster soak
 
-The final two-hour runs are in progress on Docker Desktop Kubernetes 1.36.1 and disposable minikube Kubernetes 1.35.9. Their [soak guide](MAC_V1_SOAK.md) records the exact workload and acceptance budgets; final results will replace this in-progress statement after both runs and cleanup complete. Earlier 60-second smokes passed and are harness checks, not a substitute for the requested continuous duration.
+Both two-hour runs against the corrected `32a6b514…` binary passed with verified fixture cleanup. [Docker Desktop Kubernetes 1.36.1](evidence/soak-v1-desktop/report.json) ran 7,200.13 continuous seconds with 120 fixture mutations; [disposable minikube Kubernetes 1.35.9](evidence/soak-v1-minikube/report.json) ran 7,200.08 seconds with 118 mutations and a 45.303-second pause of the owned minikube container at 1,800 seconds, which both CLI streams reported as stale and then recovered from within the 20-second settle window. Peak RSS stayed below 15.2 MiB per process, RSS growth below 0.5 MiB and peak CPU at or below 0.5% of a core. The [soak guide](MAC_V1_SOAK.md) records the workload and budgets. An earlier pair interrupted on 2026-10-23 is archived in [its index](evidence/soak-v1-interrupted-20261023/index.json) as `passed: false` and is not acceptance evidence. Earlier 60-second smokes are harness checks, not a substitute for the continuous duration.
 
 ## Security and UI corrections
 
