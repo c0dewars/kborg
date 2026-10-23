@@ -1,0 +1,35 @@
+{
+  "passed": true,
+  "binary_sha256": "357fdd264de7da5d151fcb0b2e560313d556888fae39754579f30b4aa040fe8e",
+  "scope": "Actual offline demo terminal and explicit local exports; no cluster writes",
+  "checks": [
+    "resource export cancel writes no file",
+    "resource YAML explicit save and private permissions",
+    "log export contains source identity and retained window",
+    "Helm export selected metadata only",
+    "terminal restored"
+  ],
+  "screens": [
+    {
+      "name": "resource-export-review",
+      "path": "/Users/brunogarcia/Desktop/HyperMac/repos/kborg/docs/evidence/ui-v1-final/exports/resource-export-review.png"
+    },
+    {
+      "name": "resource-export-saved",
+      "path": "/Users/brunogarcia/Desktop/HyperMac/repos/kborg/docs/evidence/ui-v1-final/exports/resource-export-saved.png"
+    },
+    {
+      "name": "log-error-filter",
+      "path": "/Users/brunogarcia/Desktop/HyperMac/repos/kborg/docs/evidence/ui-v1-final/exports/log-error-filter.png"
+    },
+    {
+      "name": "log-export-review",
+      "path": "/Users/brunogarcia/Desktop/HyperMac/repos/kborg/docs/evidence/ui-v1-final/exports/log-export-review.png"
+    },
+    {
+      "name": "helm-export-review",
+      "path": "/Users/brunogarcia/Desktop/HyperMac/repos/kborg/docs/evidence/ui-v1-final/exports/helm-export-review.png"
+    }
+  ],
+  "temporary_files_removed": true
+}

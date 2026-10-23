@@ -102,6 +102,13 @@ pub fn resource(words: &[String]) -> Result<ResourceCommand> {
 }
 
 pub const SPECIAL: &[&str] = &[
+    "edit",
+    "edit-container",
+    "yaml-edit",
+    "export",
+    "cordon",
+    "uncordon",
+    "drain",
     "actions",
     "discover",
     "workload",

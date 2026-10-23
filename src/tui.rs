@@ -9,8 +9,8 @@ use crate::{
 use crossterm::{
     cursor,
     event::{
-        self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers,
-        MouseEvent, MouseEventKind,
+        self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
+        Event, KeyCode, KeyEventKind, KeyModifiers, MouseEvent, MouseEventKind,
     },
     execute, queue,
     style::{self, Color},
@@ -26,8 +26,12 @@ mod advice_ui;
 mod helm_ui;
 #[path = "ui_navigation.rs"]
 mod nav;
+#[path = "ui_review.rs"]
+mod review_ui;
 #[path = "ui_metrics.rs"]
 mod table_metrics;
+#[path = "ui_topbar.rs"]
+mod topbar;
 use std::{
     io::{self, IsTerminal, Write},
     sync::mpsc::{self, Receiver},
@@ -50,6 +54,7 @@ impl Terminal {
         if execute!(
             io::stdout(),
             EnterAlternateScreen,
+            EnableBracketedPaste,
             DisableLineWrap,
             cursor::Hide
         )
@@ -67,6 +72,7 @@ impl Terminal {
             let _ = execute!(
                 io::stdout(),
                 LeaveAlternateScreen,
+                DisableBracketedPaste,
                 EnableLineWrap,
                 DisableMouseCapture,
                 cursor::Show,
@@ -83,6 +89,7 @@ impl Drop for Terminal {
         let _ = execute!(
             io::stdout(),
             LeaveAlternateScreen,
+            DisableBracketedPaste,
             EnableLineWrap,
             DisableMouseCapture,
             cursor::Show,
@@ -100,6 +107,13 @@ enum Task {
     Drill(String, String, String),
     Get(String, String, String),
     Yaml(String, String, String),
+    ExportResource(String, String, String),
+    ExportHelm(crate::helm::Release),
+    YamlDraft(String, String, String, Option<String>),
+    YamlPrepare(Box<crate::ui_yaml::Editor>),
+    YamlExecute(Box<crate::manifest_edit::PreparedYaml>, String),
+    NodePrepare(String, Option<String>, crate::node_maintenance::Request),
+    NodeExecute(Box<crate::node_maintenance::ReviewedNode>, String),
     Overview(Connection, Vec<String>),
     PrepareSession(String, String, Option<String>, crate::ops::Request),
     RunSession(Box<crate::ops::ReviewedOperation>, String),
@@ -144,6 +158,14 @@ enum Reply {
     Items(Value),
     Detail(String),
     Object(Box<Value>),
+    Export(crate::exports::Draft),
+    YamlDraft(Box<crate::manifest_edit::Draft>),
+    YamlPrepared(
+        Box<crate::ui_yaml::Editor>,
+        Result<crate::manifest_edit::PreparedYaml>,
+    ),
+    NodePrepared(Box<crate::node_maintenance::ReviewedNode>),
+    WriteOutcome(Result<String>),
     Drill(Box<Value>),
     Directory(crate::navigation_views::Directory),
     Helm(u64, Result<helm_ui::Response>),
@@ -153,7 +175,7 @@ enum Reply {
     HelmOutcome(u64, Result<crate::helm_lifecycle::Outcome>),
     Overview(crate::overview::OverviewFeed),
     SessionPrepared(Box<crate::ops::ReviewedOperation>),
-    ForwardQueued,
+    ForwardQueued(u64),
     Membership(LogTarget, u64),
     Containers(LogTarget, u64, Vec<String>),
     Logs(u64, String),
@@ -262,56 +284,260 @@ struct Worker {
     logs: std::sync::Arc<LogSlot>,
     forward: std::sync::Arc<ForwardSlot>,
 }
+const MAX_FORWARDS: usize = 8;
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ForwardPhase {
+    Starting,
+    Listening,
+    Stopping,
+    Ended,
+    Failed,
+}
+impl ForwardPhase {
+    fn active(self) -> bool {
+        matches!(self, Self::Starting | Self::Listening | Self::Stopping)
+    }
+    fn label(self) -> &'static str {
+        match self {
+            Self::Starting => "STARTING",
+            Self::Listening => "LISTENING",
+            Self::Stopping => "STOPPING",
+            Self::Ended => "ENDED",
+            Self::Failed => "FAILED",
+        }
+    }
+}
+struct ForwardEntry {
+    id: u64,
+    target: crate::ops::ForwardTarget,
+    phase: ForwardPhase,
+    message: String,
+    cancel: Option<tokio::sync::oneshot::Sender<()>>,
+}
+#[derive(Default)]
+struct ForwardState {
+    generation: u64,
+    next_id: u64,
+    entries: Vec<ForwardEntry>,
+}
 #[derive(Default)]
 struct ForwardSlot {
-    generation: std::sync::atomic::AtomicU64,
-    cancel: std::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
-    message: std::sync::Mutex<String>,
+    state: std::sync::Mutex<ForwardState>,
 }
 impl ForwardSlot {
+    fn generation(&self) -> u64 {
+        self.state.lock().map(|s| s.generation).unwrap_or(u64::MAX)
+    }
     fn begin(
         &self,
         generation: u64,
         epoch: u64,
         watch: &WatchSlot,
-    ) -> Option<tokio::sync::oneshot::Receiver<()>> {
-        // Serialize sender installation with cancellation and recheck both identities
-        // under the same lock, so a queued approval cannot recreate a canceled session.
-        let mut active = self.cancel.lock().ok()?;
-        if self.generation.load(std::sync::atomic::Ordering::SeqCst) != generation
+        target: crate::ops::ForwardTarget,
+    ) -> Result<(u64, tokio::sync::oneshot::Receiver<()>)> {
+        // Allocation, collision reservation and cancellation share one lock. Scope
+        // cancellation invalidates approvals before any queued work can bind again.
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| "Forward status unavailable")?;
+        if state.generation != generation
             || watch.epoch.load(std::sync::atomic::Ordering::SeqCst) != epoch
         {
-            return None;
+            return Err(
+                "Forward canceled before start: context or scope changed; review again.".into(),
+            );
         }
+        if state
+            .entries
+            .iter()
+            .any(|entry| entry.phase.active() && entry.target.local_port == target.local_port)
+        {
+            return Err(format!(
+                "Local port {} is reserved by another forward; stop it and wait for cleanup, or choose a different port.",
+                target.local_port
+            ));
+        }
+        if state.entries.len() >= MAX_FORWARDS {
+            if let Some(index) = state.entries.iter().position(|entry| !entry.phase.active()) {
+                state.entries.remove(index);
+            } else {
+                return Err(
+                    "Eight forwards are active; stop a session and wait for cleanup first.".into(),
+                );
+            }
+        }
+        state.next_id = state
+            .next_id
+            .checked_add(1)
+            .ok_or("Forward session IDs exhausted")?;
+        let id = state.next_id;
         let (sender, receiver) = tokio::sync::oneshot::channel();
-        *active = Some(sender);
-        Some(receiver)
+        state.entries.push(ForwardEntry {
+            id,
+            target,
+            phase: ForwardPhase::Starting,
+            message: "Preparing reviewed loopback listener...".into(),
+            cancel: Some(sender),
+        });
+        Ok((id, receiver))
     }
     fn cancel(&self) -> u64 {
-        let generation = self
-            .generation
-            .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
-            + 1;
-        if let Ok(mut sender) = self.cancel.lock() {
-            sender.take();
+        let Ok(mut state) = self.state.lock() else {
+            return u64::MAX;
+        };
+        state.generation = state.generation.wrapping_add(1);
+        for entry in &mut state.entries {
+            if entry.phase.active() {
+                entry.phase = ForwardPhase::Stopping;
+                entry.message =
+                    "Cancellation requested; waiting for listener and client cleanup.".into();
+                entry.cancel.take();
+            }
         }
-        if let Ok(mut message) = self.message.lock() {
-            *message = "No active forward. F starts a reviewed loopback session.".into();
-        }
-        generation
+        state.generation
     }
-    fn publish(&self, generation: u64, text: &str) {
-        if let Ok(mut message) = self.message.lock()
-            && self.generation.load(std::sync::atomic::Ordering::SeqCst) == generation
-        {
-            *message = text.into();
+    fn cancel_selected(&self, selected: usize) -> bool {
+        let Ok(mut state) = self.state.lock() else {
+            return false;
+        };
+        let Some(entry) = state.entries.get_mut(selected) else {
+            return false;
+        };
+        if matches!(
+            entry.phase,
+            ForwardPhase::Ended | ForwardPhase::Failed | ForwardPhase::Stopping
+        ) {
+            return false;
         }
+        entry.phase = ForwardPhase::Stopping;
+        entry.message = "Cancellation requested; waiting for listener and client cleanup.".into();
+        entry.cancel.take();
+        true
+    }
+    fn listening(&self, id: u64, text: &str) -> Result<()> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| "Forward status unavailable")?;
+        let entry = state
+            .entries
+            .iter_mut()
+            .find(|entry| entry.id == id)
+            .ok_or("Forward was canceled before bind")?;
+        if entry.phase != ForwardPhase::Starting {
+            return Err("Forward was canceled before bind".into());
+        }
+        entry.phase = ForwardPhase::Listening;
+        entry.message = text.into();
+        Ok(())
+    }
+    fn finish(&self, id: u64, result: Result<String>) {
+        if let Ok(mut state) = self.state.lock()
+            && let Some(entry) = state.entries.iter_mut().find(|entry| entry.id == id)
+        {
+            entry.phase = if result.is_ok() {
+                ForwardPhase::Ended
+            } else {
+                ForwardPhase::Failed
+            };
+            entry.cancel.take();
+            entry.message = match result {
+                Ok(message) => message,
+                Err(error) => format!("Forward stopped: {error}"),
+            };
+        }
+    }
+    fn suggested_port(&self) -> u16 {
+        self.state
+            .lock()
+            .ok()
+            .and_then(|state| {
+                (8080..=8088).find(|port| {
+                    !state
+                        .entries
+                        .iter()
+                        .any(|entry| entry.phase.active() && entry.target.local_port == *port)
+                })
+            })
+            .unwrap_or(8080)
+    }
+    fn active_count(&self) -> usize {
+        self.state
+            .lock()
+            .map(|s| {
+                s.entries
+                    .iter()
+                    .filter(|entry| entry.phase.active())
+                    .count()
+            })
+            .unwrap_or(0)
+    }
+    fn len(&self) -> usize {
+        self.state.lock().map(|s| s.entries.len()).unwrap_or(0)
+    }
+    fn index(&self, id: u64) -> usize {
+        self.state
+            .lock()
+            .ok()
+            .and_then(|s| s.entries.iter().position(|entry| entry.id == id))
+            .unwrap_or(0)
     }
     fn text(&self) -> String {
-        self.message
-            .lock()
-            .map(|s| s.clone())
-            .unwrap_or_else(|_| "Forward status unavailable.".into())
+        self.lines(usize::MAX, 200, 64).join("\n")
+    }
+    fn lines(&self, selected: usize, width: usize, height: usize) -> Vec<String> {
+        let Ok(state) = self.state.lock() else {
+            return vec!["Forward status unavailable.".into()];
+        };
+        let count = state
+            .entries
+            .iter()
+            .filter(|entry| entry.phase.active())
+            .count();
+        let mut lines = vec![
+            format!("{count}/{MAX_FORWARDS} active   /   j k select   s stop   F new   Esc close"),
+            String::new(),
+        ];
+        if state.entries.is_empty() {
+            lines.push("No forwards. Select a Pod and press F to review a new session.".into());
+        } else {
+            lines.push("  STATE      LOCAL             POD / REMOTE".into());
+            let rows = height.saturating_sub(7).max(1);
+            let start = selected
+                .min(state.entries.len().saturating_sub(1))
+                .saturating_sub(rows.saturating_sub(1));
+            for (index, entry) in state.entries.iter().enumerate().skip(start).take(rows) {
+                lines.push(format!(
+                    "{} {:<10} 127.0.0.1:{:<5}  {}/{}:{}",
+                    if index == selected { ">" } else { " " },
+                    entry.phase.label(),
+                    entry.target.local_port,
+                    entry.target.namespace,
+                    entry.target.pod,
+                    entry.target.remote_port
+                ));
+            }
+            if let Some(entry) = state.entries.get(selected) {
+                lines.push(String::new());
+                lines.extend(
+                    wrap_text(
+                        &format!(
+                            "Session {} / {}s maximum / {}",
+                            entry.id, entry.target.seconds, entry.message
+                        ),
+                        width,
+                    )
+                    .lines()
+                    .map(str::to_owned),
+                );
+            }
+        }
+        lines.push(String::new());
+        lines.push(
+            "Loopback only / 4 clients per session / scope changes and exit stop all.".into(),
+        );
+        lines
     }
 }
 impl Drop for Worker {
@@ -391,6 +617,12 @@ fn worker() -> Worker {
                         } else { Err("Not connected; select a context or retry.".into()) };
                         Reply::Metrics(scope, n, result)
                     }
+                    Task::YamlPrepare(editor)=>{
+                        let result=if let Some(g)=gateway.as_ref() {match tokio::time::timeout(Duration::from_secs(35),g.prepare_yaml(&editor.draft,&editor.text())).await {Ok(result)=>result,Err(_)=>Err("YAML preparation timed out; draft retained.".into())}} else {Err("Not connected.".into())};
+                        Reply::YamlPrepared(editor,result)
+                    }
+                    Task::YamlExecute(prepared,typed)=>Reply::WriteOutcome(if let Some(g)=gateway.as_mut(){g.execute_yaml(*prepared,&typed).await}else{Err("Not connected; no YAML write started.".into())}),
+                    Task::NodeExecute(prepared,typed)=>Reply::WriteOutcome(if let Some(g)=gateway.as_ref(){crate::node_maintenance::execute(g,*prepared,&typed).await.map(|report|report.summary())}else{Err("Not connected; no node operation started.".into())}),
                     Task::RunSession(reviewed, typed) => {
                         if let Some(g) = gateway.as_ref() {
                             match crate::ops::run(g, *reviewed, &typed).await {
@@ -402,15 +634,17 @@ fn worker() -> Worker {
                     Task::RunForward(reviewed,typed,generation)=>{
                         if let Some(gateway)=gateway.as_ref() {
                             let gateway=gateway.clone();let slot=forward_results.clone();
-                            if let Some(cancel)=slot.begin(generation,epoch,&watch_results){
-                                slot.publish(generation,"Preparing reviewed loopback forward...");
-                                tokio::spawn(async move {
-                                    let bound=slot.clone();
-                                    let result=crate::ops::run_forward(&gateway,*reviewed,&typed,cancel,move|message|{bound.publish(generation,message);Ok(())}).await;
-                                    slot.publish(generation,&match result{Ok(message)=>message,Err(error)=>format!("Forward stopped: {error}")});
-                                });
-                                Reply::ForwardQueued
-                            }else{Reply::Failure("Forward canceled before start: context or scope changed; review again.".into())}
+                            match reviewed.forward_target().ok_or_else(||"Review does not authorize port forwarding".to_string()).and_then(|target|slot.begin(generation,epoch,&watch_results,target)) {
+                                Ok((id,cancel))=>{
+                                    tokio::spawn(async move {
+                                        let bound=slot.clone();
+                                        let result=crate::ops::run_forward(&gateway,*reviewed,&typed,cancel,move|message|bound.listening(id,message)).await;
+                                        slot.finish(id,result);
+                                    });
+                                    Reply::ForwardQueued(id)
+                                }
+                                Err(error)=>Reply::Failure(error),
+                            }
                         }else{Reply::Failure("Not connected; review again after reconnecting.".into())}
                     }
                     Task::AdvicePrepare(kind,namespace,name,uid,policy)=>{
@@ -476,6 +710,18 @@ fn worker() -> Worker {
                                     Task::Inspect(k,n,name) => Reply::Object(Box::new(g.get(&k,&n,&name).await?)),
                                     Task::Drill(k,n,name)=>Reply::Drill(Box::new(g.get(&k,&n,&name).await?)),
                                     Task::Yaml(k,n,name) => Reply::Detail(crate::inspect::yaml(&g.get(&k,&n,&name).await?)?),
+                                    Task::ExportResource(k,n,name) => Reply::Export(crate::exports::resource(&g.get(&k,&n,&name).await?)?),
+                                    Task::ExportHelm(release) => Reply::Export(crate::exports::helm(&crate::helm::detail(g,&release).await?)?),
+                                    Task::YamlDraft(kind,ns,name,uid)=>{
+                                        let draft=g.yaml_draft(&kind,&ns,&name).await?;
+                                        if uid.as_deref().is_none_or(|uid|Some(uid)!=draft.original["metadata"]["uid"].as_str()) {return Err("Selected resource was replaced; reopen YAML editor.".into());}
+                                        Reply::YamlDraft(Box::new(draft))
+                                    },
+                                    Task::NodePrepare(name,uid,request)=>{
+                                        let prepared=crate::node_maintenance::prepare(g,&name,request).await?;
+                                        if uid.as_deref().is_none_or(|uid|uid!=prepared.uid()) {return Err("Selected node was replaced; select it again.".into());}
+                                        Reply::NodePrepared(Box::new(prepared))
+                                    },
                                     Task::Overview(options,names) => Reply::Overview(crate::overview::OverviewFeed::new(&options,&names)?),
                                     Task::PrepareSession(n,name,uid,request) => {
                                         let prepared = crate::ops::prepare(g,&n,&name,request).await?;
@@ -530,7 +776,7 @@ fn worker() -> Worker {
                                         Reply::Prepared(Box::new(prepared))
                                     },
                                     Task::Execute(p,a) => Reply::Notice(g.execute(*p,a).await?),
-                                    Task::Connect(_) | Task::Watch(..) | Task::Metrics(..) | Task::RunSession(..) | Task::RunForward(..) | Task::Directory(_) | Task::Manifest(_) | Task::Helm(..) | Task::HelmPrepare(..) | Task::HelmExecute(..) | Task::AdvicePrepare(..) | Task::AdviceExecute(..) => return Err("invalid worker task".into()),
+                                    Task::YamlPrepare(..) | Task::YamlExecute(..) | Task::NodeExecute(..) | Task::Connect(_) | Task::Watch(..) | Task::Metrics(..) | Task::RunSession(..) | Task::RunForward(..) | Task::Directory(_) | Task::Manifest(_) | Task::Helm(..) | Task::HelmPrepare(..) | Task::HelmExecute(..) | Task::AdvicePrepare(..) | Task::AdviceExecute(..) => return Err("invalid worker task".into()),
                                 })
                             };
                             match tokio::time::timeout(Duration::from_secs(25), future).await {
@@ -603,6 +849,10 @@ enum Modal {
         usize,
     ),
     Editor(Box<ContainerDraft>),
+    YamlEditor(Box<crate::ui_yaml::Editor>),
+    WriteReview(Box<WriteReview>),
+    WriteRunning,
+    Export(crate::exports::Draft),
     PodContainers(Box<Value>, usize),
     Directory(crate::navigation_views::Directory, usize),
     ForwardForm(String, String, Option<String>, [String; 3], usize),
@@ -628,6 +878,14 @@ struct ContainerDraft {
     fields: [String; 5],
     active: usize,
     resources: bool,
+}
+enum WritePlan {
+    Yaml(Box<crate::manifest_edit::PreparedYaml>),
+    Node(Box<crate::node_maintenance::ReviewedNode>),
+}
+struct WriteReview {
+    plan: WritePlan,
+    view: review_ui::Review,
 }
 #[derive(Clone)]
 struct LogTarget {
@@ -722,6 +980,7 @@ struct App {
     helm_return: Option<(String, crate::helm::Storage)>,
     helm_elapsed: u64,
     last_forward: String,
+    forward_selected: usize,
     desired_resource: Option<String>,
     status: String,
     stale: bool,
@@ -759,6 +1018,20 @@ impl App {
             .map_err(|_| "clipboard request failed".into())
     }
     fn mouse(&mut self, mouse: MouseEvent, width: u16, height: u16) {
+        if matches!(self.modal, Modal::None)
+            && !self.write_inflight
+            && mouse.row == 0
+            && matches!(
+                mouse.kind,
+                MouseEventKind::Down(crossterm::event::MouseButton::Left)
+            )
+            && let Some(command) = topbar::command_at(width, mouse.column)
+        {
+            if let Err(error) = self.command(command) {
+                self.status = error;
+            }
+            return;
+        }
         let layout = Layout::new(width, height);
         match mouse.kind {
             MouseEventKind::ScrollDown => {
@@ -1055,6 +1328,12 @@ impl App {
             ("?" | "h" | "help", []) => self.modal = Modal::Help(0),
             ("a" | "alias" | "aliases", []) => self.aliases(),
             ("actions", []) => self.modal = Modal::Picker("Actions", self.action_menu(), 0),
+            ("export", []) => self.request_export(),
+            ("edit"|"yaml-edit",[])=>self.yaml_editor(),
+            ("edit-container",[])=>self.editor(),
+            ("cordon",[])=>self.node_maintenance(crate::node_maintenance::Request::Cordon),
+            ("uncordon",[])=>self.node_maintenance(crate::node_maintenance::Request::Uncordon),
+            ("drain",[])=>self.node_maintenance(crate::node_maintenance::Request::Drain{seconds:120}),
             ("ctx" | "context" | "contexts", []) => {
                 let list=contexts(&self.options.connection)?;
                 let index=list.iter().position(|name|name==&self.context).unwrap_or(0);
@@ -1371,11 +1650,82 @@ impl App {
             )
         })
     }
+    fn yaml_editor(&mut self) {
+        if self.busy {
+            self.status = "Wait for the current request before editing.".into();
+            return;
+        }
+        if !self.options.connection.writable || !self.options.connection.allow_yaml_edit {
+            self.status = "YAML editing requires --write --allow-yaml-edit.".into();
+            return;
+        }
+        if let Some((kind, ns, name)) = self.selected_target() {
+            self.send(Task::YamlDraft(kind, ns, name, self.selected_uid()));
+        }
+    }
+    fn node_maintenance(&mut self, request: crate::node_maintenance::Request) {
+        if self.busy {
+            self.status = "Wait for the current request before node maintenance.".into();
+            return;
+        }
+        if self.kind() != "nodes" {
+            self.status = "Select a Node in :nodes first.".into();
+            return;
+        }
+        if !self.options.connection.writable || !self.options.connection.allow_node_maintenance {
+            self.status = "Node maintenance requires --write --allow-node-maintenance.".into();
+            return;
+        }
+        if let Some((_, _, name)) = self.selected_target() {
+            self.send(Task::NodePrepare(name, self.selected_uid(), request));
+        }
+    }
     fn selected_uid(&self) -> Option<String> {
         self.visible()
             .get(self.selected)
             .and_then(|v| v["metadata"]["uid"].as_str())
             .map(str::to_owned)
+    }
+    fn request_export(&mut self) {
+        if self.busy || self.write_inflight {
+            self.status = "Wait for the current request before exporting.".into();
+            return;
+        }
+        if let Modal::Follow(view) = &self.modal {
+            let source = if let Some(target) = &self.log_target {
+                if let Some(membership) = &target.membership {
+                    serde_json::json!({"context":self.context,"membership":membership})
+                } else {
+                    serde_json::json!({"context":self.context,"namespace":target.namespace,"pod":target.pod,"uid":target.uid,"container":target.container,"all_containers":target.all})
+                }
+            } else {
+                serde_json::json!({"context":self.context,"source":"unavailable"})
+            };
+            let payload = format!("# Source: {}\n{}", source, view.export_text());
+            match crate::exports::Draft::new(
+                "logs",
+                "log",
+                "Captured logs / current filtered window",
+                payload,
+                "Application logs can contain credentials or other confidential data. This saves the retained window, including timestamps and source labels.",
+            ) {
+                Ok(draft) => {
+                    let previous = std::mem::replace(&mut self.modal, Modal::Export(draft));
+                    self.push_subview(previous);
+                }
+                Err(error) => self.status = error,
+            }
+        } else if let Modal::Helm(table) = &self.modal {
+            if let Some(release) = table.current() {
+                self.send(Task::ExportHelm(release));
+            }
+        } else if matches!(self.modal, Modal::None) {
+            if let Some((kind, ns, name)) = self.selected_target() {
+                self.send(Task::ExportResource(kind, ns, name));
+            }
+        } else {
+            self.status = "Export from a resource table, Helm table or log view.".into();
+        }
     }
     fn replace_items(&mut self, items: Vec<Value>) {
         let identity = self.visible().get(self.selected).map(|v| {
@@ -1411,6 +1761,8 @@ impl App {
         let writes = matches!(
             &task,
             Task::Execute(..)
+                | Task::YamlExecute(..)
+                | Task::NodeExecute(..)
                 | Task::RunSession(..)
                 | Task::RunForward(..)
                 | Task::HelmExecute(..)
@@ -1474,9 +1826,10 @@ impl App {
         let forward = self.worker.forward.text();
         if forward != self.last_forward {
             self.last_forward = forward;
-            if matches!(self.modal, Modal::ForwardView) {
-                changed = true;
-            }
+            self.forward_selected = self
+                .forward_selected
+                .min(self.worker.forward.len().saturating_sub(1));
+            changed = true;
         }
         while let Ok((epoch, reply)) = self.worker.rx.try_recv() {
             changed = true;
@@ -1496,6 +1849,62 @@ impl App {
                 continue;
             }
             match reply {
+                Reply::YamlDraft(draft) => {
+                    self.modal = Modal::YamlEditor(Box::new(crate::ui_yaml::Editor::new(*draft)));
+                    self.status = "Edit spec fields. Ctrl-S prepares a diff; Esc cancels.".into();
+                }
+                Reply::YamlPrepared(editor, result) => match result {
+                    Ok(prepared) => {
+                        let view = review_ui::Review::new(
+                            prepared.summary().into(),
+                            prepared.confirmation(),
+                            self.epoch,
+                        );
+                        self.push_subview(Modal::YamlEditor(editor));
+                        self.modal = Modal::WriteReview(Box::new(WriteReview {
+                            plan: WritePlan::Yaml(Box::new(prepared)),
+                            view,
+                        }));
+                        self.status = "Read each change, then type the target to apply.".into();
+                    }
+                    Err(error) => {
+                        self.modal = Modal::YamlEditor(editor);
+                        self.status = error;
+                    }
+                },
+                Reply::NodePrepared(prepared) => {
+                    let view = review_ui::Review::new(
+                        prepared.summary().into(),
+                        prepared.confirmation(),
+                        self.epoch,
+                    );
+                    self.modal = Modal::WriteReview(Box::new(WriteReview {
+                        plan: WritePlan::Node(prepared),
+                        view,
+                    }));
+                    self.status = "Review the node and workload inventory before approval.".into();
+                }
+                Reply::WriteOutcome(result) => {
+                    self.subviews.clear();
+                    self.stale = true;
+                    self.refresh = true;
+                    self.modal = Modal::Detail(
+                        match result {
+                            Ok(text) => text,
+                            Err(error) => format!(
+                                "Operation stopped\n\n{error}\n\nInspect current cluster state before retrying."
+                            ),
+                        },
+                        0,
+                    );
+                    self.status =
+                        "Operation finished. Inspect the outcome before continuing.".into();
+                }
+                Reply::Export(draft) => {
+                    let previous = std::mem::replace(&mut self.modal, Modal::Export(draft));
+                    self.push_subview(previous);
+                    self.status = "Review the local export; Enter saves, Esc cancels.".into();
+                }
                 Reply::Connected(c, s, n, k) => {
                     let selected_kind = self.desired_resource.take().unwrap_or_else(|| self.kind());
                     self.connecting_epoch = None;
@@ -1676,9 +2085,11 @@ impl App {
                 Reply::SessionPrepared(prepared) => {
                     self.modal = Modal::SessionConfirm(prepared, String::new())
                 }
-                Reply::ForwardQueued => {
+                Reply::ForwardQueued(id) => {
+                    self.forward_selected = self.worker.forward.index(id);
                     self.modal = Modal::ForwardView;
-                    self.status="Reviewed forward runs in this session; s stops it; context/scope changes cancel it.".into();
+                    self.status =
+                        "Forward approved. Esc returns to resources; :pf reopens sessions.".into();
                 }
                 Reply::Membership(target, generation) => {
                     if generation
@@ -2015,7 +2426,7 @@ impl App {
             return;
         }
         if !self.options.connection.writable || !self.options.connection.allow_port_forward {
-            self.status = "Port-forward requires --write and --allow-port-forward.".into();
+            self.status = "Port-forward requires --write and --allow-forward.".into();
             return;
         }
         if self.options.connection.demo || self.kind() != "pods" {
@@ -2027,7 +2438,11 @@ impl App {
                 namespace,
                 pod,
                 self.selected_uid(),
-                ["8080".into(), "80".into(), "300".into()],
+                [
+                    self.worker.forward.suggested_port().to_string(),
+                    "80".into(),
+                    "300".into(),
+                ],
                 0,
             );
         }
@@ -2483,6 +2898,85 @@ impl App {
         self.sticky_status = false;
         let modal = std::mem::replace(&mut self.modal, Modal::None);
         match modal {
+            Modal::YamlEditor(mut editor) => {
+                match editor.key(crossterm::event::KeyEvent::new(code, KeyModifiers::NONE)) {
+                    Ok(crate::ui_yaml::Event::Cancel) => self.close_subview(),
+                    Ok(crate::ui_yaml::Event::Review) => self.send(Task::YamlPrepare(editor)),
+                    Ok(crate::ui_yaml::Event::Continue) => self.modal = Modal::YamlEditor(editor),
+                    Err(error) => {
+                        self.status = error;
+                        self.modal = Modal::YamlEditor(editor);
+                    }
+                }
+            }
+            Modal::WriteRunning => self.modal = Modal::WriteRunning,
+            Modal::WriteReview(mut review) => match code {
+                KeyCode::Esc => self.close_subview(),
+                KeyCode::Enter => {
+                    let (width, height) = terminal::size().unwrap_or((80, 24));
+                    if !self.busy && review.view.ready(width, height, self.epoch) {
+                        self.modal = Modal::WriteRunning;
+                        let task = match review.plan {
+                            WritePlan::Yaml(prepared) => {
+                                Task::YamlExecute(prepared, review.view.typed)
+                            }
+                            WritePlan::Node(prepared) => {
+                                Task::NodeExecute(prepared, review.view.typed)
+                            }
+                        };
+                        self.send(task);
+                        if !self.write_inflight {
+                            self.modal = Modal::Detail(
+                                "Operation not queued. Prepare and review again.".into(),
+                                0,
+                            );
+                        }
+                    } else {
+                        self.status =
+                            "Read every review line and type the exact target before applying."
+                                .into();
+                        self.modal = Modal::WriteReview(review);
+                    }
+                }
+                _ => {
+                    let (width, height) = terminal::size().unwrap_or((80, 24));
+                    review.view.key(
+                        code,
+                        usize::from(width.saturating_sub(2)),
+                        usize::from(height.saturating_sub(8)),
+                    );
+                    self.modal = Modal::WriteReview(review);
+                }
+            },
+            Modal::Export(draft) => match code {
+                KeyCode::Esc => self.close_subview(),
+                KeyCode::Enter => {
+                    let (width, height) = terminal::size().unwrap_or((80, 24));
+                    if wrap_text(&draft.review(), usize::from(width.saturating_sub(2)))
+                        .lines()
+                        .count()
+                        > usize::from(height.saturating_sub(8))
+                    {
+                        self.status="Enlarge the terminal to review the full export destination before saving.".into();
+                        self.modal = Modal::Export(draft);
+                    } else {
+                        self.status = match draft.save() {
+                            Ok(path) => format!(
+                                "Saved {}",
+                                path.display()
+                                    .to_string()
+                                    .chars()
+                                    .flat_map(char::escape_default)
+                                    .collect::<String>()
+                            ),
+                            Err(error) => error,
+                        };
+                        self.modal =
+                            Modal::AdviceDocument("EXPORT RESULT".into(), self.status.clone(), 0);
+                    }
+                }
+                _ => self.modal = Modal::Export(draft),
+            },
             Modal::AdviceReview(mut review) => match code {
                 KeyCode::Esc => self.close_subview(),
                 KeyCode::Enter => {
@@ -2678,13 +3172,28 @@ impl App {
             }
             Modal::ForwardView => match code {
                 KeyCode::Esc | KeyCode::Char('q') => self.close_subview(),
-                KeyCode::Char('s') => {
-                    self.worker.forward.cancel();
-                    self.status =
-                        "Forward stopped; loopback listener and clients are closing.".into();
+                KeyCode::Down | KeyCode::Char('j') => {
+                    self.forward_selected = (self.forward_selected + 1)
+                        .min(self.worker.forward.len().saturating_sub(1));
                     self.modal = Modal::ForwardView;
                 }
-                KeyCode::Char('F') => self.request_forward(),
+                KeyCode::Up | KeyCode::Char('k') => {
+                    self.forward_selected = self.forward_selected.saturating_sub(1);
+                    self.modal = Modal::ForwardView;
+                }
+                KeyCode::Char('s') => {
+                    self.status = if self.worker.forward.cancel_selected(self.forward_selected) {
+                        "Stopping selected forward; waiting for listener and client cleanup."
+                    } else {
+                        "Selected forward is already stopped or stopping."
+                    }
+                    .into();
+                    self.modal = Modal::ForwardView;
+                }
+                KeyCode::Char('F') => {
+                    self.modal = Modal::ForwardView;
+                    self.request_forward();
+                }
                 _ => self.modal = Modal::ForwardView,
             },
             Modal::ForwardForm(namespace, pod, uid, mut fields, mut index) => match code {
@@ -2731,7 +3240,7 @@ impl App {
                             },
                         ));
                     } else {
-                        self.status="Use local port1024..65535, remote port1..65535, duration1..300s; Pod UID required.".into();
+                        self.status="Use local port 1024..65535, remote port 1..65535 and duration 1..300s; Pod UID required.".into();
                         self.modal = Modal::ForwardForm(namespace, pod, uid, fields, index);
                     }
                 }
@@ -2816,7 +3325,9 @@ impl App {
                             || !self.options.connection.allow_port_forward
                             || self.options.connection.demo
                         {
-                            self.status="Port-forward requires a live Pod, --write and --allow-port-forward.".into();
+                            self.status =
+                                "Port-forward requires a live Pod, --write and --allow-forward."
+                                    .into();
                             self.modal = Modal::PodContainers(object, index);
                         } else {
                             let namespace = namespace(&object).to_owned();
@@ -2827,7 +3338,11 @@ impl App {
                                 namespace,
                                 pod,
                                 uid,
-                                ["8080".into(), "80".into(), "300".into()],
+                                [
+                                    self.worker.forward.suggested_port().to_string(),
+                                    "80".into(),
+                                    "300".into(),
+                                ],
                                 0,
                             );
                         }
@@ -3400,7 +3915,7 @@ impl App {
                 _ => self.modal = Modal::SessionContainers(n, name, uid, names, index, attach),
             },
             Modal::SessionConfirm(prepared, mut text) => match code {
-                KeyCode::Esc => self.status = "Pod shell canceled.".into(),
+                KeyCode::Esc => self.status = "Session review canceled.".into(),
                 KeyCode::Enter => {
                     let (width, height) = terminal::size().map_err(|_| "terminal size failed")?;
                     if !confirmation_fits(prepared.summary(), &text, width, height) {
@@ -3411,7 +3926,7 @@ impl App {
                         self.modal = Modal::SessionConfirm(prepared, text);
                     } else {
                         if prepared.is_port_forward() {
-                            let generation = self.worker.forward.cancel();
+                            let generation = self.worker.forward.generation();
                             self.send(Task::RunForward(prepared, text, generation));
                         } else {
                             self.pending_session = Some((prepared, text));
@@ -3758,8 +4273,7 @@ impl App {
                 }
                 KeyCode::Char('c') => {
                     if self.kind() == "nodes" && self.options.connection.writable {
-                        self.status =
-                            "Node cordon is unavailable; no operation was performed.".into();
+                        self.node_maintenance(crate::node_maintenance::Request::Cordon);
                         return Ok(false);
                     }
                     if let Some(object) = self.visible().get(self.selected) {
@@ -3773,14 +4287,16 @@ impl App {
                 }
                 KeyCode::Char('?') => self.modal = Modal::Help(0),
                 KeyCode::Char('u') => {
-                    self.status = "Node uncordon is unavailable; no operation was performed.".into()
+                    self.node_maintenance(crate::node_maintenance::Request::Uncordon)
                 }
                 KeyCode::Char('z') => self.status =
                     "Inspection is already redacted; additional k9s sanitization is unavailable."
                         .into(),
                 KeyCode::Char('r') => {
                     if self.kind() == "nodes" {
-                        self.status = "Node drain is unavailable; Ctrl-R refreshes.".into();
+                        self.node_maintenance(crate::node_maintenance::Request::Drain {
+                            seconds: 120,
+                        });
                         return Ok(false);
                     }
                     if crate::edit::supports_resource(&self.kind()) {
@@ -3863,7 +4379,7 @@ impl App {
                         "Show Node requires a scheduled Pod. :overview opens multiple contexts."
                             .into();
                 }
-                KeyCode::Char('e') => self.editor(),
+                KeyCode::Char('e') => self.yaml_editor(),
                 KeyCode::Char('V') => {
                     if !self.options.connection.writable {
                         self.status = "READ ONLY: resource budgets require --write.".into();
@@ -3921,7 +4437,34 @@ impl App {
         if self.write_inflight {
             return self.key(code);
         }
+        if matches!(self.modal, Modal::YamlEditor(..)) {
+            if let Modal::YamlEditor(mut editor) = std::mem::replace(&mut self.modal, Modal::None) {
+                match editor.key(crossterm::event::KeyEvent::new(code, modifiers)) {
+                    Ok(crate::ui_yaml::Event::Cancel) => self.close_subview(),
+                    Ok(crate::ui_yaml::Event::Review) => {
+                        if self.busy {
+                            self.modal = Modal::YamlEditor(editor);
+                            self.status = "Wait for the current request; draft retained.".into();
+                        } else {
+                            self.send(Task::YamlPrepare(editor));
+                        }
+                    }
+                    Ok(crate::ui_yaml::Event::Continue) => self.modal = Modal::YamlEditor(editor),
+                    Err(error) => {
+                        self.status = error;
+                        self.modal = Modal::YamlEditor(editor);
+                    }
+                }
+            }
+            return Ok(false);
+        }
         if modifiers.contains(KeyModifiers::CONTROL) {
+            if let Modal::WriteReview(review) = &mut self.modal {
+                if matches!(code, KeyCode::Char('u' | 'w')) {
+                    review.view.typed.clear();
+                }
+                return Ok(false);
+            }
             if let Modal::AdviceReview(review) = &mut self.modal {
                 if matches!(code, KeyCode::Char('u' | 'w')) {
                     review.typed.clear();
@@ -3949,7 +4492,7 @@ impl App {
                         self.begin_helm_form(helm_ui::Intent::Uninstall(current));
                     }
                 } else if code == KeyCode::Char('s') {
-                    self.status="Helm release export is unavailable; y shows safe selected revision metadata only.".into();
+                    self.request_export();
                 }
                 return Ok(false);
             }
@@ -3964,7 +4507,7 @@ impl App {
                         self.reload_logs(view, read);
                     }
                 } else if code == KeyCode::Char('s') {
-                    self.status="Log export is unavailable; resource Ctrl-S saves redacted API objects only.".into();
+                    self.request_export();
                 }
                 return Ok(false);
             }
@@ -4403,10 +4946,10 @@ fn resource_label(kind: &Kind) -> String {
         }
     }
 }
-const TUI_HELP: &str = "NAVIGATE LIKE K9S\n  :pod :pods :po           Singular, plural or discovered short name\n  :pod NAMESPACE          Resource in namespace; all means all namespaces\n  :pod /api|web           Resource plus regex filter\n  :pod app=api,tier=web    Server-side label selector\n  :pod @CONTEXT           Switch context; context names retain their case\n  :ctx / :ctx NAME        Context picker (Pod view) / direct switch (same view)\n  :ns / :ns NAME          Namespace picker / direct switch (Pod view)\n  Ctrl-A / :aliases       Resource alias picker; Enter navigates\n  :pulses / :pu           Read-only cluster health snapshot\n  :xray po|svc|dp [NS]    Ownership and service relationship snapshot\n  :screendump / :sd       Browse saved redacted resource snapshots\n  :can u:NAME             Read-only RBAC subject view\n  :dir PATH               Browse local YAML directory; no apply\n  :helm [NAMESPACE]       Native release metadata (--allow-helm)\n  :history RELEASE        Selected release revision history\n  :q :q! :qa :Q :quit     Quit (in-flight mutations must finish)\n\nCOMMAND PROMPT\n  : / Tab                 Open prompt; Tab completes; Shift-Tab reverses\n  Up / Down               Recall in-session command history\n  Left Right Home End     Edit at cursor; Ctrl-U clears\n  Enter / Esc             Run command / cancel without changing view\n  [ / ] / -               Previous / next / last view\n  Esc                     Close view or return to previous resource\n\nFILTER\n  /PATTERN                Case-insensitive regex over namespace/name/status\n  /!PATTERN               Inverse regex\n  /-f PATTERN             Fuzzy subsequence match\n  /-l LABEL_SELECTOR      Apply server-side label selector on Enter\n  Enter / Esc             Keep / restore previous filter and selected UID\n\nRESOURCE TABLE\n  j k / arrows            Move; PgUp PgDown Home End page\n  Enter                   Drill into containers, related Pods or namespace\n  d                       Describe selected object (redacted overview)\n  y / v                   View redacted YAML; J views JSON\n  c / n                   Copy name / namespace via terminal OSC52 clipboard\n  w / 0                   Warp to selected namespace / all namespaces\n  N / A / S / R           Sort by name / age / status / readiness\n  C / M                   Sort Pods/Nodes by CPU / memory, highest first\n  CPU/MEM snapshots refresh every 15s while the table is visible; - means\n  unknown, never zero. ~ indicates Metrics API omitted UID; creation checked.\n  Table CPU/MEM labels are rounded; d or m shows exact measured quantities.\n  Space / Ctrl-Space      Mark / mark range (visual only; no bulk mutations)\n  Ctrl-Backslash          Clear marks\n  Ctrl-S                  Save current visible redacted resource snapshot\n  Ctrl-R / :discover      Refresh / API discovery; r restarts workloads\n  l / p                   Follow logs / previous logs (--allow-logs)\n  Pod s / a / f / F       Shell / attach / forwards / new forward\n  Workload s / r          Scale Deployment-StatefulSet / reviewed restart\n  e                       Controlled workload container editor\n  Ctrl-D                  Reviewed deletion; Ctrl-K force kill disabled\n  o                       Show selected Pod's Node\n\nHELM AND LOGS\n  Helm Enter / r          Release revision history\n  History Enter / v       Explicit selected revision stored values\n  Helm i / u / t / c      Install / upgrade / test / separately install chart CRDs\n  History r / Ctrl-D      Rollback selected revision / uninstall current release\n  Helm lifecycle needs --write --allow-helm --allow-helm-write and --helm-tool.\n  Sources: local .tgz or explicit OCI :TAG / @sha256:DIGEST.
+const TUI_HELP: &str = "NAVIGATE LIKE K9S\n  :pod :pods :po           Singular, plural or discovered short name\n  :pod NAMESPACE          Resource in namespace; all means all namespaces\n  :pod /api|web           Resource plus regex filter\n  :pod app=api,tier=web    Server-side label selector\n  :pod @CONTEXT           Switch context; context names retain their case\n  :ctx / :ctx NAME        Context picker (Pod view) / direct switch (same view)\n  :ns / :ns NAME          Namespace picker / direct switch (Pod view)\n  Ctrl-A / :aliases       Resource alias picker; Enter navigates\n  :pulses / :pu           Read-only cluster health snapshot\n  :xray po|svc|dp [NS]    Ownership and service relationship snapshot\n  :screendump / :sd       Browse saved redacted resource snapshots\n  :can u:NAME             Read-only RBAC subject view\n  :dir PATH               Browse local YAML directory; no apply\n  :helm [NAMESPACE]       Native release metadata (--allow-helm)\n  :history RELEASE        Selected release revision history\n  :q :q! :qa :Q :quit     Quit (in-flight mutations must finish)\n\nCOMMAND PROMPT\n  : / Tab                 Open prompt; Tab completes; Shift-Tab reverses\n  Up / Down               Recall in-session command history\n  Left Right Home End     Edit at cursor; Ctrl-U clears\n  Enter / Esc             Run command / cancel without changing view\n  [ / ] / -               Previous / next / last view\n  Esc                     Close view or return to previous resource\n\nFILTER\n  /PATTERN                Case-insensitive regex over namespace/name/status\n  /!PATTERN               Inverse regex\n  /-f PATTERN             Fuzzy subsequence match\n  /-l LABEL_SELECTOR      Apply server-side label selector on Enter\n  Enter / Esc             Keep / restore previous filter and selected UID\n\nRESOURCE TABLE\n  j k / arrows            Move; PgUp PgDown Home End page\n  Enter                   Drill into containers, related Pods or namespace\n  d                       Describe selected object (redacted overview)\n  y / v                   View redacted YAML; J views JSON\n  c / n                   Copy name / namespace via terminal OSC52 clipboard\n  w / 0                   Warp to selected namespace / all namespaces\n  N / A / S / R           Sort by name / age / status / readiness\n  C / M                   Sort Pods/Nodes by CPU / memory, highest first\n  CPU/MEM snapshots refresh every 15s while the table is visible; - means\n  unknown, never zero. ~ indicates Metrics API omitted UID; creation checked.\n  Table CPU/MEM labels are rounded; d or m shows exact measured quantities.\n  Space / Ctrl-Space      Mark / mark range (visual only; no bulk mutations)\n  Ctrl-Backslash          Clear marks\n  Ctrl-S / :export        Save visible snapshot / selected resource YAML\n  Ctrl-R / :discover      Refresh / API discovery; r restarts workloads\n  l / p                   Follow logs / previous logs (--allow-logs)\n  Pod s / a / f / F       Shell / attach / forwards / new forward\n  Workload s / r          Scale Deployment-StatefulSet / reviewed restart\n  e / :edit-container     YAML spec editor / focused container editor\n  Ctrl-D                  Reviewed deletion; Ctrl-K force kill disabled\n  o                       Show selected Pod's Node\n\nHELM AND LOGS\n  Helm Enter / r          Release revision history\n  History Enter / v       Explicit selected revision stored values\n  Helm i / u / t / c      Install / upgrade / test / separately install chart CRDs\n  History r / Ctrl-D      Rollback selected revision / uninstall current release\n  Helm lifecycle needs --write --allow-helm --allow-helm-write and --helm-tool.\n  Sources: local .tgz or explicit OCI :TAG / @sha256:DIGEST.
   --helm-keyring requires native Helm provenance verification during prepare.\n  Hooks/CRDs require --allow-helm-hooks / --allow-helm-crds; default OFF.\n  :helm-crds prepares create-only Namespaced CRDs, retained on uninstall.
   :helm-test runs stored tests; :helm-crds-upgrade reviews schema changes.
-  :helm-crds-delete is explicit, checks live instances and needs stronger approval.\n  :helm-crds-migrate reviews storage rewrites; controller proof gates finalization.\n  :copilot previews selected diagnostics; explicit policy and transfer approval to send.\n  Every review line must be painted before exact namespace/release approval.\n  Helm d / m / y          Metadata / resource identities / metadata YAML\n  Helm Ctrl-R / /         Refresh / filter; Esc returns to previous view\n  Log a                   Toggle all ordinary containers / preferred container\n  Workload l / p          Fixed captured Pod membership / previous logs\n  :logs LABEL_SELECTOR    Explicit namespace-scoped multi-Pod log capture\n  Group reloads keep the same Pod UIDs; close and reopen to capture new Pods.\n  Log 0..6                Tail / head / last 1m,5m,15m,30m,1h\n  Log s w t f             Autoscroll / wrap / timestamps / fullscreen\n  Pod l honors the default-container annotation, otherwise merges multiple\n  ordinary containers. Each merged line carries a namespace/Pod/container.\n\nKBORG COMMANDS\n  :actions                Discover actions with capability reasons\n  :scale :image :restart  Explicit reviewed workload operations\n  :metrics [resources]    Metrics / opt into requests-limit comparisons\n  :overview               Live overview of up to four explicit contexts\n  :themes                 Theme preview and custom palette creation\n\nLIMITS AND SAFETY\n  Context, namespace and mode remain visible; DEMO is sample data.\n  STALE and TRUNCATED indicate incomplete data. Regex uses bounded Rust regex\n  syntax; look-around and backreferences are unavailable. Secrets excluded.\n  e edits only ordinary-container image and optional CPU/memory budget on\n  Deployments, StatefulSets, DaemonSets and CronJobs, with captured UID, fresh\n  server dry-run and full review. Generic YAML editing/apply is unavailable.\n  Transfer and node cordon/uncordon/drain/shell,\n  benchmarks and external scans have explicit unavailable messages.\n  Helm release reads need --allow-helm. Values are stored overrides with\n  known fields redacted; custom keys can remain confidential. Complete\n  review is mandatory for lifecycle changes. Raw storage, chart files and notes are excluded.\n  Visual marks never authorize bulk writes. Every mutation requires --write\n  plus one-use approval; shell/attach/forward need separate capabilities.";
+  :helm-crds-delete is explicit, checks live instances and needs stronger approval.\n  :helm-crds-migrate reviews storage rewrites; controller proof gates finalization.\n  :copilot previews selected diagnostics; explicit policy and transfer approval to send.\n  Every review line must be painted before exact namespace/release approval.\n  Helm d / m / y          Metadata / resource identities / metadata YAML\n  Helm Ctrl-R / /         Refresh / filter; Esc returns to previous view\n  Log a                   Toggle all ordinary containers / preferred container\n  Workload l / p          Fixed captured Pod membership / previous logs\n  :logs LABEL_SELECTOR    Explicit namespace-scoped multi-Pod log capture\n  Group reloads keep the same Pod UIDs; close and reopen to capture new Pods.\n  Log 0..6                Tail / head / last 1m,5m,15m,30m,1h\n  Log s w t f             Autoscroll / wrap / timestamps / fullscreen\n  Log e / W / Ctrl-S      Error matches / warning matches / local export\n  Pod l honors the default-container annotation, otherwise merges multiple\n  ordinary containers. Each merged line carries a namespace/Pod/container.\n\nKBORG COMMANDS\n  :actions                Discover actions with capability reasons\n  :scale :image :restart  Explicit reviewed workload operations\n  :metrics [resources]    Metrics / opt into requests-limit comparisons\n  :overview               Live overview of up to four explicit contexts\n  :themes                 Theme preview and custom palette creation\n\nLIMITS AND SAFETY\n  Context, namespace and mode remain visible; DEMO is sample data.\n  STALE and TRUNCATED indicate incomplete data. Regex uses bounded Rust regex\n  syntax; look-around and backreferences are unavailable. Secrets excluded.\n  e edits existing namespaced non-Secret spec fields with --allow-yaml-edit.\n  Hidden values, metadata and status are preserved; no resource creation.\n  :edit-container retains focused image/resource forms.\n  Node c/u/r reviews cordon/uncordon/drain with --allow-node-maintenance.\n  Pod file transfer, node shell, benchmarks and scans remain unavailable.\n  Helm release reads need --allow-helm. Values are stored overrides with\n  known fields redacted; custom keys can remain confidential. Complete\n  review is mandatory for lifecycle changes. Raw storage, chart files and notes are excluded.\n  Visual marks never authorize bulk writes. Every mutation requires --write\n  plus one-use approval; shell/attach/forward need separate capabilities.";
 
 #[derive(Clone, Copy, Debug)]
 struct Rect {
@@ -4808,6 +5351,34 @@ fn render_helm_review_footer(
         bg,
     )
 }
+fn render_write_footer(
+    out: &mut impl Write,
+    review: &review_ui::Review,
+    w: u16,
+    h: u16,
+    colors: [Color; 3],
+) -> io::Result<()> {
+    let [accent, warning, bg] = colors;
+    row(
+        out,
+        h - 2,
+        w,
+        &format!(" {} > {}_", review.confirmation, review.typed),
+        warning,
+        bg,
+    )?;
+    row(
+        out,
+        h - 1,
+        w,
+        &format!(
+            " {} unread / PgUp PgDown review / Enter apply / Esc back",
+            review.remaining(usize::from(w.saturating_sub(2)))
+        ),
+        accent,
+        bg,
+    )
+}
 fn draw(app: &mut App) -> Result<()> {
     let (w, h) = terminal::size().map_err(|_| "cannot read terminal size")?;
     let mut frame = Vec::new();
@@ -4822,6 +5393,14 @@ fn draw(app: &mut App) -> Result<()> {
             ui_color(app, "warning"),
             ui_color(app, "background"),
         ];
+        if let Modal::WriteReview(review) = &mut app.modal {
+            review
+                .view
+                .mark_drawn(usize::from(w - 2), usize::from(h - 8));
+            render_write_footer(&mut out, &review.view, w, h, advice_colors)
+                .and_then(|_| out.flush())
+                .map_err(|_| "draw failed")?;
+        }
         if let Modal::AdviceReview(review) = &mut app.modal {
             review.mark_drawn(usize::from(w - 2), usize::from(h - 8));
             render_advice_footer(&mut out, review, w, h, advice_colors)
@@ -4961,7 +5540,8 @@ fn render_log_modal(
                     &details
                 };
                 return format!(
-                    "FIXED {} Pods / {} containers | {} | {} | {}",
+                    "FIXED{} {} Pods / {} containers | {} | {} | {}",
+                    view.severity_badge(),
                     membership.pods().len(),
                     membership.source_count(),
                     details,
@@ -4970,7 +5550,8 @@ fn render_log_modal(
                 );
             }
             format!(
-                "LOGS {}/{} / {} | {}",
+                "LOGS{} {}/{} / {} | {}",
+                view.severity_badge(),
                 target.namespace,
                 target.pod,
                 if target.all {
@@ -4991,7 +5572,12 @@ fn render_log_modal(
         .iter()
         .enumerate()
     {
-        cell(out, 1, y + 1 + index as u16, w - 2, line, color("text"), bg)
+        let role = match crate::ui_logs::severity(line) {
+            Some("error") => "danger",
+            Some("warning") => "warning",
+            _ => "text",
+        };
+        cell(out, 1, y + 1 + index as u16, w - 2, line, color(role), bg)
             .map_err(|_| "draw failed")?;
     }
     row(out, h - 2, w, view.help(), color("accent"), bg).map_err(|_| "draw failed")?;
@@ -5017,6 +5603,7 @@ fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
     };
     let bg = color("background");
     let fg = color("text");
+    queue!(out, cursor::Hide).map_err(|_| "draw failed")?;
     // Surfaces are derived from the selected palette, so every theme keeps its
     // identity and existing terminal-depth/NO_COLOR handling remains central.
     let surface = if app.options.color && !t.terminal {
@@ -5052,41 +5639,84 @@ fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
     } else {
         Color::Reset
     };
-    row(out, 0, w, "", fg, bg).map_err(|_| "draw failed")?;
-    let brand = if w >= 64 { "  KBORG  " } else { "KBORG " };
-    cell(out, 0, 0, brand.len() as u16, brand, color("accent"), bg).map_err(|_| "draw failed")?;
-    let mode_text = if w >= 64 {
-        format!("  {mode}")
-    } else {
-        mode.into()
+    row(out, 0, w, "", fg, surface).map_err(|_| "draw failed")?;
+    cell(
+        out,
+        0,
+        0,
+        8.min(w),
+        " KBORG ",
+        color("selection_text"),
+        color("selection_background"),
+    )
+    .map_err(|_| "draw failed")?;
+    let active = match &app.modal {
+        Modal::Helm(..) | Modal::HelmForm(..) | Modal::HelmReview(..) => "helm".to_owned(),
+        Modal::ForwardView | Modal::ForwardForm(..) => "pf".to_owned(),
+        Modal::Themes(..) => "themes".to_owned(),
+        Modal::Help(..) => "help".to_owned(),
+        _ => match app.kind().as_str() {
+            "deployments" | "deployments.apps" => "deploy".into(),
+            "services" => "svc".into(),
+            kind => kind.to_owned(),
+        },
     };
+    for item in topbar::items(if w >= 64 { w } else { 0 }) {
+        let selected = item.command == active;
+        cell(
+            out,
+            item.x,
+            0,
+            item.width,
+            &format!(" {} ", item.label),
+            if selected {
+                color("selection_text")
+            } else {
+                color("muted")
+            },
+            if selected {
+                color("selection_background")
+            } else {
+                surface
+            },
+        )
+        .map_err(|_| "draw failed")?;
+    }
+    row(out, 1, w, "", fg, bg).map_err(|_| "draw failed")?;
     let mode_color = if app.options.connection.writable && !app.options.connection.demo {
         color("warning")
     } else {
         color("muted")
     };
+    let mode_width = (mode.len() as u16 + 1).min(w);
+    let identity_width = if w >= 64 {
+        w.saturating_sub(mode_width + 1)
+    } else {
+        w
+    };
     cell(
         out,
-        brand.len() as u16,
         0,
-        w.saturating_sub(brand.len() as u16),
-        &mode_text,
-        mode_color,
+        1,
+        identity_width,
+        &identity_line(
+            &app.context,
+            &app.namespace,
+            &app.server,
+            usize::from(identity_width),
+        ),
+        fg,
         bg,
     )
     .map_err(|_| "draw failed")?;
-    if w >= 90 {
-        let badge = format!("{}  v{}  ", app.theme.name, env!("CARGO_PKG_VERSION"));
-        let width = badge.len().min(usize::from(w / 3)) as u16;
-        cell(out, w - width, 0, width, &badge, color("muted"), bg).map_err(|_| "draw failed")?;
-    }
-    row(
+    cell(
         out,
-        1,
-        w,
-        &identity_line(&app.context, &app.namespace, &app.server, usize::from(w)),
-        fg,
-        bg,
+        w - mode_width,
+        if w >= 64 { 1 } else { 0 },
+        mode_width,
+        &format!(" {mode}"),
+        mode_color,
+        if w >= 64 { bg } else { surface },
     )
     .map_err(|_| "draw failed")?;
     let freshness = if app.busy {
@@ -5127,7 +5757,7 @@ fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
     .into_iter()
     .flatten()
     .collect::<String>();
-    let bands = if w >= 64 {
+    let mut bands = if w >= 64 {
         vec![
             (
                 format!(
@@ -5140,7 +5770,21 @@ fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
                     "accent"
                 },
             ),
-            (format!("  {} {resource}  ", visible.len()), "text"),
+            (
+                format!(
+                    "  {} {}  ",
+                    visible.len(),
+                    if visible.len() == 1 {
+                        app.kinds
+                            .get(app.kind_index)
+                            .map(|kind| kind.kind.as_str())
+                            .unwrap_or(&resource)
+                    } else {
+                        &resource
+                    }
+                ),
+                "text",
+            ),
             (format!(" {healthy} healthy "), "success"),
             (
                 format!(
@@ -5165,6 +5809,12 @@ fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
             "accent",
         )]
     };
+    if app.worker.forward.active_count() > 0 {
+        bands.push((
+            format!("  {} forwards", app.worker.forward.active_count()),
+            "accent",
+        ));
+    }
     let mut x = 0u16;
     for (text, role) in bands {
         let width = (text.len() as u16).min(w.saturating_sub(x));
@@ -5498,6 +6148,9 @@ fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
                 Modal::Overview(..) => "OBJECT OVERVIEW / J JSON / y YAML / Esc close",
                 Modal::LiveOverview(..) => "LIVE CONTEXT OVERVIEW / independent watches",
                 Modal::SessionContainers(..) => "POD SHELL / choose ordinary container",
+                Modal::SessionConfirm(prepared, _) if prepared.is_port_forward() => {
+                    "REVIEW PORT FORWARD / loopback listener"
+                }
                 Modal::SessionConfirm(..) => "REVIEW POD SHELL / privileged interactive session",
                 Modal::Metrics(..) if app.metrics_resources => {
                     "METRICS + RESOURCE COMPARISONS / extra reads enabled"
@@ -5511,11 +6164,15 @@ fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
                 Modal::Help(..) => "HELP / PgUp PgDown / Esc close",
                 Modal::EditContainers(..) => "EDIT WORKLOAD / choose ordinary container",
                 Modal::Editor(..) => "EDIT CONTAINER / server dry-run and review required",
+                Modal::Export(_) => "EXPORT / review local file",
+                Modal::YamlEditor(_) => "YAML EDITOR / spec fields",
+                Modal::WriteReview(_) => "REVIEW CHANGES / approval required",
+                Modal::WriteRunning => "APPLYING REVIEWED CHANGES",
                 Modal::PodContainers(..) => "CONTAINERS / Enter logs / d describe / Esc back",
                 Modal::Directory(..) => {
                     "DIRECTORY / Enter open / YAML and JSON previews / Esc back"
                 }
-                Modal::ForwardView => "PORT FORWARDS / session owned / s stop / Esc close",
+                Modal::ForwardView => "PORT FORWARDS / independently reviewed sessions",
                 Modal::ForwardForm(..) => "PORT FORWARD / loopback only / review required",
                 Modal::None => "",
                 Modal::Filter(..) => "",
@@ -5543,6 +6200,10 @@ fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
             .map_err(|_| "draw failed")?;
             let height = usize::from(rect.height.saturating_sub(2));
             let lines = match modal {
+                Modal::YamlEditor(editor)=>editor.viewport(usize::from(rect.width.saturating_sub(2)),height),
+                Modal::WriteReview(review)=>review.view.lines(usize::from(rect.width.saturating_sub(2)),height),
+                Modal::WriteRunning=>vec!["Applying the approved operation...".into(),"Wait for the outcome before navigating or quitting.".into(),"No automatic retries. If interrupted, inspect cluster state.".into()],
+                Modal::Export(draft)=>wrap_text(&draft.review(),usize::from(rect.width.saturating_sub(2))).lines().map(str::to_owned).collect(),
                 Modal::AdviceReview(review)=>review.lines(usize::from(rect.width.saturating_sub(2)),height),
                 Modal::AdviceLoading=>vec!["Reading selected status and preparing the minimized preview...".into(),"No inference request is sent until you review and approve.".into()],
                 Modal::AdviceRunning=>vec!["COPILOT ADVISORY / read-only".into(),String::new(),"Waiting for the bounded Copilot response...".into(),"Ctrl-C cancels; wait for process and connection cleanup.".into(),"No commands or Kubernetes changes are authorized.".into()],
@@ -5579,7 +6240,7 @@ fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
                     lines
                 }
                 Modal::Directory(directory,index)=>std::iter::once(format!("{}{}",directory.path.display(),if directory.truncated{" [TRUNCATED]"}else{""})).chain(std::iter::once("Read-only; Enter directory or redacted manifest preview".into())).chain(directory.entries.iter().enumerate().skip(index.saturating_sub(height.saturating_sub(3))).map(|(i,entry)|format!("{} {}{}",if i==*index{">"}else{" "},entry.name,if entry.directory{"/"}else{""}))).collect(),
-                Modal::ForwardView=>wrap_text(&format!("{}\n\ns stop active forward | F new reviewed forward | Esc close\nContext or resource scope changes cancel the current forward.\nOne session, loopback only, at most four clients, maximum 300 seconds.",app.worker.forward.text()),usize::from(rect.width.saturating_sub(2))).lines().map(str::to_owned).collect(),
+                Modal::ForwardView=>app.worker.forward.lines(app.forward_selected,usize::from(rect.width.saturating_sub(2)),height),
                 Modal::ForwardForm(namespace,pod,_,fields,index)=>{let mut lines=vec![format!("Pod {namespace}/{pod}"),"Tab field / Ctrl-U clear / Enter review / Esc cancel".into(),String::new()];for(i,label)in["Local port (1024..65535)","Remote port (1..65535)","Duration seconds (1..300)"].iter().enumerate(){lines.push(format!("{} {label}: {}{}",if i==*index{">"}else{" "},fields[i],if i==*index{"_"}else{""}));}lines},
                 Modal::Detail(text, offset)
                 | Modal::Metrics(text, offset)
@@ -5732,6 +6393,10 @@ fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
                     color("success")
                 } else if line.contains("signature not checked") {
                     color("warning")
+                } else if matches!(modal, Modal::WriteReview(_)) && line.starts_with("+ ") {
+                    color("success")
+                } else if matches!(modal, Modal::WriteReview(_)) && line.starts_with("- ") {
+                    color("danger")
                 } else if heading {
                     color("accent")
                 } else if matches!(modal, Modal::Confirm(..) | Modal::SessionConfirm(..)) {
@@ -5769,6 +6434,12 @@ fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
                 } else {
                     "Esc cancel | Enlarge terminal to review complete session."
                 }
+            } else if matches!(modal, Modal::YamlEditor(_)) {
+                "Arrows move  Tab indent  Ctrl-S review  Esc cancel"
+            } else if matches!(modal, Modal::WriteReview(_)) {
+                "PgUp/PgDown read all changes  Type target  Enter apply  Esc back"
+            } else if matches!(modal, Modal::WriteRunning) {
+                "Operation in progress / wait for final outcome"
             } else if matches!(modal, Modal::Input("Command", _)) {
                 "Esc cancel | Enter run | :pods :deploy :svc :nodes | :ns NAME | :sort FIELD"
             } else if matches!(modal, Modal::LiveOverview(..)) {
@@ -5833,6 +6504,30 @@ fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
             if let Modal::AdviceReview(review) = modal {
                 render_advice_footer(out, review, w, h, [color("accent"), color("warning"), bg])
                     .map_err(|_| "draw failed")?;
+            }
+            if let Modal::WriteReview(review) = modal {
+                render_write_footer(
+                    out,
+                    &review.view,
+                    w,
+                    h,
+                    [color("accent"), color("warning"), bg],
+                )
+                .map_err(|_| "draw failed")?;
+            }
+            if let Modal::YamlEditor(editor) = modal {
+                let (cx, cy) = editor.cursor();
+                queue!(
+                    out,
+                    cursor::MoveTo(
+                        (rect.x + 1 + cx as u16).min(w - 2),
+                        (rect.y + 1 + cy as u16).min(h - 3)
+                    ),
+                    cursor::Show
+                )
+                .map_err(|_| "draw failed")?;
+            } else {
+                queue!(out, cursor::Hide).map_err(|_| "draw failed")?;
             }
             if let Modal::HelmReview(review) = modal {
                 render_helm_review_footer(
@@ -5917,6 +6612,7 @@ pub fn run(options: Options) -> Result<()> {
         Err(error) => (Default::default(), Some(error)),
     };
     let initial_selector = options.selector.clone();
+    let worker = worker();
     let mut app = App {
         namespace: options.connection.namespace.clone(),
         context: options
@@ -5954,7 +6650,8 @@ pub fn run(options: Options) -> Result<()> {
         advice_cancel: None,
         helm_return: None,
         helm_elapsed: 0,
-        last_forward: String::new(),
+        last_forward: worker.forward.text(),
+        forward_selected: 0,
         desired_resource: None,
         status: "Starting...".into(),
         stale: true,
@@ -5979,7 +6676,7 @@ pub fn run(options: Options) -> Result<()> {
         metrics_resources: false,
         overview: None,
         pending_session: None,
-        worker: worker(),
+        worker,
     };
     if first_run {
         themes::use_theme(themes::DEFAULT_THEME)?;
@@ -6093,6 +6790,7 @@ pub fn run(options: Options) -> Result<()> {
                 Event::Key(key) if key.kind == KeyEventKind::Press => {
                     if key.modifiers.contains(KeyModifiers::CONTROL)
                         && key.code == KeyCode::Char('c')
+                        && !matches!(app.modal, Modal::YamlEditor(_))
                     {
                         if matches!(app.modal, Modal::AdviceRunning) {
                             let _ = app.key_event(KeyCode::Char('c'), KeyModifiers::CONTROL);
@@ -6115,6 +6813,14 @@ pub fn run(options: Options) -> Result<()> {
                         break;
                     }
                     dirty = true;
+                }
+                Event::Paste(text) => {
+                    if let Modal::YamlEditor(editor) = &mut app.modal {
+                        if let Err(error) = editor.paste(&text) {
+                            app.status = error;
+                        }
+                        dirty = true;
+                    }
                 }
                 Event::Resize(_, _) => dirty = true,
                 Event::Mouse(mouse) if matches!(app.modal, Modal::None) && !app.write_inflight => {
@@ -6258,6 +6964,7 @@ mod layout_tests {
         let (replies, rx) = mpsc::sync_channel(4);
         let watch = std::sync::Arc::new(WatchSlot::default());
         watch.invalidate(12);
+        let forward = std::sync::Arc::new(ForwardSlot::default());
         (
             App {
                 options: Options {
@@ -6322,7 +7029,8 @@ mod layout_tests {
                 advice_cancel: None,
                 helm_return: None,
                 helm_elapsed: 0,
-                last_forward: String::new(),
+                last_forward: forward.text(),
+                forward_selected: 0,
                 desired_resource: None,
                 status: "waiting".into(),
                 stale: false,
@@ -6352,7 +7060,7 @@ mod layout_tests {
                     rx,
                     watch,
                     logs: std::sync::Arc::new(LogSlot::default()),
-                    forward: Default::default(),
+                    forward,
                 },
             },
             replies,
@@ -6954,6 +7662,7 @@ mod layout_tests {
                     }
                     b'J' => cells.iter_mut().for_each(|row| row.fill(' ')),
                     b'm' => {}
+                    b'h' | b'l' if parameters == "?25" => {}
                     other => panic!("unexpected terminal command: {other}"),
                 }
             } else {
@@ -7173,26 +7882,177 @@ mod layout_tests {
         assert_eq!((app.back.len(), app.forward.len()), stacks);
         assert_eq!(app.kind(), resource);
     }
+    fn forward_target(local_port: u16) -> crate::ops::ForwardTarget {
+        crate::ops::ForwardTarget {
+            namespace: "test".into(),
+            pod: "server".into(),
+            local_port,
+            remote_port: 80,
+            seconds: 300,
+        }
+    }
     #[test]
     fn queued_forward_cannot_recreate_canceled_or_different_scope_session() {
         let slot = ForwardSlot::default();
         let watch = WatchSlot::default();
         watch.invalidate(12);
-        let generation = slot.cancel();
+        let generation = slot.generation();
         slot.cancel();
-        assert!(slot.begin(generation, 12, &watch).is_none());
-        let generation = slot.cancel();
+        assert!(
+            slot.begin(generation, 12, &watch, forward_target(8080))
+                .is_err()
+        );
+        let generation = slot.generation();
         watch.invalidate(13);
-        assert!(slot.begin(generation, 12, &watch).is_none());
-        let mut receiver = slot
-            .begin(generation, 13, &watch)
-            .unwrap_or_else(|| panic!("current scope rejected"));
+        assert!(
+            slot.begin(generation, 12, &watch, forward_target(8080))
+                .is_err()
+        );
+        let (id, mut receiver) = slot
+            .begin(generation, 13, &watch, forward_target(8080))
+            .unwrap_or_else(|e| panic!("{e}"));
         slot.cancel();
         assert!(matches!(
             receiver.try_recv(),
             Err(tokio::sync::oneshot::error::TryRecvError::Closed)
         ));
-        assert!(slot.begin(generation, 13, &watch).is_none());
+        assert!(slot.listening(id, "late bind").is_err());
+        assert!(
+            slot.begin(generation, 13, &watch, forward_target(8081))
+                .is_err()
+        );
+        assert_eq!(
+            slot.active_count(),
+            1,
+            "stopping remains active until cleanup completes"
+        );
+        slot.finish(id, Ok("closed".into()));
+        assert_eq!(slot.active_count(), 0);
+    }
+    #[test]
+    fn forwards_stop_independently_and_reserve_ports_until_cleanup() {
+        let slot = ForwardSlot::default();
+        let watch = WatchSlot::default();
+        let generation = slot.generation();
+        let (a, mut a_cancel) = slot
+            .begin(generation, 0, &watch, forward_target(8080))
+            .unwrap_or_else(|e| panic!("{e}"));
+        let (b, mut b_cancel) = slot
+            .begin(generation, 0, &watch, forward_target(8081))
+            .unwrap_or_else(|e| panic!("{e}"));
+        assert!(slot.listening(a, "A bound").is_ok());
+        assert!(slot.listening(b, "B bound").is_ok());
+        assert_eq!(slot.active_count(), 2);
+        assert!(slot.cancel_selected(0));
+        assert!(matches!(
+            a_cancel.try_recv(),
+            Err(tokio::sync::oneshot::error::TryRecvError::Closed)
+        ));
+        assert!(matches!(
+            b_cancel.try_recv(),
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+        ));
+        assert!(
+            slot.begin(generation, 0, &watch, forward_target(8080))
+                .is_err()
+        );
+        slot.finish(a, Ok("A closed".into()));
+        let (c, _c_cancel) = slot
+            .begin(generation, 0, &watch, forward_target(8080))
+            .unwrap_or_else(|e| panic!("{e}"));
+        assert_ne!(a, c);
+        assert_eq!(slot.active_count(), 2);
+        assert!(slot.lines(1, 120, 30).join("\n").contains("B bound"));
+        slot.cancel();
+        assert!(matches!(
+            b_cancel.try_recv(),
+            Err(tokio::sync::oneshot::error::TryRecvError::Closed)
+        ));
+    }
+    #[test]
+    fn concurrent_forward_reservations_cannot_claim_the_same_listener() {
+        let slot = std::sync::Arc::new(ForwardSlot::default());
+        let watch = std::sync::Arc::new(WatchSlot::default());
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(8));
+        let attempts = (0..8)
+            .map(|_| {
+                let (slot, watch, barrier) = (slot.clone(), watch.clone(), barrier.clone());
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    slot.begin(0, 0, &watch, forward_target(8080)).is_ok()
+                })
+            })
+            .collect::<Vec<_>>();
+        let winners = attempts
+            .into_iter()
+            .map(|attempt| attempt.join().unwrap_or(false))
+            .filter(|won| *won)
+            .count();
+        assert_eq!(winners, 1);
+        assert_eq!(slot.active_count(), 1);
+    }
+    #[test]
+    fn forwards_have_bounded_history_and_stale_ids_cannot_overwrite_new_sessions() {
+        let slot = ForwardSlot::default();
+        let watch = WatchSlot::default();
+        let generation = slot.generation();
+        let mut handles = Vec::new();
+        for port in 8080..8088 {
+            handles.push(
+                slot.begin(generation, 0, &watch, forward_target(port))
+                    .unwrap_or_else(|e| panic!("{e}")),
+            );
+        }
+        assert_eq!(slot.active_count(), MAX_FORWARDS);
+        assert!(
+            slot.begin(generation, 0, &watch, forward_target(8090))
+                .is_err()
+        );
+        let old = handles[0].0;
+        slot.finish(old, Ok("old ended".into()));
+        let (new, _cancel) = slot
+            .begin(generation, 0, &watch, forward_target(8090))
+            .unwrap_or_else(|e| panic!("{e}"));
+        slot.finish(old, Err("stale failure".into()));
+        assert!(slot.listening(old, "stale bind").is_err());
+        assert_eq!(slot.len(), MAX_FORWARDS);
+        assert_eq!(slot.active_count(), MAX_FORWARDS);
+        assert!(slot.listening(new, "new bound").is_ok());
+        assert!(!slot.text().contains("stale"));
+    }
+    #[test]
+    fn forward_view_selects_and_stops_only_highlighted_session() {
+        let (mut app, _replies, _commands) = harness();
+        let generation = app.worker.forward.generation();
+        let watch = &app.worker.watch;
+        let epoch = watch.epoch.load(std::sync::atomic::Ordering::SeqCst);
+        let (_, mut a) = app
+            .worker
+            .forward
+            .begin(generation, epoch, watch, forward_target(8080))
+            .unwrap_or_else(|e| panic!("{e}"));
+        let (_, mut b) = app
+            .worker
+            .forward
+            .begin(generation, epoch, watch, forward_target(8081))
+            .unwrap_or_else(|e| panic!("{e}"));
+        assert!(app.command("pf").is_ok());
+        assert!(app.key(KeyCode::Char('j')).is_ok());
+        assert_eq!(app.forward_selected, 1);
+        assert!(app.key(KeyCode::Char('s')).is_ok());
+        assert!(matches!(
+            a.try_recv(),
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+        ));
+        assert!(matches!(
+            b.try_recv(),
+            Err(tokio::sync::oneshot::error::TryRecvError::Closed)
+        ));
+        app.changed();
+        assert!(matches!(
+            a.try_recv(),
+            Err(tokio::sync::oneshot::error::TryRecvError::Closed)
+        ));
     }
     #[test]
     fn familiar_commands_complete_recall_and_keep_scoped_back_history() {
@@ -7331,7 +8191,7 @@ mod layout_tests {
             for height in [10, 12, 24] {
                 {
                     let frame = screen(&app, width, height);
-                    assert!(frame[0].contains("PRODUCTION READ ONLY"));
+                    assert!(frame[..2].join(" ").contains("PRODUCTION READ ONLY"));
                     assert!(frame[1].contains("CTX test | NS test"));
                     assert!(frame[3].starts_with(['+', '╭']));
                 }

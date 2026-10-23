@@ -95,6 +95,15 @@ impl Request {
         Ok(())
     }
 }
+/// Non-secret routing metadata for a reviewed, loopback-only listener.
+#[derive(Clone, Debug)]
+pub struct ForwardTarget {
+    pub namespace: String,
+    pub pod: String,
+    pub local_port: u16,
+    pub remote_port: u16,
+    pub seconds: u16,
+}
 pub struct ReviewedOperation {
     request: Request,
     namespace: String,
@@ -117,6 +126,23 @@ impl ReviewedOperation {
     }
     pub fn is_port_forward(&self) -> bool {
         matches!(self.request, Request::PortForward { .. })
+    }
+    pub fn forward_target(&self) -> Option<ForwardTarget> {
+        let Request::PortForward {
+            local_port,
+            remote_port,
+            seconds,
+        } = self.request
+        else {
+            return None;
+        };
+        Some(ForwardTarget {
+            namespace: self.namespace.clone(),
+            pod: self.pod.clone(),
+            local_port,
+            remote_port,
+            seconds,
+        })
     }
 }
 
@@ -380,7 +406,7 @@ pub async fn run_forward(
     gateway: &Gateway,
     reviewed: ReviewedOperation,
     typed: &str,
-    cancel: tokio::sync::oneshot::Receiver<()>,
+    mut cancel: tokio::sync::oneshot::Receiver<()>,
     on_bound: impl FnMut(&str) -> Result<()>,
 ) -> Result<String> {
     let Request::PortForward {
@@ -391,7 +417,13 @@ pub async fn run_forward(
     else {
         return Err("review does not authorize port forwarding".into());
     };
-    let api = verify_review(gateway, &reviewed, typed).await?;
+    let api = tokio::select! {
+        biased;
+        _ = &mut cancel => return Ok("Forwarding canceled before listener creation".into()),
+        result = tokio::time::timeout(Duration::from_secs(20), verify_review(gateway, &reviewed, typed)) => {
+            result.map_err(|_| "Forward target verification timed out")??
+        }
+    };
     let audit = start_audit(gateway, &reviewed)?;
     let result = forward(
         api,
@@ -487,15 +519,21 @@ async fn forward(
     control: ForwardControl<impl FnMut(&str) -> Result<()>>,
 ) -> Result<String> {
     let ForwardControl {
-        cancel,
+        mut cancel,
         mut on_bound,
     } = control;
+    if let Some(receiver) = cancel.as_mut()
+        && !matches!(
+            receiver.try_recv(),
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+        )
+    {
+        return Ok("Forwarding canceled before listener creation".into());
+    }
     let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, local))
         .await
         .map_err(|_| "cannot bind loopback forwarding port")?;
-    on_bound(&format!(
-        "Forwarding 127.0.0.1:{local} -> {pod}:{remote}; maximum {seconds} seconds; cancel to close listener and active connections"
-    ))?;
+    on_bound(&format!("Listening on 127.0.0.1:{local} -> {pod}:{remote}"))?;
     let session = async {
         let mut clients = FuturesUnordered::new();
         loop {
@@ -641,6 +679,41 @@ mod tests {
             let rebound = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, port))
                 .map_err(|_| "forward listener was not released")?;
             drop(rebound);
+            Ok(())
+        })
+    }
+    #[test]
+    fn canceled_forward_does_not_bind_or_publish_a_listener() -> Result<()> {
+        crate::cli::runtime()?.block_on(async {
+            let reserved = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+                .map_err(|_| "cannot reserve test port")?;
+            let port = reserved
+                .local_addr()
+                .map_err(|_| "cannot inspect test port")?
+                .port();
+            let service = tower::service_fn(|_: http::Request<kube::client::Body>| async {
+                Ok::<_, std::convert::Infallible>(http::Response::new(http_body_util::Full::new(
+                    bytes::Bytes::new(),
+                )))
+            });
+            let api = kube::Api::namespaced(kube::Client::new(service, "test"), "test");
+            let (cancel, stopped) = tokio::sync::oneshot::channel();
+            drop(cancel);
+            let result = forward(
+                api,
+                "pod",
+                port,
+                8080,
+                300,
+                "uid",
+                ForwardControl {
+                    cancel: Some(stopped),
+                    on_bound: |_: &str| panic!("canceled forward published listener"),
+                },
+            )
+            .await?;
+            assert!(result.contains("canceled before listener creation"));
+            drop(reserved);
             Ok(())
         })
     }

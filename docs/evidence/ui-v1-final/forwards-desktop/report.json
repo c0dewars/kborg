@@ -1,0 +1,81 @@
+{
+  "passed": true,
+  "context": "docker-desktop",
+  "namespace": "kborg-forward-9342a3603b8e",
+  "binary_sha256": "357fdd264de7da5d151fcb0b2e560313d556888fae39754579f30b4aa040fe8e",
+  "elapsed_seconds": 72.73,
+  "checks": [
+    "log export cancel writes nothing and restores paused filtered source",
+    "log save preserves filtering/timestamps/source and creates a mode0600 file with visible success",
+    "existing destination is never overwritten and refusal is visible without losing source",
+    "two independent reviewed listeners route to distinct live Pods",
+    "collision rejected without disrupting either listener",
+    "selected stop closes listener/active client and preserves other listener",
+    "cleaned port can be reviewed and reused",
+    "resource filter scope change closes all listeners and active clients",
+    "normal exit closes listener/active client and restores terminal"
+  ],
+  "captures": [
+    {
+      "name": "logs-all-levels",
+      "path": "/Users/brunogarcia/Desktop/HyperMac/repos/kborg/docs/evidence/ui-v1-final/forwards-desktop/logs-all-levels.png",
+      "width": 140,
+      "height": 40
+    },
+    {
+      "name": "log-errors-filter",
+      "path": "/Users/brunogarcia/Desktop/HyperMac/repos/kborg/docs/evidence/ui-v1-final/forwards-desktop/log-errors-filter.png",
+      "width": 140,
+      "height": 40
+    },
+    {
+      "name": "log-export-review",
+      "path": "/Users/brunogarcia/Desktop/HyperMac/repos/kborg/docs/evidence/ui-v1-final/forwards-desktop/log-export-review.png",
+      "width": 140,
+      "height": 40
+    },
+    {
+      "name": "log-export-saved-result",
+      "path": "/Users/brunogarcia/Desktop/HyperMac/repos/kborg/docs/evidence/ui-v1-final/forwards-desktop/log-export-saved-result.png",
+      "width": 140,
+      "height": 40
+    },
+    {
+      "name": "log-export-saved",
+      "path": "/Users/brunogarcia/Desktop/HyperMac/repos/kborg/docs/evidence/ui-v1-final/forwards-desktop/log-export-saved.png",
+      "width": 140,
+      "height": 40
+    },
+    {
+      "name": "log-export-existing-file-refused",
+      "path": "/Users/brunogarcia/Desktop/HyperMac/repos/kborg/docs/evidence/ui-v1-final/forwards-desktop/log-export-existing-file-refused.png",
+      "width": 140,
+      "height": 40
+    },
+    {
+      "name": "forward-review",
+      "path": "/Users/brunogarcia/Desktop/HyperMac/repos/kborg/docs/evidence/ui-v1-final/forwards-desktop/forward-review.png",
+      "width": 140,
+      "height": 40
+    },
+    {
+      "name": "two-active-forwards",
+      "path": "/Users/brunogarcia/Desktop/HyperMac/repos/kborg/docs/evidence/ui-v1-final/forwards-desktop/two-active-forwards.png",
+      "width": 140,
+      "height": 40
+    },
+    {
+      "name": "selected-forward-stopped",
+      "path": "/Users/brunogarcia/Desktop/HyperMac/repos/kborg/docs/evidence/ui-v1-final/forwards-desktop/selected-forward-stopped.png",
+      "width": 140,
+      "height": 40
+    },
+    {
+      "name": "scope-change-stopped-all",
+      "path": "/Users/brunogarcia/Desktop/HyperMac/repos/kborg/docs/evidence/ui-v1-final/forwards-desktop/scope-change-stopped-all.png",
+      "width": 140,
+      "height": 40
+    }
+  ],
+  "fixture_cleanup": true
+}

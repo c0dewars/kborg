@@ -106,6 +106,7 @@ fn parse(args: Vec<String>) -> Result<Options> {
             "--all-containers" => opts.all_containers = true,
             "--allow-helm" => opts.connection.allow_helm = true,
             "--allow-helm-write" => opts.connection.allow_helm_write = true,
+            "--allow-yaml-edit" => opts.connection.allow_yaml_edit = true,
             "--allow-helm-hooks" => opts.connection.allow_helm_hooks = true,
             "--allow-helm-crds" => opts.connection.allow_helm_crds = true,
             "--copilot-policy" => {
@@ -256,6 +257,7 @@ fn parse(args: Vec<String>) -> Result<Options> {
             "--allow-exec" => opts.connection.allow_exec = true,
             "--allow-attach" => opts.connection.allow_attach = true,
             "--allow-forward" => opts.connection.allow_port_forward = true,
+            "--allow-node-maintenance" => opts.connection.allow_node_maintenance = true,
             "--" => {
                 opts.command.extend(args);
                 break;
@@ -560,7 +562,7 @@ pub fn run_args(args: Vec<String>) -> Result<()> {
         "helm" | "history" | "list" | "watch" | "metrics" | "get" | "view" | "logs"
         | "resources" | "doctor" | "scale" | "restart" | "delete" | "set-image"
         | "set-resources" | "exec" | "attach" | "forward" | "pulses" | "xray" | "workloads"
-        | "can" => {}
+        | "can" | "yaml-template" | "yaml-edit" | "cordon" | "uncordon" | "drain" => {}
         _ => return Err("unknown command; see --help".into()),
     }
     if cmd == "view"
@@ -575,7 +577,7 @@ pub fn run_args(args: Vec<String>) -> Result<()> {
         let mut gateway=tokio::time::timeout(Duration::from_secs(15),Gateway::connect(opts.connection.clone())).await.map_err(|_|"connection timed out")??;
         let ns=gateway.namespace.clone();
         let args=&opts.command[1..];
-        if matches!(cmd, "list" | "get" | "view" | "watch" | "xray") && let Some(resource) = args.first() {
+        if matches!(cmd, "list" | "get" | "view" | "watch" | "xray" | "yaml-template" | "yaml-edit") && let Some(resource) = args.first() {
             discover_if_needed(&mut gateway, resource).await?;
         }
         match cmd {
@@ -595,6 +597,17 @@ pub fn run_args(args: Vec<String>) -> Result<()> {
             "xray" => {
                 if args.len() != 1 { return Err("usage: xray RESOURCE [-n NAMESPACE]".into()); }
                 outputln!("{}", crate::insights::xray(&gateway, &args[0], &ns).await?);
+            },
+            "cordon"|"uncordon"|"drain" => {
+                if args.is_empty() || args.len()>2 || (cmd!="drain" && args.len()!=1) {return Err("usage: cordon NODE | uncordon NODE | drain NODE [SECONDS] --write --allow-node-maintenance".into());}
+                if !io::stdin().is_terminal() || !io::stdout().is_terminal() {return Err("node maintenance requires interactive terminal approval".into());}
+                let request=match cmd {"cordon"=>crate::node_maintenance::Request::Cordon,"uncordon"=>crate::node_maintenance::Request::Uncordon,_=>crate::node_maintenance::Request::Drain{seconds:args.get(1).map(|s|s.parse::<u16>().map_err(|_|"invalid drain duration")).transpose()?.unwrap_or(120)}};
+                let reviewed=crate::node_maintenance::prepare(&gateway,&args[0],request).await?;
+                outputln!("{}",reviewed.summary()); output!("> ");io::stdout().flush().map_err(|_|"output failed")?;
+                let mut input=String::new();use std::io::BufRead;io::stdin().lock().take(322).read_line(&mut input).map_err(|_|"input failed")?;
+                let report=crate::node_maintenance::execute(&gateway,reviewed,input.trim_end()).await?;
+                outputln!("{}",report.summary());
+                if !report.complete {return Err("node maintenance incomplete; inspect the reported pending targets and scheduling state".into());}
             },
             "exec"|"attach"|"forward" => {
                 if !io::stdin().is_terminal() || !io::stdout().is_terminal() {return Err("subresource operations require interactive terminal approval".into());}
@@ -671,6 +684,22 @@ if value["truncated"]==true {eprintln!("TRUNCATED: limit reached; narrow namespa
                 output!("{}", outcome.stdout);
                 if !outcome.stderr.is_empty() { outputln!("Tool stderr:\n{}", outcome.stderr); }
                 if !outcome.success { return Err("external tool exited unsuccessfully".into()); }
+            },
+            "yaml-template" | "yaml-edit" => {
+                let needed = if cmd == "yaml-template" { 2 } else { 3 };
+                if args.len() != needed { return Err("usage: yaml-template RESOURCE NAME | yaml-edit RESOURCE NAME FILE --write --allow-yaml-edit".into()); }
+                if cmd == "yaml-edit" && (!io::stdin().is_terminal() || !io::stdout().is_terminal()) { return Err("YAML writes require interactive terminal confirmation".into()); }
+                let draft = tokio::time::timeout(Duration::from_secs(15), gateway.yaml_draft(&args[0], &ns, &args[1])).await.map_err(|_| "YAML read timed out")??;
+                if cmd == "yaml-template" { output!("{}", draft.text()); }
+                else {
+                    let bytes = safety::read_small(std::path::Path::new(&args[2]), crate::manifest_edit::MAX_DOCUMENT as u64)?;
+                    let edited = std::str::from_utf8(&bytes).map_err(|_| "YAML file must be UTF-8")?;
+                    let prepared = tokio::time::timeout(Duration::from_secs(30), gateway.prepare_yaml(&draft, edited)).await.map_err(|_| "YAML review timed out")??;
+                    outputln!("{}", prepared.summary()); output!("> "); io::stdout().flush().map_err(|_| "output failed")?;
+                    let mut typed = String::new(); use std::io::BufRead;
+                    io::stdin().lock().take(512).read_line(&mut typed).map_err(|_| "input failed")?;
+                    outputln!("{}", gateway.execute_yaml(prepared, typed.trim_end()).await?);
+                }
             },
             "logs"=>logs_command(&gateway,args,&opts).await?,
             "scale"|"restart"|"delete"|"set-image"|"set-resources"=>{
@@ -1527,6 +1556,18 @@ fn theme_command(opts: &Options) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn node_commands_route_to_terminal_approval_without_any_live_connection() {
+        for command in ["cordon", "uncordon", "drain"] {
+            let error = run_args(vec!["--demo".into(), command.into(), "node".into()])
+                .err()
+                .unwrap_or_default();
+            assert!(
+                error.contains("interactive terminal approval"),
+                "{command}: {error}"
+            );
+        }
+    }
     #[test]
     fn explicit_signature_and_advice_policies_have_strict_scope() -> Result<()> {
         assert!(
