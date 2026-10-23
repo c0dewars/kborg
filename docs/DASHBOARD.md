@@ -8,6 +8,9 @@ Press `D` from a resource table to open the current context and namespace. The h
 |---|---|
 | `1`..`4`, arrows, Tab | Focus a context card; number keys apply only inside the dashboard |
 | Enter | Open current Pods in the focused context and displayed namespace |
+| `w` | Select the next recent warning in the focused card; cycling past the last clears it |
+| Enter on a warning | Open Events for that exact Pod name and UID in its namespace |
+| Esc on a warning | Clear the warning selection without closing the dashboard |
 | `c` | Choose one to four explicit context names, comma separated; Ctrl-U clears the input |
 | `s` | Name and save the dashboard's context group and namespace |
 | `B` | Open saved selections |
@@ -15,6 +18,8 @@ Press `D` from a resource table to open the current context and namespace. The h
 | Esc | Close help, or close the dashboard and cancel its watches |
 
 All cards use the selected namespace. Change namespace in the normal resource view before opening the dashboard, or reopen an explicitly saved dashboard scope. Wide terminals show a grid; narrow terminals retain the focused card and numbered navigation. A wide single-context view places health and warnings side by side.
+
+Warning drilldown sends a server-side field selector binding `involvedObject.kind=Pod`, the Pod name and its UID, so a same-name replacement never inherits the old Pod's Events. The selection follows the same record across refreshes and clears if the record disappears or another card is focused. Esc in the Events view returns to the previous view.
 
 Each card has independent Pod health and recent Warning Event evidence. Counts describe bounded observations, not an overall cluster health guarantee. Permission failures, incomplete lists and stale data remain explicit; an unknown count is `--`, never a healthy zero. Restarts are current counters, and OOM is current/previous container termination evidence. Warnings cover recent Event records linked to current Pod UIDs. See [exact health semantics and limits](DASHBOARD_HEALTH.md).
 

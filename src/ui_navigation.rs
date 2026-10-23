@@ -138,6 +138,7 @@ pub const SPECIAL: &[&str] = &[
     "copilot",
     "helm-test",
     "logs",
+    "logs-live",
     "scans",
     "scan",
     "pop",

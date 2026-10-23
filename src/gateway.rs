@@ -765,10 +765,15 @@ impl Gateway {
         fields: &str,
     ) -> Result<crate::watch::WatchFeed> {
         crate::selectors::validate(selector)?;
-        crate::selectors::node_field(fields)?;
+        let scope = crate::selectors::field_scope(fields)?;
         let kind = self.find(key)?.clone();
-        if !fields.is_empty() && (kind.kind != "Pod" || !kind.group.is_empty()) {
-            return Err("node field selector requires Pods".into());
+        if let Some(scope) = scope
+            && (kind.kind != scope.kind() || !kind.group.is_empty())
+        {
+            return Err(format!(
+                "this field selector requires core {}s",
+                scope.kind()
+            ));
         }
         Ok(crate::watch::WatchFeed::with_filters(
             self.api(&kind, ns)?,
@@ -860,10 +865,15 @@ impl Gateway {
         fields: &str,
     ) -> Result<Value> {
         crate::selectors::validate(selector)?;
-        let node = crate::selectors::node_field(fields)?;
+        let scope = crate::selectors::field_scope(fields)?;
         let kind = self.find(key)?;
-        if node.is_some() && (kind.kind != "Pod" || !kind.group.is_empty()) {
-            return Err("node field selector requires Pods".into());
+        if let Some(scope) = scope
+            && (kind.kind != scope.kind() || !kind.group.is_empty())
+        {
+            return Err(format!(
+                "this field selector requires core {}s",
+                scope.kind()
+            ));
         }
         if self.is_demo() {
             let mut items: Vec<Value> = self
@@ -873,7 +883,7 @@ impl Gateway {
                     v["kind"] == kind.kind
                         && (ns == "*" || v["metadata"]["namespace"] == ns || !kind.namespaced)
                         && crate::selectors::matches(selector, &v["metadata"]["labels"])
-                        && node.is_none_or(|node| v["spec"]["nodeName"].as_str() == Some(node))
+                        && scope.is_none_or(|scope| scope.matches(v))
                 })
                 .cloned()
                 .collect();
@@ -1477,6 +1487,37 @@ impl Gateway {
     ) -> Result<crate::logs::MergedLogFeed> {
         self.open_membership_logs(membership, false, Some(follow), read)
             .await
+    }
+    /// Explicit opt-in: announced joins/departures on top of the same bounds.
+    pub async fn follow_dynamic_logs(
+        &self,
+        membership: &crate::logs::LogMembership,
+        follow: crate::logs::FollowOptions,
+        read: crate::logs::ReadOptions,
+    ) -> Result<crate::logs::DynamicLogFeed> {
+        if !membership.is_dynamic() {
+            return Err("dynamic workload logs require an explicit dynamic capture".into());
+        }
+        let read = read.validate()?;
+        let follow = follow.validate()?;
+        if read.head {
+            return Err(
+                "dynamic membership follows new records; choose a tail or time range, not head"
+                    .into(),
+            );
+        }
+        let feed = self
+            .open_membership_logs(membership, false, Some(follow), read)
+            .await?;
+        let api = if self.is_demo() {
+            None
+        } else {
+            Some(Api::namespaced(
+                self.client.clone().ok_or("no client")?,
+                membership.namespace(),
+            ))
+        };
+        crate::logs::DynamicLogFeed::new(self.clone(), api, membership.clone(), feed, read, follow)
     }
     async fn open_membership_logs(
         &self,

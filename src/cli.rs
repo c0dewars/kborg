@@ -42,6 +42,8 @@ pub struct Options {
     pub follow: bool,
     pub previous: bool,
     pub all_containers: bool,
+    /// Explicit opt-in: announced Pod joins/departures for followed workload logs.
+    pub dynamic_membership: bool,
     pub helm_storage: Option<crate::helm::Storage>,
     pub helm_tool: Option<PathBuf>,
     pub helm_values: Option<PathBuf>,
@@ -76,6 +78,7 @@ fn parse(args: Vec<String>) -> Result<Options> {
         follow: false,
         previous: false,
         all_containers: false,
+        dynamic_membership: false,
         helm_storage: None,
         helm_tool: None,
         helm_values: None,
@@ -104,6 +107,7 @@ fn parse(args: Vec<String>) -> Result<Options> {
             "--follow" => opts.follow = true,
             "--previous" => opts.previous = true,
             "--all-containers" => opts.all_containers = true,
+            "--dynamic-membership" => opts.dynamic_membership = true,
             "--allow-helm" => opts.connection.allow_helm = true,
             "--allow-helm-write" => opts.connection.allow_helm_write = true,
             "--allow-yaml-edit" => opts.connection.allow_yaml_edit = true,
@@ -371,6 +375,12 @@ fn parse(args: Vec<String>) -> Result<Options> {
     }
     if opts.log_read.head && opts.follow {
         return Err("--head is a snapshot and cannot be followed".into());
+    }
+    if opts.dynamic_membership && (!opts.follow || opts.command.first().is_none_or(|v| v != "logs"))
+    {
+        return Err(
+            "--dynamic-membership requires logs --follow on a workload or --selector".into(),
+        );
     }
     crate::selectors::validate(&opts.selector)?;
     if !opts.selector.is_empty()
@@ -813,25 +823,47 @@ async fn logs_command(gateway: &Gateway, args: &[String], opts: &Options) -> Res
         }
         _ => None,
     };
+    if selection.is_none() && opts.dynamic_membership {
+        return Err("--dynamic-membership requires a workload or --selector, not one Pod".into());
+    }
     if let Some(selection) = selection {
-        let membership = gateway.capture_log_membership(namespace, selection).await?;
+        let membership = gateway
+            .capture_log_membership(namespace, selection.clone())
+            .await?;
+        let membership = if opts.dynamic_membership {
+            membership.into_dynamic(selection)
+        } else {
+            membership
+        };
         let description = membership.description();
         if !opts.json {
             outputln!("{description}");
         }
         if opts.follow {
-            let mut feed = gateway
-                .follow_membership_logs(
-                    &membership,
-                    FollowOptions {
-                        seconds: opts.log_seconds,
-                    },
-                    opts.log_read,
+            let follow = FollowOptions {
+                seconds: opts.log_seconds,
+            };
+            let mut feed = if membership.is_dynamic() {
+                crate::logs::WorkloadLogFeed::Dynamic(Box::new(
+                    gateway
+                        .follow_dynamic_logs(&membership, follow, opts.log_read)
+                        .await?,
+                ))
+            } else {
+                crate::logs::WorkloadLogFeed::Merged(
+                    gateway
+                        .follow_membership_logs(&membership, follow, opts.log_read)
+                        .await?,
                 )
-                .await?;
+            };
+            let pod_scope = if membership.is_dynamic() {
+                "dynamic-membership"
+            } else {
+                "fixed-membership"
+            };
             while let Some(line) = feed.next().await? {
                 let record = if opts.json {
-                    serde_json::json!({"line":line,"container_scope":"all-ordinary","pod_scope":"fixed-membership","membership":membership}).to_string()
+                    serde_json::json!({"line":line,"container_scope":"all-ordinary","pod_scope":pod_scope,"membership":membership}).to_string()
                 } else {
                     line
                 };

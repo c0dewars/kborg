@@ -1,6 +1,10 @@
 //! Bounded cluster cards. Health and warning evidence remain independently labelled.
 use super::{App, Rect, blend, cell, panel, row, ui_color};
-use crate::{Result, dashboard_health::EvidenceState, overview::ContextSummary};
+use crate::{
+    Result,
+    dashboard_health::{EvidenceState, WarningEvidence},
+    overview::ContextSummary,
+};
 use crossterm::{event::KeyCode, style::Color};
 use std::{
     io::Write,
@@ -10,6 +14,8 @@ use std::{
 pub(super) struct Dashboard {
     pub rows: Vec<ContextSummary>,
     pub selected: usize,
+    /// Index into the focused card's recent warnings, chosen with `w`.
+    pub warning: Option<usize>,
     pub help: bool,
     pub notice: Option<(String, bool)>,
 }
@@ -22,6 +28,7 @@ impl Dashboard {
                 .map(|name| ContextSummary::connecting(name, demo))
                 .collect(),
             selected: 0,
+            warning: None,
             help: false,
             notice: None,
         }
@@ -29,21 +36,56 @@ impl Dashboard {
     pub fn selected(&self) -> Option<&ContextSummary> {
         self.rows.get(self.selected)
     }
+    fn warnings(&self) -> &[WarningEvidence] {
+        self.selected()
+            .and_then(|row| row.health.as_ref())
+            .map_or(&[], |health| health.warnings.recent.as_slice())
+    }
+    pub fn selected_warning(&self) -> Option<&WarningEvidence> {
+        self.warning.and_then(|index| self.warnings().get(index))
+    }
     pub fn set_notice(&mut self, text: String, warning: bool) {
         self.notice = Some((text, warning));
     }
     pub fn update(&mut self, rows: Vec<ContextSummary>) {
         let selected = self.selected().map(|row| row.context.clone());
+        let warning = self
+            .selected_warning()
+            .map(|w| (w.namespace.clone(), w.uid.clone(), w.reason.clone()));
         self.rows = rows;
         self.selected = selected
             .and_then(|name| self.rows.iter().position(|row| row.context == name))
             .unwrap_or(self.selected.min(self.rows.len().saturating_sub(1)));
+        // Follow the same record across refreshes; a vanished record clears
+        // the selection instead of silently moving to a different Pod.
+        self.warning = warning.and_then(|(namespace, uid, reason)| {
+            self.warnings()
+                .iter()
+                .position(|w| w.namespace == namespace && w.uid == uid && w.reason == reason)
+        });
     }
     pub fn key(&mut self, key: KeyCode) {
         let count = self.rows.len();
         if count == 0 {
             return;
         }
+        if key == KeyCode::Char('w') {
+            let available = self.warnings().len();
+            self.warning = match self.warning {
+                _ if available == 0 => None,
+                None => Some(0),
+                Some(index) if index + 1 < available => Some(index + 1),
+                Some(_) => None,
+            };
+            return;
+        }
+        let before = self.selected;
+        self.card_key(key, count);
+        if self.selected != before {
+            self.warning = None;
+        }
+    }
+    fn card_key(&mut self, key: KeyCode, count: usize) {
         match key {
             KeyCode::Char('1'..='4') => {
                 if let KeyCode::Char(number) = key {
@@ -176,13 +218,15 @@ fn cards(width: u16, height: u16, count: usize, selected: usize) -> Vec<(usize, 
 
 fn card(
     app: &App,
-    summary: &ContextSummary,
+    dashboard: &Dashboard,
     index: usize,
-    selected: bool,
     rect: Rect,
     out: &mut impl Write,
     now: u64,
 ) -> Result<()> {
+    let summary = &dashboard.rows[index];
+    let selected = index == dashboard.selected;
+    let warning = dashboard.warning;
     let color = |role| ui_color(app, role);
     let bg = if app.options.color && !app.theme.terminal {
         blend(
@@ -328,11 +372,17 @@ fn card(
                 } else {
                     evidence.pod.clone()
                 };
+                let chosen = selected && warning == Some(offset);
                 line(
                     warning_row + 2 + offset as u16,
                     true,
-                    &format!("{} / {}", evidence.reason, pod),
-                    "warning",
+                    &format!(
+                        "{}{} / {}",
+                        if chosen { "> " } else { "" },
+                        evidence.reason,
+                        pod
+                    ),
+                    if chosen { "accent" } else { "warning" },
                 )?;
             }
         }
@@ -432,6 +482,9 @@ pub(super) fn render(
             "1..4             Focus a context card",
             "Arrows / Tab     Move between cards",
             "Enter            Open focused context Pods",
+            "w                Select next recent warning",
+            "Enter on warning Open that Pod's Events (exact UID)",
+            "Esc on warning   Clear the warning selection",
             "c                Choose up to four context names",
             "s                Save these contexts and namespace",
             "B                Open saved selections",
@@ -464,15 +517,7 @@ pub(super) fn render(
             .duration_since(UNIX_EPOCH)
             .map_or(0, |time| time.as_secs());
         for (index, rect) in cards(width, height, dashboard.rows.len(), dashboard.selected) {
-            card(
-                app,
-                &dashboard.rows[index],
-                index,
-                index == dashboard.selected,
-                rect,
-                out,
-                now,
-            )?;
+            card(app, dashboard, index, rect, out, now)?;
         }
     }
     if let Some((notice, warning)) = &dashboard.notice {
@@ -490,12 +535,16 @@ pub(super) fn render(
         .selected()
         .map(|row| row.context.as_str())
         .unwrap_or("no context");
+    let warning = dashboard
+        .selected_warning()
+        .map(|w| format!("   warning {} / {}", w.reason, w.pod))
+        .unwrap_or_default();
     row(
         out,
         height - 2,
         width,
         &format!(
-            " {} of {}  {}",
+            " {} of {}  {}{warning}",
             dashboard.selected + 1,
             dashboard.rows.len(),
             selected
@@ -510,8 +559,10 @@ pub(super) fn render(
         width,
         if dashboard.help {
             " ? keymap   Esc back"
+        } else if dashboard.warning.is_some() {
+            " w next warning   Enter Events   Esc clear"
         } else {
-            " 1..4 focus   Enter Pods   ? keymap   Esc back"
+            " 1..4 focus   Enter Pods   w warnings   ? keymap   Esc back"
         },
         color("accent"),
         bg,
@@ -548,6 +599,79 @@ mod tests {
         assert_eq!(
             dashboard.selected().map(|row| row.context.as_str()),
             Some("north")
+        );
+    }
+    fn with_warnings(context: &str, uids: &[&str]) -> ContextSummary {
+        let mut row = ContextSummary::connecting(context.into(), false);
+        row.state = EvidenceState::Live;
+        row.health = Some(crate::dashboard_health::HealthSummary {
+            ready: 0,
+            unready: 0,
+            pending: 0,
+            failed: 0,
+            succeeded: 0,
+            terminating: 0,
+            unknown: 0,
+            restarts: 0,
+            oom_killed: 0,
+            warnings: crate::dashboard_health::WarningSummary {
+                state: EvidenceState::Live,
+                count: Some(uids.len()),
+                recent: uids
+                    .iter()
+                    .map(|uid| WarningEvidence {
+                        namespace: "default".into(),
+                        pod: "api".into(),
+                        uid: (*uid).into(),
+                        reason: "BackOff".into(),
+                        occurrences: 1,
+                        observed_unix_seconds: 1,
+                    })
+                    .collect(),
+                message: None,
+            },
+        });
+        row
+    }
+    #[test]
+    fn warning_selection_follows_exact_uid_and_never_moves_to_a_replacement() {
+        let mut dashboard = Dashboard::new(&["north".into(), "south".into()], false);
+        dashboard.update(vec![
+            with_warnings("north", &["a", "b"]),
+            with_warnings("south", &[]),
+        ]);
+        dashboard.key(KeyCode::Char('w'));
+        dashboard.key(KeyCode::Char('w'));
+        assert_eq!(
+            dashboard.selected_warning().map(|w| w.uid.as_str()),
+            Some("b")
+        );
+        // Reordered refresh keeps the same record.
+        dashboard.update(vec![
+            with_warnings("north", &["b", "a"]),
+            with_warnings("south", &[]),
+        ]);
+        assert_eq!(dashboard.warning, Some(0));
+        // A same-name replacement Pod has a new UID; selection clears.
+        dashboard.update(vec![
+            with_warnings("north", &["c", "a"]),
+            with_warnings("south", &[]),
+        ]);
+        assert!(dashboard.selected_warning().is_none());
+        dashboard.key(KeyCode::Char('w'));
+        dashboard.key(KeyCode::Char('w'));
+        dashboard.key(KeyCode::Char('w'));
+        assert!(dashboard.warning.is_none(), "cycling wraps to no selection");
+        dashboard.key(KeyCode::Char('w'));
+        dashboard.key(KeyCode::Char('2'));
+        assert!(
+            dashboard.warning.is_none(),
+            "changing card clears selection"
+        );
+        dashboard.key(KeyCode::Char('w'));
+        assert!(
+            dashboard.warning.is_none(),
+            "card without warnings selects nothing"
         );
     }
     #[test]

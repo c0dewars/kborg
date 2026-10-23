@@ -735,7 +735,8 @@ fn worker() -> Worker {
                                         Reply::SessionPrepared(Box::new(prepared))
                                     },
                                     Task::CaptureLogs(mut target,selection,generation)=>{
-                                        target.membership=Some(g.capture_log_membership(&target.namespace,selection).await?);
+                                        let membership=g.capture_log_membership(&target.namespace,selection.clone()).await?;
+                                        target.membership=Some(if target.dynamic{membership.into_dynamic(selection)}else{membership});
                                         Reply::Membership(target,generation)
                                     },
                                     Task::Containers(target,generation) => {
@@ -758,7 +759,7 @@ fn worker() -> Worker {
                                     },
                                     Task::Follow(target,generation,seconds,read) => {
                                         if log_results.generation.load(std::sync::atomic::Ordering::SeqCst) != generation {return Ok(Reply::Following);}
-                                        let mut feed=if let Some(membership)=&target.membership{ActiveLogFeed::Merged(g.follow_membership_logs(membership,crate::logs::FollowOptions{seconds},read).await?)}else if target.all {ActiveLogFeed::Merged(g.follow_merged_logs(&target.namespace,&target.pod,&target.uid,crate::logs::FollowOptions{seconds},read).await?)}else{ActiveLogFeed::Single(Box::new(g.follow_logs_resumable(&target.namespace,&target.pod,target.container,&target.uid,crate::logs::FollowOptions{seconds},read).await?))};
+                                        let mut feed=if let Some(membership)=target.membership.as_ref().filter(|m|m.is_dynamic()){ActiveLogFeed::Dynamic(Box::new(g.follow_dynamic_logs(membership,crate::logs::FollowOptions{seconds},read).await?))}else if let Some(membership)=&target.membership{ActiveLogFeed::Merged(g.follow_membership_logs(membership,crate::logs::FollowOptions{seconds},read).await?)}else if target.all {ActiveLogFeed::Merged(g.follow_merged_logs(&target.namespace,&target.pod,&target.uid,crate::logs::FollowOptions{seconds},read).await?)}else{ActiveLogFeed::Single(Box::new(g.follow_logs_resumable(&target.namespace,&target.pod,target.container,&target.uid,crate::logs::FollowOptions{seconds},read).await?))};
                                         let mailbox = log_results.clone();
                                         let job = tokio::spawn(async move {
                                             let mut count = 0usize;
@@ -902,17 +903,21 @@ struct LogTarget {
     previous: bool,
     follow: bool,
     all: bool,
+    /// Explicit `:logs-live` opt-in: announced Pod joins and departures.
+    dynamic: bool,
     membership: Option<crate::logs::LogMembership>,
 }
 enum ActiveLogFeed {
     Single(Box<crate::logs::LogFeed>),
     Merged(crate::logs::MergedLogFeed),
+    Dynamic(Box<crate::logs::DynamicLogFeed>),
 }
 impl ActiveLogFeed {
     async fn next(&mut self) -> Result<Option<String>> {
         match self {
             Self::Single(feed) => feed.next().await,
             Self::Merged(feed) => feed.next().await,
+            Self::Dynamic(feed) => feed.next().await,
         }
     }
 }
@@ -1396,7 +1401,9 @@ impl App {
             ("cow",_)=>self.modal=Modal::Detail(format!(" {}\n < {} >\n  \\   ^__^\n   \\  (oo)\\_______\n      (__)\\       )\\\n          ||----w |\n          ||     ||", "_".repeat(args.join(" ").len().min(70)),safety::safe_text(&args.join(" "),70)),0),
             ("can",_)=>self.status="Use :can u:USER | g:GROUP | s:NAMESPACE:SERVICEACCOUNT".into(),
             ("rbacs"|"policies"|"users"|"groups",_)=>self.status="Use :can u:USER, g:GROUP or s:NAMESPACE:SERVICEACCOUNT to inspect native RBAC policy. Subject-list views are unavailable.".into(),
-            ("logs",[selector])=>self.request_log_group(self.namespace.clone(),crate::logs::PodLogSelection::Selector(selector.clone()),false,true),
+            ("logs",[selector])=>self.request_log_group(self.namespace.clone(),crate::logs::PodLogSelection::Selector(selector.clone()),false,true,false),
+            ("logs-live",[selector])=>self.request_log_group(self.namespace.clone(),crate::logs::PodLogSelection::Selector(selector.clone()),false,true,true),
+            ("logs-live",[])=>self.request_dynamic_workload_logs(),
             ("copilot",[])=>{
                 if let Some((kind,namespace,name))=self.selected_target() {
                     if self.busy {self.status="Wait for the current request before preparing Copilot.".into();}
@@ -2363,18 +2370,46 @@ impl App {
         self.send(Task::Overview(connection, names));
         Ok(())
     }
+    /// Enter opens the focused card's Pods, or the exact Pod's Events when a
+    /// warning record is selected. Event drilldown binds name and UID, so a
+    /// replacement Pod with the same name never inherits the old records.
     fn open_dashboard_pods(&mut self, dashboard: dashboard_ui::Dashboard) -> Result<()> {
         let Some(selected) = dashboard.selected() else {
             self.modal = Modal::LiveOverview(dashboard);
             return Ok(());
         };
+        let warning = dashboard.selected_warning();
         if self.busy {
-            self.status = "Wait for the current request before opening Pods.".into();
+            self.status = format!(
+                "Wait for the current request before opening {}.",
+                if warning.is_some() { "Events" } else { "Pods" }
+            );
             self.modal = Modal::LiveOverview(dashboard);
             return Ok(());
         }
+        let fields = match warning {
+            Some(warning) => {
+                let fields = crate::selectors::pod_events_field(&warning.pod, &warning.uid);
+                if let Err(error) = crate::selectors::field_scope(&fields) {
+                    self.modal = Modal::LiveOverview(dashboard);
+                    self.status = format!("Cannot open Events for this warning: {error}");
+                    return Ok(());
+                }
+                fields
+            }
+            None => String::new(),
+        };
+        let (resource, status) = match warning {
+            Some(warning) => (
+                "v1/events",
+                format!("Events for Pod {} (exact UID) | Esc back", warning.pod),
+            ),
+            None => ("v1/pods", "Opening selected context Pods.".into()),
+        };
         let context = selected.context.clone();
-        let namespace = if selected.namespace.is_empty() {
+        let namespace = if let Some(warning) = warning {
+            warning.namespace.clone()
+        } else if selected.namespace.is_empty() {
             self.namespace.clone()
         } else {
             selected.namespace.clone()
@@ -2383,11 +2418,11 @@ impl App {
         self.overview = None;
         self.filter.clear();
         self.selector.clear();
-        self.field_selector.clear();
+        self.field_selector = fields;
         self.namespace = namespace;
-        self.desired_resource = Some("v1/pods".into());
+        self.desired_resource = Some(resource.into());
         if context == self.context {
-            if let Ok(index) = self.resolve_resource("v1/pods") {
+            if let Ok(index) = self.resolve_resource(resource) {
                 self.kind_index = index;
                 self.desired_resource = None;
             }
@@ -2397,7 +2432,7 @@ impl App {
             self.connect();
         }
         self.namespace_override = true;
-        self.status = "Opening selected context Pods.".into();
+        self.status = status;
         Ok(())
     }
     fn theme_picker(&mut self) -> Result<()> {
@@ -2534,6 +2569,7 @@ impl App {
         selection: crate::logs::PodLogSelection,
         previous: bool,
         follow: bool,
+        dynamic: bool,
     ) {
         if self.busy {
             self.status = "Wait for the current request before capturing log membership.".into();
@@ -2544,7 +2580,13 @@ impl App {
             return;
         }
         if !safety::valid_id(&namespace) {
-            self.status = "Choose one explicit namespace for fixed-membership logs.".into();
+            self.status = "Choose one explicit namespace for workload logs.".into();
+            return;
+        }
+        if dynamic && (previous || !follow || self.options.log_read.head) {
+            self.status =
+                "Dynamic membership follows new records; choose a tail or time range, not head."
+                    .into();
             return;
         }
         let (name, uid) = match &selection {
@@ -2561,14 +2603,19 @@ impl App {
             previous,
             follow,
             all: true,
+            dynamic,
             membership: None,
         };
         self.subviews
             .retain(|modal| !matches!(modal, Modal::Follow(_) | Modal::Containers(..)));
         let generation = self.worker.logs.cancel();
         let mut view = crate::ui_logs::LogView::new(
-            "Capturing complete fixed Pod membership; no new Pods will be added automatically..."
-                .into(),
+            if dynamic {
+                "Capturing complete Pod membership; dynamic opt-in announces every join and departure..."
+            } else {
+                "Capturing complete fixed Pod membership; no new Pods will be added automatically..."
+            }
+            .into(),
             self.options.log_read,
         );
         view.following = follow && !previous && !self.options.log_read.head;
@@ -2576,6 +2623,31 @@ impl App {
         self.log_target = Some(target.clone());
         self.modal = Modal::Follow(Box::new(view));
         self.send(Task::CaptureLogs(target, selection, generation));
+    }
+    fn request_dynamic_workload_logs(&mut self) {
+        if !supports_group_logs(&self.kind()) {
+            self.status =
+                "Use :logs-live on a selected workload, or :logs-live LABEL_SELECTOR.".into();
+            return;
+        }
+        match (self.selected_target(), self.selected_uid()) {
+            (Some((resource, namespace, name)), Some(uid)) => self.request_log_group(
+                namespace,
+                crate::logs::PodLogSelection::Workload {
+                    resource,
+                    name,
+                    uid,
+                },
+                false,
+                true,
+                true,
+            ),
+            (Some(_), None) => {
+                self.status =
+                    "Workload UID unavailable; refresh before capturing log membership.".into()
+            }
+            (None, _) => self.status = "Select a workload first.".into(),
+        }
     }
     fn request_logs(&mut self, previous: bool, follow: bool) {
         if supports_group_logs(&self.kind()) {
@@ -2590,6 +2662,7 @@ impl App {
                         },
                         previous,
                         follow,
+                        false,
                     );
                 } else {
                     self.status =
@@ -2637,6 +2710,7 @@ impl App {
             pod: name(&object).into(),
             uid,
             all: preferred.is_none(),
+            dynamic: false,
             membership: None,
             container: preferred.or_else(|| ordinary.first().cloned()),
             previous,
@@ -2674,6 +2748,7 @@ impl App {
                 previous,
                 follow,
                 all: false,
+                dynamic: false,
                 membership: None,
             };
             self.subviews
@@ -3478,6 +3553,7 @@ impl App {
                                         namespace: n,
                                         pod,
                                         all: container == "*",
+                                        dynamic: false,
                                         membership: None,
                                         container: if container == "*" {
                                             self.subviews.last().and_then(|modal| {
@@ -3977,6 +4053,7 @@ impl App {
                 match code {
                     KeyCode::Char('?') => dashboard.help = !dashboard.help,
                     KeyCode::Esc if dashboard.help => dashboard.help = false,
+                    KeyCode::Esc if dashboard.warning.is_some() => dashboard.warning = None,
                     KeyCode::Esc | KeyCode::Char('q') => {
                         self.overview = None;
                         return Ok(false);
@@ -5112,7 +5189,7 @@ fn resource_label(kind: &Kind) -> String {
 const TUI_HELP: &str = "NAVIGATE LIKE K9S\n  :pod :pods :po           Singular, plural or discovered short name\n  :pod NAMESPACE          Resource in namespace; all means all namespaces\n  :pod /api|web           Resource plus regex filter\n  :pod app=api,tier=web    Server-side label selector\n  :pod @CONTEXT           Switch context; context names retain their case\n  :ctx / :ctx NAME        Context picker (Pod view) / direct switch (same view)\n  :ns / :ns NAME          Namespace picker / direct switch (Pod view)\n  Ctrl-A / :aliases       Resource alias picker; Enter navigates\n  :pulses / :pu           Read-only cluster health snapshot\n  :xray po|svc|dp [NS]    Ownership and service relationship snapshot\n  :screendump / :sd       Browse saved redacted resource snapshots\n  :can u:NAME             Read-only RBAC subject view\n  :dir PATH               Browse local YAML directory; no apply\n  :helm [NAMESPACE]       Native release metadata (--allow-helm)\n  :history RELEASE        Selected release revision history\n  :q :q! :qa :Q :quit     Quit (in-flight mutations must finish)\n\nCOMMAND PROMPT\n  : / Tab                 Open prompt; Tab completes; Shift-Tab reverses\n  Up / Down               Recall in-session command history\n  Left Right Home End     Edit at cursor; Ctrl-U clears\n  Enter / Esc             Run command / cancel without changing view\n  [ / ] / -               Previous / next / last view\n  Esc                     Close view or return to previous resource\n\nFILTER\n  /PATTERN                Case-insensitive regex over namespace/name/status\n  /!PATTERN               Inverse regex\n  /-f PATTERN             Fuzzy subsequence match\n  /-l LABEL_SELECTOR      Apply server-side label selector on Enter\n  Enter / Esc             Keep / restore previous filter and selected UID\n\nRESOURCE TABLE\n  j k / arrows            Move; PgUp PgDown Home End page\n  Enter                   Drill into containers, related Pods or namespace\n  d                       Describe selected object (redacted overview)\n  D                       Dashboard for current context and namespace\n  b / B                   Save current selection / open saved selections\n  y / v                   View redacted YAML; J views JSON\n  c / n                   Copy name / namespace via terminal OSC52 clipboard\n  w / 0                   Warp to selected namespace / all namespaces\n  N / A / S / R           Sort by name / age / status / readiness\n  C / M                   Sort Pods/Nodes by CPU / memory, highest first\n  CPU/MEM snapshots refresh every 15s while the table is visible; - means\n  unknown, never zero. ~ indicates Metrics API omitted UID; creation checked.\n  Table CPU/MEM labels are rounded; d or m shows exact measured quantities.\n  Space / Ctrl-Space      Mark / mark range (visual only; no bulk mutations)\n  Ctrl-Backslash          Clear marks\n  Ctrl-S / :export        Save visible snapshot / selected resource YAML\n  Ctrl-R / :discover      Refresh / API discovery; r restarts workloads\n  l / p                   Follow logs / previous logs (--allow-logs)\n  Pod s / a / f / F       Shell / attach / forwards / new forward\n  Workload s / r          Scale Deployment-StatefulSet / reviewed restart\n  e / :edit-container     YAML spec editor / focused container editor\n  Ctrl-D                  Reviewed deletion; Ctrl-K force kill disabled\n  o                       Show selected Pod's Node\n\nHELM AND LOGS\n  Helm Enter / r          Release revision history\n  History Enter / v       Explicit selected revision stored values\n  Helm i / u / t / c      Install / upgrade / test / separately install chart CRDs\n  History r / Ctrl-D      Rollback selected revision / uninstall current release\n  Helm lifecycle needs --write --allow-helm --allow-helm-write and --helm-tool.\n  Sources: local .tgz or explicit OCI :TAG / @sha256:DIGEST.
   --helm-keyring requires native Helm provenance verification during prepare.\n  Hooks/CRDs require --allow-helm-hooks / --allow-helm-crds; default OFF.\n  :helm-crds prepares create-only Namespaced CRDs, retained on uninstall.
   :helm-test runs stored tests; :helm-crds-upgrade reviews schema changes.
-  :helm-crds-delete is explicit, checks live instances and needs stronger approval.\n  :helm-crds-migrate reviews storage rewrites; controller proof gates finalization.\n  :copilot previews selected diagnostics; explicit policy and transfer approval to send.\n  Every review line must be painted before exact namespace/release approval.\n  Helm d / m / y          Metadata / resource identities / metadata YAML\n  Helm Ctrl-R / /         Refresh / filter; Esc returns to previous view\n  Log a                   Toggle all ordinary containers / preferred container\n  Workload l / p          Fixed captured Pod membership / previous logs\n  :logs LABEL_SELECTOR    Explicit namespace-scoped multi-Pod log capture\n  Group reloads keep the same Pod UIDs; close and reopen to capture new Pods.\n  Log 0..6                Tail / head / last 1m,5m,15m,30m,1h\n  Log s w t f             Autoscroll / wrap / timestamps / fullscreen\n  Log e / W / Ctrl-S      Error matches / warning matches / local export\n  Pod l honors the default-container annotation, otherwise merges multiple\n  ordinary containers. Each merged line carries a namespace/Pod/container.\n\nKBORG COMMANDS\n  :actions                Discover actions with capability reasons\n  :scale :image :restart  Explicit reviewed workload operations\n  :metrics [resources]    Metrics / opt into requests-limit comparisons\n  :overview               Dashboard of up to four explicit contexts\n  Dashboard 1..4 / Enter   Focus a context / open its Pods\n  Dashboard c / s / B      Choose contexts / save / open saved selections\n  Dashboard ?             Contextual keymap and health evidence meaning\n  :themes                 Theme preview and custom palette creation\n\nLIMITS AND SAFETY\n  Context, namespace and mode remain visible; DEMO is sample data.\n  STALE and TRUNCATED indicate incomplete data. Regex uses bounded Rust regex\n  syntax; look-around and backreferences are unavailable. Secrets excluded.\n  e edits existing namespaced non-Secret spec fields with --allow-yaml-edit.\n  Hidden values, metadata and status are preserved; no resource creation.\n  :edit-container retains focused image/resource forms.\n  Node c/u/r reviews cordon/uncordon/drain with --allow-node-maintenance.\n  Pod file transfer, node shell, benchmarks and scans remain unavailable.\n  Helm release reads need --allow-helm. Values are stored overrides with\n  known fields redacted; custom keys can remain confidential. Complete\n  review is mandatory for lifecycle changes. Raw storage, chart files and notes are excluded.\n  Visual marks never authorize bulk writes. Every mutation requires --write\n  plus one-use approval; shell/attach/forward need separate capabilities.";
+  :helm-crds-delete is explicit, checks live instances and needs stronger approval.\n  :helm-crds-migrate reviews storage rewrites; controller proof gates finalization.\n  :copilot previews selected diagnostics; explicit policy and transfer approval to send.\n  Every review line must be painted before exact namespace/release approval.\n  Helm d / m / y          Metadata / resource identities / metadata YAML\n  Helm Ctrl-R / /         Refresh / filter; Esc returns to previous view\n  Log a                   Toggle all ordinary containers / preferred container\n  Workload l / p          Fixed captured Pod membership / previous logs\n  :logs LABEL_SELECTOR    Explicit namespace-scoped multi-Pod log capture\n  Group reloads keep the same Pod UIDs; close and reopen to capture new Pods.\n  :logs-live [SELECTOR]   Opt in to announced Pod joins/departures (10s refresh)\n  Log 0..6                Tail / head / last 1m,5m,15m,30m,1h\n  Log s w t f             Autoscroll / wrap / timestamps / fullscreen\n  Log e / W / Ctrl-S      Error matches / warning matches / local export\n  Pod l honors the default-container annotation, otherwise merges multiple\n  ordinary containers. Each merged line carries a namespace/Pod/container.\n\nKBORG COMMANDS\n  :actions                Discover actions with capability reasons\n  :scale :image :restart  Explicit reviewed workload operations\n  :metrics [resources]    Metrics / opt into requests-limit comparisons\n  :overview               Dashboard of up to four explicit contexts\n  Dashboard 1..4 / Enter   Focus a context / open its Pods\n  Dashboard c / s / B      Choose contexts / save / open saved selections\n  Dashboard ?             Contextual keymap and health evidence meaning\n  :themes                 Theme preview and custom palette creation\n\nLIMITS AND SAFETY\n  Context, namespace and mode remain visible; DEMO is sample data.\n  STALE and TRUNCATED indicate incomplete data. Regex uses bounded Rust regex\n  syntax; look-around and backreferences are unavailable. Secrets excluded.\n  e edits existing namespaced non-Secret spec fields with --allow-yaml-edit.\n  Hidden values, metadata and status are preserved; no resource creation.\n  :edit-container retains focused image/resource forms.\n  Node c/u/r reviews cordon/uncordon/drain with --allow-node-maintenance.\n  Pod file transfer, node shell, benchmarks and scans remain unavailable.\n  Helm release reads need --allow-helm. Values are stored overrides with\n  known fields redacted; custom keys can remain confidential. Complete\n  review is mandatory for lifecycle changes. Raw storage, chart files and notes are excluded.\n  Visual marks never authorize bulk writes. Every mutation requires --write\n  plus one-use approval; shell/attach/forward need separate capabilities.";
 
 #[derive(Clone, Copy, Debug)]
 struct Rect {
@@ -6564,7 +6641,7 @@ fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
             } else if matches!(modal, Modal::Input("Command", _)) {
                 "Esc cancel | Enter run | :pods :deploy :svc :nodes | :ns NAME | :sort FIELD"
             } else if matches!(modal, Modal::LiveOverview(..)) {
-                "1..4 focus | Enter Pods | ? keymap | Esc back"
+                "1..4 focus | Enter Pods | w warnings | ? keymap | Esc back"
             } else if matches!(modal, Modal::Overview(..)) {
                 "Esc close | J redacted JSON | y YAML | PgUp/PgDown scroll"
             } else if matches!(modal, Modal::AdviceRunning) {
@@ -7111,6 +7188,7 @@ mod layout_tests {
                     follow: false,
                     previous: false,
                     all_containers: false,
+                    dynamic_membership: false,
                     helm_storage: None,
                     helm_tool: None,
                     helm_values: None,
@@ -7642,6 +7720,7 @@ mod layout_tests {
             previous: false,
             follow: true,
             all: true,
+            dynamic: false,
             membership: Some(membership),
         });
         let view = crate::ui_logs::LogView::new(
@@ -7661,6 +7740,39 @@ mod layout_tests {
             assert!(!title.contains("111111111111111111111111111111111111"));
         }
         Ok(())
+    }
+    #[test]
+    fn logs_live_is_an_explicit_dynamic_opt_in_and_rejects_head_snapshots() {
+        let (mut app, _replies, mut commands) = harness();
+        app.options.connection.logs = true;
+        app.namespace = "default".into();
+        assert!(app.command("logs app=web").is_ok());
+        match commands.try_recv() {
+            Ok((_, Task::CaptureLogs(target, _, _))) => assert!(!target.dynamic),
+            _ => panic!("fixed capture missing"),
+        }
+        app.busy = false;
+        app.command_epoch = None;
+        assert!(app.command("logs-live app=web").is_ok());
+        match commands.try_recv() {
+            Ok((
+                _,
+                Task::CaptureLogs(target, crate::logs::PodLogSelection::Selector(selector), _),
+            )) => {
+                assert!(target.dynamic && target.follow && !target.previous);
+                assert_eq!(selector, "app=web");
+            }
+            _ => panic!("dynamic capture missing"),
+        }
+        app.busy = false;
+        app.command_epoch = None;
+        app.options.log_read.head = true;
+        assert!(app.command("logs-live app=web").is_ok());
+        assert!(
+            commands.try_recv().is_err(),
+            "head snapshots cannot be dynamic"
+        );
+        assert!(app.status.contains("not head"));
     }
     #[test]
     fn workload_logs_capture_once_and_range_reload_retains_exact_pod_membership() -> Result<()> {
@@ -8441,6 +8553,7 @@ mod layout_tests {
                 previous: false,
                 follow: false,
                 all: false,
+                dynamic: false,
                 membership: None,
             },
             (0..20).map(|index| format!("container-{index}")).collect(),
@@ -8930,6 +9043,66 @@ mod layout_tests {
         assert!(app.namespace_override);
         assert!(app.filter.is_empty() && app.selector.is_empty());
         assert_eq!(app.desired_resource.as_deref(), Some("v1/pods"));
+        assert!(app.overview.is_none());
+    }
+    #[test]
+    fn dashboard_warning_opens_exact_pod_events_and_esc_clears_selection_first() {
+        let (mut app, _replies, mut commands) = harness();
+        app.namespace = "*".into();
+        let mut row = crate::overview::ContextSummary::connecting("other cluster".into(), false);
+        row.state = crate::dashboard_health::EvidenceState::Live;
+        row.namespace = "*".into();
+        row.health = Some(crate::dashboard_health::HealthSummary {
+            ready: 1,
+            unready: 1,
+            pending: 0,
+            failed: 0,
+            succeeded: 0,
+            terminating: 0,
+            unknown: 0,
+            restarts: 3,
+            oom_killed: 0,
+            warnings: crate::dashboard_health::WarningSummary {
+                state: crate::dashboard_health::EvidenceState::Live,
+                count: Some(1),
+                recent: vec![crate::dashboard_health::WarningEvidence {
+                    namespace: "payments".into(),
+                    pod: "api-7d9f".into(),
+                    uid: "0f0b21f0-af23-4c1e-9a77-3546a8e1e804".into(),
+                    reason: "BackOff".into(),
+                    occurrences: 4,
+                    observed_unix_seconds: 1,
+                }],
+                message: None,
+            },
+        });
+        let mut dashboard = dashboard_ui::Dashboard::new(&["other cluster".into()], false);
+        dashboard.update(vec![row]);
+        app.modal = Modal::LiveOverview(dashboard);
+        assert!(app.key(KeyCode::Char('w')).is_ok());
+        assert!(
+            screen(&app, 120, 30)
+                .join("\n")
+                .contains("> BackOff / payments/api-7d9f")
+        );
+        assert!(app.key(KeyCode::Esc).is_ok());
+        assert!(
+            matches!(&app.modal, Modal::LiveOverview(dashboard) if dashboard.warning.is_none())
+        );
+        assert!(app.key(KeyCode::Char('w')).is_ok());
+        assert!(app.key(KeyCode::Enter).is_ok());
+        match commands.try_recv() {
+            Ok((_, Task::Connect(connection))) => {
+                assert_eq!(connection.context.as_deref(), Some("other cluster"));
+            }
+            _ => panic!("warning context was not opened"),
+        }
+        assert_eq!(app.namespace, "payments");
+        assert_eq!(app.desired_resource.as_deref(), Some("v1/events"));
+        assert_eq!(
+            app.field_selector,
+            crate::selectors::pod_events_field("api-7d9f", "0f0b21f0-af23-4c1e-9a77-3546a8e1e804")
+        );
         assert!(app.overview.is_none());
     }
     #[test]
