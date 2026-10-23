@@ -106,6 +106,8 @@ pub const SPECIAL: &[&str] = &[
     "edit-container",
     "yaml-edit",
     "export",
+    "save",
+    "selections",
     "cordon",
     "uncordon",
     "drain",

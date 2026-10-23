@@ -115,7 +115,7 @@ Ctrl-] disconnect, stdin/resize, 1..3600s, 16MiB output/1MiB input. Output filte
 unsafe terminal controls; remote full-screen apps remain unsupported.
 Disconnect cannot guarantee remote termination. Follow defaults 1h; rolling
 display 256KiB/2000 lines, 64MiB wire cap and per-second flood limits.
-Overview snapshots have a 30s global budget; --follow owns up to 4 live watches.
+Overview snapshots have a 30s global budget; --follow watches Pods/Events in up to 4 contexts.
 
 Themes:
   theme list | use ID | reset | new ID --base BUILTIN | clone-current ID
@@ -139,6 +139,8 @@ TUI navigation (k9s command grammar; full compatibility register in docs/K9S_COM
   :copilot                        Preview selected diagnostics; separately approve transfer
   :logs LABELS                   Capture fixed multi-Pod logs in current namespace
   :themes :metrics :overview :actions  Additional KBorg views
+  D / b / B                    Dashboard / save selection / reopen selections
+  Dashboard 1..4 / c / s / ?    Focus / contexts / save / keymap
   :q :quit / Ctrl-C               Quit
 
   j/k / arrows: rows   Enter: drill down   Esc: back   ?: help

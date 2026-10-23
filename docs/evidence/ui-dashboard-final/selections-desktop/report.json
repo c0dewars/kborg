@@ -1,0 +1,58 @@
+{
+  "passed": true,
+  "context": "docker-desktop",
+  "binary_sha256": "803777f8e773ab741e6535a438246f7f7dbe5ae1554516d3595741b5500530dc",
+  "checks": [
+    "startup and empty picker do not create saved preferences",
+    "explicit resource save retains selector and UID in private data-only preferences",
+    "duplicate selection name cannot overwrite an existing record",
+    "dashboard save persists only selected contexts and namespace",
+    "restart preserves selections but explicit reopen revalidates resource and exact workload UID",
+    "saved dashboard explicitly reopens its live namespace scope",
+    "recreated workload name cannot inherit saved UID focus",
+    "missing context rejected before changing active scope",
+    "delete cancel and incorrect confirmation preserve records; exact name removes only selected record",
+    "invalid preferences show an in-app notice, retain file and restore underlying resource/dashboard",
+    "nonprivate preferences are refused without changing contents or permissions",
+    "all TUI sessions exit cleanly and restore terminal mode"
+  ],
+  "captures": [
+    {
+      "name": "saved-selections",
+      "path": "/Users/brunogarcia/Desktop/HyperMac/repos/kborg/docs/evidence/ui-dashboard-final/selections-desktop/saved-selections.png",
+      "width": 136,
+      "height": 38
+    },
+    {
+      "name": "restored-workload",
+      "path": "/Users/brunogarcia/Desktop/HyperMac/repos/kborg/docs/evidence/ui-dashboard-final/selections-desktop/restored-workload.png",
+      "width": 136,
+      "height": 38
+    },
+    {
+      "name": "restored-dashboard",
+      "path": "/Users/brunogarcia/Desktop/HyperMac/repos/kborg/docs/evidence/ui-dashboard-final/selections-desktop/restored-dashboard.png",
+      "width": 136,
+      "height": 38
+    },
+    {
+      "name": "replaced-workload",
+      "path": "/Users/brunogarcia/Desktop/HyperMac/repos/kborg/docs/evidence/ui-dashboard-final/selections-desktop/replaced-workload.png",
+      "width": 136,
+      "height": 38
+    },
+    {
+      "name": "unavailable-context",
+      "path": "/Users/brunogarcia/Desktop/HyperMac/repos/kborg/docs/evidence/ui-dashboard-final/selections-desktop/unavailable-context.png",
+      "width": 136,
+      "height": 38
+    },
+    {
+      "name": "invalid-preferences",
+      "path": "/Users/brunogarcia/Desktop/HyperMac/repos/kborg/docs/evidence/ui-dashboard-final/selections-desktop/invalid-preferences.png",
+      "width": 136,
+      "height": 38
+    }
+  ],
+  "fixture_cleanup": true
+}

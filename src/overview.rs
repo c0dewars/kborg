@@ -1,14 +1,16 @@
-//! Explicit, bounded, independent read-only context snapshots.
+//! Explicit, bounded, independent read-only context health snapshots and watches.
 use crate::{
     Result,
+    dashboard_health::{EventEvidence, EvidenceState, HealthSummary, PodHealth},
     gateway::{Connection, Gateway},
     safety,
 };
 use futures_util::{StreamExt, stream};
 use serde::Serialize;
-use std::time::Duration;
+use serde_json::Value;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-#[derive(Clone, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 pub struct ContextSummary {
     pub demo: bool,
     pub context: String,
@@ -17,6 +19,60 @@ pub struct ContextSummary {
     pub unhealthy: Option<usize>,
     pub truncated: bool,
     pub error: Option<String>,
+    pub state: EvidenceState,
+    pub observed_unix_seconds: Option<u64>,
+    pub health: Option<HealthSummary>,
+}
+
+impl ContextSummary {
+    pub fn connecting(context: String, demo: bool) -> Self {
+        Self {
+            demo,
+            context,
+            namespace: String::new(),
+            pods: None,
+            unhealthy: None,
+            truncated: false,
+            error: Some("Connecting to Pods".into()),
+            state: EvidenceState::Connecting,
+            observed_unix_seconds: None,
+            health: None,
+        }
+    }
+    fn fail(&mut self, message: &str) {
+        self.error = Some(safety::safe_text(message, 200));
+        self.state = EvidenceState::from_error(message);
+        self.pods = None;
+        self.unhealthy = None;
+        self.health = None;
+    }
+    fn set_health(&mut self, pods: &PodHealth, events: &EventEvidence) {
+        let health = pods.with_warnings(events, unix_seconds());
+        self.unhealthy = Some(health.unhealthy());
+        self.health = Some(health);
+    }
+}
+
+fn unix_seconds() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_secs())
+}
+
+fn read_only(options: &Connection, context: &str) -> Connection {
+    let mut connection = options.clone();
+    connection.context = Some(context.into());
+    connection.writable = false;
+    connection.logs = false;
+    connection.allow_exec = false;
+    connection.allow_attach = false;
+    connection.allow_port_forward = false;
+    connection.allow_node_maintenance = false;
+    connection.allow_yaml_edit = false;
+    connection.allow_helm_write = false;
+    connection.allow_helm_hooks = false;
+    connection.allow_helm_crds = false;
+    connection
 }
 
 pub fn validate(names: &[String]) -> Result<()> {
@@ -36,57 +92,104 @@ pub fn validate(names: &[String]) -> Result<()> {
     Ok(())
 }
 
-pub async fn collect(options: &Connection, names: &[String]) -> Result<Vec<ContextSummary>> {
-    validate(names)?;
-    // Each connection owns its identity and transport. No credentials, object caches,
-    // or writes are shared; release each object list before retaining the summary.
-    let mut pending = stream::iter(names.iter().cloned().map(|name| {
-        let mut connection = options.clone();
-        connection.context = Some(name.clone());
-        connection.writable = false;
-        connection.logs = false;
-        connection.allow_exec = false;
-        connection.allow_attach = false;
-        connection.allow_port_forward = false;
-        async move {
-            let result = tokio::time::timeout(Duration::from_secs(20), async {
-                let gateway = Gateway::connect(connection).await?;
-                let list = gateway.list("pods", &gateway.namespace).await?;
-                let items = list["items"].as_array().ok_or("invalid pod list")?;
-                let unhealthy = items.iter().filter(|pod| pod_unhealthy(pod)).count();
-                Ok::<_, String>((
-                    gateway.namespace,
-                    items.len(),
-                    unhealthy,
-                    list["truncated"] == true,
-                ))
-            })
-            .await;
-            match result {
-                Ok(Ok((namespace, pods, unhealthy, truncated))) => ContextSummary {
-                    demo: options.demo,
-                    context: name,
-                    namespace,
-                    pods: Some(pods),
-                    unhealthy: Some(unhealthy),
-                    truncated,
-                    error: None,
-                },
-                other => ContextSummary {
-                    demo: options.demo,
-                    context: name,
-                    namespace: String::new(),
-                    pods: None,
-                    unhealthy: None,
-                    truncated: false,
-                    error: Some(match other {
-                        Ok(Err(e)) => safety::safe_text(&e, 200),
-                        _ => "context timed out".into(),
-                    }),
-                },
+fn events_from_list(result: Result<Value>, pods: &[Value], demo: bool) -> EventEvidence {
+    match result {
+        Ok(mut list) => {
+            let truncated = list["truncated"] == true;
+            let Some(events) = list["items"].as_array_mut() else {
+                return EventEvidence::unavailable(
+                    EvidenceState::Unavailable,
+                    "Invalid Event list",
+                );
+            };
+            if demo {
+                // These are explicitly synthetic fixtures; keep their event identity and
+                // recency coherent without altering live cluster evidence.
+                for event in events.iter_mut() {
+                    if let Some(pod) = pods.iter().find(|pod| {
+                        pod["metadata"]["namespace"] == event["involvedObject"]["namespace"]
+                            && pod["metadata"]["name"] == event["involvedObject"]["name"]
+                    }) {
+                        event["involvedObject"]["uid"] = pod["metadata"]["uid"].clone();
+                        event["lastTimestamp"] =
+                            Value::String(k8s_openapi::jiff::Timestamp::now().to_string());
+                    }
+                }
+            }
+            EventEvidence::from_objects(events, truncated)
+        }
+        Err(error) => EventEvidence::unavailable(EvidenceState::from_error(&error), &error),
+    }
+}
+
+async fn collect_context(options: Connection, context: String) -> ContextSummary {
+    let mut row = ContextSummary::connecting(context, options.demo);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    let gateway = match tokio::time::timeout_at(deadline, Gateway::connect(options)).await {
+        Ok(Ok(gateway)) => gateway,
+        result => {
+            row.fail(&match result {
+                Ok(Err(error)) => error,
+                _ => "Context connection timed out".into(),
+            });
+            return row;
+        }
+    };
+    row.namespace = gateway.namespace.clone();
+    // A denied/slow Event source must never discard a successful Pod observation.
+    let gateway_ref = &gateway;
+    let read = |kind| async move {
+        tokio::time::timeout_at(deadline, gateway_ref.list(kind, &gateway_ref.namespace))
+            .await
+            .map_err(|_| "Context snapshot budget exceeded".to_owned())?
+    };
+    let (pods, events) = tokio::join!(read("pods"), read("events"));
+    match pods {
+        Ok(mut list) => {
+            if row.demo {
+                for pod in list["items"].as_array_mut().into_iter().flatten() {
+                    let ready = crate::gateway::summary(pod) == "Running"
+                        && pod["status"]["containerStatuses"]
+                            .as_array()
+                            .is_some_and(|items| {
+                                !items.is_empty() && items.iter().all(|item| item["ready"] == true)
+                            });
+                    pod["status"]["conditions"] = serde_json::json!([{
+                        "type":"Ready", "status": if ready { "True" } else { "False" }
+                    }]);
+                }
+            }
+            if let Some(items) = list["items"].as_array() {
+                row.pods = Some(items.len());
+                row.truncated = list["truncated"] == true;
+                row.state = if row.truncated {
+                    EvidenceState::Truncated
+                } else {
+                    EvidenceState::Live
+                };
+                row.error = None;
+                row.observed_unix_seconds = Some(unix_seconds());
+                row.set_health(
+                    &PodHealth::from_objects(items),
+                    &events_from_list(events, items, row.demo),
+                );
+            } else {
+                row.fail("Invalid Pod list");
             }
         }
-    }))
+        Err(error) => row.fail(&error),
+    }
+    row
+}
+
+pub async fn collect(options: &Connection, names: &[String]) -> Result<Vec<ContextSummary>> {
+    validate(names)?;
+    let mut pending = stream::iter(
+        names
+            .iter()
+            .cloned()
+            .map(|name| collect_context(read_only(options, &name), name)),
+    )
     .buffer_unordered(4);
     let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
     let mut rows = Vec::new();
@@ -96,74 +199,74 @@ pub async fn collect(options: &Connection, names: &[String]) -> Result<Vec<Conte
     drop(pending);
     for name in names {
         if !rows.iter().any(|row| &row.context == name) {
-            rows.push(ContextSummary {
-                demo: options.demo,
-                context: name.clone(),
-                namespace: String::new(),
-                pods: None,
-                unhealthy: None,
-                truncated: false,
-                error: Some(
-                    "overview 30-second global budget exceeded; narrow the selected contexts"
-                        .into(),
-                ),
-            });
+            let mut row = ContextSummary::connecting(name.clone(), options.demo);
+            row.fail("Overview 30-second global budget exceeded; narrow the selected contexts");
+            rows.push(row);
         }
     }
     rows.sort_by(|a, b| a.context.cmp(&b.context));
     Ok(rows)
 }
 
-fn pod_unhealthy(pod: &serde_json::Value) -> bool {
-    if pod["metadata"]["deletionTimestamp"].is_string() {
-        return true;
-    }
-    if pod["status"]["phase"] == "Succeeded" {
-        return false;
-    }
-    crate::gateway::summary(pod) != "Running"
-        || pod["status"]["containerStatuses"]
-            .as_array()
-            .is_none_or(|statuses| {
-                statuses.is_empty() || statuses.iter().any(|status| status["ready"] != true)
-            })
+#[cfg(test)]
+fn pod_unhealthy(pod: &Value) -> bool {
+    PodHealth::from_objects(std::slice::from_ref(pod))
+        .summary
+        .unhealthy()
+        > 0
 }
 
 pub fn text(rows: &[ContextSummary]) -> String {
     let mut output = String::from(
-        "READ ONLY | independent context snapshots (maximum 4 simultaneous requests)\nCONTEXT\tNAMESPACE\tPODS\tUNHEALTHY\tSTATE\n",
+        "READ ONLY | independent context snapshots (maximum 4 simultaneous contexts)\nCONTEXT\tNAMESPACE\tPODS\tUNHEALTHY\tSTATE\tREADY\tRESTARTS\tOOM PODS\tWARNINGS 15m\n",
     );
     if rows.iter().any(|row| row.demo) {
         output.insert_str(0, "DEMO: synthetic samples; no cluster contacted\n");
     }
     for row in rows {
+        let number = |value: Option<usize>| value.map_or("-".into(), |v| v.to_string());
+        let warnings = row.health.as_ref().map_or("-".into(), |health| {
+            let count = number(health.warnings.count);
+            if health.warnings.state == EvidenceState::Live {
+                count
+            } else {
+                format!("{count} ({:?})", health.warnings.state)
+            }
+        });
         output.push_str(&format!(
-            "{}\t{}\t{}\t{}\t{}\n",
+            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
             row.context,
             row.namespace,
-            row.pods.map_or("-".into(), |v| v.to_string()),
-            row.unhealthy.map_or("-".into(), |v| v.to_string()),
+            number(row.pods),
+            number(row.unhealthy),
             row.error.as_deref().unwrap_or(if row.truncated {
                 "TRUNCATED"
             } else {
                 "snapshot"
-            })
+            }),
+            number(row.health.as_ref().map(|health| health.ready)),
+            row.health
+                .as_ref()
+                .map_or("-".into(), |health| health.restarts.to_string()),
+            number(row.health.as_ref().map(|health| health.oom_killed)),
+            warnings,
         ));
     }
+    output.push_str("Restarts are current container counters; OOM is current/last termination evidence. Warning records match current Pod UIDs within 15m.\n");
     output
 }
 
 pub fn live_text(rows: &[ContextSummary]) -> String {
     text(rows)
         .replace(
-            "independent context snapshots (maximum 4 simultaneous requests)",
-            "LIVE independent pod watches (maximum 4 contexts)",
+            "independent context snapshots (maximum 4 simultaneous contexts)",
+            "LIVE independent Pod/Event watches (maximum 4 contexts)",
         )
-        .replace("\tsnapshot\n", "\tLIVE\n")
+        .replace("\tsnapshot\t", "\tLIVE\t")
 }
 
-/// Four independent watches, one coalesced mailbox, no credentials/objects exported.
-/// Dropping the feed aborts every connection and releases each bounded watch cache.
+/// Four independent contexts, each with bounded Pod/Event watches. One coalesced
+/// mailbox stores projections only. Dropping the feed aborts every connection.
 pub struct OverviewFeed {
     rows: std::sync::Arc<std::sync::Mutex<Vec<ContextSummary>>>,
     changed: std::sync::Arc<tokio::sync::Notify>,
@@ -181,137 +284,120 @@ impl OverviewFeed {
         let rows = std::sync::Arc::new(std::sync::Mutex::new(
             names
                 .iter()
-                .map(|context| ContextSummary {
-                    demo: options.demo,
-                    context: context.clone(),
-                    namespace: String::new(),
-                    pods: None,
-                    unhealthy: None,
-                    truncated: false,
-                    error: Some("CONNECTING".into()),
-                })
+                .map(|context| ContextSummary::connecting(context.clone(), options.demo))
                 .collect::<Vec<_>>(),
         ));
         let changed = std::sync::Arc::new(tokio::sync::Notify::new());
         let generation = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
         let mut jobs = Vec::new();
         for (index, name) in names.iter().enumerate() {
-            let mut connection = options.clone();
-            connection.context = Some(name.clone());
-            connection.writable = false;
-            connection.logs = false;
-            connection.allow_exec = false;
-            connection.allow_attach = false;
-            connection.allow_port_forward = false;
-            let context = name.clone();
+            let connection = read_only(options, name);
+            let mut row = ContextSummary::connecting(name.clone(), connection.demo);
             let slot = rows.clone();
             let signal = changed.clone();
             let revision = generation.clone();
             jobs.push(tokio::spawn(async move {
-                let publish = |namespace: String,
-                               pods: Option<usize>,
-                               unhealthy: Option<usize>,
-                               truncated: bool,
-                               error: Option<String>| {
+                let publish = |row: &ContextSummary| {
                     if let Ok(mut rows) = slot.lock() {
-                        rows[index] = ContextSummary {
-                            demo: connection.demo,
-                            context: context.clone(),
-                            namespace,
-                            pods,
-                            unhealthy,
-                            truncated,
-                            error,
-                        };
+                        rows[index] = row.clone();
                     }
                     revision.fetch_add(1, std::sync::atomic::Ordering::Release);
                     signal.notify_one();
                 };
-                let gateway = match tokio::time::timeout(
-                    Duration::from_secs(20),
-                    Gateway::connect(connection.clone()),
-                )
-                .await
-                {
+                let gateway = match tokio::time::timeout(Duration::from_secs(20), Gateway::connect(connection.clone())).await {
                     Ok(Ok(gateway)) => gateway,
-                    Ok(Err(error)) => {
-                        publish(
-                            String::new(),
-                            None,
-                            None,
-                            false,
-                            Some(safety::safe_text(&error, 200)),
-                        );
-                        return;
-                    }
-                    Err(_) => {
-                        publish(
-                            String::new(),
-                            None,
-                            None,
-                            false,
-                            Some("connection timed out; other contexts remain independent".into()),
-                        );
+                    result => {
+                        row.fail(&match result {
+                            Ok(Err(error)) => error,
+                            _ => "Connection timed out; other contexts remain independent".into(),
+                        });
+                        publish(&row);
                         return;
                     }
                 };
+                row.namespace = gateway.namespace.clone();
+                publish(&row);
                 if gateway.is_demo() {
                     loop {
-                        match gateway.list("pods", &gateway.namespace).await {
-                            Ok(list) => {
-                                let items = list["items"].as_array();
-                                publish(
-                                    gateway.namespace.clone(),
-                                    items.map(Vec::len),
-                                    items.map(|items| {
-                                        items.iter().filter(|pod| pod_unhealthy(pod)).count()
-                                    }),
-                                    list["truncated"] == true,
-                                    None,
-                                );
-                            }
-                            Err(error) => publish(
-                                gateway.namespace.clone(),
-                                None,
-                                None,
-                                false,
-                                Some(safety::safe_text(&error, 200)),
-                            ),
-                        }
+                        row = collect_context(connection.clone(), row.context.clone()).await;
+                        publish(&row);
                         tokio::time::sleep(Duration::from_secs(5)).await;
                     }
                 }
-                let mut feed = match gateway.watch("pods", &gateway.namespace) {
+                let pod_feed = match gateway.watch("pods", &gateway.namespace) {
                     Ok(feed) => feed,
                     Err(error) => {
-                        publish(
-                            gateway.namespace.clone(),
-                            None,
-                            None,
-                            false,
-                            Some(safety::safe_text(&error, 200)),
-                        );
+                        row.fail(&error);
+                        publish(&row);
                         return;
                     }
                 };
+                let mut events = EventEvidence::connecting();
+                let event_feed = match gateway.watch("events", &gateway.namespace) {
+                    Ok(feed) => Some(feed),
+                    Err(error) => {
+                        events = EventEvidence::unavailable(EvidenceState::from_error(&error), &error);
+                        None
+                    }
+                };
+                // Keep each in-flight LIST/WATCH future inside its own stream. A
+                // faster peer or the five-second clock must not cancel/restart
+                // a slower initial list and starve that source indefinitely.
+                let snapshots = |feed| {
+                    Box::pin(stream::unfold(Some(feed), |feed| async {
+                        let mut feed: crate::watch::WatchFeed = feed?;
+                        let snapshot = feed.next().await;
+                        let next = (!snapshot.terminal).then_some(feed);
+                        Some((snapshot, next))
+                    }))
+                };
+                let mut pod_stream = snapshots(pod_feed);
+                let mut event_stream = event_feed.map(snapshots);
+                let mut pods: Option<PodHealth> = None;
+                let mut pod_terminal = false;
+                let mut tick = tokio::time::interval(Duration::from_secs(5));
                 loop {
-                    let snapshot = feed.next().await;
-                    let unhealthy = snapshot
-                        .objects
-                        .iter()
-                        .filter(|pod| pod_unhealthy(pod))
-                        .count();
-                    // Failed or revoked watches report unknown counts, never healthy zeroes.
-                    publish(
-                        gateway.namespace.clone(),
-                        (!snapshot.stale).then_some(snapshot.objects.len()),
-                        (!snapshot.stale).then_some(unhealthy),
-                        snapshot.truncated,
-                        snapshot
-                            .stale
-                            .then(|| safety::safe_text(&snapshot.message, 200)),
-                    );
-                    if snapshot.terminal {
+                    tokio::select! {
+                        Some(snapshot) = pod_stream.next(), if !pod_terminal => {
+                            pod_terminal = snapshot.terminal;
+                            row.truncated = snapshot.truncated;
+                            if snapshot.stale {
+                                pods = None;
+                                row.fail(&snapshot.message);
+                            } else {
+                                row.pods = Some(snapshot.objects.len());
+                                row.state = if snapshot.truncated { EvidenceState::Truncated } else { EvidenceState::Live };
+                                row.error = None;
+                                row.observed_unix_seconds = Some(unix_seconds());
+                                pods = Some(PodHealth::from_objects(&snapshot.objects));
+                            }
+                        },
+                        snapshot = async {
+                            match event_stream.as_mut() {
+                                Some(feed) => feed.next().await,
+                                None => std::future::pending().await,
+                            }
+                        } => {
+                            let Some(snapshot) = snapshot else {
+                                event_stream = None;
+                                continue;
+                            };
+                            events = if snapshot.stale {
+                                EventEvidence::unavailable(EvidenceState::from_error(&snapshot.message), &snapshot.message)
+                            } else {
+                                EventEvidence::from_objects(&snapshot.objects, snapshot.truncated)
+                            };
+                            if snapshot.terminal {
+                                event_stream = None;
+                            }
+                        },
+                        _ = tick.tick() => {},
+                    }
+                    if let Some(pods) = &pods {
+                        row.set_health(pods, &events);
+                    }
+                    publish(&row);
+                    if pod_terminal && event_stream.is_none() {
                         break;
                     }
                 }
@@ -367,6 +453,47 @@ impl Drop for OverviewFeed {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn stale_or_denied_pods_clear_every_health_value_and_keep_last_observation_time() {
+        let mut row = ContextSummary::connecting("example".into(), false);
+        row.pods = Some(1);
+        row.unhealthy = Some(0);
+        row.observed_unix_seconds = Some(123);
+        row.set_health(
+            &PodHealth::from_objects(&[]),
+            &EventEvidence::from_objects(&[], false),
+        );
+        row.fail("watch authorization denied; cache cleared");
+        assert_eq!(row.state, EvidenceState::Denied);
+        assert!(row.health.is_none() && row.pods.is_none() && row.unhealthy.is_none());
+        assert_eq!(row.observed_unix_seconds, Some(123));
+    }
+
+    #[test]
+    fn dashboard_connections_strip_all_mutation_and_stream_capabilities() {
+        let options = Connection {
+            writable: true,
+            logs: true,
+            allow_exec: true,
+            allow_attach: true,
+            allow_port_forward: true,
+            allow_node_maintenance: true,
+            allow_yaml_edit: true,
+            allow_helm_write: true,
+            allow_helm_hooks: true,
+            allow_helm_crds: true,
+            ..Default::default()
+        };
+        let scoped = read_only(&options, "isolated");
+        assert_eq!(scoped.context.as_deref(), Some("isolated"));
+        assert!(!scoped.writable && !scoped.logs && !scoped.allow_exec && !scoped.allow_attach);
+        assert!(
+            !scoped.allow_port_forward && !scoped.allow_node_maintenance && !scoped.allow_yaml_edit
+        );
+        assert!(!scoped.allow_helm_write && !scoped.allow_helm_hooks && !scoped.allow_helm_crds);
+        assert!(options.writable && options.allow_yaml_edit);
+    }
+
     #[test]
     fn live_overview_bounds_contexts_and_keeps_scope_isolated() -> Result<()> {
         crate::cli::runtime()?.block_on(async {
@@ -432,7 +559,7 @@ mod tests {
             &json!({"kind":"Pod","status":{"phase":"Succeeded"}})
         ));
         assert!(!pod_unhealthy(
-            &json!({"kind":"Pod","status":{"phase":"Running","containerStatuses":[{"ready":true}]}})
+            &json!({"kind":"Pod","status":{"phase":"Running","containerStatuses":[{"ready":true}],"conditions":[{"type":"Ready","status":"True"}]}})
         ));
     }
     #[test]
