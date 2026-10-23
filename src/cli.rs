@@ -111,6 +111,8 @@ fn parse(args: Vec<String>) -> Result<Options> {
             "--allow-helm" => opts.connection.allow_helm = true,
             "--allow-helm-write" => opts.connection.allow_helm_write = true,
             "--allow-yaml-edit" => opts.connection.allow_yaml_edit = true,
+            "--allow-force-kill" => opts.connection.allow_force_kill = true,
+            "--allow-secret-reveal" => opts.connection.allow_secret_reveal = true,
             "--allow-helm-hooks" => opts.connection.allow_helm_hooks = true,
             "--allow-helm-crds" => opts.connection.allow_helm_crds = true,
             "--copilot-policy" => {
@@ -570,7 +572,7 @@ pub fn run_args(args: Vec<String>) -> Result<()> {
         }
         "ui" => return tui::run(opts),
         "helm" | "history" | "list" | "watch" | "metrics" | "get" | "view" | "logs"
-        | "resources" | "doctor" | "scale" | "restart" | "delete" | "set-image"
+        | "resources" | "doctor" | "scale" | "restart" | "delete" | "kill" | "set-image"
         | "set-resources" | "exec" | "attach" | "forward" | "pulses" | "xray" | "workloads"
         | "can" | "yaml-template" | "yaml-edit" | "cordon" | "uncordon" | "drain" => {}
         _ => return Err("unknown command; see --help".into()),
@@ -712,13 +714,14 @@ if value["truncated"]==true {eprintln!("TRUNCATED: limit reached; narrow namespa
                 }
             },
             "logs"=>logs_command(&gateway,args,&opts).await?,
-            "scale"|"restart"|"delete"|"set-image"|"set-resources"=>{
+            "scale"|"restart"|"delete"|"kill"|"set-image"|"set-resources"=>{
                 if !io::stdin().is_terminal() || !io::stdout().is_terminal(){return Err("noninteractive writes are disabled; use the interactive TUI or terminal confirmation".into());}
                 let (resource,name,action)=match cmd {
                     "set-image"=>{let (resource,args)=write_args(args,3,"set-image [RESOURCE] NAME CONTAINER IMAGE --write")?;(resource,args[0].as_str(),Action::SetImage{container:args[1].clone(),image:args[2].clone()})},
                     "set-resources"=>{let (resource,args)=write_args(args,6,"set-resources [RESOURCE] NAME CONTAINER CPU_REQUEST MEMORY_REQUEST CPU_LIMIT MEMORY_LIMIT --write")?;(resource,args[0].as_str(),Action::SetResources{container:args[1].clone(),resources:crate::edit::ResourceEdit{cpu_request:args[2].clone(),memory_request:args[3].clone(),cpu_limit:args[4].clone(),memory_limit:args[5].clone()}})},
                     "scale"=>{let (resource,args)=write_args(args,2,"scale [RESOURCE] NAME REPLICAS --write")?;(resource,args[0].as_str(),Action::Scale(args[1].parse().map_err(|_|"invalid replicas")?))},
                     "restart"=>{let (resource,args)=write_args(args,1,"restart [RESOURCE] NAME --write")?;(resource,args[0].as_str(),Action::Restart)},
+                    "kill"=>{if args.len()!=1{return Err("usage: kill POD --write --allow-force-kill".into());}("pods",args[0].as_str(),Action::Kill)},
                     _=>{if args.len()!=2{return Err("usage: delete <resource> <name> --write".into());}(args[0].as_str(),args[1].as_str(),Action::Delete)},
                 };
                 let prepared=tokio::time::timeout(Duration::from_secs(15),gateway.prepare(resource,&ns,name,action)).await.map_err(|_|"dry-run timed out")??;

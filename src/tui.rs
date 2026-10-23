@@ -128,9 +128,21 @@ enum Task {
     Containers(LogTarget, u64),
     Logs(LogTarget, u64, crate::logs::ReadOptions),
     Follow(LogTarget, u64, u32, crate::logs::ReadOptions),
+    /// Dashboard pane: connection, namespace, Pod, UID, generation, seconds, range.
+    DashboardLogs(
+        Box<Connection>,
+        String,
+        String,
+        String,
+        u64,
+        u32,
+        crate::logs::ReadOptions,
+    ),
     Discover,
     Namespaces,
     Pulses(String),
+    Secrets(String),
+    SecretValue(String, String, String, String),
     Xray(String, String),
     Workloads(String),
     Can(String, String),
@@ -174,6 +186,8 @@ enum Reply {
     WriteOutcome(Result<String>),
     Drill(Box<Value>),
     Directory(crate::navigation_views::Directory),
+    Secrets(crate::secrets::SecretIndex),
+    SecretValue(String, String, Result<crate::secrets::Revealed>),
     Helm(u64, Result<helm_ui::Response>),
     HelmPrepared(u64, Result<Box<crate::helm_lifecycle::Prepared>>),
     AdvicePrepared(Result<(Option<crate::advice::PreparedAdvice>, String)>),
@@ -694,6 +708,32 @@ fn worker() -> Worker {
                         let result=if let Some(gateway)=gateway.as_ref(){match tokio::time::timeout(Duration::from_secs(23),helm_ui::read(gateway,request)).await{Ok(result)=>result,Err(_)=>Err("Helm read deadline exceeded; metadata may be incomplete. Retry explicitly.".into())}}else{Err("Not connected; select a context before reading Helm releases.".into())};
                         Reply::Helm(generation,result)
                     }
+                    Task::DashboardLogs(connection,namespace,pod,uid,generation,seconds,read)=>{
+                        let opened=async {
+                            let pane=tokio::time::timeout(Duration::from_secs(20),Gateway::connect(*connection)).await.map_err(|_|"connection timed out".to_owned())??;
+                            tokio::time::timeout(Duration::from_secs(25),pane.follow_merged_logs(&namespace,&pod,&uid,crate::logs::FollowOptions{seconds},read)).await.map_err(|_|"log open timed out".to_owned())?
+                        }.await;
+                        match opened {
+                            Ok(mut feed)=>{
+                                let mailbox=log_results.clone();
+                                let job=tokio::spawn(async move {
+                                    let mut count=0usize;
+                                    loop {
+                                        match feed.next().await {
+                                            Ok(Some(line))=>{if !mailbox.append(generation,&line){break;} count+=1; if count.is_multiple_of(64){tokio::task::yield_now().await;}},
+                                            Ok(None)=>{mailbox.append(generation,"[Log stream ended]");break;},
+                                            Err(error)=>{mailbox.append(generation,&format!("[Stopped: {error}]"));break;}
+                                        }
+                                    }
+                                });
+                                if let Ok(mut handle)=log_results.abort.lock() {
+                                    if log_results.generation.load(std::sync::atomic::Ordering::SeqCst)==generation {*handle=Some(job.abort_handle());} else {job.abort();}
+                                } else {job.abort();}
+                                Reply::Following
+                            }
+                            Err(error)=>Reply::LogFailure(generation,error),
+                        }
+                    }
                     Task::Directory(path)=>match crate::navigation_views::directory(&path){Ok(directory)=>Reply::Directory(directory),Err(error)=>Reply::Failure(error)},
                     Task::Manifest(path)=>match crate::navigation_views::preview_manifest(&path){Ok(text)=>Reply::Detail(text),Err(error)=>Reply::Failure(error)},
                     task => {
@@ -709,6 +749,8 @@ fn worker() -> Worker {
                                         Reply::Namespaces(names)
                                     },
                                     Task::Pulses(n)=>Reply::Detail(crate::insights::pulses(g,&n).await?),
+                                    Task::Secrets(n)=>Reply::Secrets(g.secret_index(&n).await?),
+                                    Task::SecretValue(n,name,uid,key)=>{let value=g.secret_value(&n,&name,&uid,&key).await;Reply::SecretValue(uid,key,value)},
                                     Task::Xray(k,n)=>Reply::Detail(crate::insights::xray(g,&k,&n).await?),
                                     Task::Workloads(n)=>Reply::Detail(crate::insights::workloads(g,&n).await?),
                                     Task::Can(n,subject)=>Reply::Detail(crate::navigation_views::can(g,&n,&subject).await?),
@@ -783,7 +825,7 @@ fn worker() -> Worker {
                                         Reply::Prepared(Box::new(prepared))
                                     },
                                     Task::Execute(p,a) => Reply::Notice(g.execute(*p,a).await?),
-                                    Task::YamlPrepare(..) | Task::YamlExecute(..) | Task::NodeExecute(..) | Task::Connect(_) | Task::Watch(..) | Task::Metrics(..) | Task::RunSession(..) | Task::RunForward(..) | Task::Directory(_) | Task::Manifest(_) | Task::Helm(..) | Task::HelmPrepare(..) | Task::HelmExecute(..) | Task::AdvicePrepare(..) | Task::AdviceExecute(..) => return Err("invalid worker task".into()),
+                                    Task::YamlPrepare(..) | Task::YamlExecute(..) | Task::NodeExecute(..) | Task::DashboardLogs(..) | Task::Connect(_) | Task::Watch(..) | Task::Metrics(..) | Task::RunSession(..) | Task::RunForward(..) | Task::Directory(_) | Task::Manifest(_) | Task::Helm(..) | Task::HelmPrepare(..) | Task::HelmExecute(..) | Task::AdvicePrepare(..) | Task::AdviceExecute(..) => return Err("invalid worker task".into()),
                                 })
                             };
                             match tokio::time::timeout(Duration::from_secs(25), future).await {
@@ -862,6 +904,7 @@ enum Modal {
     Export(crate::exports::Draft),
     PodContainers(Box<Value>, usize),
     Directory(crate::navigation_views::Directory, usize),
+    Secrets(Box<crate::ui_secrets::View>),
     ForwardForm(String, String, Option<String>, [String; 3], usize),
     ForwardView,
     Helm(Box<helm_ui::Table>),
@@ -1388,6 +1431,7 @@ impl App {
             ("image", []) => return self.image(),
             ("restart", []) => self.prepare(Action::Restart),
             ("delete", []) => self.prepare(Action::Delete),
+            ("kill", []) => self.kill(),
             ("pulse"|"pulses"|"hz"|"pu",[])=>self.send(Task::Pulses(self.namespace.clone())),
             ("xray"|"xrays"|"xr"|"x",[resource])=>self.send(Task::Xray(resource.clone(),self.namespace.clone())),
             ("xray"|"xrays"|"xr"|"x",[resource,ns]) if ns=="all" || ns=="*" || safety::valid_id(ns)=>self.send(Task::Xray(resource.clone(),if ns=="all"{"*".into()}else{ns.clone()})),
@@ -1434,7 +1478,8 @@ impl App {
             }
             ("helm"|"history",_)=>self.status="Use :helm [NAMESPACE] or :history RELEASE; --allow-helm enables live release storage reads.".into(),
             ("benchmarks"|"benchmark"|"be"|"scans"|"scan"|"pop"|"popeye",_)=>self.status="This k9s view requires an external scanner/benchmark integration; it is unavailable. No command was executed.".into(),
-            ("secrets"|"secret"|"sec",_)=>self.status="Secrets are explicitly excluded from KBorg discovery and inspection.".into(),
+            ("secrets"|"secret"|"sec",[])=>self.secrets(),
+            ("secrets"|"secret"|"sec",_)=>self.status="Use :secrets in the current namespace; values stay hidden until one key is revealed.".into(),
             _ => {
                 let command = match nav::resource(&words) { Ok(command)=>command, Err(error)=>{self.status=error;return Ok(false);} };
                 if !nav::valid_resource(&command.resource){self.status="Invalid resource command syntax.".into();return Ok(false);}
@@ -1668,6 +1713,111 @@ impl App {
                 v["metadata"]["name"].as_str().unwrap_or("").into(),
             )
         })
+    }
+    /// Dashboard `L`: follow the selected warning's exact Pod in a pane, over a
+    /// separate read-only connection to that card's context.
+    fn dashboard_logs(&mut self, dashboard: &mut dashboard_ui::Dashboard) {
+        let selected = dashboard
+            .selected_warning()
+            .map(|w| (w.namespace.clone(), w.pod.clone(), w.uid.clone()));
+        if let Some(pane) = dashboard.logs.take() {
+            self.worker.logs.cancel();
+            if selected.as_ref().is_none_or(|(_, _, uid)| *uid == pane.uid) {
+                return;
+            }
+        }
+        let Some((namespace, pod, uid)) = selected else {
+            dashboard.set_notice(
+                "Press w to select a warning Pod, then L to follow its logs.".into(),
+                true,
+            );
+            return;
+        };
+        if !self.options.connection.demo && !self.options.connection.logs {
+            dashboard.set_notice("Log panes require --allow-logs.".into(), true);
+            return;
+        }
+        if uid.is_empty() || !safety::valid_id(&namespace) {
+            dashboard.set_notice(
+                "This warning has no exact Pod identity; logs are unavailable.".into(),
+                true,
+            );
+            return;
+        }
+        if self.busy {
+            dashboard.set_notice(
+                "Wait for the current request before opening logs.".into(),
+                true,
+            );
+            return;
+        }
+        let Some(context) = dashboard.selected().map(|row| row.context.clone()) else {
+            return;
+        };
+        let mut connection = self.options.connection.clone();
+        if !connection.demo {
+            connection.context = Some(context.clone());
+        }
+        connection.namespace = namespace.clone();
+        connection.writable = false;
+        connection.allow_exec = false;
+        connection.allow_attach = false;
+        connection.allow_port_forward = false;
+        connection.allow_node_maintenance = false;
+        connection.allow_yaml_edit = false;
+        connection.allow_force_kill = false;
+        connection.allow_secret_reveal = false;
+        connection.allow_helm_write = false;
+        connection.allow_helm_hooks = false;
+        connection.allow_helm_crds = false;
+        self.subviews
+            .retain(|modal| !matches!(modal, Modal::Follow(_) | Modal::Containers(..)));
+        let generation = self.worker.logs.cancel();
+        let read = crate::logs::ReadOptions {
+            head: false,
+            ..self.options.log_read
+        };
+        let mut view = crate::ui_logs::LogView::new("Connecting to logs...".into(), read);
+        view.following = true;
+        dashboard.logs = Some(dashboard_ui::LogPane {
+            context,
+            namespace: namespace.clone(),
+            pod: pod.clone(),
+            uid: uid.clone(),
+            view: Box::new(view),
+        });
+        self.send(Task::DashboardLogs(
+            Box::new(connection),
+            namespace,
+            pod,
+            uid,
+            generation,
+            self.options.log_seconds,
+            read,
+        ));
+    }
+    fn secrets(&mut self) {
+        if !self.options.connection.allow_secret_reveal {
+            self.status = "Secrets are excluded by default; start with --allow-secret-reveal to list keys and reveal one value at a time.".into();
+            return;
+        }
+        if self.namespace == "all" || self.namespace == "*" {
+            self.status = "Choose one namespace before opening :secrets.".into();
+            return;
+        }
+        self.send(Task::Secrets(self.namespace.clone()));
+    }
+    /// k9s Ctrl-K: a reviewed, approved Pod delete with gracePeriodSeconds=0.
+    fn kill(&mut self) {
+        if !self.options.connection.writable || !self.options.connection.allow_force_kill {
+            self.status = "Force kill requires --write --allow-force-kill; Ctrl-D is a reviewed graceful delete.".into();
+            return;
+        }
+        if self.kind() != "pods" {
+            self.status = "Force kill applies to Pods only.".into();
+            return;
+        }
+        self.prepare(Action::Kill);
     }
     fn yaml_editor(&mut self) {
         if self.busy {
@@ -2092,6 +2242,18 @@ impl App {
                 Reply::Object(object) => self.modal = Modal::Overview(object, 0),
                 Reply::Drill(object) => self.modal = Modal::PodContainers(object, 0),
                 Reply::Directory(directory) => self.modal = Modal::Directory(directory, 0),
+                Reply::Secrets(index) => {
+                    let modal = std::mem::replace(&mut self.modal, Modal::None);
+                    if !matches!(modal, Modal::None) {
+                        self.push_subview(modal);
+                    }
+                    self.modal = Modal::Secrets(Box::new(crate::ui_secrets::View::new(index)));
+                }
+                Reply::SecretValue(uid, key, value) => {
+                    if let Modal::Secrets(view) = &mut self.modal {
+                        view.reveal(&uid, &key, value);
+                    }
+                }
                 Reply::Overview(feed) => {
                     if matches!(self.modal, Modal::LiveOverview(..)) {
                         match feed.snapshot() {
@@ -2176,6 +2338,17 @@ impl App {
                     {
                         self.status = error.clone();
                         self.modal = Modal::Detail(format!("LOGS unavailable\n{error}"), 0);
+                    } else if self
+                        .worker
+                        .logs
+                        .generation
+                        .load(std::sync::atomic::Ordering::SeqCst)
+                        == generation
+                        && let Modal::LiveOverview(dashboard) = &mut self.modal
+                        && let Some(pane) = dashboard.logs.as_mut()
+                    {
+                        pane.view
+                            .replace_source(format!("[Logs unavailable: {error}]"));
                     }
                 }
                 Reply::Following => {}
@@ -2330,6 +2503,13 @@ impl App {
             && let Modal::Follow(view) = &mut self.modal
         {
             view.update(text);
+            changed = true;
+        }
+        if let Modal::LiveOverview(dashboard) = &mut self.modal
+            && let Some(pane) = dashboard.logs.as_mut()
+            && let Some(text) = self.worker.logs.take()
+        {
+            pane.view.update(text);
             changed = true;
         }
         if let Some(feed) = &self.overview {
@@ -3000,6 +3180,7 @@ impl App {
                     | "jobs.batch"
                     | "cronjobs.batch"
             ),
+            Action::Kill => self.kind() == "pods",
         };
         if !allowed {
             self.status = "This operation is disabled for the selected resource.".into();
@@ -3421,6 +3602,14 @@ impl App {
                     }
                 }
                 _ => self.modal = Modal::ForwardForm(namespace, pod, uid, fields, index),
+            },
+            Modal::Secrets(mut view) => match view.key(code) {
+                crate::ui_secrets::Outcome::Close => self.close_subview(),
+                crate::ui_secrets::Outcome::Stay => self.modal = Modal::Secrets(view),
+                crate::ui_secrets::Outcome::Reveal(namespace, name, uid, key) => {
+                    self.modal = Modal::Secrets(view);
+                    self.send(Task::SecretValue(namespace, name, uid, key));
+                }
             },
             Modal::Directory(directory, mut index) => match code {
                 KeyCode::Esc | KeyCode::Char('q') => self.close_subview(),
@@ -4053,12 +4242,23 @@ impl App {
                 match code {
                     KeyCode::Char('?') => dashboard.help = !dashboard.help,
                     KeyCode::Esc if dashboard.help => dashboard.help = false,
+                    KeyCode::Esc if dashboard.logs.is_some() => {
+                        dashboard.logs = None;
+                        self.worker.logs.cancel();
+                    }
                     KeyCode::Esc if dashboard.warning.is_some() => dashboard.warning = None,
                     KeyCode::Esc | KeyCode::Char('q') => {
+                        if dashboard.logs.is_some() {
+                            self.worker.logs.cancel();
+                        }
                         self.overview = None;
                         return Ok(false);
                     }
+                    KeyCode::Char('L') if !dashboard.help => self.dashboard_logs(&mut dashboard),
                     KeyCode::Enter if !dashboard.help => {
+                        if dashboard.logs.take().is_some() {
+                            self.worker.logs.cancel();
+                        }
                         self.open_dashboard_pods(dashboard)?;
                         return Ok(false);
                     }
@@ -4780,19 +4980,55 @@ impl App {
             }
             if matches!(self.modal, Modal::None) {
                 match code {
-                    KeyCode::Char('a')=>self.aliases(),
-                    KeyCode::Char('d')=>self.prepare(Action::Delete),
-                    KeyCode::Char('k')=>self.status="Force kill is unavailable. Ctrl-D performs a reviewed deletion; immediate unreviewed deletion is disabled.".into(),
-                    KeyCode::Char('r')=>{if self.connected{self.refresh=true;}else if !self.busy{self.connect();}},
-                    KeyCode::Char('s')=>{
-                        let values=self.visible().into_iter().cloned().collect::<Vec<_>>();
-                        match crate::screendump::save(&self.context,&self.namespace,&self.kind(),&values){Ok(record)=>self.status=format!("Saved {} | :sd opens saved resources",record.title),Err(error)=>self.status=error};
+                    KeyCode::Char('a') => self.aliases(),
+                    KeyCode::Char('d') => self.prepare(Action::Delete),
+                    KeyCode::Char('k') => self.kill(),
+                    KeyCode::Char('r') => {
+                        if self.connected {
+                            self.refresh = true;
+                        } else if !self.busy {
+                            self.connect();
+                        }
                     }
-                    KeyCode::Char(' ')=>{
-                        let uids=self.visible().iter().take(self.selected+1).filter_map(|object|object["metadata"]["uid"].as_str().map(str::to_owned)).collect::<Vec<_>>();self.marks.extend(uids);self.status=format!("{} marked | actions still target one selected UID",self.marks.len());
+                    KeyCode::Char('s') => {
+                        let values = self.visible().into_iter().cloned().collect::<Vec<_>>();
+                        match crate::screendump::save(
+                            &self.context,
+                            &self.namespace,
+                            &self.kind(),
+                            &values,
+                        ) {
+                            Ok(record) => {
+                                self.status =
+                                    format!("Saved {} | :sd opens saved resources", record.title)
+                            }
+                            Err(error) => self.status = error,
+                        };
                     }
-                    KeyCode::Char('\\')=>{self.marks.clear();self.status="Marks cleared.".into();}
-                    _=>self.status="This k9s shortcut is not available here; ? lists supported actions.".into(),
+                    KeyCode::Char(' ') => {
+                        let uids = self
+                            .visible()
+                            .iter()
+                            .take(self.selected + 1)
+                            .filter_map(|object| {
+                                object["metadata"]["uid"].as_str().map(str::to_owned)
+                            })
+                            .collect::<Vec<_>>();
+                        self.marks.extend(uids);
+                        self.status = format!(
+                            "{} marked | actions still target one selected UID",
+                            self.marks.len()
+                        );
+                    }
+                    KeyCode::Char('\\') => {
+                        self.marks.clear();
+                        self.status = "Marks cleared.".into();
+                    }
+                    _ => {
+                        self.status =
+                            "This k9s shortcut is not available here; ? lists supported actions."
+                                .into()
+                    }
                 }
             }
             return Ok(false);
@@ -5186,10 +5422,10 @@ fn resource_label(kind: &Kind) -> String {
         }
     }
 }
-const TUI_HELP: &str = "NAVIGATE LIKE K9S\n  :pod :pods :po           Singular, plural or discovered short name\n  :pod NAMESPACE          Resource in namespace; all means all namespaces\n  :pod /api|web           Resource plus regex filter\n  :pod app=api,tier=web    Server-side label selector\n  :pod @CONTEXT           Switch context; context names retain their case\n  :ctx / :ctx NAME        Context picker (Pod view) / direct switch (same view)\n  :ns / :ns NAME          Namespace picker / direct switch (Pod view)\n  Ctrl-A / :aliases       Resource alias picker; Enter navigates\n  :pulses / :pu           Read-only cluster health snapshot\n  :xray po|svc|dp [NS]    Ownership and service relationship snapshot\n  :screendump / :sd       Browse saved redacted resource snapshots\n  :can u:NAME             Read-only RBAC subject view\n  :dir PATH               Browse local YAML directory; no apply\n  :helm [NAMESPACE]       Native release metadata (--allow-helm)\n  :history RELEASE        Selected release revision history\n  :q :q! :qa :Q :quit     Quit (in-flight mutations must finish)\n\nCOMMAND PROMPT\n  : / Tab                 Open prompt; Tab completes; Shift-Tab reverses\n  Up / Down               Recall in-session command history\n  Left Right Home End     Edit at cursor; Ctrl-U clears\n  Enter / Esc             Run command / cancel without changing view\n  [ / ] / -               Previous / next / last view\n  Esc                     Close view or return to previous resource\n\nFILTER\n  /PATTERN                Case-insensitive regex over namespace/name/status\n  /!PATTERN               Inverse regex\n  /-f PATTERN             Fuzzy subsequence match\n  /-l LABEL_SELECTOR      Apply server-side label selector on Enter\n  Enter / Esc             Keep / restore previous filter and selected UID\n\nRESOURCE TABLE\n  j k / arrows            Move; PgUp PgDown Home End page\n  Enter                   Drill into containers, related Pods or namespace\n  d                       Describe selected object (redacted overview)\n  D                       Dashboard for current context and namespace\n  b / B                   Save current selection / open saved selections\n  y / v                   View redacted YAML; J views JSON\n  c / n                   Copy name / namespace via terminal OSC52 clipboard\n  w / 0                   Warp to selected namespace / all namespaces\n  N / A / S / R           Sort by name / age / status / readiness\n  C / M                   Sort Pods/Nodes by CPU / memory, highest first\n  CPU/MEM snapshots refresh every 15s while the table is visible; - means\n  unknown, never zero. ~ indicates Metrics API omitted UID; creation checked.\n  Table CPU/MEM labels are rounded; d or m shows exact measured quantities.\n  Space / Ctrl-Space      Mark / mark range (visual only; no bulk mutations)\n  Ctrl-Backslash          Clear marks\n  Ctrl-S / :export        Save visible snapshot / selected resource YAML\n  Ctrl-R / :discover      Refresh / API discovery; r restarts workloads\n  l / p                   Follow logs / previous logs (--allow-logs)\n  Pod s / a / f / F       Shell / attach / forwards / new forward\n  Workload s / r          Scale Deployment-StatefulSet / reviewed restart\n  e / :edit-container     YAML spec editor / focused container editor\n  Ctrl-D                  Reviewed deletion; Ctrl-K force kill disabled\n  o                       Show selected Pod's Node\n\nHELM AND LOGS\n  Helm Enter / r          Release revision history\n  History Enter / v       Explicit selected revision stored values\n  Helm i / u / t / c      Install / upgrade / test / separately install chart CRDs\n  History r / Ctrl-D      Rollback selected revision / uninstall current release\n  Helm lifecycle needs --write --allow-helm --allow-helm-write and --helm-tool.\n  Sources: local .tgz or explicit OCI :TAG / @sha256:DIGEST.
+const TUI_HELP: &str = "NAVIGATE LIKE K9S\n  :pod :pods :po           Singular, plural or discovered short name\n  :pod NAMESPACE          Resource in namespace; all means all namespaces\n  :pod /api|web           Resource plus regex filter\n  :pod app=api,tier=web    Server-side label selector\n  :pod @CONTEXT           Switch context; context names retain their case\n  :ctx / :ctx NAME        Context picker (Pod view) / direct switch (same view)\n  :ns / :ns NAME          Namespace picker / direct switch (Pod view)\n  Ctrl-A / :aliases       Resource alias picker; Enter navigates\n  :pulses / :pu           Read-only cluster health snapshot\n  :xray po|svc|dp [NS]    Ownership and service relationship snapshot\n  :screendump / :sd       Browse saved redacted resource snapshots\n  :can u:NAME             Read-only RBAC subject view\n  :dir PATH               Browse local YAML directory; no apply\n  :helm [NAMESPACE]       Native release metadata (--allow-helm)\n  :history RELEASE        Selected release revision history\n  :q :q! :qa :Q :quit     Quit (in-flight mutations must finish)\n\nCOMMAND PROMPT\n  : / Tab                 Open prompt; Tab completes; Shift-Tab reverses\n  Up / Down               Recall in-session command history\n  Left Right Home End     Edit at cursor; Ctrl-U clears\n  Enter / Esc             Run command / cancel without changing view\n  [ / ] / -               Previous / next / last view\n  Esc                     Close view or return to previous resource\n\nFILTER\n  /PATTERN                Case-insensitive regex over namespace/name/status\n  /!PATTERN               Inverse regex\n  /-f PATTERN             Fuzzy subsequence match\n  /-l LABEL_SELECTOR      Apply server-side label selector on Enter\n  Enter / Esc             Keep / restore previous filter and selected UID\n\nRESOURCE TABLE\n  j k / arrows            Move; PgUp PgDown Home End page\n  Enter                   Drill into containers, related Pods or namespace\n  d                       Describe selected object (redacted overview)\n  D                       Dashboard for current context and namespace\n  b / B                   Save current selection / open saved selections\n  y / v                   View redacted YAML; J views JSON\n  c / n                   Copy name / namespace via terminal OSC52 clipboard\n  w / 0                   Warp to selected namespace / all namespaces\n  N / A / S / R           Sort by name / age / status / readiness\n  C / M                   Sort Pods/Nodes by CPU / memory, highest first\n  CPU/MEM snapshots refresh every 15s while the table is visible; - means\n  unknown, never zero. ~ indicates Metrics API omitted UID; creation checked.\n  Table CPU/MEM labels are rounded; d or m shows exact measured quantities.\n  Space / Ctrl-Space      Mark / mark range (visual only; no bulk mutations)\n  Ctrl-Backslash          Clear marks\n  Ctrl-S / :export        Save visible snapshot / selected resource YAML\n  Ctrl-R / :discover      Refresh / API discovery; r restarts workloads\n  l / p                   Follow logs / previous logs (--allow-logs)\n  Pod s / a / f / F       Shell / attach / forwards / new forward\n  Workload s / r          Scale Deployment-StatefulSet / reviewed restart\n  e / :edit-container     YAML spec editor / focused container editor\n  Ctrl-D                  Reviewed deletion\n  Ctrl-K / :kill          Reviewed zero-grace Pod kill (--allow-force-kill)\n  o                       Show selected Pod's Node\n\nHELM AND LOGS\n  Helm Enter / r          Release revision history\n  History Enter / v       Explicit selected revision stored values\n  Helm i / u / t / c      Install / upgrade / test / separately install chart CRDs\n  History r / Ctrl-D      Rollback selected revision / uninstall current release\n  Helm lifecycle needs --write --allow-helm --allow-helm-write and --helm-tool.\n  Sources: local .tgz or explicit OCI :TAG / @sha256:DIGEST.
   --helm-keyring requires native Helm provenance verification during prepare.\n  Hooks/CRDs require --allow-helm-hooks / --allow-helm-crds; default OFF.\n  :helm-crds prepares create-only Namespaced CRDs, retained on uninstall.
   :helm-test runs stored tests; :helm-crds-upgrade reviews schema changes.
-  :helm-crds-delete is explicit, checks live instances and needs stronger approval.\n  :helm-crds-migrate reviews storage rewrites; controller proof gates finalization.\n  :copilot previews selected diagnostics; explicit policy and transfer approval to send.\n  Every review line must be painted before exact namespace/release approval.\n  Helm d / m / y          Metadata / resource identities / metadata YAML\n  Helm Ctrl-R / /         Refresh / filter; Esc returns to previous view\n  Log a                   Toggle all ordinary containers / preferred container\n  Workload l / p          Fixed captured Pod membership / previous logs\n  :logs LABEL_SELECTOR    Explicit namespace-scoped multi-Pod log capture\n  Group reloads keep the same Pod UIDs; close and reopen to capture new Pods.\n  :logs-live [SELECTOR]   Opt in to announced Pod joins/departures (10s refresh)\n  Log 0..6                Tail / head / last 1m,5m,15m,30m,1h\n  Log s w t f             Autoscroll / wrap / timestamps / fullscreen\n  Log e / W / Ctrl-S      Error matches / warning matches / local export\n  Pod l honors the default-container annotation, otherwise merges multiple\n  ordinary containers. Each merged line carries a namespace/Pod/container.\n\nKBORG COMMANDS\n  :actions                Discover actions with capability reasons\n  :scale :image :restart  Explicit reviewed workload operations\n  :metrics [resources]    Metrics / opt into requests-limit comparisons\n  :overview               Dashboard of up to four explicit contexts\n  Dashboard 1..4 / Enter   Focus a context / open its Pods\n  Dashboard c / s / B      Choose contexts / save / open saved selections\n  Dashboard ?             Contextual keymap and health evidence meaning\n  :themes                 Theme preview and custom palette creation\n\nLIMITS AND SAFETY\n  Context, namespace and mode remain visible; DEMO is sample data.\n  STALE and TRUNCATED indicate incomplete data. Regex uses bounded Rust regex\n  syntax; look-around and backreferences are unavailable. Secrets excluded.\n  e edits existing namespaced non-Secret spec fields with --allow-yaml-edit.\n  Hidden values, metadata and status are preserved; no resource creation.\n  :edit-container retains focused image/resource forms.\n  Node c/u/r reviews cordon/uncordon/drain with --allow-node-maintenance.\n  Pod file transfer, node shell, benchmarks and scans remain unavailable.\n  Helm release reads need --allow-helm. Values are stored overrides with\n  known fields redacted; custom keys can remain confidential. Complete\n  review is mandatory for lifecycle changes. Raw storage, chart files and notes are excluded.\n  Visual marks never authorize bulk writes. Every mutation requires --write\n  plus one-use approval; shell/attach/forward need separate capabilities.";
+  :helm-crds-delete is explicit, checks live instances and needs stronger approval.\n  :helm-crds-migrate reviews storage rewrites; controller proof gates finalization.\n  :copilot previews selected diagnostics; explicit policy and transfer approval to send.\n  Every review line must be painted before exact namespace/release approval.\n  Helm d / m / y          Metadata / resource identities / metadata YAML\n  Helm Ctrl-R / /         Refresh / filter; Esc returns to previous view\n  Log a                   Toggle all ordinary containers / preferred container\n  Workload l / p          Fixed captured Pod membership / previous logs\n  :logs LABEL_SELECTOR    Explicit namespace-scoped multi-Pod log capture\n  Group reloads keep the same Pod UIDs; close and reopen to capture new Pods.\n  :logs-live [SELECTOR]   Opt in to announced Pod joins/departures (10s refresh)\n  Log 0..6                Tail / head / last 1m,5m,15m,30m,1h\n  Log s w t f             Autoscroll / wrap / timestamps / fullscreen\n  Log e / W / Ctrl-S      Error matches / warning matches / local export\n  Pod l honors the default-container annotation, otherwise merges multiple\n  ordinary containers. Each merged line carries a namespace/Pod/container.\n\nKBORG COMMANDS\n  :actions                Discover actions with capability reasons\n  :scale :image :restart  Explicit reviewed workload operations\n  :metrics [resources]    Metrics / opt into requests-limit comparisons\n  :overview               Dashboard of up to four explicit contexts\n  Dashboard 1..4 / Enter   Focus a context / open its Pods\n  Dashboard c / s / B      Choose contexts / save / open saved selections\n  Dashboard ?             Contextual keymap and health evidence meaning\n  :themes                 Theme preview and custom palette creation\n\nLIMITS AND SAFETY\n  Context, namespace and mode remain visible; DEMO is sample data.\n  STALE and TRUNCATED indicate incomplete data. Regex uses bounded Rust regex\n  syntax; look-around and backreferences are unavailable.\n  :secrets lists key names only with --allow-secret-reveal; x reveals one\n  key for 30s. Values are never exported, copied or kept after Esc.\n  e edits existing namespaced non-Secret spec fields with --allow-yaml-edit.\n  Hidden values, metadata and status are preserved; no resource creation.\n  :edit-container retains focused image/resource forms.\n  Node c/u/r reviews cordon/uncordon/drain with --allow-node-maintenance.\n  Pod file transfer, node shell, benchmarks and scans remain unavailable.\n  Helm release reads need --allow-helm. Values are stored overrides with\n  known fields redacted; custom keys can remain confidential. Complete\n  review is mandatory for lifecycle changes. Raw storage, chart files and notes are excluded.\n  Visual marks never authorize bulk writes. Every mutation requires --write\n  plus one-use approval; shell/attach/forward need separate capabilities.";
 
 #[derive(Clone, Copy, Debug)]
 struct Rect {
@@ -6365,6 +6601,7 @@ fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
                 Modal::Directory(..) => {
                     "DIRECTORY / Enter open / YAML and JSON previews / Esc back"
                 }
+                Modal::Secrets(..) => "SECRETS / values hidden / x reveals one key",
                 Modal::ForwardView => "PORT FORWARDS / independently reviewed sessions",
                 Modal::ForwardForm(..) => "PORT FORWARD / loopback only / review required",
                 Modal::None => "",
@@ -6433,6 +6670,7 @@ fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
                     lines
                 }
                 Modal::Directory(directory,index)=>std::iter::once(format!("{}{}",directory.path.display(),if directory.truncated{" [TRUNCATED]"}else{""})).chain(std::iter::once("Read-only; Enter directory or redacted manifest preview".into())).chain(directory.entries.iter().enumerate().skip(index.saturating_sub(height.saturating_sub(3))).map(|(i,entry)|format!("{} {}{}",if i==*index{">"}else{" "},entry.name,if entry.directory{"/"}else{""}))).collect(),
+                Modal::Secrets(view)=>view.lines(usize::from(rect.width.saturating_sub(2)),height),
                 Modal::ForwardView=>app.worker.forward.lines(app.forward_selected,usize::from(rect.width.saturating_sub(2)),height),
                 Modal::ForwardForm(namespace,pod,_,fields,index)=>{let mut lines=vec![format!("Pod {namespace}/{pod}"),"Tab field / Ctrl-U clear / Enter review / Esc cancel".into(),String::new()];for(i,label)in["Local port (1024..65535)","Remote port (1..65535)","Duration seconds (1..300)"].iter().enumerate(){lines.push(format!("{} {label}: {}{}",if i==*index{">"}else{" "},fields[i],if i==*index{"_"}else{""}));}lines},
                 Modal::LiveOverview(_) => Vec::new(),
@@ -9044,6 +9282,127 @@ mod layout_tests {
         assert!(app.filter.is_empty() && app.selector.is_empty());
         assert_eq!(app.desired_resource.as_deref(), Some("v1/pods"));
         assert!(app.overview.is_none());
+    }
+    #[test]
+    fn dashboard_log_pane_follows_exact_warning_pod_and_closes_first() -> Result<()> {
+        let (mut app, replies, mut commands) = harness();
+        app.options.connection.logs = true;
+        app.options.connection.writable = true;
+        app.options.connection.allow_force_kill = true;
+        let mut row = crate::overview::ContextSummary::connecting("other cluster".into(), false);
+        row.state = crate::dashboard_health::EvidenceState::Live;
+        row.health = Some(crate::dashboard_health::HealthSummary {
+            ready: 1,
+            unready: 1,
+            pending: 0,
+            failed: 0,
+            succeeded: 0,
+            terminating: 0,
+            unknown: 0,
+            restarts: 3,
+            oom_killed: 0,
+            warnings: crate::dashboard_health::WarningSummary {
+                state: crate::dashboard_health::EvidenceState::Live,
+                count: Some(1),
+                recent: vec![crate::dashboard_health::WarningEvidence {
+                    namespace: "payments".into(),
+                    pod: "api-7d9f".into(),
+                    uid: "0f0b21f0-af23-4c1e-9a77-3546a8e1e804".into(),
+                    reason: "BackOff".into(),
+                    occurrences: 4,
+                    observed_unix_seconds: 1,
+                }],
+                message: None,
+            },
+        });
+        let mut dashboard = dashboard_ui::Dashboard::new(&["other cluster".into()], false);
+        dashboard.update(vec![row]);
+        app.modal = Modal::LiveOverview(dashboard);
+        app.key(KeyCode::Char('L'))?;
+        assert!(commands.try_recv().is_err());
+        app.key(KeyCode::Char('w'))?;
+        app.key(KeyCode::Char('L'))?;
+        let generation = match commands.try_recv() {
+            Ok((_, Task::DashboardLogs(connection, ns, pod, uid, generation, _, _))) => {
+                assert_eq!(connection.context.as_deref(), Some("other cluster"));
+                assert!(!connection.writable && !connection.allow_force_kill);
+                assert_eq!(
+                    (ns.as_str(), pod.as_str(), uid.as_str()),
+                    (
+                        "payments",
+                        "api-7d9f",
+                        "0f0b21f0-af23-4c1e-9a77-3546a8e1e804"
+                    )
+                );
+                generation
+            }
+            _ => return Err("dashboard log task not sent".into()),
+        };
+        replies
+            .send((app.epoch, Reply::Following))
+            .map_err(|_| "reply closed")?;
+        app.receive();
+        assert!(app.worker.logs.append(generation, "api-7d9f/app: boom"));
+        app.receive();
+        let text = screen(&app, 120, 40).join("\n");
+        assert!(text.contains("LOGS other cluster / payments/api-7d9f") && text.contains("boom"));
+        app.key(KeyCode::Esc)?;
+        assert!(
+            matches!(&app.modal, Modal::LiveOverview(d) if d.logs.is_none() && d.warning.is_some())
+        );
+        assert!(!app.worker.logs.append(generation, "late"));
+        Ok(())
+    }
+    #[test]
+    fn secrets_are_opt_in_hidden_by_default_and_reveal_one_key() -> Result<()> {
+        let (mut app, replies, mut commands) = harness();
+        app.namespace = "demo".into();
+        app.command("secrets")?;
+        assert!(app.status.contains("--allow-secret-reveal"));
+        assert!(commands.try_recv().is_err());
+        app.options.connection.allow_secret_reveal = true;
+        app.command("secrets")?;
+        assert!(matches!(commands.try_recv(), Ok((_, Task::Secrets(ns))) if ns == "demo"));
+        let data = crate::secrets::demo_data();
+        replies
+            .send((
+                app.epoch,
+                Reply::Secrets(crate::secrets::SecretIndex {
+                    namespace: "demo".into(),
+                    items: vec![crate::secrets::entry("api", "u1", None, Some(&data))],
+                    truncated: false,
+                }),
+            ))
+            .map_err(|_| "reply closed")?;
+        app.receive();
+        app.key(KeyCode::Enter)?;
+        app.key(KeyCode::Char('x'))?;
+        assert!(matches!(
+            commands.try_recv(),
+            Ok((_, Task::SecretValue(ns, name, uid, key)))
+                if (ns.as_str(), name.as_str(), uid.as_str(), key.as_str()) == ("demo", "api", "u1", "blob.bin")
+        ));
+        assert!(
+            !screen(&app, 120, 30)
+                .join("\n")
+                .contains("not-a-real-password")
+        );
+        replies
+            .send((
+                app.epoch,
+                Reply::SecretValue(
+                    "u1".into(),
+                    "blob.bin".into(),
+                    Ok(crate::secrets::reveal(&data["blob.bin"])),
+                ),
+            ))
+            .map_err(|_| "reply closed")?;
+        app.receive();
+        assert!(screen(&app, 120, 30).join("\n").contains("binary, 4 bytes"));
+        app.key(KeyCode::Esc)?;
+        app.key(KeyCode::Esc)?;
+        assert!(matches!(app.modal, Modal::None));
+        Ok(())
     }
     #[test]
     fn dashboard_warning_opens_exact_pod_events_and_esc_clears_selection_first() {

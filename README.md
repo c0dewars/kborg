@@ -79,6 +79,9 @@ These flags make actions available. Each mutation still requires its own review 
 | Dashboard `1..4`, `Enter`, `c`, `s` | Focus card, open Pods, choose contexts, save dashboard |
 | Dashboard `w`, then `Enter` | Select a recent warning, open that exact Pod's Events |
 | `:logs-live [SELECTOR]` | Follow workload logs with announced Pod joins and departures |
+| Dashboard `w`, then `L` | Follow that warning Pod's logs in a pane under the cards |
+| `:secrets` (`--allow-secret-reveal`) | List Secret keys; `x` reveals one value for 30 seconds |
+| Ctrl-K (`--write --allow-force-kill`) | Reviewed zero-grace Pod kill |
 | `:themes`, `?`, `:q` | Themes, help, quit |
 
 The header keeps only `?` for the keymap; it also supports mouse clicks. Familiar `:` commands remain available when you type them. The [compatibility map](docs/K9S_COMPATIBILITY.md) records exact behavior and remaining k9s differences.

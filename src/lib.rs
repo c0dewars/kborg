@@ -36,11 +36,13 @@ pub mod insights;
 pub mod navigation_views;
 pub mod pager;
 pub mod screendump;
+pub mod secrets;
 pub mod selections;
 pub mod selectors;
 pub mod session;
 pub mod transport;
 pub mod ui_logs;
+pub mod ui_secrets;
 
 pub mod helm;
 

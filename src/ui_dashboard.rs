@@ -11,6 +11,15 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+/// Live logs for one exact warning Pod, followed over its own read-only connection.
+pub(super) struct LogPane {
+    pub context: String,
+    pub namespace: String,
+    pub pod: String,
+    pub uid: String,
+    pub view: Box<crate::ui_logs::LogView>,
+}
+
 pub(super) struct Dashboard {
     pub rows: Vec<ContextSummary>,
     pub selected: usize,
@@ -18,6 +27,7 @@ pub(super) struct Dashboard {
     pub warning: Option<usize>,
     pub help: bool,
     pub notice: Option<(String, bool)>,
+    pub logs: Option<LogPane>,
 }
 impl Dashboard {
     pub fn new(names: &[String], demo: bool) -> Self {
@@ -31,6 +41,7 @@ impl Dashboard {
             warning: None,
             help: false,
             notice: None,
+            logs: None,
         }
     }
     pub fn selected(&self) -> Option<&ContextSummary> {
@@ -214,6 +225,44 @@ fn cards(width: u16, height: u16, count: usize, selected: usize) -> Vec<(usize, 
             )
         })
         .collect()
+}
+
+/// The log pane takes a bit under half the dashboard and never fewer than 6 rows.
+fn pane_height(height: u16) -> u16 {
+    (height.saturating_sub(7) * 9 / 20)
+        .max(6)
+        .min(height.saturating_sub(4))
+}
+
+fn log_pane(app: &App, pane: &LogPane, rect: Rect, out: &mut impl Write) -> Result<()> {
+    let color = |role| ui_color(app, role);
+    let bg = color("background");
+    let title = format!(
+        "LOGS {} / {}/{} (exact UID)",
+        pane.context, pane.namespace, pane.pod
+    );
+    panel(out, rect, &title, true, color("accent"), bg).map_err(|_| "draw failed")?;
+    let inner = usize::from(rect.width.saturating_sub(2));
+    let lines = pane
+        .view
+        .render(inner, usize::from(rect.height.saturating_sub(2)));
+    for (index, text) in lines
+        .iter()
+        .take(usize::from(rect.height.saturating_sub(2)))
+        .enumerate()
+    {
+        cell(
+            out,
+            rect.x + 1,
+            rect.y + 1 + index as u16,
+            rect.width.saturating_sub(2),
+            text,
+            color("text"),
+            bg,
+        )
+        .map_err(|_| "draw failed")?;
+    }
+    Ok(())
 }
 
 fn card(
@@ -484,7 +533,8 @@ pub(super) fn render(
             "Enter            Open focused context Pods",
             "w                Select next recent warning",
             "Enter on warning Open that Pod's Events (exact UID)",
-            "Esc on warning   Clear the warning selection",
+            "L on warning     Follow that Pod's logs in a pane (exact UID)",
+            "Esc on warning   Close the log pane, then clear the selection",
             "c                Choose up to four context names",
             "s                Save these contexts and namespace",
             "B                Open saved selections",
@@ -516,8 +566,34 @@ pub(super) fn render(
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_or(0, |time| time.as_secs());
-        for (index, rect) in cards(width, height, dashboard.rows.len(), dashboard.selected) {
-            card(app, dashboard, index, rect, out, now)?;
+        let pane = dashboard
+            .logs
+            .as_ref()
+            .map(|pane| (pane, pane_height(height)));
+        let card_height = height.saturating_sub(pane.map_or(0, |(_, h)| h + 1));
+        let mut cards_bottom = 4;
+        if card_height >= 12 || pane.is_none() {
+            for (index, rect) in cards(width, card_height, dashboard.rows.len(), dashboard.selected)
+            {
+                cards_bottom = cards_bottom.max(rect.y + rect.height);
+                card(app, dashboard, index, rect, out, now)?;
+            }
+        }
+        // The pane starts directly under the cards and fills down to the
+        // status rows, so a short single card leaves no blank band.
+        if let Some((pane, _)) = pane {
+            let pane_y = cards_bottom.min(height.saturating_sub(9));
+            log_pane(
+                app,
+                pane,
+                Rect {
+                    x: 0,
+                    y: pane_y,
+                    width,
+                    height: height.saturating_sub(3).saturating_sub(pane_y),
+                },
+                out,
+            )?;
         }
     }
     if let Some((notice, warning)) = &dashboard.notice {
@@ -559,8 +635,10 @@ pub(super) fn render(
         width,
         if dashboard.help {
             " ? keymap   Esc back"
+        } else if dashboard.logs.is_some() {
+            " L close logs   w next warning   Enter Events   Esc close logs"
         } else if dashboard.warning.is_some() {
-            " w next warning   Enter Events   Esc clear"
+            " w next warning   Enter Events   L live logs   Esc clear"
         } else {
             " 1..4 focus   Enter Pods   w warnings   ? keymap   Esc back"
         },
