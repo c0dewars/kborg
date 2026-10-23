@@ -29,11 +29,25 @@ pub struct Config {
     #[serde(default)]
     pub allow_logs: bool,
     #[serde(default)]
+    pub allow_helm: bool,
+    #[serde(default)]
+    pub allow_helm_write: bool,
+    #[serde(default)]
+    pub allow_helm_hooks: bool,
+    #[serde(default)]
+    pub allow_helm_crds: bool,
+    #[serde(default)]
     pub allow_exec: bool,
     #[serde(default)]
     pub allow_attach: bool,
     #[serde(default)]
     pub allow_forward: bool,
+    #[serde(default)]
+    pub allow_tools: bool,
+    #[serde(default)]
+    pub allow_extensions: bool,
+    #[serde(default)]
+    pub allow_auth_helper: bool,
 }
 impl Default for Config {
     fn default() -> Self {
@@ -42,13 +56,20 @@ impl Default for Config {
             profile: Profile::ReadOnly,
             context: None,
             namespace: None,
-            theme: Some("catppuccin-mocha".into()),
+            theme: Some(crate::themes::DEFAULT_THEME.into()),
             no_splash: false,
             poll: false,
             allow_logs: false,
+            allow_helm: false,
+            allow_helm_write: false,
+            allow_helm_hooks: false,
+            allow_helm_crds: false,
             allow_exec: false,
             allow_attach: false,
             allow_forward: false,
+            allow_tools: false,
+            allow_extensions: false,
+            allow_auth_helper: false,
         }
     }
 }
@@ -82,6 +103,38 @@ pub fn apply(config: Config, options: &mut Options) -> Result<()> {
             "read-only profile forbids --write; use a reviewed operator configuration".into(),
         );
     }
+    // Validate every constraint before changing the caller's options. Files may
+    // constrain capabilities, but they never enable them without explicit flags.
+    if options.connection.allow_helm && !config.allow_helm {
+        return Err("configuration forbids Helm release storage access".into());
+    }
+    if options.connection.allow_helm_write && !config.allow_helm_write {
+        return Err("configuration forbids Helm lifecycle actions".into());
+    }
+    if options.connection.allow_helm_hooks && !config.allow_helm_hooks {
+        return Err("configuration forbids Helm hooks".into());
+    }
+    if options.connection.allow_helm_crds && !config.allow_helm_crds {
+        return Err("configuration forbids Helm CRD actions".into());
+    }
+    if options.connection.logs && !config.allow_logs {
+        return Err("configuration forbids log access".into());
+    }
+    if (options.connection.allow_exec && !config.allow_exec)
+        || (options.connection.allow_attach && !config.allow_attach)
+        || (options.connection.allow_port_forward && !config.allow_forward)
+    {
+        return Err("configuration forbids requested subresource capability".into());
+    }
+    if options.allow_tools && !config.allow_tools {
+        return Err("configuration forbids external tool views".into());
+    }
+    if options.connection.allow_auth_helper && !config.allow_auth_helper {
+        return Err("configuration forbids authentication helpers".into());
+    }
+    if options.allow_extensions && !config.allow_extensions {
+        return Err("configuration forbids registered extensions".into());
+    }
     if options.connection.context.is_none() {
         options.connection.context = config.context;
     }
@@ -93,16 +146,6 @@ pub fn apply(config: Config, options: &mut Options) -> Result<()> {
     }
     options.splash &= !config.no_splash;
     options.poll |= config.poll;
-    // A file may constrain log access, but never enable it by itself.
-    if options.connection.logs && !config.allow_logs {
-        return Err("configuration forbids log access".into());
-    }
-    if (options.connection.allow_exec && !config.allow_exec)
-        || (options.connection.allow_attach && !config.allow_attach)
-        || (options.connection.allow_port_forward && !config.allow_forward)
-    {
-        return Err("configuration forbids requested subresource capability".into());
-    }
     Ok(())
 }
 pub fn init(path: &Path) -> Result<()> {
@@ -125,5 +168,174 @@ mod tests {
         assert!(
             serde_json::from_str::<Config>(r#"{"schema_version":1,"profile":"admin"}"#).is_err()
         );
+        for text in [
+            r#"{"schema_version":1,"profile":"read-only","allow_tools":false,"allow_tools":true}"#,
+            r#"{"schema_version":1,"profile":"read-only","namespace":null,"namespace":"prod"}"#,
+            r#"{"schema_version":1,"schema_version":2,"profile":"read-only"}"#,
+        ] {
+            assert!(serde_json::from_str::<Config>(text).is_err());
+        }
+    }
+
+    fn options() -> Options {
+        Options {
+            connection: crate::gateway::Connection::default(),
+            theme: None,
+            color: true,
+            mouse: true,
+            json: false,
+            allow_tools: false,
+            allow_extensions: false,
+            splash: true,
+            poll: false,
+            yaml: false,
+            follow: false,
+            previous: false,
+            all_containers: false,
+            helm_storage: None,
+            helm_tool: None,
+            helm_values: None,
+            helm_registry_ca: None,
+            helm_registry_auth: None,
+            helm_keyring: None,
+            helm_sigstore_policy: None,
+            copilot_policy: None,
+            helm_timeout_seconds: 300,
+            log_seconds: crate::logs::DEFAULT_FOLLOW_SECONDS,
+            log_read: crate::logs::ReadOptions::default(),
+            selector: String::new(),
+            interactive: false,
+            metrics_resources: false,
+            session_seconds: 900,
+            command: vec![],
+        }
+    }
+
+    #[test]
+    fn helm_extension_configuration_constrains_but_never_enables_capabilities() -> Result<()> {
+        let allowed = || Config {
+            profile: Profile::Operator,
+            allow_helm: true,
+            allow_helm_write: true,
+            allow_helm_hooks: true,
+            allow_helm_crds: true,
+            ..Config::default()
+        };
+        let mut disabled = options();
+        apply(allowed(), &mut disabled)?;
+        assert!(!disabled.connection.allow_helm_hooks);
+        assert!(!disabled.connection.allow_helm_crds);
+        for (hooks, crds) in [(true, false), (false, true)] {
+            let mut selected = options();
+            selected.connection.allow_helm_hooks = hooks;
+            selected.connection.allow_helm_crds = crds;
+            let mut denied = allowed();
+            denied.allow_helm_hooks = false;
+            denied.allow_helm_crds = false;
+            assert!(apply(denied, &mut selected).is_err());
+            assert!(selected.connection.context.is_none());
+            apply(allowed(), &mut selected)?;
+            assert_eq!(selected.connection.allow_helm_hooks, hooks);
+            assert_eq!(selected.connection.allow_helm_crds, crds);
+        }
+        Ok(())
+    }
+    #[test]
+    fn helm_write_permission_requires_both_cli_opt_in_and_operator_config() -> Result<()> {
+        let mut selected = options();
+        selected.connection.allow_helm_write = true;
+        assert!(apply(Config::default(), &mut selected).is_err());
+        let mut selected = options();
+        selected.connection.allow_helm_write = true;
+        selected.connection.writable = true;
+        assert!(
+            apply(
+                Config {
+                    allow_helm_write: true,
+                    ..Config::default()
+                },
+                &mut selected
+            )
+            .is_err()
+        );
+        apply(
+            Config {
+                profile: Profile::Operator,
+                allow_helm_write: true,
+                ..Config::default()
+            },
+            &mut selected,
+        )?;
+        let mut disabled = options();
+        apply(
+            Config {
+                profile: Profile::Operator,
+                allow_helm_write: true,
+                ..Config::default()
+            },
+            &mut disabled,
+        )?;
+        assert!(!disabled.connection.allow_helm_write);
+        assert!(!disabled.connection.writable);
+        Ok(())
+    }
+    #[test]
+    fn files_constrain_capabilities_and_cli_scope_wins() -> Result<()> {
+        let config = Config {
+            context: Some("file-context".into()),
+            namespace: Some("file-ns".into()),
+            allow_logs: true,
+            allow_exec: true,
+            allow_attach: true,
+            allow_forward: true,
+            allow_tools: true,
+            ..Config::default()
+        };
+        let mut opts = options();
+        opts.connection.context = Some("cli-context".into());
+        opts.connection.namespace = "cli-ns".into();
+        opts.theme = Some("k8borg-dark".into());
+        apply(config, &mut opts)?;
+        assert_eq!(opts.connection.context.as_deref(), Some("cli-context"));
+        assert_eq!(opts.connection.namespace, "cli-ns");
+        assert_eq!(opts.theme.as_deref(), Some("k8borg-dark"));
+        assert!(
+            !opts.connection.logs
+                && !opts.connection.allow_exec
+                && !opts.connection.allow_attach
+                && !opts.connection.allow_port_forward
+                && !opts.allow_tools
+        );
+
+        let mut denied = options();
+        denied.allow_tools = true;
+        assert!(
+            apply(
+                Config {
+                    context: Some("must-not-apply".into()),
+                    ..Config::default()
+                },
+                &mut denied
+            )
+            .is_err()
+        );
+        assert!(denied.connection.context.is_none());
+        let mut helm = options();
+        helm.connection.allow_helm = true;
+        assert!(apply(Config::default(), &mut helm).is_err());
+        let mut allowed_helm = options();
+        allowed_helm.connection.allow_helm = true;
+        apply(
+            Config {
+                allow_helm: true,
+                ..Config::default()
+            },
+            &mut allowed_helm,
+        )?;
+        assert!(allowed_helm.connection.allow_helm);
+        let mut writable = options();
+        writable.connection.writable = true;
+        assert!(apply(Config::default(), &mut writable).is_err());
+        Ok(())
     }
 }

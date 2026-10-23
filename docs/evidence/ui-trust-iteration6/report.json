@@ -1,0 +1,68 @@
+{
+  "passed": true,
+  "theme": "rose-pine",
+  "binary_sha256": "f963852ab5de76442f42ce83324436fb5200bb0cc58d2295f4a567993202a6e1",
+  "terminal_restored": true,
+  "screens": [
+    {
+      "name": "resources",
+      "path": "/Users/brunogarcia/Desktop/HyperMac/repos/kborg/docs/evidence/ui-trust-iteration6/resources.png",
+      "width": 120,
+      "height": 34
+    },
+    {
+      "name": "helm-releases",
+      "path": "/Users/brunogarcia/Desktop/HyperMac/repos/kborg/docs/evidence/ui-trust-iteration6/helm-releases.png",
+      "width": 120,
+      "height": 34
+    },
+    {
+      "name": "helm-install-form",
+      "path": "/Users/brunogarcia/Desktop/HyperMac/repos/kborg/docs/evidence/ui-trust-iteration6/helm-install-form.png",
+      "width": 120,
+      "height": 34
+    },
+    {
+      "name": "helm-review-overview",
+      "path": "/Users/brunogarcia/Desktop/HyperMac/repos/kborg/docs/evidence/ui-trust-iteration6/helm-review-overview.png",
+      "width": 120,
+      "height": 34
+    },
+    {
+      "name": "helm-test-form",
+      "path": "/Users/brunogarcia/Desktop/HyperMac/repos/kborg/docs/evidence/ui-trust-iteration6/helm-test-form.png",
+      "width": 120,
+      "height": 34
+    },
+    {
+      "name": "crd-delete-form",
+      "path": "/Users/brunogarcia/Desktop/HyperMac/repos/kborg/docs/evidence/ui-trust-iteration6/crd-delete-form.png",
+      "width": 120,
+      "height": 34
+    },
+    {
+      "name": "crd-migrate-form",
+      "path": "/Users/brunogarcia/Desktop/HyperMac/repos/kborg/docs/evidence/ui-trust-iteration6/crd-migrate-form.png",
+      "width": 120,
+      "height": 34
+    },
+    {
+      "name": "crd-migrate-narrow",
+      "path": "/Users/brunogarcia/Desktop/HyperMac/repos/kborg/docs/evidence/ui-trust-iteration6/crd-migrate-narrow.png",
+      "width": 48,
+      "height": 12
+    },
+    {
+      "name": "copilot-local-preview",
+      "path": "/Users/brunogarcia/Desktop/HyperMac/repos/kborg/docs/evidence/ui-trust-iteration6/copilot-local-preview.png",
+      "width": 120,
+      "height": 34
+    },
+    {
+      "name": "copilot-demo-send-blocked",
+      "path": "/Users/brunogarcia/Desktop/HyperMac/repos/kborg/docs/evidence/ui-trust-iteration6/copilot-demo-send-blocked.png",
+      "width": 120,
+      "height": 34
+    }
+  ]
+}

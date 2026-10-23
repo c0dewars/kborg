@@ -1,0 +1,424 @@
+{
+  "schema": 1,
+  "passed": true,
+  "namespace": "kborg-dashboard-d0c8d50281f1",
+  "binary_sha256": "803777f8e773ab741e6535a438246f7f7dbe5ae1554516d3595741b5500530dc",
+  "source_sha256": {
+    "src/overview.rs": "b838266d564fa7d23e354fc5623037df8162662f2c956e22be78597b9f222127",
+    "src/dashboard_health.rs": "b464e500cc9ffa19615dee0424100dc7d426208834d5d6372f1b63036cae87d5",
+    "scripts/test-dashboard-health-live.py": "7199d61aa9b75e81b205eb7f033cd7ffef3a34be2f8f727c265b12add73f536c"
+  },
+  "checks": [
+    "Docker Desktop and minikube: explicit namespace, Ready=True, unready and pending counts",
+    "Recent Warning Events match exact Pod UID and exclude old/unrelated UID evidence",
+    "Event denial retains valid Pod evidence with unknown Warning count",
+    "Pod denial produces no health/count values while independent peers remain live",
+    "Desktop readiness recovery updates its card while minikube and denied peers retain independent state",
+    "Closing the follow process releases all read-only watches promptly",
+    "Actual live dashboard cards and keymap captured; terminal attributes restored on exit"
+  ],
+  "snapshots": {
+    "initial": {
+      "docker-desktop": {
+        "context": "docker-desktop",
+        "demo": false,
+        "error": null,
+        "health": {
+          "failed": 0,
+          "oom_killed": 0,
+          "pending": 1,
+          "ready": 1,
+          "restarts": 0,
+          "succeeded": 0,
+          "terminating": 0,
+          "unknown": 0,
+          "unready": 1,
+          "warnings": {
+            "count": 2,
+            "message": null,
+            "recent": [
+              {
+                "namespace": "kborg-dashboard-d0c8d50281f1",
+                "observed_unix_seconds": 1792756419,
+                "occurrences": 2,
+                "pod": "unready",
+                "reason": "Unhealthy"
+              },
+              {
+                "namespace": "kborg-dashboard-d0c8d50281f1",
+                "observed_unix_seconds": 1792756418,
+                "occurrences": 1,
+                "pod": "ready",
+                "reason": "DashboardFixtureWarning"
+              }
+            ],
+            "state": "live"
+          }
+        },
+        "namespace": "kborg-dashboard-d0c8d50281f1",
+        "observed_unix_seconds": 1792756421,
+        "pods": 3,
+        "state": "live",
+        "truncated": false,
+        "unhealthy": 2
+      },
+      "events-denied": {
+        "context": "events-denied",
+        "demo": false,
+        "error": null,
+        "health": {
+          "failed": 0,
+          "oom_killed": 0,
+          "pending": 1,
+          "ready": 1,
+          "restarts": 0,
+          "succeeded": 0,
+          "terminating": 0,
+          "unknown": 0,
+          "unready": 1,
+          "warnings": {
+            "count": null,
+            "message": "Kubernetes API 403 (Forbidden); server message suppressed",
+            "recent": [],
+            "state": "denied"
+          }
+        },
+        "namespace": "kborg-dashboard-d0c8d50281f1",
+        "observed_unix_seconds": 1792756421,
+        "pods": 3,
+        "state": "live",
+        "truncated": false,
+        "unhealthy": 2
+      },
+      "kborg-dashboard": {
+        "context": "kborg-dashboard",
+        "demo": false,
+        "error": null,
+        "health": {
+          "failed": 0,
+          "oom_killed": 0,
+          "pending": 1,
+          "ready": 1,
+          "restarts": 0,
+          "succeeded": 0,
+          "terminating": 0,
+          "unknown": 0,
+          "unready": 1,
+          "warnings": {
+            "count": 2,
+            "message": null,
+            "recent": [
+              {
+                "namespace": "kborg-dashboard-d0c8d50281f1",
+                "observed_unix_seconds": 1792756420,
+                "occurrences": 1,
+                "pod": "ready",
+                "reason": "DashboardFixtureWarning"
+              },
+              {
+                "namespace": "kborg-dashboard-d0c8d50281f1",
+                "observed_unix_seconds": 1792756420,
+                "occurrences": 1,
+                "pod": "unready",
+                "reason": "Unhealthy"
+              }
+            ],
+            "state": "live"
+          }
+        },
+        "namespace": "kborg-dashboard-d0c8d50281f1",
+        "observed_unix_seconds": 1792756421,
+        "pods": 3,
+        "state": "live",
+        "truncated": false,
+        "unhealthy": 2
+      },
+      "pods-denied": {
+        "context": "pods-denied",
+        "demo": false,
+        "error": "Kubernetes API 403 (Forbidden); server message suppressed",
+        "health": null,
+        "namespace": "kborg-dashboard-d0c8d50281f1",
+        "observed_unix_seconds": null,
+        "pods": null,
+        "state": "denied",
+        "truncated": false,
+        "unhealthy": null
+      }
+    },
+    "watch_initial": {
+      "docker-desktop": {
+        "demo": false,
+        "context": "docker-desktop",
+        "namespace": "kborg-dashboard-d0c8d50281f1",
+        "pods": 3,
+        "unhealthy": 2,
+        "truncated": false,
+        "error": null,
+        "state": "live",
+        "observed_unix_seconds": 1792756421,
+        "health": {
+          "ready": 1,
+          "unready": 1,
+          "pending": 1,
+          "failed": 0,
+          "succeeded": 0,
+          "terminating": 0,
+          "unknown": 0,
+          "restarts": 0,
+          "oom_killed": 0,
+          "warnings": {
+            "state": "live",
+            "count": 2,
+            "recent": [
+              {
+                "namespace": "kborg-dashboard-d0c8d50281f1",
+                "pod": "unready",
+                "reason": "Unhealthy",
+                "occurrences": 2,
+                "observed_unix_seconds": 1792756419
+              },
+              {
+                "namespace": "kborg-dashboard-d0c8d50281f1",
+                "pod": "ready",
+                "reason": "DashboardFixtureWarning",
+                "occurrences": 1,
+                "observed_unix_seconds": 1792756418
+              }
+            ],
+            "message": null
+          }
+        }
+      },
+      "events-denied": {
+        "demo": false,
+        "context": "events-denied",
+        "namespace": "kborg-dashboard-d0c8d50281f1",
+        "pods": 3,
+        "unhealthy": 2,
+        "truncated": false,
+        "error": null,
+        "state": "live",
+        "observed_unix_seconds": 1792756421,
+        "health": {
+          "ready": 1,
+          "unready": 1,
+          "pending": 1,
+          "failed": 0,
+          "succeeded": 0,
+          "terminating": 0,
+          "unknown": 0,
+          "restarts": 0,
+          "oom_killed": 0,
+          "warnings": {
+            "state": "denied",
+            "count": null,
+            "recent": [],
+            "message": "watch authorization denied"
+          }
+        }
+      },
+      "kborg-dashboard": {
+        "demo": false,
+        "context": "kborg-dashboard",
+        "namespace": "kborg-dashboard-d0c8d50281f1",
+        "pods": 3,
+        "unhealthy": 2,
+        "truncated": false,
+        "error": null,
+        "state": "live",
+        "observed_unix_seconds": 1792756421,
+        "health": {
+          "ready": 1,
+          "unready": 1,
+          "pending": 1,
+          "failed": 0,
+          "succeeded": 0,
+          "terminating": 0,
+          "unknown": 0,
+          "restarts": 0,
+          "oom_killed": 0,
+          "warnings": {
+            "state": "live",
+            "count": 2,
+            "recent": [
+              {
+                "namespace": "kborg-dashboard-d0c8d50281f1",
+                "pod": "ready",
+                "reason": "DashboardFixtureWarning",
+                "occurrences": 1,
+                "observed_unix_seconds": 1792756420
+              },
+              {
+                "namespace": "kborg-dashboard-d0c8d50281f1",
+                "pod": "unready",
+                "reason": "Unhealthy",
+                "occurrences": 1,
+                "observed_unix_seconds": 1792756420
+              }
+            ],
+            "message": null
+          }
+        }
+      },
+      "pods-denied": {
+        "demo": false,
+        "context": "pods-denied",
+        "namespace": "kborg-dashboard-d0c8d50281f1",
+        "pods": null,
+        "unhealthy": null,
+        "truncated": false,
+        "error": "watch authorization denied",
+        "state": "denied",
+        "observed_unix_seconds": null,
+        "health": null
+      }
+    },
+    "watch_recovered": {
+      "docker-desktop": {
+        "demo": false,
+        "context": "docker-desktop",
+        "namespace": "kborg-dashboard-d0c8d50281f1",
+        "pods": 3,
+        "unhealthy": 1,
+        "truncated": false,
+        "error": null,
+        "state": "live",
+        "observed_unix_seconds": 1792756423,
+        "health": {
+          "ready": 2,
+          "unready": 0,
+          "pending": 1,
+          "failed": 0,
+          "succeeded": 0,
+          "terminating": 0,
+          "unknown": 0,
+          "restarts": 0,
+          "oom_killed": 0,
+          "warnings": {
+            "state": "live",
+            "count": 2,
+            "recent": [
+              {
+                "namespace": "kborg-dashboard-d0c8d50281f1",
+                "pod": "unready",
+                "reason": "Unhealthy",
+                "occurrences": 3,
+                "observed_unix_seconds": 1792756421
+              },
+              {
+                "namespace": "kborg-dashboard-d0c8d50281f1",
+                "pod": "ready",
+                "reason": "DashboardFixtureWarning",
+                "occurrences": 1,
+                "observed_unix_seconds": 1792756418
+              }
+            ],
+            "message": null
+          }
+        }
+      },
+      "events-denied": {
+        "demo": false,
+        "context": "events-denied",
+        "namespace": "kborg-dashboard-d0c8d50281f1",
+        "pods": 3,
+        "unhealthy": 1,
+        "truncated": false,
+        "error": null,
+        "state": "live",
+        "observed_unix_seconds": 1792756423,
+        "health": {
+          "ready": 2,
+          "unready": 0,
+          "pending": 1,
+          "failed": 0,
+          "succeeded": 0,
+          "terminating": 0,
+          "unknown": 0,
+          "restarts": 0,
+          "oom_killed": 0,
+          "warnings": {
+            "state": "denied",
+            "count": null,
+            "recent": [],
+            "message": "watch authorization denied"
+          }
+        }
+      },
+      "kborg-dashboard": {
+        "demo": false,
+        "context": "kborg-dashboard",
+        "namespace": "kborg-dashboard-d0c8d50281f1",
+        "pods": 3,
+        "unhealthy": 2,
+        "truncated": false,
+        "error": null,
+        "state": "live",
+        "observed_unix_seconds": 1792756421,
+        "health": {
+          "ready": 1,
+          "unready": 1,
+          "pending": 1,
+          "failed": 0,
+          "succeeded": 0,
+          "terminating": 0,
+          "unknown": 0,
+          "restarts": 0,
+          "oom_killed": 0,
+          "warnings": {
+            "state": "live",
+            "count": 2,
+            "recent": [
+              {
+                "namespace": "kborg-dashboard-d0c8d50281f1",
+                "pod": "unready",
+                "reason": "Unhealthy",
+                "occurrences": 2,
+                "observed_unix_seconds": 1792756421
+              },
+              {
+                "namespace": "kborg-dashboard-d0c8d50281f1",
+                "pod": "ready",
+                "reason": "DashboardFixtureWarning",
+                "occurrences": 1,
+                "observed_unix_seconds": 1792756420
+              }
+            ],
+            "message": null
+          }
+        }
+      },
+      "pods-denied": {
+        "demo": false,
+        "context": "pods-denied",
+        "namespace": "kborg-dashboard-d0c8d50281f1",
+        "pods": null,
+        "unhealthy": null,
+        "truncated": false,
+        "error": "watch authorization denied",
+        "state": "denied",
+        "observed_unix_seconds": null,
+        "health": null
+      }
+    }
+  },
+  "captures": [
+    {
+      "name": "live-dashboard",
+      "path": "/Users/brunogarcia/Desktop/HyperMac/repos/kborg/docs/evidence/ui-dashboard-final/live/live-dashboard.png",
+      "columns": 150,
+      "rows": 44
+    },
+    {
+      "name": "dashboard-keymap",
+      "path": "/Users/brunogarcia/Desktop/HyperMac/repos/kborg/docs/evidence/ui-dashboard-final/live/dashboard-keymap.png",
+      "columns": 150,
+      "rows": 44
+    }
+  ],
+  "fixture_cleanup": {
+    "docker-desktop": true,
+    "kborg-dashboard": true
+  }
+}

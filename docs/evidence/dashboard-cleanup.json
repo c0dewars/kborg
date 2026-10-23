@@ -1,0 +1,14 @@
+{
+  "passed": true,
+  "profile": "kborg-dashboard",
+  "profile_deleted": true,
+  "containers_removed": 1,
+  "owned_fixture_namespaces_absent_on_both_clusters": true,
+  "node_schedulable_before_cleanup": true,
+  "context_before": "docker-desktop",
+  "context_after": "docker-desktop",
+  "desktop_metrics_provider_available": true,
+  "desktop_metrics_apiservice_available": true,
+  "desktop_metrics_apiservice_tls_verified": true,
+  "scope": "Only the task-owned single-node profile was removed after container ownership and fixture cleanup checks. Docker Desktop and its metrics provider were retained."
+}

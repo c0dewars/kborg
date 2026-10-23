@@ -1,0 +1,63 @@
+{
+  "schema": 1,
+  "tested_source_sha256": {
+    "src/audit.rs": "063fb70a176c8f7a06f633130d2b789df985e4019fe957b55680cdd42dba8375",
+    "src/cli.rs": "5ff52457c232d5886c2f5c1414dbd370b3164d8fe8ddf8a31e0d8b5412b9646a",
+    "src/completions.rs": "c7c7a7fb2fbf7cbed0fa797be58850e4f9960621a70ca0eeca5d07beb42ea8d2",
+    "src/config.rs": "f92efc5125d6637d38cf5b0916291a5cd39975f1016f3e1b7f9b3d50396db458",
+    "src/copilot.rs": "3016f4a3a3827297b6dc343944e8de16c5af909c2001e6f28e17807c11233759",
+    "src/discovery.rs": "17e127578c13f245bd3435b1017c1fef5a430f600c8041525b0272964691f63e",
+    "src/edit.rs": "e6eb924fc17410a909a0c96824610281b49249aed7dd8b9650de49876e24e571",
+    "src/gateway.rs": "9a1d61e70f316580aa04704a23382e2bb21ecca4acc2251dab77584d04610777",
+    "src/handoff.rs": "c38c98c7f895850c7511f7e0c0374683444f308885860a1e2d4d949d362ed3e7",
+    "src/inspect.rs": "ee066b3ecfb1b251b1b834242f70c8ac4ff2b208f1d81763802ceb4b6269bfc9",
+    "src/lib.rs": "b2c98616931771d2d14051c7edacacc5d5f9a7ff4ba77eef34c24b5a2dfd97f4",
+    "src/logs.rs": "1be1f2f5240e18a18c5aa03a181a4043e722da11c8963126f7519bcb77137cef",
+    "src/main.rs": "397d518c3303e14bce67dc7021bdddf6ae97808f78fa58ba0f54801d07ad07b5",
+    "src/metrics.rs": "49c84da2e2104094a2893f303fa4838c9259577c9e0fac181913c77dbbd28d0a",
+    "src/ops.rs": "c30426607532c91a17a6acf7bf97af090cf33acacfb367c41e93683a5bc2f29f",
+    "src/overview.rs": "b5add946531fccc851eb76857391232bc73921fe04063d92ff6b0212fb2cb761",
+    "src/policy.rs": "ec78d0c84196b5d7a3d4152bb69e27e87dcf2011856449e3a8b247f268400506",
+    "src/safety.rs": "7c1458b88d16b595272ffac243d2f4a06a4403f00951dfd1ff4ddf0b5a8d5582",
+    "src/themes.rs": "85675d9651ba57a1856c0b977acfb49591fb32008453c7e77ea7e360419d1c56",
+    "src/tui.rs": "952cec5edee522ae7a896de55fef3773a1fdeb0024bac3a3593a15c4927be013",
+    "src/watch.rs": "43f9efde71d2506781bd80ff8b09657f033e249616467f3243672b7339d19b77",
+    "Cargo.toml": "2f186ab9d095ca031078bb730594dfeea95b4412d7ed9bcce3dbf1b30d6e4719",
+    "Cargo.lock": "f01d03dde1b12d231c895f753a14436eab54453f14eeba9cf835cbf74ba290c2",
+    "rust-toolchain.toml": "2ad6f15416572b4836585087f1d4abc53b8fa2dbd616f8dacfaa587ed6714228"
+  },
+  "timestamp_utc": "2026-10-10T08:32:35Z",
+  "platform": "Darwin",
+  "architecture": "arm64",
+  "kubernetes": "v1.36.1",
+  "server": "https://127.0.0.1:49409",
+  "ca_sha256": "f864a88046b41b6d81a756f55ef16574f4f1ade29e653a646e8206da9cc3436e",
+  "image": "busybox@sha256:bdf57e528e45e4433820e045b29b4597825a1c9e38353532d90a01445013f82e",
+  "suites": [
+    {
+      "suite": "desktop",
+      "namespace": "kborg-tests-0c96fe4bf42d",
+      "run_id": "0c96fe4bf42d",
+      "passed": true,
+      "cleanup": true,
+      "seconds": 59.073
+    },
+    {
+      "suite": "watch",
+      "namespace": "kborg-watch-8694f5544e75",
+      "run_id": "8694f5544e75",
+      "passed": true,
+      "cleanup": true,
+      "seconds": 6.061
+    },
+    {
+      "suite": "native",
+      "namespace": "kborg-ops-e077ea35e853",
+      "run_id": "e077ea35e853",
+      "passed": true,
+      "cleanup": true,
+      "seconds": 62.467
+    }
+  ],
+  "temporary_credentials_removed": true
+}

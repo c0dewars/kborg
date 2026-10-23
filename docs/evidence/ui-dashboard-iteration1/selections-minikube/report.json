@@ -1,0 +1,50 @@
+{
+  "passed": true,
+  "context": "kborg-dashboard",
+  "binary_sha256": "66154a91a3e5f3028f7c3053c1d624403bc12c670de3daf3fa23005190bdef0a",
+  "checks": [
+    "startup and empty picker do not create saved preferences",
+    "explicit resource save retains selector and UID in private data-only preferences",
+    "duplicate selection name cannot overwrite an existing record",
+    "dashboard save persists only selected contexts and namespace",
+    "restart preserves selections but explicit reopen revalidates resource and exact workload UID",
+    "saved dashboard explicitly reopens its live namespace scope",
+    "recreated workload name cannot inherit saved UID focus",
+    "missing context rejected before changing active scope",
+    "delete cancel and incorrect confirmation preserve records; exact name removes only selected record",
+    "all TUI sessions exit cleanly and restore terminal mode"
+  ],
+  "captures": [
+    {
+      "name": "saved-selections",
+      "path": "/Users/brunogarcia/Desktop/HyperMac/repos/kborg/docs/evidence/ui-dashboard-iteration1/selections-minikube/saved-selections.png",
+      "width": 136,
+      "height": 38
+    },
+    {
+      "name": "restored-workload",
+      "path": "/Users/brunogarcia/Desktop/HyperMac/repos/kborg/docs/evidence/ui-dashboard-iteration1/selections-minikube/restored-workload.png",
+      "width": 136,
+      "height": 38
+    },
+    {
+      "name": "restored-dashboard",
+      "path": "/Users/brunogarcia/Desktop/HyperMac/repos/kborg/docs/evidence/ui-dashboard-iteration1/selections-minikube/restored-dashboard.png",
+      "width": 136,
+      "height": 38
+    },
+    {
+      "name": "replaced-workload",
+      "path": "/Users/brunogarcia/Desktop/HyperMac/repos/kborg/docs/evidence/ui-dashboard-iteration1/selections-minikube/replaced-workload.png",
+      "width": 136,
+      "height": 38
+    },
+    {
+      "name": "unavailable-context",
+      "path": "/Users/brunogarcia/Desktop/HyperMac/repos/kborg/docs/evidence/ui-dashboard-iteration1/selections-minikube/unavailable-context.png",
+      "width": 136,
+      "height": 38
+    }
+  ],
+  "fixture_cleanup": true
+}

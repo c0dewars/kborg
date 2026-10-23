@@ -1,8 +1,249 @@
 use crate::{Result, safety};
-use crossterm::style::Color;
+use crossterm::{
+    Command,
+    style::{self, Color},
+};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::{fmt, sync::OnceLock};
+
+pub const DEFAULT_THEME: &str = "flexoki-dark";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ColorDepth {
+    Basic16,
+    Indexed256,
+    TrueColor,
+}
+
+fn detected_depth(term: Option<&str>, colorterm: Option<&str>, windows: bool) -> ColorDepth {
+    let term = term.unwrap_or_default().to_ascii_lowercase();
+    let colorterm = colorterm.unwrap_or_default().to_ascii_lowercase();
+    if matches!(colorterm.as_str(), "truecolor" | "24bit")
+        || term.ends_with("-direct")
+        || term.contains("truecolor")
+        || term.contains("24bit")
+    {
+        ColorDepth::TrueColor
+    } else if term.contains("256color") {
+        ColorDepth::Indexed256
+    } else if term.is_empty() && windows {
+        // Native Windows terminals commonly omit TERM. Preserve the existing
+        // Crossterm native/modern-console behavior in that case.
+        ColorDepth::TrueColor
+    } else {
+        ColorDepth::Basic16
+    }
+}
+
+fn terminal_depth() -> ColorDepth {
+    static DEPTH: OnceLock<ColorDepth> = OnceLock::new();
+    *DEPTH.get_or_init(|| {
+        detected_depth(
+            std::env::var("TERM").ok().as_deref(),
+            std::env::var("COLORTERM").ok().as_deref(),
+            cfg!(windows),
+        )
+    })
+}
+
+// The fixed xterm cube/grayscale entries are independent of customized terminal
+// ANSI slots 0..15. Basic-color approximations necessarily use the host palette.
+const CUBE: [u8; 6] = [0, 95, 135, 175, 215, 255];
+const BASIC: [Rgb; 16] = [
+    Rgb(0, 0, 0),
+    Rgb(128, 0, 0),
+    Rgb(0, 128, 0),
+    Rgb(128, 128, 0),
+    Rgb(0, 0, 128),
+    Rgb(128, 0, 128),
+    Rgb(0, 128, 128),
+    Rgb(192, 192, 192),
+    Rgb(128, 128, 128),
+    Rgb(255, 0, 0),
+    Rgb(0, 255, 0),
+    Rgb(255, 255, 0),
+    Rgb(0, 0, 255),
+    Rgb(255, 0, 255),
+    Rgb(0, 255, 255),
+    Rgb(255, 255, 255),
+];
+
+fn distance(a: Rgb, b: Rgb) -> u32 {
+    let channel = |x: u8, y: u8| (i32::from(x) - i32::from(y)).pow(2) as u32;
+    channel(a.0, b.0) + channel(a.1, b.1) + channel(a.2, b.2)
+}
+
+fn nearest_basic(rgb: Rgb) -> u8 {
+    let mut index = 0;
+    let mut closest = u32::MAX;
+    for (candidate, color) in BASIC.iter().enumerate() {
+        let score = distance(rgb, *color);
+        if score < closest {
+            closest = score;
+            index = candidate as u8;
+        }
+    }
+    index
+}
+
+fn nearest_indexed(rgb: Rgb) -> u8 {
+    let channel = |value: u8| -> u8 {
+        let mut index = 0;
+        let mut closest = u32::MAX;
+        for (candidate, level) in CUBE.iter().enumerate() {
+            let score = (i32::from(value) - i32::from(*level)).pow(2) as u32;
+            if score < closest {
+                closest = score;
+                index = candidate as u8;
+            }
+        }
+        index
+    };
+    let (r, g, b) = (channel(rgb.0), channel(rgb.1), channel(rgb.2));
+    let cube = Rgb(
+        CUBE[usize::from(r)],
+        CUBE[usize::from(g)],
+        CUBE[usize::from(b)],
+    );
+    // The best grayscale entry is nearest to the mean of the three channels.
+    let sum = i32::from(rgb.0) + i32::from(rgb.1) + i32::from(rgb.2);
+    let gray_index = ((sum - 24 + 15) / 30).clamp(0, 23) as u8;
+    let gray = 8 + gray_index * 10;
+    if distance(rgb, Rgb(gray, gray, gray)) < distance(rgb, cube) {
+        232 + gray_index
+    } else {
+        16 + 36 * r + 6 * g + b
+    }
+}
+
+fn rgb_for_index(index: u8) -> Rgb {
+    match index {
+        0..=15 => BASIC[usize::from(index)],
+        16..=231 => {
+            let cube = index - 16;
+            Rgb(
+                CUBE[usize::from(cube / 36)],
+                CUBE[usize::from((cube / 6) % 6)],
+                CUBE[usize::from(cube % 6)],
+            )
+        }
+        _ => {
+            let gray = 8 + (index - 232) * 10;
+            Rgb(gray, gray, gray)
+        }
+    }
+}
+
+fn basic_index(color: Color) -> Option<u8> {
+    Some(match color {
+        Color::Reset => return None,
+        Color::Black => 0,
+        Color::DarkRed => 1,
+        Color::DarkGreen => 2,
+        Color::DarkYellow => 3,
+        Color::DarkBlue => 4,
+        Color::DarkMagenta => 5,
+        Color::DarkCyan => 6,
+        Color::Grey => 7,
+        Color::DarkGrey => 8,
+        Color::Red => 9,
+        Color::Green => 10,
+        Color::Yellow => 11,
+        Color::Blue => 12,
+        Color::Magenta => 13,
+        Color::Cyan => 14,
+        Color::White => 15,
+        Color::AnsiValue(index) if index < 16 => index,
+        Color::AnsiValue(index) => nearest_basic(rgb_for_index(index)),
+        Color::Rgb { r, g, b } => nearest_basic(Rgb(r, g, b)),
+    })
+}
+#[cfg(any(windows, test))]
+fn native_color(color: Color) -> Color {
+    const NAMED: [Color; 16] = [
+        Color::Black,
+        Color::DarkRed,
+        Color::DarkGreen,
+        Color::DarkYellow,
+        Color::DarkBlue,
+        Color::DarkMagenta,
+        Color::DarkCyan,
+        Color::Grey,
+        Color::DarkGrey,
+        Color::Red,
+        Color::Green,
+        Color::Yellow,
+        Color::Blue,
+        Color::Magenta,
+        Color::Cyan,
+        Color::White,
+    ];
+    basic_index(color)
+        .map(|index| NAMED[usize::from(index)])
+        .unwrap_or(Color::Reset)
+}
+
+fn write_color(
+    color: Color,
+    background: bool,
+    depth: ColorDepth,
+    out: &mut impl fmt::Write,
+) -> fmt::Result {
+    if depth == ColorDepth::Basic16 {
+        let code = match basic_index(color) {
+            None => {
+                if background {
+                    49
+                } else {
+                    39
+                }
+            }
+            Some(index) if index < 8 => 30 + u16::from(index) + if background { 10 } else { 0 },
+            Some(index) => 90 + u16::from(index - 8) + if background { 10 } else { 0 },
+        };
+        write!(out, "\x1b[{code}m")
+    } else {
+        let color = match (depth, color) {
+            (ColorDepth::Indexed256, Color::Rgb { r, g, b }) => {
+                Color::AnsiValue(nearest_indexed(Rgb(r, g, b)))
+            }
+            _ => color,
+        };
+        if background {
+            style::SetBackgroundColor(color).write_ansi(out)
+        } else {
+            style::SetForegroundColor(color).write_ansi(out)
+        }
+    }
+}
+
+/// Color command that emits basic SGR on terminals advertising only ANSI colors.
+#[derive(Clone, Copy, Debug)]
+pub struct ForegroundColor(pub Color);
+impl Command for ForegroundColor {
+    fn write_ansi(&self, out: &mut impl fmt::Write) -> fmt::Result {
+        write_color(self.0, false, terminal_depth(), out)
+    }
+    #[cfg(windows)]
+    fn execute_winapi(&self) -> std::io::Result<()> {
+        style::SetForegroundColor(native_color(self.0)).execute_winapi()
+    }
+}
+
+/// Background equivalent of `ForegroundColor`, preserving native Windows fallback.
+#[derive(Clone, Copy, Debug)]
+pub struct BackgroundColor(pub Color);
+impl Command for BackgroundColor {
+    fn write_ansi(&self, out: &mut impl fmt::Write) -> fmt::Result {
+        write_color(self.0, true, terminal_depth(), out)
+    }
+    #[cfg(windows)]
+    fn execute_winapi(&self) -> std::io::Result<()> {
+        style::SetBackgroundColor(native_color(self.0)).execute_winapi()
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Rgb(pub u8, pub u8, pub u8);
@@ -21,10 +262,17 @@ impl Rgb {
         format!("#{:02X}{:02X}{:02X}", self.0, self.1, self.2)
     }
     pub fn color(self) -> Color {
-        Color::Rgb {
-            r: self.0,
-            g: self.1,
-            b: self.2,
+        self.color_at_depth(terminal_depth())
+    }
+    fn color_at_depth(self, depth: ColorDepth) -> Color {
+        match depth {
+            ColorDepth::Basic16 => Color::AnsiValue(nearest_basic(self)),
+            ColorDepth::Indexed256 => Color::AnsiValue(nearest_indexed(self)),
+            ColorDepth::TrueColor => Color::Rgb {
+                r: self.0,
+                g: self.1,
+                b: self.2,
+            },
         }
     }
     fn luminance(self) -> f64 {
@@ -168,6 +416,20 @@ const PALETTES: &[(&str, &str, [&str; 7])] = &[
         ],
     ),
     (
+        "flexoki-dark",
+        "Flexoki Dark",
+        [
+            "#100F0F", "#CECDC3", "#878580", "#3AA99F", "#879A39", "#D0A215", "#E8705F",
+        ],
+    ),
+    (
+        "rose-pine",
+        "Rose Pine",
+        [
+            "#191724", "#E0DEF4", "#908CAA", "#C4A7E7", "#9CCFD8", "#F6C177", "#EB6F92",
+        ],
+    ),
+    (
         "tokyo-night-night",
         "Tokyo Night / Night",
         [
@@ -243,6 +505,24 @@ pub fn builtins() -> Vec<Theme> {
                 "status_text".into(),
                 colors.get("warning").copied().unwrap_or(accent),
             );
+            // These reading-oriented palettes use quiet surfaces rather than a
+            // saturated accent fill. Keep focus in the accent and ordinary
+            // selected text in the original foreground. Their upstream faint
+            // colors are intentionally not used for functional text below 4.5:1.
+            let surfaces = match *id {
+                "flexoki-dark" => Some(("#282726", "#1C1B1A")),
+                "rose-pine" => Some(("#403D52", "#1F1D2E")),
+                _ => None,
+            };
+            if let Some((selection, status)) = surfaces {
+                colors.insert(
+                    "selection_background".into(),
+                    Rgb::parse(selection).unwrap_or(bg),
+                );
+                colors.insert("selection_text".into(), colors["text"]);
+                colors.insert("status_background".into(), Rgb::parse(status).unwrap_or(bg));
+                colors.insert("status_text".into(), colors["muted"]);
+            }
             Theme {
                 id: (*id).into(),
                 name: (*name).into(),
@@ -400,7 +680,7 @@ pub fn selected() -> String {
         find(&p.theme)?;
         Ok(p.theme)
     };
-    read().unwrap_or_else(|_| "catppuccin-mocha".into())
+    read().unwrap_or_else(|_| DEFAULT_THEME.into())
 }
 pub fn use_theme(id: &str) -> Result<()> {
     find(id)?;
@@ -466,7 +746,7 @@ pub fn remove(id: &str) -> Result<()> {
     let path = themes_dir()?.join(format!("{id}.json"));
     safety::checked_path(&path)?;
     if selected() == id {
-        use_theme("catppuccin-mocha")?;
+        use_theme(DEFAULT_THEME)?;
     }
     std::fs::remove_file(path).map_err(|_| "cannot remove custom theme".into())
 }
@@ -492,6 +772,17 @@ fn replace_in_dir(file: &ThemeFile, dir: &Path) -> Result<String> {
 /// Create an independent resolved custom theme from the current palette.
 pub fn create_from_current(id: &str) -> Result<PathBuf> {
     let current = find(&selected())?;
+    create_from_theme(id, &current)
+}
+/// Clone the actual session/preview palette without changing saved preferences.
+pub fn create_from_theme(id: &str, current: &Theme) -> Result<PathBuf> {
+    let file = cloned_theme(id, current)?;
+    let destination = themes_dir()?.join(format!("{id}.json"));
+    let bytes = serde_json::to_vec_pretty(&file).map_err(|_| "cannot serialize theme")?;
+    safety::write_new(&destination, &bytes)?;
+    Ok(destination)
+}
+fn cloned_theme(id: &str, current: &Theme) -> Result<ThemeFile> {
     if current.terminal {
         return Err("host palette cannot be copied as fixed RGB".into());
     }
@@ -502,19 +793,136 @@ pub fn create_from_current(id: &str) -> Result<PathBuf> {
         base: "k8borg-dark".into(),
         colors: current
             .colors
-            .into_iter()
-            .map(|(key, value)| (key, value.hex()))
+            .iter()
+            .map(|(key, value)| (key.clone(), value.hex()))
             .collect(),
     };
     file.resolve()?;
-    let destination = themes_dir()?.join(format!("{id}.json"));
-    let bytes = serde_json::to_vec_pretty(&file).map_err(|_| "cannot serialize theme")?;
-    safety::write_new(&destination, &bytes)?;
-    Ok(destination)
+    Ok(file)
 }
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn native_windows_fallback_uses_named_host_palette_colors() {
+        use super::{Color, basic_index, native_color};
+        for index in 0..16 {
+            let color = native_color(Color::AnsiValue(index));
+            assert_eq!(basic_index(color), Some(index));
+            assert!(!matches!(color, Color::Rgb { .. } | Color::AnsiValue(_)));
+        }
+        assert_eq!(native_color(Color::Rgb { r: 255, g: 0, b: 0 }), Color::Red);
+        assert_eq!(
+            native_color(Color::Rgb { r: 128, g: 0, b: 0 }),
+            Color::DarkRed
+        );
+        assert_eq!(native_color(Color::AnsiValue(196)), Color::Red);
+        assert_eq!(native_color(Color::AnsiValue(244)), Color::DarkGrey);
+        assert_eq!(native_color(Color::Reset), Color::Reset);
+    }
+    #[test]
+    fn declared_terminal_depth_controls_color_encoding() {
+        use super::{ColorDepth::*, detected_depth};
+        for term in ["linux", "vt100", "xterm", "screen", "dumb"] {
+            assert_eq!(detected_depth(Some(term), None, false), Basic16);
+        }
+        for term in ["xterm-256color", "screen-256color", "rxvt-unicode-256color"] {
+            assert_eq!(detected_depth(Some(term), None, false), Indexed256);
+        }
+        for term in ["xterm-direct", "screen-direct", "xterm-24bit"] {
+            assert_eq!(detected_depth(Some(term), None, false), TrueColor);
+        }
+        for declaration in ["truecolor", "24bit", "TRUECOLOR"] {
+            assert_eq!(
+                detected_depth(Some("xterm-256color"), Some(declaration), false),
+                TrueColor
+            );
+        }
+        assert_eq!(detected_depth(None, None, false), Basic16);
+        assert_eq!(detected_depth(None, None, true), TrueColor);
+        assert_eq!(detected_depth(Some("linux"), None, true), Basic16);
+    }
+
+    #[test]
+    fn indexed_palette_preserves_cube_and_grayscale_and_chooses_the_nearest_entry() {
+        use super::*;
+        for index in 16..=255 {
+            assert_eq!(nearest_indexed(rgb_for_index(index)), index);
+        }
+        // Include colors between entries and unequal channels: selecting a cube
+        // entry alone loses the much closer neutral grayscale candidates.
+        for r in [0, 17, 64, 96, 128, 181, 217, 254, 255] {
+            for g in [0, 17, 64, 96, 128, 181, 217, 254, 255] {
+                for b in [0, 17, 64, 96, 128, 181, 217, 254, 255] {
+                    let rgb = Rgb(r, g, b);
+                    let chosen = nearest_indexed(rgb);
+                    assert!(chosen >= 16);
+                    let score = distance(rgb, rgb_for_index(chosen));
+                    assert!(
+                        (16..=255).all(|index| score <= distance(rgb, rgb_for_index(index))),
+                        "{rgb:?}"
+                    );
+                }
+            }
+        }
+        assert_eq!(nearest_indexed(Rgb(128, 128, 128)), 244);
+    }
+
+    #[test]
+    fn basic_palette_uses_all_sixteen_colors_and_actual_basic_sgr() -> fmt::Result {
+        for (index, rgb) in BASIC.iter().enumerate() {
+            let color = rgb.color_at_depth(ColorDepth::Basic16);
+            assert_eq!(color, Color::AnsiValue(index as u8));
+            let mut foreground = String::new();
+            let mut background = String::new();
+            write_color(color, false, ColorDepth::Basic16, &mut foreground)?;
+            write_color(color, true, ColorDepth::Basic16, &mut background)?;
+            let expected = if index < 8 {
+                30 + index
+            } else {
+                90 + index - 8
+            };
+            assert_eq!(foreground, format!("\x1b[{expected}m"));
+            assert_eq!(background, format!("\x1b[{}m", expected + 10));
+            assert!(!foreground.contains("38;5;") && !background.contains("48;5;"));
+        }
+        for index in 0..=255 {
+            let mut foreground = String::new();
+            write_color(
+                Color::AnsiValue(index),
+                false,
+                ColorDepth::Basic16,
+                &mut foreground,
+            )?;
+            assert!(!foreground.contains(';'));
+            assert!(nearest_basic(rgb_for_index(index)) < 16);
+        }
+        let mut reset = String::new();
+        write_color(Color::Reset, false, ColorDepth::Basic16, &mut reset)?;
+        write_color(Color::Reset, true, ColorDepth::Basic16, &mut reset)?;
+        assert_eq!(reset, "\x1b[39m\x1b[49m");
+        let rgb = Rgb(37, 98, 211);
+        assert_eq!(
+            rgb.color_at_depth(ColorDepth::TrueColor),
+            Color::Rgb {
+                r: 37,
+                g: 98,
+                b: 211
+            }
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn cloning_uses_the_session_palette_and_validates_name_and_fixed_colors() -> crate::Result<()> {
+        let preview = super::find("catppuccin-macchiato")?;
+        let copy = super::cloned_theme("my-session-theme", &preview)?.resolve()?;
+        assert_eq!(copy.colors, preview.colors);
+        assert!(super::cloned_theme("../invalid", &preview).is_err());
+        assert!(super::cloned_theme("catppuccin-mocha", &preview).is_err());
+        assert!(super::cloned_theme("host-copy", &super::find("terminal")?).is_err());
+        Ok(())
+    }
     #[test]
     fn replacement_retains_original_backup_and_refuses_backup_overwrite_or_builtin() {
         let stamp = std::time::SystemTime::now()
@@ -560,10 +968,48 @@ mod tests {
     use super::*;
     #[test]
     fn all_builtins_meet_fixed_palette_targets() {
-        assert_eq!(builtins().len(), 18);
+        assert_eq!(builtins().len(), 20);
         for t in builtins() {
             assert!(t.validate().is_ok(), "{}", t.id);
         }
+    }
+    #[test]
+    fn reading_palettes_keep_their_ink_colors_and_quiet_legible_surfaces() -> crate::Result<()> {
+        for (id, background, text, accent, danger) in [
+            ("flexoki-dark", "#100F0F", "#CECDC3", "#3AA99F", "#E8705F"),
+            ("rose-pine", "#191724", "#E0DEF4", "#C4A7E7", "#EB6F92"),
+        ] {
+            let theme = builtins()
+                .into_iter()
+                .find(|theme| theme.id == id)
+                .ok_or("missing reading palette")?;
+            theme.validate()?;
+            assert_eq!(theme.get("background"), Rgb::parse(background)?);
+            assert_eq!(theme.get("text"), Rgb::parse(text)?);
+            assert_eq!(theme.get("accent"), Rgb::parse(accent)?);
+            assert_eq!(theme.get("danger"), Rgb::parse(danger)?);
+            assert_eq!(theme.get("focus"), theme.get("accent"));
+            assert_eq!(theme.get("selection_text"), theme.get("text"));
+            assert_eq!(theme.get("status_text"), theme.get("muted"));
+            for surface in ["selection_background", "status_background"] {
+                assert_ne!(theme.get(surface), theme.get("background"));
+                assert!(theme.get(surface).luminance() < theme.get("accent").luminance());
+            }
+            // The two sources use colors that are too faint for actionable
+            // terminal text. Preserve palette hues instead of bleaching them
+            // through the black/white fallback in legible().
+            assert!(
+                theme
+                    .colors
+                    .values()
+                    .all(|color| { *color != Rgb(255, 255, 255) && *color != Rgb(0, 0, 0) })
+            );
+            assert_eq!(
+                cloned_theme("reading-copy", &theme)?.resolve()?.colors,
+                theme.colors
+            );
+        }
+        Ok(())
     }
     #[test]
     fn rejects_duplicate_keys_and_hooks() {

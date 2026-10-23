@@ -1,0 +1,9 @@
+{
+  "schema": 1,
+  "profile": "kborg-validation",
+  "isolated_home": ".local/minikube",
+  "isolated_kubeconfig": ".local/minikube.kubeconfig",
+  "profile_deleted": true,
+  "feature_fixture_cleanup_verified": true,
+  "default_context_changed": false
+}

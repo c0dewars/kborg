@@ -1,0 +1,93 @@
+{
+  "schema": 1,
+  "passed": true,
+  "binary_sha256": "36f6eeecba162df7e687e55425eacec19b9542a37347e9cea3a95e75caf32def",
+  "seconds": 24.976,
+  "checks": [
+    {
+      "case": "throttle",
+      "passed": true,
+      "seconds": 3.61,
+      "pod_lists": 1,
+      "pod_watches": 4,
+      "http_requests": 14,
+      "unexpected": 0,
+      "interrupt_exit_seconds": 0.004
+    },
+    {
+      "case": "expired",
+      "passed": true,
+      "seconds": 0.523,
+      "pod_lists": 2,
+      "pod_watches": 1,
+      "http_requests": 5,
+      "unexpected": 0,
+      "interrupt_exit_seconds": 0.001
+    },
+    {
+      "case": "outage",
+      "passed": true,
+      "seconds": 1.545,
+      "pod_lists": 1,
+      "pod_watches": 3,
+      "http_requests": 9,
+      "unexpected": 0,
+      "interrupt_exit_seconds": 0.001
+    },
+    {
+      "case": "revoked401",
+      "passed": true,
+      "seconds": 2.103,
+      "pod_lists": 1,
+      "pod_watches": 1,
+      "http_requests": 8,
+      "unexpected": 0,
+      "interrupt_exit_seconds": 0.001
+    },
+    {
+      "case": "revoked403",
+      "passed": true,
+      "seconds": 2.109,
+      "pod_lists": 1,
+      "pod_watches": 1,
+      "http_requests": 8,
+      "unexpected": 0,
+      "interrupt_exit_seconds": 0.004
+    },
+    {
+      "case": "cross_scope",
+      "passed": true,
+      "seconds": 0.708,
+      "pod_lists": 1,
+      "pod_watches": 0,
+      "http_requests": 4,
+      "unexpected": 0,
+      "interrupt_exit_seconds": 0.004
+    },
+    {
+      "case": "flood",
+      "passed": true,
+      "seconds": 0.702,
+      "pod_lists": 1,
+      "pod_watches": 0,
+      "http_requests": 4,
+      "unexpected": 0,
+      "interrupt_exit_seconds": 0.001
+    },
+    {
+      "case": "slow_body",
+      "passed": true,
+      "seconds": 10.101,
+      "pod_lists": 1,
+      "pod_watches": 0,
+      "http_requests": 22,
+      "unexpected": 0,
+      "interrupt_exit_seconds": 0.001
+    },
+    {
+      "case": "tls_ca_rotation_requires_explicit_reconnect",
+      "passed": true
+    }
+  ],
+  "scope": "Synthetic HTTPS loopback Kubernetes protocol fixture with generated CAs; no real cluster or credential access. Static-token revocation, not a provider identity-rotation test."
+}

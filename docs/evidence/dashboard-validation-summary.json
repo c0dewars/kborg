@@ -1,0 +1,84 @@
+{
+  "schema": 1,
+  "date": "2026-10-23",
+  "platform": "macOS ARM64",
+  "passed": true,
+  "binary_sha256": "803777f8e773ab741e6535a438246f7f7dbe5ae1554516d3595741b5500530dc",
+  "source_manifest": "docs/evidence/dashboard-build-source.json",
+  "source_manifest_verified": true,
+  "embedded_help_verified": true,
+  "rust": {
+    "passed": 404,
+    "failed": 0,
+    "ignored": 18,
+    "serial": true,
+    "report": "docs/evidence/dashboard-tests-macos.txt"
+  },
+  "format": {
+    "passed": true,
+    "report": "docs/evidence/dashboard-fmt-macos.txt"
+  },
+  "clippy": {
+    "passed": true,
+    "strict": true,
+    "all_targets": true,
+    "report": "docs/evidence/dashboard-clippy-macos.txt",
+    "scope": "Same Rust source before final embedded CLI-help text update"
+  },
+  "frame_parser": {
+    "passed": 3,
+    "failed": 0,
+    "report": "docs/evidence/dashboard-screen-tests.txt"
+  },
+  "acceptance": {
+    "terminal": {
+      "passed": true,
+      "states": 63,
+      "report": "docs/evidence/dashboard-terminal-macos.json"
+    },
+    "dashboard_demo": {
+      "passed": true,
+      "checks": 7,
+      "screenshots": 10,
+      "report": "docs/evidence/ui-dashboard-final/demo/report.json"
+    },
+    "health_live": {
+      "passed": true,
+      "checks": 7,
+      "screenshots": 2,
+      "report": "docs/evidence/dashboard-health-live-final.json"
+    },
+    "selections_desktop": {
+      "passed": true,
+      "checks": 12,
+      "screenshots": 6,
+      "report": "docs/evidence/ui-dashboard-final/selections-desktop/report.json"
+    },
+    "selections_minikube": {
+      "passed": true,
+      "checks": 12,
+      "screenshots": 6,
+      "report": "docs/evidence/ui-dashboard-final/selections-minikube/report.json"
+    }
+  },
+  "cleanup": {
+    "passed": true,
+    "report": "docs/evidence/dashboard-cleanup.json"
+  },
+  "clusters": {
+    "docker-desktop": "1.36.1",
+    "kborg-dashboard": "1.35.9"
+  },
+  "review": "Three implementation agents with cross-review plus root integration review; no unresolved blocking findings. Internal review, not independent security assessment.",
+  "remaining_release_gates": [
+    "Signing/notarization",
+    "Sustained cluster soak",
+    "Real terminal and accessibility matrix",
+    "Independent security review"
+  ],
+  "limits": [
+    "PTY screenshots render captured terminal cells; not native terminal font screenshots",
+    "OOM classification unit tested; no live OOM induction",
+    "Prior mutation suites were not all rerun in this dashboard batch"
+  ]
+}

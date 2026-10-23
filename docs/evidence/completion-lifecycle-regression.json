@@ -1,0 +1,157 @@
+{
+  "schema": 1,
+  "timestamp_utc": "2026-10-22T20:03:42Z",
+  "binary_sha256": "fc846bd3bac99709ee7fc400d3de02e4585b419e6c60ba7af39b7073ff2d01ef",
+  "helm_version": "v4.3.1+gc0d08d0",
+  "helm_sha256": "c62da98a8e5728f5acc08b66bbe5c3ad1cb6b71d3d31b7bf939d9f4b6628c96d",
+  "tested_source_sha256": {
+    "src/advice.rs": "ceb7a72df73f82bd6284b2ae31612e7b710b81ffebd903ed7f9cf657943b5a8c",
+    "src/aliases.rs": "54c548e89426a6ef3269ffe1ed037cd820b26f74532385157411b51ee9a48f31",
+    "src/allocations.rs": "a0d4891aa7b36b4e341d52276748d602fa29b3aa37664393be20b5eb6d40c337",
+    "src/audit.rs": "ce4a4681532af7b2bfea6d4ff18beeb8c3cc1960cf2f69ea32103e4ff986b279",
+    "src/auth.rs": "0ed06ef678869accf1d4de83e877c146f4f6f1b8c4b778a9f5c14be0ed42ec87",
+    "src/cli.rs": "41622c788e777e82769acc27c8983c086460ca2d7e3a9d3748e5d9ab95409a97",
+    "src/completions.rs": "d432802ab6c938d1ba6afb71947591599c0a90bb3f18a7bb91180c729a65311f",
+    "src/config.rs": "67dba01e48edc372e4ed91e6ce370e150039ebdef321c6280a0181d67ba2a60e",
+    "src/copilot.rs": "3016f4a3a3827297b6dc343944e8de16c5af909c2001e6f28e17807c11233759",
+    "src/discovery.rs": "54e858ddc52d5a777e85aaffc922aa0c93fe89117bfd56a4fafa5810bd633089",
+    "src/edit.rs": "80b377f8f87f525389322d810c921136df914deda7b85da901cf08d6e12d546a",
+    "src/extensions.rs": "96f26dd56d3528a11c9dc2d24ba928a5ac63c5ff8043c0cfbf6687934d136e3e",
+    "src/gateway.rs": "ab471b08adc09abaf356f8801bc7161f307db7c72a073e746d5681dc664e9c43",
+    "src/handoff.rs": "c38c98c7f895850c7511f7e0c0374683444f308885860a1e2d4d949d362ed3e7",
+    "src/helm.rs": "ae13a5cd25a83f91ebd575eaaff66cd4f6b94895b0c75716263259761c3b1adc",
+    "src/helm_crds.rs": "bd8945235c143951a25cbf8949b120dd08d992529af1f2deedc1d49e006f4ef4",
+    "src/helm_extensions.rs": "4f0a6b8ccf882487342e0514c7a19fade2b4a500be5a1ad030feabea7eb4d4bf",
+    "src/helm_lifecycle.rs": "14a0bdeeaeaa4c5c9edc56339e6db93d4126faa44360f710afae2df9d422fd10",
+    "src/helm_oci.rs": "a471815ed484b9e0fce3328c110ae9ffbd2608fe0f72fa853644df4e24c461c4",
+    "src/helm_provenance.rs": "f154fe1070359bbaf74547fe0cebf790efc839c24505f252205c546928e0a65b",
+    "src/insights.rs": "5a7a7fe4e58bf8b55cd72ca32385f850dbc01b628a09e0a90fff9b769df18539",
+    "src/inspect.rs": "ee066b3ecfb1b251b1b834242f70c8ac4ff2b208f1d81763802ceb4b6269bfc9",
+    "src/lib.rs": "5b48247a4453305829a41972747d2a0f98e4e22d2d8ff3deaed76870686dd27b",
+    "src/logs.rs": "e57f9bf2d794f4590a026571f6c402856f1fb147c8c8c75f044da36809f2462f",
+    "src/main.rs": "397d518c3303e14bce67dc7021bdddf6ae97808f78fa58ba0f54801d07ad07b5",
+    "src/metrics.rs": "04f219ee6ee114b798f23fc52a93a973c9aec4df8e53a38c1b9362d24f9a5ca2",
+    "src/navigation_views.rs": "ec07e90494fa6f27e875a7debf43205556292e47c8f77a1691adceccc7bba652",
+    "src/ops.rs": "c3b0a124c9ffeb717f6d93d245981a5d87f55a9e4d0252477246fb707ad0e7ad",
+    "src/overview.rs": "e014141605d9404e1a610b747f00edbf251b7490c3478b403ce4f5e6e75d0215",
+    "src/pager.rs": "bd57e79d484b98d25226ae7682edf7a78a0b7dce5fe0a6df6ddda093a7885143",
+    "src/policy.rs": "fd96d63ffa8af19f2ad2f6e90bf22e72785be8ec78024c665dbd7733469f0b2b",
+    "src/safety.rs": "fed551da5e0abeb844b1c3ff08317495d7f2e41e5e30527bbfe08aaea88bbdcf",
+    "src/screendump.rs": "ca8adddda5d7563220ac14a370dfd8def0b70c2d3a72b14f640aaf7adbeb7d7c",
+    "src/selectors.rs": "598922f71b3798a99523416ce06125986a2a12bd6758aa134c54f183feb7c3ef",
+    "src/session.rs": "385a47ec1716b0e76ba3ca4adb8b998c0dd32dab0e7debba1fd897eba06a496f",
+    "src/themes.rs": "6dd9eb5a55d3dfa0909bd64944d491f9b14899490c6ad5b7135151bfc2ce893d",
+    "src/transport.rs": "5ac1be0dc57a6995222db7cbf8a673e191c4aef2317907c4de2abc550db9c16d",
+    "src/tui.rs": "bb2f0436894e0076964c86915189b59ef5d3d21358c36572853d5cda2e738f3e",
+    "src/ui_helm.rs": "93f1c1925f718fd6c2fc583fcef9f8eec4b32a156bd0a2ce55d3a91603bd29ed",
+    "src/ui_logs.rs": "146c2c3b8587655f119e2ffe384af4707323d95e74e9856d6c425977fb187f16",
+    "src/ui_metrics.rs": "af6497d8c40ef0562d26c77535bb23f944a1b482ad1b7eae30c4d342157a46b5",
+    "src/ui_navigation.rs": "f16ea3c8ac88c4f9e723f4f43ea86b892ce977fbff56e785e869e19d45222081",
+    "src/watch.rs": "1655d76c17d0e1dbbdfcdeed63eecb98270df0701f1c3fe3fd2575912ee5f3dc",
+    "tests/auth_helper_live.rs": "8fb5663eafc292fcb184980c0bc8d16afdbe15df63ab8d7128b32ddf7f69ef18",
+    "tests/cli_output.rs": "5a78c48c478dc0b2bed213f39cf935999c6361b4827067cd7b46046b576d1ba4",
+    "tests/docker_desktop.rs": "723a67f3c0267ef51ca55fcd23dd4814ec8d3820d553c672dd002478988f6b59",
+    "tests/native_operations.rs": "c917ee5e70021e351c2a03ec632646922d5dccff6897406f5fb5149b3902390e",
+    "tests/watch_metrics_acceptance.rs": "2ad2ed63f4022066540ca783f3f1c4446bf4712f04f7264127a0a92734c1f7fd",
+    "Cargo.toml": "0dbc079a25e0a919bdc346fb52194158b1e1e9e99fde57be92577a49c438c1b1",
+    "Cargo.lock": "6707a4b7efbb1f53c2d78595de335675a5b451758b8fa3b76ba6d84e18493a8e",
+    "rust-toolchain.toml": "2ad6f15416572b4836585087f1d4abc53b8fa2dbd616f8dacfaa587ed6714228",
+    "docs/CLI_HELP.txt": "874ef4c1fe47f3cb935ab7b1de1ed658fce9554e2881b940b90084a36f508ece",
+    "scripts/test-helm-lifecycle.py": "57de354c006a782c05f7fe4312c536e604b78a99fb9caad4eab946c59fea4e5f",
+    "scripts/test-helm-logs-metrics.py": "b479a57507657058702f1016b68190837c4924b9d9aed4ca18191275b30a26ae"
+  },
+  "targets": [
+    {
+      "target": "desktop",
+      "context": "docker-desktop",
+      "server": "https://127.0.0.1:49409",
+      "namespace": "kborg-lifecycle-20cacaf0a92d",
+      "run_id": "20cacaf0a92d",
+      "kubernetes": "v1.36.1",
+      "passed": true,
+      "cleanup": true,
+      "checks": [
+        {
+          "storage": "secret",
+          "install_upgrade_rollback_uninstall": true,
+          "revisions": [
+            1,
+            2,
+            3
+          ],
+          "canceled_review_no_write": true,
+          "stale_resource_review_rejected": true,
+          "changed_release_review_rejected": true,
+          "secret_canary_absent": true,
+          "hostile_helm_environment_ignored": true
+        },
+        {
+          "storage": "configmap",
+          "install_upgrade_rollback_uninstall": true,
+          "revisions": [
+            1,
+            2,
+            3
+          ],
+          "canceled_review_no_write": true,
+          "stale_resource_review_rejected": true,
+          "changed_release_review_rejected": true,
+          "secret_canary_absent": true,
+          "hostile_helm_environment_ignored": true
+        }
+      ],
+      "scope": "cli-lifecycle",
+      "phase": "complete",
+      "dynamic_template_rejected": true,
+      "changed_chart_review_rejected": true,
+      "seconds": 96.355
+    },
+    {
+      "target": "minikube",
+      "context": "kborg-validation",
+      "server": "https://127.0.0.1:58096",
+      "namespace": "kborg-lifecycle-1f9da309d1fd",
+      "run_id": "1f9da309d1fd",
+      "kubernetes": "v1.35.9",
+      "passed": true,
+      "cleanup": true,
+      "checks": [
+        {
+          "storage": "secret",
+          "install_upgrade_rollback_uninstall": true,
+          "revisions": [
+            1,
+            2,
+            3
+          ],
+          "canceled_review_no_write": true,
+          "stale_resource_review_rejected": true,
+          "changed_release_review_rejected": true,
+          "secret_canary_absent": true,
+          "hostile_helm_environment_ignored": true
+        },
+        {
+          "storage": "configmap",
+          "install_upgrade_rollback_uninstall": true,
+          "revisions": [
+            1,
+            2,
+            3
+          ],
+          "canceled_review_no_write": true,
+          "stale_resource_review_rejected": true,
+          "changed_release_review_rejected": true,
+          "secret_canary_absent": true,
+          "hostile_helm_environment_ignored": true
+        }
+      ],
+      "scope": "cli-lifecycle",
+      "phase": "complete",
+      "dynamic_template_rejected": true,
+      "changed_chart_review_rejected": true,
+      "seconds": 99.429
+    }
+  ],
+  "temporary_credentials_removed": true,
+  "source_unchanged": true
+}

@@ -29,6 +29,52 @@ pub fn safe_lines(input: &str, max_chars: usize) -> String {
         .join("\n")
 }
 
+/// Approval text must be complete. Reject instead of silently sanitizing or
+/// clipping target/effect information before a human confirmation.
+pub fn review_text(input: &str, max_chars: usize) -> Result<String> {
+    let shown = safe_lines(input, max_chars);
+    if shown != input {
+        return Err(
+            "operation review contains controls or exceeds its display budget; approval blocked"
+                .into(),
+        );
+    }
+    Ok(shown)
+}
+
+/// Reversible ASCII presentation for approval screens, whose data cells are
+/// deliberately ASCII-only. Escape before wrapping/counting painted lines, never
+/// after: otherwise different Unicode inputs would both be displayed as `?`.
+/// This affects presentation only; the sealed operation and confirmation stay exact.
+pub fn review_display(input: &str) -> Result<String> {
+    const LIMIT: usize = 1024 * 1024;
+    const NOTICE: &str =
+        "Escaped review: \\\\ is a literal backslash; \\u{...} is a Unicode code point.\n\n";
+    let failure = "Review display exceeds 1 MiB; approval blocked. Reduce the operation scope.";
+    if input.len() > LIMIT {
+        return Err(failure.into());
+    }
+    let needs_escape = |ch: char| ch == '\\' || !ch.is_ascii() || (ch.is_control() && ch != '\n');
+    if !input.chars().any(needs_escape) {
+        return Ok(input.into());
+    }
+    let mut output = String::from(NOTICE);
+    for ch in input.chars() {
+        let escaped = if ch == '\\' {
+            "\\\\".into()
+        } else if needs_escape(ch) {
+            ch.escape_unicode().to_string()
+        } else {
+            ch.to_string()
+        };
+        if output.len().saturating_add(escaped.len()) > LIMIT {
+            return Err(failure.into());
+        }
+        output.push_str(&escaped);
+    }
+    Ok(output)
+}
+
 pub fn valid_id(id: &str) -> bool {
     !id.is_empty()
         && id.len() <= 63
@@ -269,6 +315,41 @@ pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn approval_display_is_unambiguous_ascii_and_bounds_expansion() -> Result<()> {
+        let input = "context: pröd\narg: 東京\\u{e9}\u{1b}]52;c;canary\u{7}\u{202e}";
+        let shown = review_display(input)?;
+        assert!(shown.is_ascii());
+        assert!(shown.contains("pr\\u{f6}d"));
+        assert!(shown.contains("\\u{6771}\\u{4eac}\\\\u{e9}"));
+        assert!(shown.contains("\\u{1b}]52;c;canary\\u{7}\\u{202e}"));
+        assert!(!shown.contains('\u{1b}'));
+        assert_ne!(review_display("é")?, review_display("\\u{e9}")?);
+        assert_ne!(review_display("é")?, review_display("ö")?);
+        assert_eq!(
+            review_display("ordinary\nASCII target")?,
+            "ordinary\nASCII target"
+        );
+        // Input fits its byte limit, but escaped output does not. Never truncate.
+        assert!(review_display(&"é".repeat(200_000)).is_err());
+        assert!(review_display(&"a".repeat(1024 * 1024 + 1)).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn approval_preview_rejects_long_aliases_and_never_omits_effects() -> Result<()> {
+        let summary = format!(
+            "context: {}\nUID:123\nresourceVersion:7\n- limits.cpu: 100m\n+ limits.cpu: 200m\nType test/app to execute",
+            "a".repeat(5000)
+        );
+        assert!(review_text(&summary, 16_384).is_err());
+        let many_lines = "short line\n".repeat(3000);
+        assert!(review_text(many_lines.trim_end(), 16_384).is_err());
+        let ordinary = "context: local\nUID:123\n- limits.cpu:100m\n+ limits.cpu:200m\nType test/app to execute";
+        assert_eq!(review_text(ordinary, 16_384)?, ordinary);
+        assert!(review_text("target: test/app\u{001b}[2J\neffect:delete", 16_384).is_err());
+        Ok(())
+    }
     fn storage_test_dir(label: &str) -> PathBuf {
         let stamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

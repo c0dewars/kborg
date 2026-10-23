@@ -1,0 +1,104 @@
+{
+  "schema": 1,
+  "timestamp_utc": "2026-10-10T11:14:12.628599+00:00",
+  "platform": "Darwin",
+  "architecture": "arm64",
+  "rust": "1.99.0",
+  "automated_tests_passed": 162,
+  "library_tests_passed": 160,
+  "automated_tests_failed": 0,
+  "ignored_tests": 8,
+  "checks": {
+    "fmt": {
+      "command": [
+        "cargo",
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ],
+      "exit_code": 0,
+      "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "tests": {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--offline"
+      ],
+      "exit_code": 0,
+      "log_sha256": "204555b423707044215f314c86093c0d21386214d133305f8446a5ff0362bb00"
+    },
+    "clippy": {
+      "command": [
+        "cargo",
+        "clippy",
+        "--locked",
+        "--offline",
+        "--all-targets",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "exit_code": 0,
+      "log_sha256": "a41051563a4cb5fc1b1bcdd9aa0ba28ca80f7736d629d90cc138218756e8e3a9"
+    },
+    "release": {
+      "command": [
+        "cargo",
+        "build",
+        "--release",
+        "--locked",
+        "--offline"
+      ],
+      "exit_code": 0,
+      "log_sha256": "14994b3f11735ae4658038319488abc5678d37270ee5ab8493bb63998211088c"
+    }
+  },
+  "release_binary_sha256": "03bb57e54b9db3d243a8a04b490e97432376550a468cdcdbb4ce54b37e38a544",
+  "cli_help_matches_document_ignoring_trailing_blank_line": true,
+  "demo_json_and_allocations_smoke": true,
+  "tested_source_sha256": {
+    "src/edit.rs": "a45bb5c6ae75cef5f374c353be823e5a3c4d4142d845ff7c30fc26108d024209",
+    "src/policy.rs": "9e332282556b8c589c39ae939d867d45f78f0e25196d6903e18a3f5d4e748551",
+    "src/session.rs": "385a47ec1716b0e76ba3ca4adb8b998c0dd32dab0e7debba1fd897eba06a496f",
+    "src/handoff.rs": "c38c98c7f895850c7511f7e0c0374683444f308885860a1e2d4d949d362ed3e7",
+    "src/copilot.rs": "3016f4a3a3827297b6dc343944e8de16c5af909c2001e6f28e17807c11233759",
+    "src/audit.rs": "2930020165d46c5f7f89eb5f968a64e2f35769e8c82de79b8a43418325d05acd",
+    "src/config.rs": "77178267622a1f6c60e1d45ab0cc56551bfa362f96aaf5e3c106f99db8346e1b",
+    "src/advice.rs": "ceb7a72df73f82bd6284b2ae31612e7b710b81ffebd903ed7f9cf657943b5a8c",
+    "src/transport.rs": "5c77608de091d4c2c6b5c26d02c21e803810d803c778840937412ee797aae737",
+    "src/discovery.rs": "17e127578c13f245bd3435b1017c1fef5a430f600c8041525b0272964691f63e",
+    "src/lib.rs": "5029c8deef872bbc863fdd0136ca2560b339c2977fc5ee832ed1063f58443708",
+    "src/auth.rs": "4c3c7efdf0309e201c5375762ac943393783e803cc2bd24fae1df113f8bc6514",
+    "src/themes.rs": "6dd9eb5a55d3dfa0909bd64944d491f9b14899490c6ad5b7135151bfc2ce893d",
+    "src/gateway.rs": "be895afefc5710f2ae218ba4c49da10303b8c2945707a226c89e1af132c38712",
+    "src/metrics.rs": "fc82a4196844b3306cb219ba4a1fb5d750a38e4253f45c87f9bcc2aad785514f",
+    "src/safety.rs": "fed551da5e0abeb844b1c3ff08317495d7f2e41e5e30527bbfe08aaea88bbdcf",
+    "src/allocations.rs": "a0d4891aa7b36b4e341d52276748d602fa29b3aa37664393be20b5eb6d40c337",
+    "src/watch.rs": "7e3abd657d168361fec377c9c6fd1ef774a2ba7c64ef67e794389d718276b919",
+    "src/main.rs": "397d518c3303e14bce67dc7021bdddf6ae97808f78fa58ba0f54801d07ad07b5",
+    "src/pager.rs": "bd57e79d484b98d25226ae7682edf7a78a0b7dce5fe0a6df6ddda093a7885143",
+    "src/tui.rs": "0d40df3d7063754cedfd29e74ce96b6df15291123ba64cdbbaed409312ae8dd5",
+    "src/overview.rs": "e014141605d9404e1a610b747f00edbf251b7490c3478b403ce4f5e6e75d0215",
+    "src/inspect.rs": "ee066b3ecfb1b251b1b834242f70c8ac4ff2b208f1d81763802ceb4b6269bfc9",
+    "src/ops.rs": "667a6754e9b9bb399be5c70f1e83cfc1d55dbca1ffc89b658bd0711f30a2cf12",
+    "src/extensions.rs": "96f26dd56d3528a11c9dc2d24ba928a5ac63c5ff8043c0cfbf6687934d136e3e",
+    "src/completions.rs": "447f3d5838ad6e29d1adbf3746e93c274c67d48e11baba06bc4a28c025b6ba3e",
+    "src/logs.rs": "e8a64a4fc65177396773d1de0fead6877a828b3478b828119ac33405dafb6f7c",
+    "src/cli.rs": "24b7084504fa27d33c7c3152911f3df0d88a67ab0673c0bb0bc1aebd9c0a65d3",
+    "tests/auth_helper_live.rs": "8fb5663eafc292fcb184980c0bc8d16afdbe15df63ab8d7128b32ddf7f69ef18",
+    "tests/cli_output.rs": "1e617c82eb3ae80b2f5b3905dee9a8d29a27ad9585df464ed6bce1f96d7decca",
+    "tests/native_operations.rs": "c917ee5e70021e351c2a03ec632646922d5dccff6897406f5fb5149b3902390e",
+    "tests/docker_desktop.rs": "4a32fa9d0ae2f75f197002f440a731bd830d144104928d781c3696b204351ba3",
+    "tests/watch_metrics_acceptance.rs": "2ad2ed63f4022066540ca783f3f1c4446bf4712f04f7264127a0a92734c1f7fd",
+    "Cargo.toml": "03f6f633e3446866c20db735f19e9e45c1df0b945f355248588edeb1015115d8",
+    "Cargo.lock": "e9d0cd1469ec5fcc409612be616e2dd8e95f04001ccad6ba5db34d7dba9fd028",
+    "rust-toolchain.toml": "2ad6f15416572b4836585087f1d4abc53b8fa2dbd616f8dacfaa587ed6714228",
+    "docs/CLI_HELP.txt": "dd0066f579c53587f79e2ec7479ae8122f1be45cfe7976a6b33148820bb84179",
+    "scripts/test-terminal.py": "96e23e6064de5e70ea214b6a41fb6a815ae5eccd5461510cb240681cc2c39e7a",
+    "scripts/test-local.py": "912cf881764b3d31f7164c88fa9245d538376ce0e0a25c4ada6fc497c4aa12c9"
+  },
+  "scope": "native macOS ARM64; cluster integration and PTY recorded separately"
+}

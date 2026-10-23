@@ -112,14 +112,14 @@ def main():
         assert denied.returncode != 0 and not denied.stdout and b'opt in with --allow-logs' in denied.stderr
         report['log_opt_in'] = {'denied_without_flag': True, 'stdout_bytes': 0}
         logs, data, errors = measured([*prefix, '--allow-logs', '--json', 'logs', pod_name,
-                                      container, '--follow'], environment, 75)
+                                      container, '--follow', '--log-seconds', '60'], environment, 75)
         lines = [json.loads(line)['line'] for line in data.splitlines()]
         assert lines and all(not any(ord(char) < 32 for char in line) for line in lines)
-        assert b'60-second limit' in errors or b'timeout' in errors or b'transport failure' in errors
+        assert b'60-second session limit' in errors or b'timeout' in errors or b'transport failure' in errors
         assert logs['exit_code'] != 0
         logs.update({'lines': len(lines), 'stdout_bytes': len(data), 'container_selected': True,
                      'terminal_controls_absent': True, 'bounded_stop_reported': True,
-                     'stop_reason': 'lifetime' if b'60-second limit' in errors else
+                     'stop_reason': 'lifetime' if b'60-second session limit' in errors else
                                     'idle/transport timeout', 'raw_logs_retained': False})
         report['live_log_follow'] = logs
     report['temporary_credential_copy_removed'] = True

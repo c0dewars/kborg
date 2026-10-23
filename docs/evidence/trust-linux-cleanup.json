@@ -1,0 +1,8 @@
+{
+  "run_id": "3f635683fdc2467aa4c353a81904f243",
+  "container": "kborg-trust-build-3f635683fdc2",
+  "volume": "kborg-trust-build-3f635683fdc2-scratch",
+  "container_removed": true,
+  "volume_removed": true,
+  "exit_code": 0
+}

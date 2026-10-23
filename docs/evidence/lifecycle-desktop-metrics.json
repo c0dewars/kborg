@@ -1,0 +1,16 @@
+{
+  "schema": 1,
+  "context": "docker-desktop",
+  "namespace": "kborg-system",
+  "binary_sha256": "9a174a440153252c195fb9be30876bdaea6ec9472c27e0e390a07b0ca7dfb225",
+  "checks": {
+    "pods": {
+      "passed": true,
+      "samples": 1
+    },
+    "nodes": {
+      "passed": true,
+      "samples": 1
+    }
+  }
+}

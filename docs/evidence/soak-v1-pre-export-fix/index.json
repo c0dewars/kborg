@@ -1,0 +1,21 @@
+{
+  "scope": "Interrupted before the export approval visibility fix; no completed soak acceptance claims",
+  "binary_sha256": "3711c0fffb3cfe87cb6babd67ab7b6ff3233d83881df62e8a5c7b057043173d7",
+  "reason": "Parent code review found an existing narrow/tall terminal export approval issue. Both continuous runs were deliberately interrupted so final sustained evidence can bind to the corrected release binary.",
+  "runs": [
+    {
+      "context": "docker-desktop",
+      "actual_continuous_seconds": 1248.1,
+      "fixture_cleanup": true,
+      "passed": false,
+      "report": "/Users/brunogarcia/Desktop/HyperMac/repos/kborg/docs/evidence/soak-v1-pre-export-fix/desktop/report.json"
+    },
+    {
+      "context": "kborg-soak-v1",
+      "actual_continuous_seconds": 857.339,
+      "fixture_cleanup": true,
+      "passed": false,
+      "report": "/Users/brunogarcia/Desktop/HyperMac/repos/kborg/docs/evidence/soak-v1-pre-export-fix/minikube/report.json"
+    }
+  ]
+}

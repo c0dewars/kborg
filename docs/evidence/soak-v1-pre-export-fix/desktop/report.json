@@ -1,0 +1,136 @@
+{
+  "schema": 1,
+  "passed": false,
+  "started_utc": "2026-10-23T12:22:59.718963+00:00",
+  "context": "docker-desktop",
+  "namespace": "kborg-soak-3b108c183334",
+  "run_id": "790cd21b9c2c41d7ba0eac22f321861f",
+  "requested_seconds": 7200,
+  "binary_sha256": "3711c0fffb3cfe87cb6babd67ab7b6ff3233d83881df62e8a5c7b057043173d7",
+  "harness_sha256": "34f1fc5706d0c79d149871e2ec5095d658faa02cb5e4587f37f9f48455c48301",
+  "checks": [
+    "Three continuous read-only processes converged in the explicit fixture namespace"
+  ],
+  "captures": [
+    {
+      "name": "soak-start-dashboard",
+      "path": "/Users/brunogarcia/Desktop/HyperMac/repos/kborg/docs/evidence/soak-v1-pre-export-fix/desktop/soak-start-dashboard.png",
+      "columns": 120,
+      "rows": 32
+    }
+  ],
+  "mutations": [
+    {
+      "elapsed_seconds": 5.346,
+      "expected_pods": 2
+    },
+    {
+      "elapsed_seconds": 65.82,
+      "expected_pods": 1
+    },
+    {
+      "elapsed_seconds": 126.09,
+      "expected_pods": 2
+    },
+    {
+      "elapsed_seconds": 186.553,
+      "expected_pods": 1
+    },
+    {
+      "elapsed_seconds": 246.919,
+      "expected_pods": 2
+    },
+    {
+      "elapsed_seconds": 307.388,
+      "expected_pods": 1
+    },
+    {
+      "elapsed_seconds": 367.718,
+      "expected_pods": 2
+    },
+    {
+      "elapsed_seconds": 428.156,
+      "expected_pods": 1
+    },
+    {
+      "elapsed_seconds": 488.45,
+      "expected_pods": 2
+    },
+    {
+      "elapsed_seconds": 548.927,
+      "expected_pods": 1
+    },
+    {
+      "elapsed_seconds": 609.381,
+      "expected_pods": 2
+    },
+    {
+      "elapsed_seconds": 669.868,
+      "expected_pods": 1
+    },
+    {
+      "elapsed_seconds": 730.315,
+      "expected_pods": 2
+    },
+    {
+      "elapsed_seconds": 790.627,
+      "expected_pods": 1
+    },
+    {
+      "elapsed_seconds": 850.881,
+      "expected_pods": 2
+    },
+    {
+      "elapsed_seconds": 911.361,
+      "expected_pods": 1
+    },
+    {
+      "elapsed_seconds": 971.639,
+      "expected_pods": 2
+    },
+    {
+      "elapsed_seconds": 1032.096,
+      "expected_pods": 1
+    },
+    {
+      "elapsed_seconds": 1092.38,
+      "expected_pods": 2
+    },
+    {
+      "elapsed_seconds": 1152.704,
+      "expected_pods": 1
+    },
+    {
+      "elapsed_seconds": 1212.968,
+      "expected_pods": 2
+    }
+  ],
+  "fault": null,
+  "limits": {
+    "rss_per_process_kib": 262144,
+    "rss_growth_kib": 65536,
+    "total_output_per_process_bytes": 536870912,
+    "json_record_bytes": 16777216,
+    "average_cpu_core_percent_after_30_seconds": 25
+  },
+  "claims_excluded": [
+    "429 throttling",
+    "credential/token rotation",
+    "certificate rotation",
+    "organizational production pilot",
+    "native terminal font rendering"
+  ],
+  "configured_current_context_before": "docker-desktop",
+  "kubernetes_version": "v1.36.1",
+  "fixture_namespace_uid": "675a5755-ab52-4b4b-ade8-843ebba2d350",
+  "issued_token_remaining_seconds_at_start": 7799,
+  "continuous_started_utc": "2026-10-23T12:23:01.902786+00:00",
+  "failure": {
+    "type": "KeyboardInterrupt",
+    "message": ""
+  },
+  "actual_continuous_seconds": 1248.1,
+  "fixture_cleanup": true,
+  "finished_utc": "2026-10-23T12:43:55.226107+00:00",
+  "archive_note": "Evidence relocated after deliberate pre-export-fix interruption; capture paths updated to archived locations."
+}

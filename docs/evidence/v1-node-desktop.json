@@ -1,0 +1,20 @@
+{
+  "schema": 1,
+  "context": "docker-desktop",
+  "node": "desktop-control-plane",
+  "mode": "review-only",
+  "node_uid": "ad9d82c9-b33a-4bea-994d-89d57a1e5509",
+  "passed": true,
+  "checks": [
+    "cordon full review/dry-run/cancel preserved node spec",
+    "Docker Desktop scheduling untouched"
+  ],
+  "fixture_cleanup": true,
+  "node_restored": true,
+  "binary_sha256": "357fdd264de7da5d151fcb0b2e560313d556888fae39754579f30b4aa040fe8e",
+  "source_sha256": {
+    "src/node_maintenance.rs": "11c803f5d8e957468b566fad580cdaf4199dc45384ac77502050843103902857",
+    "scripts/test-node-maintenance.py": "adab530ab48ff02fb9faf483f8249b79fa09afde2126bba98449e6c261059cf2"
+  },
+  "audit_settings": ".local/node-acceptance-04bfbf27b75d"
+}

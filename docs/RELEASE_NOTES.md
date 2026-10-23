@@ -1,3 +1,50 @@
+# Helm completion and terminal UI — 2026-10-22
+
+## Helm completion and terminal refinement (2026-10-22)
+
+Adds one-time OCI tag resolution, explicitly required trusted OpenPGP chart provenance, reviewed stored release tests, compatible CRD schema upgrades and separately confirmed schema deletion. Refines app surfaces, table headers, operation forms and review hierarchy. See [workflow guide](HELM_EXTENSIONS.md) and [source-specific acceptance](HELM_COMPLETION_ACCEPTANCE.md) for supported bounds, tests and screenshots.
+
+The preceding extension iteration added digest-pinned OCI chart acquisition with verified HTTPS and explicit registry credentials, reviewed pre/post lifecycle hooks, and a separate create-only CRD bootstrap followed by schema-bound custom-resource lifecycle. The full-width Helm UI adds `:helm-crds` and `c`, source fields accept OCI digests, and capability states remain visible. See [extension guide](HELM_EXTENSIONS.md) for supported scope and limits.
+
+# Local development update — 2026-10-22
+
+This earlier iteration added reviewed Helm install, upgrade, rollback and uninstall
+from the CLI and Helm view, plus fixed-membership workload/selector logs across
+up to eight Pods and 32 ordinary-container streams. Lifecycle requires all three
+flags `--write --allow-helm --allow-helm-write`, exact trusted Unix Helm 4.3.1 and
+local deterministic packaged charts. A complete 15-minute review and fresh
+plan/history/UID/resourceVersion checks precede execution. Hooks, CRDs,
+cluster/system/cross-namespace targets, recognized GitOps resources and foreign
+adoption are rejected. SQL storage, repository/OCI fetching and Windows lifecycle
+remain unsupported. Source membership and shared log limits remain fixed across
+range changes/reconnects; init and ephemeral sources are excluded from merges.
+See [workflow guide](HELM_LIFECYCLE.md),
+[current acceptance](HELM_LIFECYCLE_ACCEPTANCE.md),
+[exact command compatibility](K9S_COMPATIBILITY.md) and
+[remaining work](REMAINING_WORK.md). Full k9s parity and external production gates
+remain open. No new release is published by this local session.
+
+## Earlier Helm, Pod-log and metrics iteration — 2026-10-22
+
+This earlier iteration added full-width k9s command navigation, native Helm release
+and revision browsing, redacted selected values, merged ordinary-container Pod
+logs, and CPU/memory tables with numeric sorting and session history. Docker
+Desktop now has an explicitly installed Metrics Server with verified TLS on both
+hops. Helm/log workflows also run against an isolated minikube cluster. See
+[historical acceptance](HELM_LOGS_METRICS_ACCEPTANCE.md). Helm lifecycle was still
+open in that source and is superseded by the latest iteration above.
+The dated reports below preserve their original artifact scope.
+
+# Local development update — 2026-10-10
+
+The current working iteration adds interactive stdin/TTY sessions, longer rolling
+logs, reviewed ExecCredential helpers, continuous context watches, explicit
+metrics allocation comparisons, controlled resource edits, a native pager, opt-in
+view extensions and a second UI refinement. See [current acceptance](PRIORITIES_ACCEPTANCE.md)
+and [remaining gates](REMAINING_WORK.md). Automated Copilot stays disabled after
+preflight; current packages are unsigned. The notes and artifacts below describe
+the original0.3 release source and are preserved as historical evidence.
+
 # KBorg 0.3.0 — renamed client and operational workflows
 
 K8Borg is now **KBorg**, executable `kborg`, private repository `c0dewars/kborg`. Existing pre-rename settings directories and `K8BORG_CONFIG_DIR` / `K8BORG_NO_SPLASH` remain compatible. Built-in theme identifiers remain stable. The updated logo is `assets/kborg-logo.png`.

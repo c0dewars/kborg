@@ -1,0 +1,85 @@
+{
+  "schema": 1,
+  "platform": "Linux",
+  "architecture": "aarch64",
+  "binary": "/build/work/target/release/kborg",
+  "binary_sha256": "2dff0e51af4234d28d527f282e4ed02ea827809eadc4a681f6091edac45fa3f2",
+  "elapsed_seconds": 16.679,
+  "child_cpu_seconds": 0.032085,
+  "peak_rss_bytes": 10690560,
+  "idle_output_bytes_over_2_seconds": 0,
+  "terminal_restored": true,
+  "screens": [
+    {
+      "name": "demo-pods",
+      "width": 120,
+      "height": 32
+    },
+    {
+      "name": "object-overview",
+      "width": 120,
+      "height": 32
+    },
+    {
+      "name": "json",
+      "width": 120,
+      "height": 32
+    },
+    {
+      "name": "actions",
+      "width": 120,
+      "height": 32
+    },
+    {
+      "name": "deployments",
+      "width": 120,
+      "height": 32
+    },
+    {
+      "name": "sorted-pods",
+      "width": 120,
+      "height": 32
+    },
+    {
+      "name": "metrics",
+      "width": 120,
+      "height": 32
+    },
+    {
+      "name": "allocations",
+      "width": 120,
+      "height": 32
+    },
+    {
+      "name": "logs",
+      "width": 120,
+      "height": 32
+    },
+    {
+      "name": "log-detail",
+      "width": 120,
+      "height": 32
+    },
+    {
+      "name": "live-overview",
+      "width": 120,
+      "height": 32
+    },
+    {
+      "name": "themes",
+      "width": 120,
+      "height": 32
+    },
+    {
+      "name": "create-theme",
+      "width": 120,
+      "height": 32
+    },
+    {
+      "name": "narrow",
+      "width": 48,
+      "height": 12
+    }
+  ],
+  "scope": "native PTY, offline samples, ASCII truecolor; not a real-terminal/platform matrix"
+}

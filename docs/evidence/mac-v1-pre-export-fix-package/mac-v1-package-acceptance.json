@@ -1,0 +1,58 @@
+{
+  "schema": 1,
+  "passed": true,
+  "validated_at_utc": "2026-10-23T12:35:07.703669+00:00",
+  "source_commit": "4c136425f0620efdf153354a2db5db4026a8ab02",
+  "source_scope": "Code candidate validation artifact; includes historical committed docs, not the completed current-batch report. Unpublished and unsigned.",
+  "target": "aarch64-apple-darwin",
+  "archive": "/Users/brunogarcia/Desktop/HyperMac/repos/kborg/dist/mac-v1-4c13642/kborg-0.3.0-aarch64-apple-darwin.tar.gz",
+  "archive_bytes": 40886908,
+  "archive_sha256": "df58d05a9b6d75a3e731de6926dc336d89e543b70d3407d26581a19b8aa8e828",
+  "binary_sha256": "407756918342d97eca923c214a34340fc5764bd5c09377db01f149b5ff81812e",
+  "soak_binary_sha256": "3711c0fffb3cfe87cb6babd67ab7b6ff3233d83881df62e8a5c7b057043173d7",
+  "same_binary_as_soak": false,
+  "dependency_packages": 203,
+  "license_notice_files": 396,
+  "checks": [
+    "Archive SHA-256 matches retained checksum and unsigned provenance",
+    "BUILD target/version/source match clean code candidate",
+    "Metadata distinguishes packaging smoke from external unit-test evidence",
+    "Archive entries are bounded regular files/directories under one relative root; executable mode retained",
+    "Internal/external BUILD and SBOM agree; executable hash verified",
+    "CycloneDX dependency references resolve uniquely",
+    "Every dependency notice coverage entry and notice hash verified",
+    "Extracted executable passed version/demo/theme/default-private-read-only-config smoke"
+  ],
+  "limits": [
+    "Unsigned local records and checksums do not authenticate a publisher",
+    "Fresh build and package checks do not prove bit-for-bit reproducibility",
+    "No signing, notarization, publication or installation into a global binary directory performed"
+  ],
+  "extracted_test_binary": "/Users/brunogarcia/Desktop/HyperMac/repos/kborg/.local/package-runtime-4c13642/kborg",
+  "frozen_source_manifest": "docs/evidence/mac-v1-pre-export-fix-package/mac-v1-hardening-source.json",
+  "source_files_matching_manifest": 70,
+  "exact_binary_regressions": {
+    "completed_at_utc": "2026-10-23T12:39:32.551615+00:00",
+    "binary_sha256": "407756918342d97eca923c214a34340fc5764bd5c09377db01f149b5ff81812e",
+    "terminal_states": {
+      "passed": 63,
+      "terminal_restored": true,
+      "report": "docs/evidence/mac-v1-pre-export-fix-package/mac-v1-package-terminal.json"
+    },
+    "terminal_compatibility": {
+      "profiles_passed": 10,
+      "term_dumb_passed": true,
+      "isolated_tmux_passed": true,
+      "report": "docs/evidence/mac-v1-pre-export-fix-package/mac-v1-package-terminal-compatibility.json"
+    },
+    "synthetic_tls_faults": {
+      "passed": 9,
+      "report": "docs/evidence/mac-v1-pre-export-fix-package/mac-v1-package-transport-faults.json"
+    },
+    "scope": "Exact executable extracted from this unsigned candidate archive. Simulated offline PTY scenarios and isolated synthetic HTTPS faults; no claim that this executable received the separate two-hour live-cluster soak."
+  },
+  "current_release_candidate": false,
+  "superseded_reason": "Subsequent terminal review identified a pre-existing export approval minimum-size defect. This report remains exact evidence for historical code candidate 4c136425f0620efdf153354a2db5db4026a8ab02; a rebuilt and retested final source/package is required.",
+  "archived_from": "docs/evidence/mac-v1-package-acceptance.json",
+  "archive_scope": "Historical 4c136425f0620efdf153354a2db5db4026a8ab02 package and pre-export-fix source; superseded, not current release evidence."
+}

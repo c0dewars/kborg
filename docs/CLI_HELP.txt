@@ -4,39 +4,118 @@ KBorg 0.3 — Kubernetes operations, under your control
   kborg demo                     Offline sample cluster; no credentials
   kborg startup on|off           Persist startup animation preference
   kborg contexts                 List contexts without connecting
-  kborg overview CONTEXT...       Independent pod summaries, 1..100 contexts
+  kborg overview CONTEXT...       Snapshots 1..100; --follow watches up to 4 contexts
   kborg doctor                   Verify selected context and pod access
   kborg resources                Bounded API discovery (Secrets excluded)
+  kborg pulses                   Resource health snapshot
+  kborg workloads                Mixed workload snapshot
+  kborg xray RESOURCE             UID/selector resource relationship tree
+  kborg can u:NAME|g:NAME|s:NAME   Declared RBAC binding evidence
+  kborg dir [PATH]                Local directory / redacted manifest preview
   kborg watch RESOURCE            Bounded live snapshots; --json emits JSONL
-  kborg metrics pods|nodes        CPU/memory with timestamp/window
+  kborg metrics pods|nodes        CPU/memory/history; --metrics-resources comparisons
   kborg list RESOURCE             Bounded resource table; --json for pipelines
   kborg get RESOURCE NAME         Redacted JSON; --yaml for YAML inspection
+  kborg yaml-template RESOURCE NAME   Safe editable spec template with UID/version
+  kborg yaml-edit RESOURCE NAME FILE  Reviewed spec patch (--write --allow-yaml-edit)
+  kborg view RESOURCE NAME --interactive  Native searchable JSON/YAML pager
+  kborg view RESOURCE NAME --tool ABS [--tool-arg ARG]  Reviewed tool view
   kborg logs POD [CONTAINER]      --allow-logs; optional --follow or --previous
-  kborg scale NAME REPLICAS       Deployment scale with terminal approval
-  kborg restart NAME              Guarded deployment rollout
-  kborg set-image NAME CONTAINER IMAGE   Reviewed deployment image change
+  kborg logs POD --all-containers Merged ordinary-container logs with source prefixes
+  kborg logs deploy/NAME          Fixed workload Pod membership, all ordinary containers
+  kborg logs --selector LABELS    Fixed namespace Pod membership, shared log limits
+  kborg helm [list]               Native Helm releases (--allow-helm)
+  kborg helm history RELEASE      Stored revision history; history RELEASE is an alias
+  kborg helm detail|resources|values RELEASE REVISION   Explicit selected-revision reads
+  kborg helm install|upgrade RELEASE CHART      Reviewed local .tgz or OCI tag/digest
+  kborg helm crds RELEASE CHART                  Separate create-only chart CRD review
+  kborg helm crds-upgrade RELEASE CHART          Separate reviewed schema update
+  kborg helm crds-delete RELEASE CHART           Explicit cluster-wide schema deletion
+  kborg helm crds-migrate RELEASE CHART          Reviewed storage-version migration
+  kborg helm test RELEASE                       Run reviewed stored test hooks
+  kborg helm rollback RELEASE REVISION           Reviewed stored revision rollback
+  kborg helm uninstall RELEASE                  Reviewed release/resource deletion
+  kborg scale [RESOURCE] NAME REPLICAS   Deployment/StatefulSet scale (0..20)
+  kborg restart [RESOURCE] NAME    Guarded Deployment/StatefulSet/DaemonSet restart
+  kborg set-image [RESOURCE] NAME CONTAINER IMAGE   Reviewed image change
+  kborg set-resources [RESOURCE] NAME CONTAINER CPU_REQ MEM_REQ CPU_LIMIT MEM_LIMIT
   kborg delete RESOURCE NAME      Guarded deletion; no force
-  kborg exec POD CONTAINER -- COMMAND [ARG...]   Bounded noninteractive exec
-  kborg attach POD CONTAINER      Bounded stdout/stderr attachment, no stdin
+  kborg cordon NODE               Review and disable node scheduling
+  kborg uncordon NODE             Review and enable node scheduling
+  kborg drain NODE [SECONDS]      Reviewed eviction; default 120s, maximum 300s
+  kborg exec POD CONTAINER -- COMMAND [ARG...]   Reviewed exec; --interactive enables stdin/TTY
+  kborg attach POD CONTAINER      Output-only; --interactive enables stdin/TTY
   kborg forward POD LOCAL REMOTE SECONDS   Loopback only, up to 300 seconds
   kborg audit pending             Uncertain local outcomes; never auto-retries
   kborg config init|validate FILE Strict schema-1 JSON configuration
   kborg completions bash|zsh|fish|powershell   Static completion script
+  kborg auth-helper review --executable ABS [--env NAME=VALUE] --output POLICY
+  kborg extensions list | register NAME --tool ABS | remove NAME
+  kborg extensions run NAME RESOURCE OBJECT --allow-extensions --allow-tools
+  kborg copilot preflight --cli ABS_NATIVE --host HOST
+  kborg copilot diagnose RESOURCE NAME --copilot-policy ABS
+  kborg copilot preview RESOURCE NAME --host HOST
   kborg copilot context RESOURCE NAME --output NEW.json
   kborg copilot login --cli ABSOLUTE_PATH --host github.com
 
 Options (put KBorg flags before exec's -- separator):
   --context NAME     --namespace NAME / -n NAME ("*" for all on reads)
   --kubeconfig FILE  --config FILE  --write (default READ ONLY)  --readonly
+  --allow-tools      --tool ABS     --tool-arg ARG    --allow-extensions
+  --allow-auth-helper --auth-helper-policy FILE
+  --interactive     --session-seconds 1..3600    --log-seconds 1..86400
+  --metrics-resources  --selector LABELS / -l LABELS (ui/list/watch/logs)
+  --tail 1..2000      --since-seconds 1..86400   --head (logs only)
+  --allow-helm       --helm-storage secret|configmap   --all-containers
+  --allow-helm-write --helm-tool ABS --helm-values FILE --helm-timeout 1..900
+  --allow-helm-hooks --allow-helm-crds            Separate default-off capabilities
+  --helm-registry-ca ABS --helm-registry-auth ABS  Explicit OCI TLS/auth files
+  --helm-keyring ABS                           Require trusted OpenPGP chart provenance
+  --helm-sigstore-policy ABS                   Require pinned Cosign chart-blob verification
+  --copilot-policy ABS                         Dedicated Copilot advisory configuration
+  --allow-yaml-edit                            General reviewed spec edits
+  --allow-node-maintenance                     Reviewed cordon/uncordon/drain
   --allow-logs       --allow-exec   --allow-attach   --allow-forward
   --poll            --theme ID     --color=never    --json       --yaml
   --no-mouse        --follow          --previous     --no-splash      --demo       --help
 
 Exec/attach/forward require --write AND their separate --allow-* flag.
+Helm lifecycle requires --write --allow-helm --allow-helm-write and a trusted
+Helm 4.3.1 executable. Sources are local deterministic .tgz charts or exact
+oci://HOST/repository/chart:TAG or @sha256:<64 lowercase hex> references.
+Tags resolve once to a digest before review. Execution uses the sealed chart.
+--helm-keyring requires valid OpenPGP provenance for acquired local/OCI charts;
+stored-release test/rollback/uninstall do not reacquire or reverify chart provenance.
+Without signature verification, digest integrity alone does not establish publisher identity.
+--helm-sigstore-policy verifies exact chart bytes with Cosign 3.1.3 and explicit
+bundle/public trust; it does not discover OCI manifest signatures or attestations.
+Both selected signature policies must pass before review and again before writes.
+Registry auth is an explicit private JSON file, never ambient Docker/Helm credentials.
+Hooks require --allow-helm-hooks and complete review of their resources and lifecycle.
+CRDs require --allow-helm-crds plus separate helm crds review before chart installation.
+CRD schema creation is cluster-wide; only Namespaced custom-resource APIs are accepted.
+Schemas remain on release uninstall. Explicit crds-upgrade/crds-delete review the
+cluster-wide schema and instance impact; deletion requires DELETE CRDS namespace/release.
+crds-migrate requires MIGRATE CRDS namespace/release approval. Only identical schemas
+with None conversion are supported. Native rewrites retain historical storedVersions;
+only a fresh successful StorageVersionMigration controller permits finalization.
+Controller objects can continue after client cancellation and remain for inspection.
+helm test runs stored test hooks with --allow-helm-hooks, without automatic logs.
+Complete target review and namespace/release confirmation expire in 15 minutes.
+Ctrl-C cancels; partial or unknown outcomes require inspection before retrying.
+Multi-Pod logs capture at most 8 Pods/32 ordinary containers with one shared budget.
+Membership stays fixed until an explicit new capture; replacements stop the stream.
+Tool views require --allow-tools and RUN TOOL transfer approval (Unix only).
+Trusted tools retain your OS-user filesystem/network access; no OS sandbox.
+Output is sanitized/captured with a 15s/256KiB budget. No external interactive editor.
+Native helper/tool execution is Unix-only; SDK sandbox preflight is macOS-only.
 All writes and subresource operations require exact terminal confirmation.
-Exec has no stdin/TTY, a 30s deadline and bounded output; disconnect cannot
-guarantee remote process termination. Log follow stops after 60s/256KiB.
-Overview permits 4 concurrent contexts with a 30s global deadline.
+Noninteractive exec/attach retain a 30s deadline. Interactive sessions use
+Ctrl-] disconnect, stdin/resize, 1..3600s, 16MiB output/1MiB input. Output filters
+unsafe terminal controls; remote full-screen apps remain unsupported.
+Disconnect cannot guarantee remote termination. Follow defaults 1h; rolling
+display 256KiB/2000 lines, 64MiB wire cap and per-second flood limits.
+Overview snapshots have a 30s global budget; --follow watches Pods/Events in up to 4 contexts.
 
 Themes:
   theme list | use ID | reset | new ID --base BUILTIN | clone-current ID
@@ -44,15 +123,69 @@ Themes:
   theme export ID --output FILE | remove ID
 Replacement preserves an original .json.bak and refuses to overwrite it.
 
-TUI keys:
-  Up/Down, j/k: select   Tab: resources/table   Enter: JSON   y: YAML
-  /: cache filter   r: refresh   c: contexts   n: namespace   o: overview
-  m: metrics   w: watch/poll   R: discovery   l/L: logs/previous   f: follow
-  a: actions   e: image edit   s: scale   x: restart   Delete: guarded delete
-  t: themes    ?: help        Esc: close/cancel       q: quit
-  PgUp/PgDown: scroll details/logs     Mouse: click rows / scroll
+TUI navigation (k9s command grammar; full compatibility register in docs/K9S_COMPATIBILITY.md):
+  :pods :po :dp :svc :nodes        Resource plural/singular/short names and GVRs
+  :pod NAMESPACE /REGEX @CONTEXT   Namespace, filter and context arguments
+  :pod 'app in (api,web)'          Server-side label selection
+  :ctx [NAME]  :ns [NAME]          Context/namespace picker or direct switch
+  :aliases / Ctrl-A               Resource and custom alias picker
+  :pulses :workloads :xray RESOURCE  Health and relationships
+  :can u:NAME|g:NAME|s:NAME         Declared RBAC evidence
+  :dir PATH  :screendump           Local manifests / explicitly saved snapshots
+  :helm [NAMESPACE] :history NAME   Native release metadata and stored revisions
+  :helm-install :helm-crds         Release or separate CRD installation form
+  :helm-test :helm-crds-upgrade :helm-crds-delete   Explicit test/schema actions
+  :helm-crds-migrate               Review schema storage switch and instance rewrites
+  :copilot                        Preview selected diagnostics; separately approve transfer
+  :logs LABELS                   Capture fixed multi-Pod logs in current namespace
+  :themes :metrics :overview :actions  Additional KBorg views
+  D / b / B                    Dashboard / save selection / reopen selections
+  Dashboard 1..4 / c / s / ?    Focus / contexts / save / keymap
+  :q :quit / Ctrl-C               Quit
 
-TLS verification is mandatory. Secret reads, auth helpers, impersonation,
-generic patches, automatic AI requests and generic extensions remain disabled.
+  j/k / arrows: rows   Enter: drill down   Esc: back   ?: help
+  /REGEX: filter   /!REGEX: inverse   /-f TEXT: fuzzy   /-l LABELS: server selector
+  Tab: command completion   Up/Down: command history   [ / ]: back/forward
+  d: describe   y: redacted YAML   l: logs   p: previous logs   Ctrl-R: refresh
+  Shift-N/A/S: sort name/age/status   C/M: CPU/memory sort on Pods and Nodes
+  CPU/MEM refresh every 15s; - means unknown; ~ means UID absent, creation-time checked
+  Table quantities are rounded to fit; d/m and CLI metrics retain exact measured values
+  0: all namespaces   Space: mark
+  Ctrl-S: explicitly save redacted resource snapshot   c: copy name (OSC52)
+  e: reviewed container editor   Ctrl-D: reviewed deletion
+  Pod s: shell   a: attach   F: prepare forwarding   f: show forward
+  Workload s: scale (supported families)   r: restart (supported families)
+  Helm: Enter/r history; history Enter/v stored values; d metadata; m resource identities; y metadata YAML
+  Helm: i install; u upgrade; c chart CRDs; history r rollback; Ctrl-D uninstall
+  Logs: a toggles all ordinary containers; Pod l honors default-container annotation
+  Logs: 0 tail,1 head,2 1m,3 5m,4 15m,5 30m,6 1h; s autoscroll,w wrap,t timestamps,f fullscreen
+  Themes: arrows preview, Enter saves, N creates from preview, Esc cancels
+  Writes require --write and full exact target review; sessions need --allow-*.
+  Unimplemented upstream operations show their limitation and never run another action.
+
+--allow-helm authorizes bounded Helm metadata reads. Lifecycle writes additionally
+require --write, --allow-helm-write and an explicit trusted Helm executable.
+Values are stored overrides with known fields redacted; custom keys may remain confidential.
+Raw Helm storage, chart files/defaults, notes and manifests are never exported.
+Merged logs include at most 16 ordinary containers and one shared output/session budget.
+
+TLS verification is mandatory. General Secret reads, unreviewed auth helpers,
+impersonation, generic patches and automatic AI requests remain disabled.
+Registered views are opt-in; their OS containment remains a production gate.
 All real clusters are labeled PRODUCTION; this is a target warning, not a
 production certification. See docs/REMAINING_WORK.md for release gates.
+
+Helm list: i install / u upgrade / t test / c chart CRDs / Enter or r history / Ctrl-D uninstall.
+Helm history: r rollback selected revision. Charts use local .tgz or OCI :tag/@sha256:digest;
+values files remain local. Hooks/CRDs stay disabled without their flags.
+Helm review: read every line, then type the displayed confirmation and Enter.
+CRD deletion requires DELETE CRDS namespace/release; migration requires
+MIGRATE CRDS namespace/release; other actions use namespace/release.
+Workload l/p opens merged current/previous logs; group a cannot widen source scope.
+
+Copilot advice: local preview is available without setup. Inference requires a
+pinned --copilot-policy, explicit stored gh account or private credential file,
+and exact payload review. Existing gh authority can be broader than Copilot.
+Demo never sends requests. Supported native macOS ARM64 builds use independently checked
+process/network containment; other platforms fail closed. No automatic remediation.
+See docs/COPILOT_INTEGRATION.md for trust, permissions and limitations.

@@ -1,0 +1,70 @@
+{
+  "scope": "Deliberate early interruption to strengthen recovery assertions; not a completed product soak",
+  "report": {
+    "schema": 1,
+    "passed": false,
+    "started_utc": "2026-10-23T12:21:53.735416+00:00",
+    "context": "kborg-soak-v1",
+    "namespace": "kborg-soak-79135086080e",
+    "run_id": "68d5453a31434da99a3313b36a03a925",
+    "requested_seconds": 7200,
+    "binary_sha256": "3711c0fffb3cfe87cb6babd67ab7b6ff3233d83881df62e8a5c7b057043173d7",
+    "harness_sha256": "34f1fc5706d0c79d149871e2ec5095d658faa02cb5e4587f37f9f48455c48301",
+    "checks": [
+      "Three continuous read-only processes converged in the explicit fixture namespace"
+    ],
+    "captures": [
+      {
+        "name": "soak-start-dashboard",
+        "path": "/Users/brunogarcia/Desktop/HyperMac/repos/kborg/docs/evidence/soak-v1-minikube/soak-start-dashboard.png",
+        "columns": 120,
+        "rows": 32
+      }
+    ],
+    "mutations": [
+      {
+        "elapsed_seconds": 5.283,
+        "expected_pods": 2
+      },
+      {
+        "elapsed_seconds": 65.537,
+        "expected_pods": 1
+      },
+      {
+        "elapsed_seconds": 125.839,
+        "expected_pods": 2
+      },
+      {
+        "elapsed_seconds": 186.303,
+        "expected_pods": 1
+      }
+    ],
+    "fault": null,
+    "limits": {
+      "rss_per_process_kib": 262144,
+      "rss_growth_kib": 65536,
+      "total_output_per_process_bytes": 536870912,
+      "json_record_bytes": 16777216,
+      "average_cpu_core_percent_after_30_seconds": 25
+    },
+    "claims_excluded": [
+      "429 throttling",
+      "credential/token rotation",
+      "certificate rotation",
+      "organizational production pilot",
+      "native terminal font rendering"
+    ],
+    "configured_current_context_before": "",
+    "kubernetes_version": "v1.35.9",
+    "fixture_namespace_uid": "500c217c-35b2-453f-8d26-7d56978f8e12",
+    "issued_token_remaining_seconds_at_start": 7799,
+    "continuous_started_utc": "2026-10-23T12:21:55.914704+00:00",
+    "failure": {
+      "type": "KeyboardInterrupt",
+      "message": ""
+    },
+    "actual_continuous_seconds": 199.742,
+    "fixture_cleanup": true,
+    "finished_utc": "2026-10-23T12:25:20.829525+00:00"
+  }
+}

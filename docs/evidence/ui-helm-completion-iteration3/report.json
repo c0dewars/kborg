@@ -1,0 +1,49 @@
+{
+  "passed": true,
+  "binary_sha256": "dc84fab8ea6f3f4f37005312462ebc16e3767fcde52ffcd15eb2fd01b197a595",
+  "terminal_restored": true,
+  "screens": [
+    {
+      "name": "resources",
+      "path": "/Users/brunogarcia/Desktop/HyperMac/repos/kborg/docs/evidence/ui-helm-completion-iteration3/resources.png",
+      "width": 120,
+      "height": 34
+    },
+    {
+      "name": "helm-releases",
+      "path": "/Users/brunogarcia/Desktop/HyperMac/repos/kborg/docs/evidence/ui-helm-completion-iteration3/helm-releases.png",
+      "width": 120,
+      "height": 34
+    },
+    {
+      "name": "helm-install-form",
+      "path": "/Users/brunogarcia/Desktop/HyperMac/repos/kborg/docs/evidence/ui-helm-completion-iteration3/helm-install-form.png",
+      "width": 120,
+      "height": 34
+    },
+    {
+      "name": "helm-review-overview",
+      "path": "/Users/brunogarcia/Desktop/HyperMac/repos/kborg/docs/evidence/ui-helm-completion-iteration3/helm-review-overview.png",
+      "width": 120,
+      "height": 34
+    },
+    {
+      "name": "helm-test-form",
+      "path": "/Users/brunogarcia/Desktop/HyperMac/repos/kborg/docs/evidence/ui-helm-completion-iteration3/helm-test-form.png",
+      "width": 120,
+      "height": 34
+    },
+    {
+      "name": "crd-delete-form",
+      "path": "/Users/brunogarcia/Desktop/HyperMac/repos/kborg/docs/evidence/ui-helm-completion-iteration3/crd-delete-form.png",
+      "width": 120,
+      "height": 34
+    },
+    {
+      "name": "crd-delete-narrow",
+      "path": "/Users/brunogarcia/Desktop/HyperMac/repos/kborg/docs/evidence/ui-helm-completion-iteration3/crd-delete-narrow.png",
+      "width": 48,
+      "height": 12
+    }
+  ]
+}

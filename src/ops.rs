@@ -21,6 +21,15 @@ pub enum Request {
     Attach {
         container: String,
     },
+    InteractiveExec {
+        container: String,
+        argv: Vec<String>,
+        seconds: u16,
+    },
+    InteractiveAttach {
+        container: String,
+        seconds: u16,
+    },
     PortForward {
         local_port: u16,
         remote_port: u16,
@@ -30,8 +39,8 @@ pub enum Request {
 impl Request {
     fn capability(&self) -> usize {
         match self {
-            Self::Exec { .. } => 0,
-            Self::Attach { .. } => 1,
+            Self::Exec { .. } | Self::InteractiveExec { .. } => 0,
+            Self::Attach { .. } | Self::InteractiveAttach { .. } => 1,
             Self::PortForward { .. } => 2,
         }
     }
@@ -39,12 +48,17 @@ impl Request {
         match self {
             Self::Exec { .. } => "exec",
             Self::Attach { .. } => "attach",
+            Self::InteractiveExec { .. } => "interactive-exec",
+            Self::InteractiveAttach { .. } => "interactive-attach",
             Self::PortForward { .. } => "port-forward",
         }
     }
     fn validate(&self) -> Result<()> {
         match self {
-            Self::Exec { container, argv } => {
+            Self::Exec { container, argv }
+            | Self::InteractiveExec {
+                container, argv, ..
+            } => {
                 crate::edit::validate(container, "placeholder:1")?;
                 if argv.is_empty()
                     || argv.len() > 64
@@ -60,6 +74,9 @@ impl Request {
                 }
             }
             Self::Attach { container } => crate::edit::validate(container, "placeholder:1")?,
+            Self::InteractiveAttach { container, .. } => {
+                crate::edit::validate(container, "placeholder:1")?
+            }
             Self::PortForward {
                 local_port,
                 remote_port,
@@ -70,8 +87,22 @@ impl Request {
                 }
             }
         }
+        if let Self::InteractiveExec { seconds, .. } | Self::InteractiveAttach { seconds, .. } =
+            self
+        {
+            crate::session::validate_lifetime(*seconds)?;
+        }
         Ok(())
     }
+}
+/// Non-secret routing metadata for a reviewed, loopback-only listener.
+#[derive(Clone, Debug)]
+pub struct ForwardTarget {
+    pub namespace: String,
+    pub pod: String,
+    pub local_port: u16,
+    pub remote_port: u16,
+    pub seconds: u16,
 }
 pub struct ReviewedOperation {
     request: Request,
@@ -86,6 +117,32 @@ pub struct ReviewedOperation {
 impl ReviewedOperation {
     pub fn summary(&self) -> &str {
         &self.summary
+    }
+    pub fn uid(&self) -> &str {
+        &self.uid
+    }
+    pub fn confirmation(&self) -> String {
+        format!("{}/{}", self.namespace, self.pod)
+    }
+    pub fn is_port_forward(&self) -> bool {
+        matches!(self.request, Request::PortForward { .. })
+    }
+    pub fn forward_target(&self) -> Option<ForwardTarget> {
+        let Request::PortForward {
+            local_port,
+            remote_port,
+            seconds,
+        } = self.request
+        else {
+            return None;
+        };
+        Some(ForwardTarget {
+            namespace: self.namespace.clone(),
+            pod: self.pod.clone(),
+            local_port,
+            remote_port,
+            seconds,
+        })
     }
 }
 
@@ -123,6 +180,32 @@ pub async fn prepare(
                 "container: {container}\nRead-only stdout/stderr attachment; no stdin or TTY. 30-second deadline."
             )
         }
+        Request::InteractiveExec {
+            container,
+            argv,
+            seconds,
+        } => {
+            verify_container(object.spec.as_ref(), container)?;
+            format!(
+                "container: {container}\nDirect argv: {}\n{}",
+                serde_json::to_string(argv).map_err(|_| "cannot review arguments")?,
+                crate::session::review(*seconds)
+            )
+        }
+        Request::InteractiveAttach { container, seconds } => {
+            verify_container(object.spec.as_ref(), container)?;
+            if !object.spec.as_ref().is_some_and(|spec| {
+                spec.containers
+                    .iter()
+                    .any(|c| c.name == *container && c.stdin == Some(true) && c.tty == Some(true))
+            }) {
+                return Err("interactive attach requires a container originally configured with stdin:true and tty:true".into());
+            }
+            format!(
+                "container: {container}\nAttach to the existing container process; entered commands affect that process.\n{}",
+                crate::session::review(*seconds)
+            )
+        }
         Request::PortForward {
             local_port,
             remote_port,
@@ -131,7 +214,7 @@ pub async fn prepare(
             "127.0.0.1:{local_port} -> pod:{remote_port}; {seconds} seconds; at most 4 simultaneous clients. Other local users can access the listener."
         ),
     };
-    let summary = safety::safe_lines(
+    let summary = safety::review_text(
         &format!(
             "{}\nserver: {}\ncontext: {}\ntarget: {namespace}/{pod}\nUID: {uid}\nresourceVersion: {version}\n{details}\nKubernetes subresources have no UID precondition; a narrow name-recreation race remains.\nType {namespace}/{pod} to approve within 60 seconds.",
             request.name(),
@@ -139,7 +222,7 @@ pub async fn prepare(
             gateway.context
         ),
         16384,
-    );
+    )?;
     Ok(ReviewedOperation {
         request,
         namespace: namespace.into(),
@@ -158,7 +241,11 @@ fn verify_container(spec: Option<&k8s_openapi::api::core::v1::PodSpec>, name: &s
     Ok(())
 }
 
-pub async fn run(gateway: &Gateway, reviewed: ReviewedOperation, typed: &str) -> Result<String> {
+async fn verify_review(
+    gateway: &Gateway,
+    reviewed: &ReviewedOperation,
+    typed: &str,
+) -> Result<kube::Api<k8s_openapi::api::core::v1::Pod>> {
     if reviewed.created.elapsed() > Duration::from_secs(60)
         || reviewed.session != gateway.operation_session()
         || typed != format!("{}/{}", reviewed.namespace, reviewed.pod)
@@ -166,16 +253,87 @@ pub async fn run(gateway: &Gateway, reviewed: ReviewedOperation, typed: &str) ->
         return Err("operation approval expired or target confirmation changed".into());
     }
     let api = gateway.operation_api(&reviewed.namespace, reviewed.request.capability())?;
-    let current = api
-        .get(&reviewed.pod)
+    let current = tokio::time::timeout(Duration::from_secs(15), api.get(&reviewed.pod))
         .await
+        .map_err(|_| "operation target recheck timed out")?
         .map_err(|_| "cannot recheck operation target")?;
     if current.metadata.uid.as_deref() != Some(&reviewed.uid)
         || current.metadata.resource_version.as_deref() != Some(&reviewed.version)
     {
         return Err("target changed; review again".into());
     }
+    Ok(api)
+}
+
+async fn connect_interactive(
+    api: &kube::Api<k8s_openapi::api::core::v1::Pod>,
+    reviewed: &ReviewedOperation,
+) -> Result<kube::api::AttachedProcess> {
+    let connection = async {
+        match &reviewed.request {
+            Request::InteractiveExec {
+                container, argv, ..
+            } => {
+                api.exec(&reviewed.pod, argv, &crate::session::parameters(container))
+                    .await
+            }
+            Request::InteractiveAttach { container, .. } => {
+                api.attach(&reviewed.pod, &crate::session::parameters(container))
+                    .await
+            }
+            _ => return Err("review does not authorize an interactive session".into()),
+        }
+        .map_err(connection_error)
+    };
+    tokio::time::timeout(Duration::from_secs(15), connection)
+        .await
+        .map_err(|_| "interactive connection timed out; remote outcome unknown")?
+}
+
+/// Controlled-input session entrypoint for UI integrations and owned live tests.
+/// Reuses the exact same one-use target review, capabilities and audit as terminal sessions.
+pub async fn run_interactive(
+    gateway: &Gateway,
+    reviewed: ReviewedOperation,
+    typed: &str,
+    inputs: tokio::sync::mpsc::Receiver<crate::session::Input>,
+    emit: impl FnMut(&str) -> Result<()>,
+) -> Result<crate::session::Outcome> {
+    let seconds = match &reviewed.request {
+        Request::InteractiveExec { seconds, .. } | Request::InteractiveAttach { seconds, .. } => {
+            *seconds
+        }
+        _ => return Err("review does not authorize an interactive session".into()),
+    };
+    let api = verify_review(gateway, &reviewed, typed).await?;
     let audit = start_audit(gateway, &reviewed)?;
+    let result = match connect_interactive(&api, &reviewed).await {
+        Ok(process) => crate::session::pump(process, seconds, inputs, emit).await,
+        Err(error) => Err(error),
+    };
+    finish_audit(
+        &audit,
+        match &result {
+            Ok(outcome) if outcome.remote_outcome_unknown() => {
+                "session-ended-remote-outcome-unknown"
+            }
+            Ok(_) => "succeeded",
+            Err(_) => "failed-or-unknown",
+        },
+    )?;
+    result
+}
+
+pub async fn run(gateway: &Gateway, reviewed: ReviewedOperation, typed: &str) -> Result<String> {
+    let api = verify_review(gateway, &reviewed, typed).await?;
+    if matches!(
+        &reviewed.request,
+        Request::InteractiveExec { .. } | Request::InteractiveAttach { .. }
+    ) {
+        crate::session::ensure_terminal()?;
+    }
+    let audit = start_audit(gateway, &reviewed)?;
+    let mut session_unknown = false;
     let result = match &reviewed.request {
         Request::Exec { container, argv } => {
             let params = AttachParams {
@@ -197,6 +355,18 @@ pub async fn run(gateway: &Gateway, reviewed: ReviewedOperation, typed: &str) ->
                 Err(error) => Err(connection_error(error)),
             }
         }
+        Request::InteractiveExec { seconds, .. } | Request::InteractiveAttach { seconds, .. } => {
+            match connect_interactive(&api, &reviewed).await {
+                Ok(process) => match crate::session::terminal(process, *seconds).await {
+                    Ok(outcome) => {
+                        session_unknown = outcome.remote_outcome_unknown();
+                        Ok(outcome.summary())
+                    }
+                    Err(error) => Err(error),
+                },
+                Err(error) => Err(error),
+            }
+        }
         Request::PortForward {
             local_port,
             remote_port,
@@ -209,10 +379,65 @@ pub async fn run(gateway: &Gateway, reviewed: ReviewedOperation, typed: &str) ->
                 *remote_port,
                 *seconds,
                 &reviewed.uid,
+                ForwardControl {
+                    cancel: None,
+                    on_bound: |_: &str| Ok(()),
+                },
             )
             .await
         }
     };
+    finish_audit(
+        &audit,
+        if result.is_ok() && session_unknown {
+            "session-ended-remote-outcome-unknown"
+        } else if result.is_ok() {
+            "succeeded"
+        } else {
+            "failed-or-unknown"
+        },
+    )?;
+    result
+}
+
+/// Run the reviewed forwarding session with an explicit UI-owned cancellation handle.
+/// The caller must keep this future polled; the callback runs after loopback bind.
+pub async fn run_forward(
+    gateway: &Gateway,
+    reviewed: ReviewedOperation,
+    typed: &str,
+    mut cancel: tokio::sync::oneshot::Receiver<()>,
+    on_bound: impl FnMut(&str) -> Result<()>,
+) -> Result<String> {
+    let Request::PortForward {
+        local_port,
+        remote_port,
+        seconds,
+    } = &reviewed.request
+    else {
+        return Err("review does not authorize port forwarding".into());
+    };
+    let api = tokio::select! {
+        biased;
+        _ = &mut cancel => return Ok("Forwarding canceled before listener creation".into()),
+        result = tokio::time::timeout(Duration::from_secs(20), verify_review(gateway, &reviewed, typed)) => {
+            result.map_err(|_| "Forward target verification timed out")??
+        }
+    };
+    let audit = start_audit(gateway, &reviewed)?;
+    let result = forward(
+        api,
+        &reviewed.pod,
+        *local_port,
+        *remote_port,
+        *seconds,
+        &reviewed.uid,
+        ForwardControl {
+            cancel: Some(cancel),
+            on_bound,
+        },
+    )
+    .await;
     finish_audit(
         &audit,
         if result.is_ok() {
@@ -280,6 +505,10 @@ impl Drop for ForwardGuard {
         self.0.abort();
     }
 }
+struct ForwardControl<F> {
+    cancel: Option<tokio::sync::oneshot::Receiver<()>>,
+    on_bound: F,
+}
 async fn forward(
     api: kube::Api<k8s_openapi::api::core::v1::Pod>,
     pod: &str,
@@ -287,10 +516,24 @@ async fn forward(
     remote: u16,
     seconds: u16,
     uid: &str,
+    control: ForwardControl<impl FnMut(&str) -> Result<()>>,
 ) -> Result<String> {
+    let ForwardControl {
+        mut cancel,
+        mut on_bound,
+    } = control;
+    if let Some(receiver) = cancel.as_mut()
+        && !matches!(
+            receiver.try_recv(),
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+        )
+    {
+        return Ok("Forwarding canceled before listener creation".into());
+    }
     let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, local))
         .await
         .map_err(|_| "cannot bind loopback forwarding port")?;
+    on_bound(&format!("Listening on 127.0.0.1:{local} -> {pod}:{remote}"))?;
     let session = async {
         let mut clients = FuturesUnordered::new();
         loop {
@@ -332,16 +575,28 @@ async fn forward(
                     .0
                     .take_stream(remote)
                     .ok_or("forward stream unavailable")?;
-                tokio::io::copy_bidirectional(&mut socket, &mut stream)
-                    .await
-                    .map_err(|_| "forward stream failed")?;
+                // A browser refresh or reset closes only this client. Target UID,
+                // authorization and upgrade failures above still stop the session.
+                let _ = tokio::io::copy_bidirectional(&mut socket, &mut stream).await;
                 Ok::<(), String>(())
             });
         }
         #[allow(unreachable_code)]
         Ok::<(), String>(())
     };
-    match tokio::time::timeout(Duration::from_secs(u64::from(seconds)), session).await {
+    let stopped = async {
+        if let Some(cancel) = cancel {
+            let _ = cancel.await;
+        } else {
+            std::future::pending::<()>().await;
+        }
+    };
+    let result = tokio::select! {
+        biased;
+        _ = stopped => return Ok("Forwarding canceled; listener and active connections closed".into()),
+        result = tokio::time::timeout(Duration::from_secs(u64::from(seconds)), session) => result,
+    };
+    match result {
         Err(_) => Ok("Forwarding session ended; listener and active connections closed".into()),
         Ok(Err(error)) => Err(error),
         Ok(Ok(())) => Ok("Forwarding session ended".into()),
@@ -382,6 +637,86 @@ fn finish_audit(path: &std::path::Path, status: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn forwarding_can_cancel_after_bind_and_releases_listener() -> Result<()> {
+        crate::cli::runtime()?.block_on(async {
+            let reserved = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+                .map_err(|_| "cannot reserve test loopback port")?;
+            let port = reserved
+                .local_addr()
+                .map_err(|_| "cannot inspect test port")?
+                .port();
+            drop(reserved);
+            let service = tower::service_fn(|_: http::Request<kube::client::Body>| async {
+                Ok::<_, std::convert::Infallible>(http::Response::new(http_body_util::Full::new(
+                    bytes::Bytes::new(),
+                )))
+            });
+            let api = kube::Api::namespaced(kube::Client::new(service, "test"), "test");
+            let (cancel, stopped) = tokio::sync::oneshot::channel();
+            let mut cancel = Some(cancel);
+            let result = forward(
+                api,
+                "pod",
+                port,
+                8080,
+                300,
+                "uid",
+                ForwardControl {
+                    cancel: Some(stopped),
+                    on_bound: |message: &str| {
+                        assert!(message.contains(&format!("127.0.0.1:{port}")));
+                        cancel
+                            .take()
+                            .ok_or("test cancellation already consumed")?
+                            .send(())
+                            .map_err(|_| "test cancellation receiver closed".to_owned())
+                    },
+                },
+            )
+            .await?;
+            assert!(result.contains("canceled"));
+            let rebound = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, port))
+                .map_err(|_| "forward listener was not released")?;
+            drop(rebound);
+            Ok(())
+        })
+    }
+    #[test]
+    fn canceled_forward_does_not_bind_or_publish_a_listener() -> Result<()> {
+        crate::cli::runtime()?.block_on(async {
+            let reserved = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+                .map_err(|_| "cannot reserve test port")?;
+            let port = reserved
+                .local_addr()
+                .map_err(|_| "cannot inspect test port")?
+                .port();
+            let service = tower::service_fn(|_: http::Request<kube::client::Body>| async {
+                Ok::<_, std::convert::Infallible>(http::Response::new(http_body_util::Full::new(
+                    bytes::Bytes::new(),
+                )))
+            });
+            let api = kube::Api::namespaced(kube::Client::new(service, "test"), "test");
+            let (cancel, stopped) = tokio::sync::oneshot::channel();
+            drop(cancel);
+            let result = forward(
+                api,
+                "pod",
+                port,
+                8080,
+                300,
+                "uid",
+                ForwardControl {
+                    cancel: Some(stopped),
+                    on_bound: |_: &str| panic!("canceled forward published listener"),
+                },
+            )
+            .await?;
+            assert!(result.contains("canceled before listener creation"));
+            drop(reserved);
+            Ok(())
+        })
+    }
     #[test]
     fn restrictive_request_validation() {
         assert!(
