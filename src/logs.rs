@@ -72,6 +72,9 @@ pub struct LogMembership {
     pub(crate) parents: Vec<LogParent>,
     #[serde(skip)]
     connection: String,
+    /// Present only when the user explicitly opted into dynamic membership.
+    #[serde(skip)]
+    pub(crate) dynamic: Option<PodLogSelection>,
 }
 impl LogMembership {
     pub fn namespace(&self) -> &str {
@@ -132,7 +135,20 @@ impl LogMembership {
             pods,
             parents,
             connection: connection.into(),
+            dynamic: None,
         })
+    }
+    /// Opt this capture into announced joins and departures. The selection is
+    /// recaptured with the same complete-inventory rules on every refresh.
+    pub(crate) fn into_dynamic(mut self, selection: PodLogSelection) -> Self {
+        self.description = self
+            .description
+            .replace("fixed membership", "dynamic membership");
+        self.dynamic = Some(selection);
+        self
+    }
+    pub fn is_dynamic(&self) -> bool {
+        self.dynamic.is_some()
     }
     pub(crate) fn verify_connection(&self, connection: &str) -> Result<()> {
         if self.connection != connection {
@@ -628,6 +644,8 @@ pub struct LogFeed {
     reconnect_pending: bool,
     merge_budget: Option<SharedMergeBudget>,
     last_control: bool,
+    /// Dynamic membership: a replaced or deleted Pod ends only its own source.
+    isolate_identity: bool,
 }
 
 #[derive(Clone)]
@@ -702,6 +720,15 @@ impl LogFeed {
         }
         message
     }
+    /// Pod identity loss stops every merged stream for fixed membership, but
+    /// only this source when the session explicitly opted into dynamic membership.
+    fn stop_source_for_identity(&self, message: String) -> String {
+        if self.isolate_identity {
+            format!("{message}; this Pod's stream closed")
+        } else {
+            self.stop_merge_for_identity(message)
+        }
+    }
     #[cfg(test)]
     pub(crate) fn new(reader: impl AsyncBufRead + Send + 'static) -> Self {
         Self::create(reader, FollowOptions::default())
@@ -763,6 +790,7 @@ impl LogFeed {
             last_timestamp: None,
             reconnect_pending: false,
             merge_budget: None,
+            isolate_identity: false,
             last_control: false,
         }
     }
@@ -859,7 +887,7 @@ impl LogFeed {
                 Ok(()) => {}
                 Err(ReopenFailure::Retry) => continue,
                 Err(ReopenFailure::Stop(message)) => {
-                    return Err(self.stop_merge_for_identity(message));
+                    return Err(self.stop_source_for_identity(message));
                 }
             }
             match tokio::time::timeout_at(deadline, source.api.log_stream(&source.name, &params))
@@ -872,7 +900,7 @@ impl LogFeed {
                         Ok(()) => {}
                         Err(ReopenFailure::Retry) => continue,
                         Err(ReopenFailure::Stop(message)) => {
-                            return Err(self.stop_merge_for_identity(message));
+                            return Err(self.stop_source_for_identity(message));
                         }
                     }
                     self.reader = Box::pin(reader);
@@ -1096,8 +1124,62 @@ pub struct MergedLogFeed {
     next_identity_check: Option<Instant>,
     identity_failures: u8,
     notice_reserve: usize,
+    /// Dynamic sessions wait for joins instead of ending when no source is active.
+    keep_open: bool,
 }
 impl MergedLogFeed {
+    /// Close every source of one departed Pod. Dropping a pending read cancels it.
+    pub(crate) fn remove_pod(&mut self, namespace: &str, pod: &str) -> usize {
+        let prefix = format!("{namespace}/{pod}:");
+        let before = self.sources.len();
+        self.sources
+            .retain(|source| !source.identity.starts_with(&prefix));
+        self.cursor = 0;
+        before - self.sources.len()
+    }
+    /// Admit sources for one newly joined Pod under the same session deadline,
+    /// shared budget and parent guards. The 32-source bound stays global.
+    pub(crate) fn add_sources(&mut self, sources: Vec<(String, Result<LogFeed>)>) -> Result<()> {
+        if self.ended {
+            return Err("log session already ended".into());
+        }
+        if self.sources.len() + sources.len() > MAX_WORKLOAD_LOG_SOURCES {
+            return Err("joined Pod would exceed the shared 32-source limit".into());
+        }
+        for (identity, result) in sources {
+            if self
+                .sources
+                .iter()
+                .any(|source| source.identity == identity)
+            {
+                return Err("joined Pod duplicates an active log source".into());
+            }
+            let (pending, notice) = match result {
+                Ok(mut feed) => {
+                    feed.deadline = self.deadline;
+                    feed.merge_budget = Some(self.budget.clone());
+                    feed.isolate_identity = true;
+                    if let Some(resume) = &mut feed.resume {
+                        resume.guards = self.guards.clone();
+                    }
+                    (Some(pending_source(feed)), None)
+                }
+                Err(error) => (
+                    None,
+                    Some(source_notice(&identity, &safety::safe_text(&error, 512))),
+                ),
+            };
+            self.sources.push(MergedSource {
+                identity,
+                pending,
+                notice,
+            });
+        }
+        Ok(())
+    }
+    pub(crate) fn deadline(&self) -> Instant {
+        self.deadline
+    }
     pub(crate) async fn open_membership(
         api: Api<Pod>,
         membership: &LogMembership,
@@ -1134,6 +1216,11 @@ impl MergedLogFeed {
         while let Some(pod) = captures.next().await {
             membership_bytes(&mut bytes, &pod?)?;
         }
+        // Dynamic sessions verify every captured Pod while opening, but keep only
+        // the parent workload as a session-wide guard: a departing Pod is a
+        // reported membership change, not a reason to stop its peers.
+        let dynamic = membership.is_dynamic();
+        let session_guards = dynamic.then(|| guards.clone());
         for member in &membership.pods {
             guards.push(IdentityGuard::Pod {
                 api: api.clone(),
@@ -1171,6 +1258,7 @@ impl MergedLogFeed {
                         .map_err(|error| open_failure(error, previous))?;
                         let mut feed = LogFeed::with_read_options(reader, options, read)?;
                         feed.deadline = deadline;
+                        feed.isolate_identity = dynamic;
                         if follow.is_some() {
                             feed = feed.with_resume(
                                 api,
@@ -1194,6 +1282,9 @@ impl MergedLogFeed {
             Ok(())=>{}, Err(ReopenFailure::Retry)=>return Err("captured workload log identities could not be verified after opening; retry explicitly".into()), Err(ReopenFailure::Stop(error))=>return Err(error),
         }
         opens.sort_by_key(|(index, _, _, _)| *index);
+        if let Some(parents) = session_guards {
+            guards = parents;
+        }
         if follow.is_none() || read.head {
             guards.clear();
         }
@@ -1230,7 +1321,12 @@ impl MergedLogFeed {
             }
         }
         let mut headers = VecDeque::new();
-        headers.push_back(bounded_line(&format!("[Log stream merge: {}; {} Pods / {} ordinary containers; fixed membership, no new Pods or replacements admitted; delivery arrival order, timestamps preserved; init/ephemeral excluded]",membership.description,membership.pods.len(),sources.len())));
+        let admission = if membership.is_dynamic() {
+            "dynamic membership opted in; every join and departure is announced, replacements are a departure plus a join"
+        } else {
+            "fixed membership, no new Pods or replacements admitted"
+        };
+        headers.push_back(bounded_line(&format!("[Log stream merge: {}; {} Pods / {} ordinary containers; {admission}; delivery arrival order, timestamps preserved; init/ephemeral excluded]",membership.description,membership.pods.len(),sources.len())));
         for pod in &membership.pods {
             headers.push_back(source_notice(
                 &format!("{}/{}", membership.namespace, pod.name),
@@ -1439,6 +1535,7 @@ impl MergedLogFeed {
             guards,
             identity_failures: 0,
             notice_reserve: 16 * 1024,
+            keep_open: false,
         })
     }
     pub async fn next(&mut self) -> Result<Option<String>> {
@@ -1475,7 +1572,14 @@ impl MergedLogFeed {
                     Ok(()) => self.identity_failures = 0,
                     Err(ReopenFailure::Stop(error)) => {
                         self.stop();
-                        return Err(format!("{error}; all fixed-membership log streams stopped"));
+                        return Err(format!(
+                            "{error}; all {} log streams stopped",
+                            if self.keep_open {
+                                "dynamic-membership"
+                            } else {
+                                "fixed-membership"
+                            }
+                        ));
                     }
                     Err(ReopenFailure::Retry) => {
                         self.identity_failures += 1;
@@ -1491,6 +1595,7 @@ impl MergedLogFeed {
                 return Ok(Some(header));
             }
             let count = self.sources.len();
+            let keep_open = self.keep_open;
             for distance in 0..count {
                 let index = (self.cursor + distance) % count;
                 if let Some(notice) = self.sources[index].notice.take() {
@@ -1509,7 +1614,7 @@ impl MergedLogFeed {
                         }
                     }
                 }
-                if active {
+                if active || keep_open {
                     Poll::Pending
                 } else {
                     Poll::Ready(None)
@@ -1638,6 +1743,283 @@ impl MergedLogFeed {
     }
 }
 
+/// A followed workload log session with fixed or explicitly dynamic membership.
+pub enum WorkloadLogFeed {
+    Merged(MergedLogFeed),
+    Dynamic(Box<DynamicLogFeed>),
+}
+impl WorkloadLogFeed {
+    pub async fn next(&mut self) -> Result<Option<String>> {
+        match self {
+            Self::Merged(feed) => feed.next().await,
+            Self::Dynamic(feed) => feed.next().await,
+        }
+    }
+}
+
+/// Membership refresh cadence for explicitly opted-in dynamic sessions.
+pub const MEMBERSHIP_REFRESH_INTERVAL: Duration = Duration::from_secs(10);
+const MEMBERSHIP_REFRESH_FAILURES: u8 = 3;
+
+/// Pods that left (by exact UID) and Pods that joined between two captures.
+/// A same-name replacement appears in both lists, never as a continuation.
+pub(crate) fn membership_changes<'a>(
+    current: &'a LogMembership,
+    next: &'a LogMembership,
+) -> (Vec<&'a LogPod>, Vec<&'a LogPod>) {
+    let left = current
+        .pods
+        .iter()
+        .filter(|pod| !next.pods.iter().any(|other| other.uid == pod.uid))
+        .collect();
+    let joined = next
+        .pods
+        .iter()
+        .filter(|pod| !current.pods.iter().any(|other| other.uid == pod.uid))
+        .collect();
+    (left, joined)
+}
+
+fn membership_notice(namespace: &str, pod: &LogPod, change: &str) -> String {
+    bounded_line(&format!(
+        "[Log membership: {namespace}/{} UID {} {change}]",
+        pod.name, pod.uid
+    ))
+}
+
+/// Opt-in workload tail. It periodically recaptures the same selection with the
+/// complete-inventory rules of a fixed capture, announces every departure and
+/// join, and opens joined Pods only after verifying their exact UID. Refresh
+/// failures retain current sources and are reported; repeated transport or
+/// permission failures stop the session rather than hiding stale membership.
+pub struct DynamicLogFeed {
+    gateway: crate::gateway::Gateway,
+    api: Option<Api<Pod>>,
+    membership: LogMembership,
+    feed: MergedLogFeed,
+    read: ReadOptions,
+    options: FollowOptions,
+    next_refresh: Instant,
+    notices: VecDeque<String>,
+    failures: u8,
+    last_limit: Option<String>,
+    /// Joined Pods whose streams could not all open yet (for example, still
+    /// starting). They are retried each refresh and announced only once.
+    waiting: std::collections::BTreeSet<String>,
+}
+impl DynamicLogFeed {
+    pub(crate) fn new(
+        gateway: crate::gateway::Gateway,
+        api: Option<Api<Pod>>,
+        membership: LogMembership,
+        mut feed: MergedLogFeed,
+        read: ReadOptions,
+        options: FollowOptions,
+    ) -> Result<Self> {
+        if !membership.is_dynamic() {
+            return Err("dynamic log feed requires an explicitly dynamic membership".into());
+        }
+        if read.head {
+            return Err(
+                "dynamic membership follows new records; choose a tail or time range, not head"
+                    .into(),
+            );
+        }
+        feed.keep_open = true;
+        Ok(Self {
+            gateway,
+            api,
+            membership,
+            feed,
+            read,
+            options,
+            next_refresh: Instant::now() + MEMBERSHIP_REFRESH_INTERVAL,
+            notices: VecDeque::new(),
+            failures: 0,
+            last_limit: None,
+            waiting: std::collections::BTreeSet::new(),
+        })
+    }
+    pub async fn next(&mut self) -> Result<Option<String>> {
+        loop {
+            if let Some(notice) = self.notices.pop_front() {
+                return Ok(Some(notice));
+            }
+            if Instant::now() >= self.feed.deadline() {
+                return Err("dynamic log session deadline reached; all streams stopped; start a new session to continue".into());
+            }
+            if Instant::now() >= self.next_refresh {
+                self.refresh().await?;
+                continue;
+            }
+            // The merged read is cancel-safe: pending source futures stay owned
+            // by the feed, so a refresh tick never drops buffered records.
+            if let Ok(result) = tokio::time::timeout_at(self.next_refresh, self.feed.next()).await {
+                return result;
+            }
+        }
+    }
+    async fn refresh(&mut self) -> Result<()> {
+        self.next_refresh = Instant::now() + MEMBERSHIP_REFRESH_INTERVAL;
+        let Some(selection) = self.membership.dynamic.clone() else {
+            return Err("dynamic log membership selection unavailable".into());
+        };
+        let deadline = self
+            .feed
+            .deadline()
+            .min(Instant::now() + MEMBERSHIP_CHECK_INTERVAL + CONNECT_BUDGET);
+        let captured = tokio::time::timeout_at(
+            deadline,
+            self.gateway
+                .capture_log_membership(self.membership.namespace(), selection.clone()),
+        )
+        .await
+        .unwrap_or_else(|_| Err("membership refresh timed out".into()));
+        let next = match captured {
+            Ok(next) => next.into_dynamic(selection),
+            Err(error) => {
+                let error = safety::safe_text(&error, 400);
+                // A scale-up past the bounded inventory is a visible, stable
+                // condition; transport and permission failures count as strikes.
+                if error.contains("exceeds") || error.contains("limit") {
+                    if self.last_limit.as_deref() != Some(error.as_str()) {
+                        self.notices.push_back(bounded_line(&format!(
+                            "[Log membership refresh refused: {error}; current sources retained; no Pods admitted]"
+                        )));
+                        self.last_limit = Some(error);
+                    }
+                    return Ok(());
+                }
+                self.failures += 1;
+                if self.failures >= MEMBERSHIP_REFRESH_FAILURES {
+                    return Err(format!(
+                        "dynamic log membership could not be refreshed three times ({error}); all streams stopped; capture again"
+                    ));
+                }
+                self.notices.push_back(bounded_line(&format!(
+                    "[Log membership refresh failed: {error}; current sources retained; no Pods admitted]"
+                )));
+                return Ok(());
+            }
+        };
+        self.failures = 0;
+        self.last_limit = None;
+        let namespace = self.membership.namespace().to_owned();
+        let (left, joined) = membership_changes(&self.membership, &next);
+        for pod in left {
+            let closed = self.feed.remove_pod(&namespace, &pod.name);
+            self.notices.push_back(membership_notice(
+                &namespace,
+                pod,
+                &format!("left; {closed} streams closed"),
+            ));
+        }
+        let mut admitted = Vec::new();
+        for pod in joined {
+            let opened = match self.api.clone() {
+                Some(api) => {
+                    open_joined_pod(
+                        api,
+                        &namespace,
+                        pod,
+                        self.read,
+                        self.options,
+                        self.feed.deadline().min(Instant::now() + CONNECT_BUDGET),
+                    )
+                    .await
+                }
+                None => Err("joined Pods cannot be opened without a live connection".into()),
+            };
+            match opened {
+                Ok(sources) => match self.feed.add_sources(sources) {
+                    Ok(()) => {
+                        self.notices.push_back(membership_notice(
+                            &namespace,
+                            pod,
+                            &format!("joined; {} ordinary containers", pod.containers.len()),
+                        ));
+                        self.waiting.remove(&pod.uid);
+                        admitted.push(pod.uid.clone());
+                    }
+                    Err(error) => self.notices.push_back(membership_notice(
+                        &namespace,
+                        pod,
+                        &format!("not admitted: {error}"),
+                    )),
+                },
+                Err(error) => {
+                    if self.waiting.insert(pod.uid.clone()) {
+                        self.notices.push_back(membership_notice(
+                            &namespace,
+                            pod,
+                            &format!(
+                                "waiting to join: {}; retried every refresh",
+                                safety::safe_text(&error, 300)
+                            ),
+                        ));
+                    }
+                }
+            }
+        }
+        // Only admitted Pods become membership; a refused join is retried next refresh.
+        self.waiting
+            .retain(|uid| next.pods.iter().any(|pod| &pod.uid == uid));
+        let current = std::mem::replace(&mut self.membership, next);
+        self.membership.pods.retain(|pod| {
+            current.pods.iter().any(|old| old.uid == pod.uid) || admitted.contains(&pod.uid)
+        });
+        Ok(())
+    }
+}
+
+async fn open_joined_pod(
+    api: Api<Pod>,
+    namespace: &str,
+    member: &LogPod,
+    read: ReadOptions,
+    options: FollowOptions,
+    deadline: Instant,
+) -> Result<Vec<(String, Result<LogFeed>)>> {
+    let pod = tokio::time::timeout_at(deadline, api.get(&member.name))
+        .await
+        .map_err(|_| "joined Pod verification timed out")?
+        .map_err(|error| open_failure(error, false))?;
+    let current = log_pod(&pod, namespace)?;
+    if current.uid != member.uid || current.containers != member.containers {
+        return Err("joined Pod changed before its streams opened".into());
+    }
+    let mut sources = Vec::new();
+    for container in &member.containers {
+        let identity = format!("{namespace}/{}:{container}", member.name);
+        let result = async {
+            let params = read.params(Some(container.clone()), false, true)?;
+            let reader = tokio::time::timeout_at(deadline, api.log_stream(&member.name, &params))
+                .await
+                .map_err(|_| "log source connection timed out".to_owned())?
+                .map_err(|error| open_failure(error, false))?;
+            LogFeed::with_read_options(reader, options, read)?.with_resume(
+                api.clone(),
+                &member.name,
+                &member.uid,
+                Some(container.clone()),
+                read,
+            )
+        }
+        .await;
+        // All-or-nothing: a Pod whose containers are still starting joins on
+        // a later refresh instead of streaming with a silent permanent gap.
+        sources.push((identity, Ok(result?)));
+    }
+    // The pod/log endpoint has no UID precondition; recheck after opening.
+    match check_uid(&api, &member.name, &member.uid, deadline).await {
+        Ok(()) => Ok(sources),
+        Err(ReopenFailure::Stop(error)) => Err(error),
+        Err(ReopenFailure::Retry) => {
+            Err("joined Pod identity could not be verified after opening".into())
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     fn workload_membership(containers: usize) -> Result<LogMembership> {
@@ -1711,6 +2093,108 @@ mod tests {
         assert!(membership_bytes(&mut bytes, &"data").is_err());
         assert!(bytes <= MEMBERSHIP_BYTES);
         Ok(())
+    }
+    #[test]
+    fn dynamic_changes_are_exact_uid_departures_and_joins() -> Result<()> {
+        let current = workload_membership(1)?;
+        let next = LogMembership::new(
+            "default",
+            "selector app=web; fixed membership".into(),
+            vec![
+                LogPod {
+                    name: "two".into(),
+                    uid: "uid-two".into(),
+                    containers: vec!["c0".into()],
+                },
+                LogPod {
+                    name: "one".into(),
+                    uid: "uid-replacement".into(),
+                    containers: vec!["c0".into()],
+                },
+            ],
+            Vec::new(),
+            "connection",
+        )?;
+        let (left, joined) = membership_changes(&current, &next);
+        assert_eq!(
+            left.iter().map(|pod| pod.uid.as_str()).collect::<Vec<_>>(),
+            ["uid-one"]
+        );
+        assert_eq!(
+            joined
+                .iter()
+                .map(|pod| pod.uid.as_str())
+                .collect::<Vec<_>>(),
+            ["uid-replacement"],
+            "a same-name replacement is a departure plus a join"
+        );
+        let dynamic = current.into_dynamic(PodLogSelection::Selector("app=web".into()));
+        assert!(dynamic.is_dynamic());
+        assert!(dynamic.description().contains("dynamic membership"));
+        let json = serde_json::to_string(&dynamic).map_err(|_| "membership JSON")?;
+        assert!(!json.contains("app=web\"") && !json.contains("Selector"));
+        Ok(())
+    }
+    #[test]
+    fn dynamic_merge_closes_departed_sources_admits_joins_and_stays_open() -> Result<()> {
+        runtime()?.block_on(async {
+            let membership =
+                workload_membership(1)?.into_dynamic(PodLogSelection::Selector("app=web".into()));
+            let source = |text: &str| Ok(LogFeed::new(Cursor::new(text.as_bytes().to_vec())));
+            let mut feed = MergedLogFeed::from_membership_sources(
+                &membership,
+                vec![
+                    ("one".into(), "c0".into(), source("one-record\n")),
+                    ("two".into(), "c0".into(), source("two-record\n")),
+                ],
+                Instant::now() + Duration::from_secs(10),
+                Vec::new(),
+            )?;
+            feed.keep_open = true;
+            assert!(
+                feed.next()
+                    .await?
+                    .is_some_and(|line| line.contains("dynamic membership opted in"))
+            );
+            for _ in 0..2 {
+                feed.next().await?;
+            }
+            assert_eq!(feed.remove_pod("default", "one"), 1);
+            assert_eq!(feed.remove_pod("default", "one"), 0);
+            feed.add_sources(vec![("default/three:c0".into(), source("three-record\n"))])?;
+            assert!(
+                feed.add_sources(vec![("default/three:c0".into(), source("again\n"))])
+                    .is_err(),
+                "duplicate sources are refused"
+            );
+            let mut seen = Vec::new();
+            while let Ok(Ok(Some(line))) =
+                tokio::time::timeout(Duration::from_millis(200), feed.next()).await
+            {
+                seen.push(line);
+            }
+            assert!(
+                seen.iter()
+                    .any(|line| line.contains("[default/two:c0] two-record"))
+            );
+            assert!(
+                seen.iter()
+                    .any(|line| line.contains("[default/three:c0] three-record"))
+            );
+            assert!(!seen.iter().any(|line| line.contains("one-record")));
+            assert!(
+                !feed.ended,
+                "dynamic sessions wait for joins after sources end"
+            );
+            let many = (0..MAX_WORKLOAD_LOG_SOURCES)
+                .map(|index| (format!("default/many:c{index}"), source("x\n")))
+                .collect();
+            assert!(
+                feed.add_sources(many).is_err(),
+                "the 32-source bound is global"
+            );
+            Ok(())
+        })
     }
     #[test]
     fn multi_pod_streams_are_attributed_fair_and_have_one_global_tail() -> Result<()> {

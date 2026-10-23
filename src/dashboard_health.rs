@@ -45,6 +45,9 @@ impl EvidenceState {
 pub struct WarningEvidence {
     pub namespace: String,
     pub pod: String,
+    /// Exact Pod UID for event drilldown; not part of the CLI projection.
+    #[serde(skip)]
+    pub uid: String,
     pub reason: String,
     pub occurrences: u64,
     pub observed_unix_seconds: u64,
@@ -308,6 +311,7 @@ impl EventEvidence {
             recent.push(WarningEvidence {
                 namespace: candidate.identity.0.clone(),
                 pod: candidate.identity.1.clone(),
+                uid: candidate.identity.2.clone(),
                 reason: candidate.reason.clone(),
                 occurrences: candidate.occurrences,
                 observed_unix_seconds: timestamp,

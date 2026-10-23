@@ -192,6 +192,7 @@ mod tests {
             follow: false,
             previous: false,
             all_containers: false,
+            dynamic_membership: false,
             helm_storage: None,
             helm_tool: None,
             helm_values: None,

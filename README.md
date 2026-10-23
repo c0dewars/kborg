@@ -77,6 +77,8 @@ These flags make actions available. Each mutation still requires its own review 
 | `:helm`, `:pulses`, `:xray po`, `:overview` | Releases, health, relationships, multiple contexts |
 | `D`, `b`, `B` | Dashboard, save current selection, reopen saved selections |
 | Dashboard `1..4`, `Enter`, `c`, `s` | Focus card, open Pods, choose contexts, save dashboard |
+| Dashboard `w`, then `Enter` | Select a recent warning, open that exact Pod's Events |
+| `:logs-live [SELECTOR]` | Follow workload logs with announced Pod joins and departures |
 | `:themes`, `?`, `:q` | Themes, help, quit |
 
 The header keeps only `?` for the keymap; it also supports mouse clicks. Familiar `:` commands remain available when you type them. The [compatibility map](docs/K9S_COMPATIBILITY.md) records exact behavior and remaining k9s differences.
