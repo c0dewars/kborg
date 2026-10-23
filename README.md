@@ -65,9 +65,9 @@ Omit `-KeepFixtures` for automatic cleanup. Failed runs clean up even when reten
 
 ## Interface
 
-![Native KBorg resource browser](docs/evidence/ui-helm-logs-metrics/metrics-table.png)
+![KBorg resource browser in Rose Pine, demo data](docs/evidence/ui-trust-rose-pine-final/resources.png)
 
-The browser uses a full-width table with a compact context, namespace and status header. There is no persistent sidebar. Type `:pods`, `:po`, `:deploy`, `:dp`, `:svc`, `:nodes`, or any discovered resource name/short name. `:ctx` opens contexts; `:ctx NAME` switches context. `:ns` opens namespaces; `:pods NAMESPACE` selects a namespace directly. `0` selects all namespaces. `?` shows the available keys, and `:q` quits.
+The browser uses a full-width table with a compact context, namespace and status header. Flexoki Dark adds warm charcoal, cream text and restrained teal; Rose Pine provides a softer violet alternative. Thin frames, quiet selection surfaces and focused shortcut colors follow the k10s/Omarchy visual direction. There is no persistent sidebar. Type `:pods`, `:po`, `:deploy`, `:dp`, `:svc`, `:nodes`, or any discovered resource name/short name. `:ctx` opens contexts; `:ctx NAME` switches context. `:ns` opens namespaces; `:pods NAMESPACE` selects a namespace directly. `0` selects all namespaces. `?` shows the available keys, and `:q` quits.
 
 Navigation follows the k9s command grammar, including `:pod /REGEX`, `:pod app=web`, `:pod 'app in (api,web)'`, and `:pod @CONTEXT`. `/` filters with regex; `/!REGEX` inverts, `/-f TEXT` uses fuzzy matching, and `/-l LABELS` sends a real Kubernetes selector. Commands offer completion and history. Enter drills into containers or related pods; Esc returns. `d` describes, `y` shows redacted YAML, `l` opens logs, and Ctrl-R refreshes. Shift-N/A/S sort name/age/status; C/M sort exact CPU/memory usage. Table values use compact rounded units; d/m retain exact measurements. See the exact [k9s compatibility register](docs/K9S_COMPATIBILITY.md), including remaining differences.
 
@@ -80,10 +80,10 @@ Native resource mutations require `--write`, server dry-run and exact `namespace
 Helm releases are available through `:helm` with `--allow-helm`; Enter opens revision
 history and selected values. Reviewed install, upgrade, rollback, uninstall and tests
 require all three flags `--write --allow-helm --allow-helm-write`, an explicitly
-trusted Helm 4.3.1 executable and deterministic packaged charts from local files or OCI tags/digests with optional required OpenPGP provenance. The
+trusted Helm 4.3.1 executable and deterministic packaged charts from local files or OCI tags/digests with optional required OpenPGP or Sigstore verification. The
 15-minute review binds inputs, release history and live resource identities;
 fresh final checks precede execution. Hooks/tests and separate CRD schema workflows require explicit opt-ins; other cluster/system targets, recognized GitOps resources and foreign adoption are rejected. Read the
-[Helm lifecycle guide](docs/HELM_LIFECYCLE.md) before enabling writes. Explicit hooks, release tests and schema create/update/delete workflows are described in [Helm extensions](docs/HELM_EXTENSIONS.md).
+[Helm lifecycle guide](docs/HELM_LIFECYCLE.md) before enabling writes. Explicit hooks, release tests and schema create/update/delete workflows are described in [Helm extensions](docs/HELM_EXTENSIONS.md). Sigstore trust and `:helm-crds-migrate` storage migration are documented in [trust and migration](docs/HELM_TRUST_AND_MIGRATION.md). Finalization requires Kubernetes controller proof; clusters without it retain historical storage versions.
 
 `logs POD --all-containers` and the log-view `a` key merge ordinary containers.
 Workload `l`/`p`, `logs deploy/NAME` and `logs --selector app=web` capture a fixed
@@ -92,12 +92,12 @@ Source labels, per-source failures and shared limits remain visible; new rollout
 Pods are not added automatically. Init and ephemeral sources are excluded from
 merges. Docker Desktop supplies real CPU and memory data through the explicitly
 installed provider described in [Desktop metrics setup](docs/DESKTOP_METRICS.md).
-See [current acceptance](docs/HELM_COMPLETION_ACCEPTANCE.md) for source-specific
+See [current acceptance](docs/TRUST_MIGRATION_ACCEPTANCE.md) for source-specific
 validation and remaining limits.
 
 ## Themes
 
-18 bundled choices: KBorg Dark/Light/High Contrast; all four Catppuccin flavors; Dracula; Nord; Gruvbox Dark/Light; Tokyo Night Night/Storm/Moon/Day; Solarized Dark/Light; host Terminal mode. Safety-critical low-contrast upstream colors are adapted to meet the project's fixed-palette targets. Theme families are credited in `THIRD_PARTY_NOTICES.md`; this is an unofficial adaptation.
+20 bundled choices: KBorg Dark/Light/High Contrast; all four Catppuccin flavors; Dracula; Nord; Gruvbox Dark/Light; Tokyo Night Night/Storm/Moon/Day; Solarized Dark/Light; Flexoki Dark; Rosé Pine; host Terminal mode. Safety-critical low-contrast upstream colors are adapted to meet the project's fixed-palette targets. Theme families are credited in `THIRD_PARTY_NOTICES.md`; this is an unofficial adaptation.
 
 ```powershell
 .\target\release\kborg.exe theme list
@@ -117,25 +117,32 @@ TLS validation is required. Secrets are excluded from built-in and discovered ki
 
 Writes use a local durable intent/outcome audit spool; this is supplementary and mutable by the operator, not centralized protected audit. Windows config directories outside the test harness inherit their existing user ACLs; verify them before using writes on sensitive clusters. Same-user path replacement races are not eliminated by symlink checks. Authentication revocation, malicious local software and cluster admission remain outside the client trust boundary.
 
-The current development iteration adds reviewed native stdin/TTY sessions, longer rolling logs, continuous context watches, resource-budget edits and optional metrics comparisons to the 0.3 baseline. Each privileged operation requires separate opt-in and target review. Automatic AI diagnosis, generic YAML apply, remote full-screen applications, interactive external pagers/editors, signed distribution and protected centralized audit remain incomplete or gated. This prerelease is suitable for isolated local testing; see `docs/REMAINING_WORK.md` for the current acceptance register.
+The current development iteration adds reviewed native stdin/TTY sessions, longer rolling logs, continuous context watches, resource-budget edits and optional metrics comparisons to the 0.3 baseline. Each privileged operation requires separate opt-in and target review. Autonomous AI remediation, generic YAML apply, remote full-screen applications, interactive external pagers/editors, signed distribution and protected centralized audit remain incomplete or gated. This prerelease is suitable for isolated local testing; see `docs/REMAINING_WORK.md` for the current acceptance register.
 
 ## Startup and first use
 
-Interactive startup shows a two-second ASCII KBorg animation. Any key skips it. Use `--no-splash`, set `KBORG_NO_SPLASH`, or run `kborg startup off` to disable it persistently (`startup on` restores it). Animation never runs in CLI/JSON commands. The first interactive launch opens the theme picker with Catppuccin Mocha selected; Enter chooses a theme and Esc keeps Mocha. Explicit `--theme` overrides onboarding for that session.
+Interactive startup shows a two-second ASCII KBorg animation. Any key skips it. Use `--no-splash`, set `KBORG_NO_SPLASH`, or run `kborg startup off` to disable it persistently (`startup on` restores it). Animation never runs in CLI/JSON commands. The first interactive launch opens the theme picker with Flexoki Dark selected; Enter chooses a theme and Esc keeps Flexoki. Saved theme selections are preserved. Explicit `--theme` overrides onboarding for that session.
 
-## Optional GitHub Copilot preparation
+## Optional GitHub Copilot advice
 
-KBorg supports only GitHub Copilot as the planned AI provider. Current commands prepare a small local diagnostic JSON file and hand login to an explicitly selected trusted official Copilot CLI. KBorg sends no model request and never gives AI write authority. Copilot CLI is optional and is not installed or downloaded by KBorg.
+Select a resource and type `:copilot` to inspect its minimized diagnostic payload.
+Configured macOS ARM64 sessions can send it after full review and exact account-bound
+approval. CLI users can run `copilot diagnose pods NAME --copilot-policy ABS`.
+Demo mode only previews local data. Advice never authorizes commands or changes.
 
-```powershell
-kborg --kubeconfig <file> -n <namespace> copilot context pods <name> --output <new-file.json>
-kborg copilot login --cli <absolute-trusted-copilot-executable> --host github.com
-kborg copilot login --cli <absolute-trusted-copilot-executable> --host acme.ghe.com
-```
+The explicit policy pins the signed native Copilot tool and selects either a
+stored `gh` account through a separately pinned GitHub CLI, or a private credential
+file. Ambient GitHub tokens are not used. Existing `gh` credentials may have
+broader permissions than Copilot; the review discloses their reuse. The isolated
+Copilot process receives a temporary home and restricted network broker, with
+fresh file/process/network checks before credential access.
 
-Context export omits object names, cluster identity, workload specs, logs, labels and arbitrary status messages. Bounded type/reason strings can still contain confidential text or prompt injection: inspect before manually sharing. Copilot manages login credentials and may have its own telemetry/storage. Do not assume GitHub Enterprise Server login provides a Copilot service; supported login hosts are GitHub.com and GitHub Enterprise Cloud data-residency `*.ghe.com`. See [official Copilot authentication](https://docs.github.com/en/enterprise-cloud%40latest/copilot/how-tos/copilot-cli/set-up-copilot-cli/authenticate-copilot-cli).
-
-Automatic AI diagnosis remains a production gate requiring isolation, tested tool denial, explicit per-request payload review and policy evidence. Other AI providers are excluded. The current UI refinement has native PTY captures and a retained short CPU/memory sample; longer soak and accessibility acceptance remain open.
+Only allowlisted status terms and bounded counters are shared; names, namespaces,
+cluster identity, specs, logs and credentials are omitted. Counters may still
+reveal workload state, so inspect each payload. Inference currently supports
+`github.com` on macOS ARM64; other platforms fail closed. Read the
+[Copilot setup and trust guide](docs/COPILOT_INTEGRATION.md) before enabling it.
+The older context-export and trusted login-handoff commands remain available.
 
 ## Platform, security and performance evidence
 

@@ -1,5 +1,7 @@
 # Independent implementation security review
 
+Current continuation: see [Sigstore, migration and Copilot review](TRUST_SECURITY_REVIEW.md) and its source-specific acceptance evidence. The findings below retain their original historical scope.
+
 Review date: 2026-10-09. Reviewer: a separate security-review agent, independent of the implementation agent. This is a source review and targeted regression exercise, not an external certification or penetration test. Reviewed gateway, policy, safety, CLI output handling and existing security/release documents.
 
 ## Disposition

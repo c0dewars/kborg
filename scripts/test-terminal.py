@@ -5,6 +5,7 @@ Exercises the actual release binary, keyboard paths and resize events. Runs demo
 only, with private temporary preferences and a bounded subprocess lifetime.
 """
 import argparse
+import codecs
 import errno
 import fcntl
 import json
@@ -29,8 +30,11 @@ class Screen:
         self.fg, self.bg = (205, 214, 244), (30, 30, 46)
         self.cells = [[(" ", self.fg, self.bg) for _ in range(width)] for _ in range(height)]
         self.pending = ""
+        self.decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
 
     def feed(self, text):
+        if isinstance(text, bytes):
+            text = self.decoder.decode(text)
         self.pending += text
         position = 0
         while position < len(self.pending):
@@ -79,19 +83,56 @@ class Screen:
     def text(self):
         return "\n".join("".join(cell[0] for cell in row) for row in self.cells)
 
+    @staticmethod
+    def _box_glyph(draw, char, left, top, width, height, color):
+        """Render only the TUI's six box characters at exact cell edges.
+
+        Font glyphs use font ascent/descent rather than the terminal's row
+        height, which leaves gaps between vertical strokes in captures. These
+        paths depict the existing terminal cells; they never infer a border
+        through spaces, ASCII punctuation, or resource text.
+        """
+        if char not in "─│╭╮╰╯":
+            return False
+        right, bottom = left + width - 1, top + height - 1
+        cx, cy = left + width // 2, top + height // 2
+        radius = max(1, min(width // 2 - 1, height // 2 - 1))
+        if char == "─":
+            draw.line((left, cy, right, cy), fill=color)
+        elif char == "│":
+            draw.line((cx, top, cx, bottom), fill=color)
+        elif char == "╭":
+            draw.arc((cx, cy, cx + 2 * radius, cy + 2 * radius), 180, 270, fill=color)
+            draw.line((cx + radius, cy, right, cy), fill=color)
+            draw.line((cx, cy + radius, cx, bottom), fill=color)
+        elif char == "╮":
+            draw.arc((cx - 2 * radius, cy, cx, cy + 2 * radius), 270, 360, fill=color)
+            draw.line((left, cy, cx - radius, cy), fill=color)
+            draw.line((cx, cy + radius, cx, bottom), fill=color)
+        elif char == "╰":
+            draw.arc((cx, cy - 2 * radius, cx + 2 * radius, cy), 90, 180, fill=color)
+            draw.line((cx, top, cx, cy - radius), fill=color)
+            draw.line((cx + radius, cy, right, cy), fill=color)
+        else:  # ╯
+            draw.arc((cx - 2 * radius, cy - 2 * radius, cx, cy), 0, 90, fill=color)
+            draw.line((cx, top, cx, cy - radius), fill=color)
+            draw.line((left, cy, cx - radius, cy), fill=color)
+        return True
+
     def png(self, path):
         from PIL import Image, ImageDraw, ImageFont
         font_path = "/System/Library/Fonts/Menlo.ttc"
         font = ImageFont.truetype(font_path, 17) if Path(font_path).exists() else ImageFont.load_default()
         cell_width = int(font.getlength("M") + .5)
         cell_height = 24
-        picture = Image.new("RGB", (self.width * cell_width + 32, self.height * cell_height + 32), (30, 30, 46))
+        picture = Image.new("RGB", (self.width * cell_width + 32, self.height * cell_height + 32), self.cells[0][0][2])
         draw = ImageDraw.Draw(picture)
         for y, row in enumerate(self.cells):
             for x, (char, fg, bg) in enumerate(row):
                 left, top = 16 + x * cell_width, 16 + y * cell_height
-                draw.rectangle((left, top, left + cell_width, top + cell_height), fill=bg)
-                draw.text((left, top), char, font=font, fill=fg)
+                draw.rectangle((left, top, left + cell_width - 1, top + cell_height - 1), fill=bg)
+                if not self._box_glyph(draw, char, left, top, cell_width, cell_height, fg):
+                    draw.text((left, top), char, font=font, fill=fg)
         path.parent.mkdir(parents=True, exist_ok=True)
         picture.save(path)
 
@@ -129,7 +170,7 @@ def lifecycle_session(binary, args, captures):
                         break
                     output.extend(data)
                     assert len(output) <= 8*1024*1024, "lifecycle terminal output exceeded bound"
-                    screen.feed(data.decode("utf-8", errors="replace"))
+                    screen.feed(data)
         def keys(value, expected=None):
             idle_deadline=time.monotonic()+6
             while ("LOADING" in screen.text().splitlines()[2] or "Request in progress" in screen.text().splitlines()[-1]) and time.monotonic()<idle_deadline:
@@ -273,7 +314,7 @@ def extension_form_session(binary, args, captures):
                     if not data:break
                     output.extend(data)
                     assert len(output)<=8*1024*1024,"extension form terminal output exceeded bound"
-                    screen.feed(data.decode("utf-8",errors="replace"))
+                    screen.feed(data)
         def keys(value,expected=None):
             os.write(master,value)
             deadline=time.monotonic()+6
@@ -307,7 +348,7 @@ def extension_form_session(binary, args, captures):
             keys(b"\x1b","HELM / releases")
             keys(b"c","INSTALL CHART CRDS")
             keys(b"\tcrd-demo\t\x15"+pinned.encode())
-            capture("helm-crds-form",["INSTALL CHART CRDS","Cluster-wide schemas","retained on uninstall","No release installed"])
+            capture("helm-crds-form",["INSTALL CHART CRDS","Cluster-wide schemas","retained on uninstall","no Helm release is installed"])
             assert "Values file" not in screen.text(),"CRD bootstrap must not offer release values"
             keys(b"\x1b","HELM / releases")
             keys(b"t","TEST HELM RELEASE")
@@ -334,6 +375,17 @@ def extension_form_session(binary, args, captures):
             keys(b"\x15")
             complete_review("DELETE CRDS demo/schema-demo")
             capture("helm-crds-delete-simulated",["HELM OPERATION SUCCEEDED","SIMULATED"])
+            keys(b"\x1b","HELM / releases")
+            keys(b":helm-crds-migrate\r","MIGRATE CRD STORAGE")
+            keys(b"\tschema-demo")
+            capture("helm-crds-migrate-form",["MIGRATE CRD STORAGE","Cluster-wide schemas","controller proof"])
+            keys(b"\r","HELM REVIEW")
+            capture("helm-crds-migrate-review",["HELM REVIEW","CONFIRM MIGRATE CRDS demo/schema-demo"])
+            keys(b"demo/schema-demo\r","HELM REVIEW")
+            capture("helm-crds-migrate-weak-confirmation-denied",["HELM REVIEW","exact confirmation","CONFIRM MIGRATE CRDS"])
+            keys(b"\x15")
+            complete_review("MIGRATE CRDS demo/schema-demo")
+            capture("helm-crds-migrate-simulated",["HELM OPERATION SUCCEEDED","SIMULATED"])
             keys(b"\x1b","HELM / releases")
             keys(b"i","INSTALL HELM RELEASE")
             tagged="oci://registry.example/team/chart:1.2.3"
@@ -422,7 +474,7 @@ def main():
                     all_output.extend(data)
                     if len(all_output) > 4 * 1024 * 1024:
                         raise RuntimeError("terminal output exceeded 4 MiB test bound")
-                    screen.feed(data.decode("utf-8", errors="replace"))
+                    screen.feed(data)
 
         def capture(name, required):
             deadline=time.monotonic()+6
@@ -446,6 +498,11 @@ def main():
             drain(1)
             capture("demo-pods", ["KBorg", "DEMO", "api-7d4f9", "CrashLoopBackOff"])
             assert b"\x1b[38;2;" in all_output, "explicit truecolor output was suppressed"
+            keys(b":copilot\r",1)
+            capture("copilot-local-preview",["COPILOT / local preview only","EXACT DIAGNOSTIC PAYLOAD","Sending is disabled in demo mode"])
+            keys(b"\r")
+            capture("copilot-demo-send-denied",["Local previews cannot send","nothing will be sent"])
+            keys(b"\x1b")
             # A quiet interval measures actual idle redraw/output behavior.
             idle_bytes = len(all_output)
             drain(2)
@@ -475,9 +532,9 @@ def main():
             keys(b"\x1b")
             keys(b":po\r")
             keys(b"S")
-            capture("sorted-pods", ["sort:status", "api-7d4f9"])
+            capture("sorted-pods", ["sort: status", "api-7d4f9"])
             keys(b"C", 1)
-            capture("metrics-table", ["CPU(m)", "MEM", "125", "64Mi", "sort:cpu"])
+            capture("metrics-table", ["CPU(m)", "MEM", "125", "64Mi", "sort: cpu"])
             keys(b"N")
             keys(b"m", 1)
             capture("metrics", ["METRICS", "CPU", "MEM", "SESSION HISTORY"])

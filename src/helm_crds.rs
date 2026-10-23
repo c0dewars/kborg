@@ -19,6 +19,8 @@ pub struct Binding {
     pub uid: String,
     pub resource_version: String,
     pub(crate) live_metadata: Value,
+    pub stored_versions: Vec<String>,
+    pub(crate) live_status: Value,
 }
 
 fn group_version(api: &str) -> Result<(&str, &str)> {
@@ -60,6 +62,24 @@ pub fn validate_live(mut object: Value) -> Result<Binding> {
         return Err("custom resource CRD is not Established or is terminating".into());
     }
     let live_metadata = object["metadata"].clone();
+    let live_status = object["status"].clone();
+    let mut stored_versions = Vec::new();
+    if let Some(versions) = live_status.get("storedVersions") {
+        let versions = versions
+            .as_array()
+            .filter(|versions| versions.len() <= 8)
+            .ok_or("CRD storedVersions is not a bounded version array")?;
+        for version in versions {
+            let version = version
+                .as_str()
+                .filter(|version| version.len() <= 63 && safety::valid_id(version))
+                .ok_or("CRD storedVersions has an invalid version")?;
+            if stored_versions.iter().any(|old| old == version) {
+                return Err("CRD storedVersions contains a duplicate version".into());
+            }
+            stored_versions.push(version.to_owned());
+        }
+    }
     let uid = object["metadata"]["uid"]
         .as_str()
         .filter(|value| !value.is_empty() && value.len() <= 253)
@@ -106,6 +126,8 @@ pub fn validate_live(mut object: Value) -> Result<Binding> {
         uid,
         resource_version,
         live_metadata,
+        stored_versions,
+        live_status,
     })
 }
 

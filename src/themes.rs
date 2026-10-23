@@ -8,6 +8,8 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::{fmt, sync::OnceLock};
 
+pub const DEFAULT_THEME: &str = "flexoki-dark";
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ColorDepth {
     Basic16,
@@ -414,6 +416,20 @@ const PALETTES: &[(&str, &str, [&str; 7])] = &[
         ],
     ),
     (
+        "flexoki-dark",
+        "Flexoki Dark",
+        [
+            "#100F0F", "#CECDC3", "#878580", "#3AA99F", "#879A39", "#D0A215", "#E8705F",
+        ],
+    ),
+    (
+        "rose-pine",
+        "Rose Pine",
+        [
+            "#191724", "#E0DEF4", "#908CAA", "#C4A7E7", "#9CCFD8", "#F6C177", "#EB6F92",
+        ],
+    ),
+    (
         "tokyo-night-night",
         "Tokyo Night / Night",
         [
@@ -489,6 +505,24 @@ pub fn builtins() -> Vec<Theme> {
                 "status_text".into(),
                 colors.get("warning").copied().unwrap_or(accent),
             );
+            // These reading-oriented palettes use quiet surfaces rather than a
+            // saturated accent fill. Keep focus in the accent and ordinary
+            // selected text in the original foreground. Their upstream faint
+            // colors are intentionally not used for functional text below 4.5:1.
+            let surfaces = match *id {
+                "flexoki-dark" => Some(("#282726", "#1C1B1A")),
+                "rose-pine" => Some(("#403D52", "#1F1D2E")),
+                _ => None,
+            };
+            if let Some((selection, status)) = surfaces {
+                colors.insert(
+                    "selection_background".into(),
+                    Rgb::parse(selection).unwrap_or(bg),
+                );
+                colors.insert("selection_text".into(), colors["text"]);
+                colors.insert("status_background".into(), Rgb::parse(status).unwrap_or(bg));
+                colors.insert("status_text".into(), colors["muted"]);
+            }
             Theme {
                 id: (*id).into(),
                 name: (*name).into(),
@@ -646,7 +680,7 @@ pub fn selected() -> String {
         find(&p.theme)?;
         Ok(p.theme)
     };
-    read().unwrap_or_else(|_| "catppuccin-mocha".into())
+    read().unwrap_or_else(|_| DEFAULT_THEME.into())
 }
 pub fn use_theme(id: &str) -> Result<()> {
     find(id)?;
@@ -712,7 +746,7 @@ pub fn remove(id: &str) -> Result<()> {
     let path = themes_dir()?.join(format!("{id}.json"));
     safety::checked_path(&path)?;
     if selected() == id {
-        use_theme("catppuccin-mocha")?;
+        use_theme(DEFAULT_THEME)?;
     }
     std::fs::remove_file(path).map_err(|_| "cannot remove custom theme".into())
 }
@@ -934,10 +968,48 @@ mod tests {
     use super::*;
     #[test]
     fn all_builtins_meet_fixed_palette_targets() {
-        assert_eq!(builtins().len(), 18);
+        assert_eq!(builtins().len(), 20);
         for t in builtins() {
             assert!(t.validate().is_ok(), "{}", t.id);
         }
+    }
+    #[test]
+    fn reading_palettes_keep_their_ink_colors_and_quiet_legible_surfaces() -> crate::Result<()> {
+        for (id, background, text, accent, danger) in [
+            ("flexoki-dark", "#100F0F", "#CECDC3", "#3AA99F", "#E8705F"),
+            ("rose-pine", "#191724", "#E0DEF4", "#C4A7E7", "#EB6F92"),
+        ] {
+            let theme = builtins()
+                .into_iter()
+                .find(|theme| theme.id == id)
+                .ok_or("missing reading palette")?;
+            theme.validate()?;
+            assert_eq!(theme.get("background"), Rgb::parse(background)?);
+            assert_eq!(theme.get("text"), Rgb::parse(text)?);
+            assert_eq!(theme.get("accent"), Rgb::parse(accent)?);
+            assert_eq!(theme.get("danger"), Rgb::parse(danger)?);
+            assert_eq!(theme.get("focus"), theme.get("accent"));
+            assert_eq!(theme.get("selection_text"), theme.get("text"));
+            assert_eq!(theme.get("status_text"), theme.get("muted"));
+            for surface in ["selection_background", "status_background"] {
+                assert_ne!(theme.get(surface), theme.get("background"));
+                assert!(theme.get(surface).luminance() < theme.get("accent").luminance());
+            }
+            // The two sources use colors that are too faint for actionable
+            // terminal text. Preserve palette hues instead of bleaching them
+            // through the black/white fallback in legible().
+            assert!(
+                theme
+                    .colors
+                    .values()
+                    .all(|color| { *color != Rgb(255, 255, 255) && *color != Rgb(0, 0, 0) })
+            );
+            assert_eq!(
+                cloned_theme("reading-copy", &theme)?.resolve()?.colors,
+                theme.colors
+            );
+        }
+        Ok(())
     }
     #[test]
     fn rejects_duplicate_keys_and_hooks() {

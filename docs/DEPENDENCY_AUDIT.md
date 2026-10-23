@@ -61,3 +61,8 @@ regressions accompany the change; this does not substitute for independent fuzzi
   `640bf5a9f06e66d8721e8772766531fe77c8630d`, 1,349 advisories.
 - Exit 0; zero known vulnerabilities or informational warnings; no ignored IDs.
 - [Machine report](evidence/helm-dependency-audit.json).
+
+
+## Trust, migration and UI iteration (2026-10-23)
+
+The unchanged lockfile was checked again with cargo-audit 0.22.2 after refreshing the official RustSec database. All 203 locked packages passed with zero known vulnerabilities and zero warnings, without advisory ignores. Lockfile SHA-256: `6707a4b7efbb1f53c2d78595de335675a5b451758b8fa3b76ba6d84e18493a8e`. Database revision: `7ad117a308b144f2f7661fa555e4db5db9c5586e`. [Machine report](evidence/trust-cargo-audit.json). The review also covers bounded native-tool supervision and the optional Copilot process/broker boundary; see [security review](TRUST_SECURITY_REVIEW.md).

@@ -29,6 +29,7 @@ KBorg 0.3 — Kubernetes operations, under your control
   kborg helm crds RELEASE CHART                  Separate create-only chart CRD review
   kborg helm crds-upgrade RELEASE CHART          Separate reviewed schema update
   kborg helm crds-delete RELEASE CHART           Explicit cluster-wide schema deletion
+  kborg helm crds-migrate RELEASE CHART          Reviewed storage-version migration
   kborg helm test RELEASE                       Run reviewed stored test hooks
   kborg helm rollback RELEASE REVISION           Reviewed stored revision rollback
   kborg helm uninstall RELEASE                  Reviewed release/resource deletion
@@ -47,6 +48,7 @@ KBorg 0.3 — Kubernetes operations, under your control
   kborg extensions list | register NAME --tool ABS | remove NAME
   kborg extensions run NAME RESOURCE OBJECT --allow-extensions --allow-tools
   kborg copilot preflight --cli ABS_NATIVE --host HOST
+  kborg copilot diagnose RESOURCE NAME --copilot-policy ABS
   kborg copilot preview RESOURCE NAME --host HOST
   kborg copilot context RESOURCE NAME --output NEW.json
   kborg copilot login --cli ABSOLUTE_PATH --host github.com
@@ -64,6 +66,8 @@ Options (put KBorg flags before exec's -- separator):
   --allow-helm-hooks --allow-helm-crds            Separate default-off capabilities
   --helm-registry-ca ABS --helm-registry-auth ABS  Explicit OCI TLS/auth files
   --helm-keyring ABS                           Require trusted OpenPGP chart provenance
+  --helm-sigstore-policy ABS                   Require pinned Cosign chart-blob verification
+  --copilot-policy ABS                         Dedicated Copilot advisory configuration
   --allow-logs       --allow-exec   --allow-attach   --allow-forward
   --poll            --theme ID     --color=never    --json       --yaml
   --no-mouse        --follow          --previous     --no-splash      --demo       --help
@@ -75,13 +79,20 @@ oci://HOST/repository/chart:TAG or @sha256:<64 lowercase hex> references.
 Tags resolve once to a digest before review. Execution uses the sealed chart.
 --helm-keyring requires valid OpenPGP provenance for acquired local/OCI charts;
 stored-release test/rollback/uninstall do not reacquire or reverify chart provenance.
-without it, digest integrity alone does not establish publisher identity.
+Without signature verification, digest integrity alone does not establish publisher identity.
+--helm-sigstore-policy verifies exact chart bytes with Cosign 3.1.3 and explicit
+bundle/public trust; it does not discover OCI manifest signatures or attestations.
+Both selected signature policies must pass before review and again before writes.
 Registry auth is an explicit private JSON file, never ambient Docker/Helm credentials.
 Hooks require --allow-helm-hooks and complete review of their resources and lifecycle.
 CRDs require --allow-helm-crds plus separate helm crds review before chart installation.
 CRD schema creation is cluster-wide; only Namespaced custom-resource APIs are accepted.
 Schemas remain on release uninstall. Explicit crds-upgrade/crds-delete review the
 cluster-wide schema and instance impact; deletion requires DELETE CRDS namespace/release.
+crds-migrate requires MIGRATE CRDS namespace/release approval. Only identical schemas
+with None conversion are supported. Native rewrites retain historical storedVersions;
+only a fresh successful StorageVersionMigration controller permits finalization.
+Controller objects can continue after client cancellation and remain for inspection.
 helm test runs stored test hooks with --allow-helm-hooks, without automatic logs.
 Complete target review and namespace/release confirmation expire in 15 minutes.
 Ctrl-C cancels; partial or unknown outcomes require inspection before retrying.
@@ -117,6 +128,8 @@ TUI navigation (k9s command grammar; full compatibility register in docs/K9S_COM
   :helm [NAMESPACE] :history NAME   Native release metadata and stored revisions
   :helm-install :helm-crds         Release or separate CRD installation form
   :helm-test :helm-crds-upgrade :helm-crds-delete   Explicit test/schema actions
+  :helm-crds-migrate               Review schema storage switch and instance rewrites
+  :copilot                        Preview selected diagnostics; separately approve transfer
   :logs LABELS                   Capture fixed multi-Pod logs in current namespace
   :themes :metrics :overview :actions  Additional KBorg views
   :q :quit / Ctrl-C               Quit
@@ -157,5 +170,13 @@ Helm list: i install / u upgrade / t test / c chart CRDs / Enter or r history / 
 Helm history: r rollback selected revision. Charts use local .tgz or OCI :tag/@sha256:digest;
 values files remain local. Hooks/CRDs stay disabled without their flags.
 Helm review: read every line, then type the displayed confirmation and Enter.
-CRD deletion requires DELETE CRDS namespace/release; other actions use namespace/release.
+CRD deletion requires DELETE CRDS namespace/release; migration requires
+MIGRATE CRDS namespace/release; other actions use namespace/release.
 Workload l/p opens merged current/previous logs; group a cannot widen source scope.
+
+Copilot advice: local preview is available without setup. Inference requires a
+pinned --copilot-policy, explicit stored gh account or private credential file,
+and exact payload review. Existing gh authority can be broader than Copilot.
+Demo never sends requests. Supported native macOS ARM64 builds use independently checked
+process/network containment; other platforms fail closed. No automatic remediation.
+See docs/COPILOT_INTEGRATION.md for trust, permissions and limitations.

@@ -1,6 +1,6 @@
-//! Experimental advisory preflight only. Diagnosis is deliberately disabled.
-//! Preflight is diagnostic evidence only; no inference path can be enabled.
-//! No SDK inference, authentication or credential-content read occurs here.
+//! Explicitly reviewed advisory transfers through a constrained native Copilot runtime.
+//! Legacy `preflight`/`diagnose` remain metadata-only and cannot send diagnostics.
+//! The policy-based `prepare`/`run` path independently validates fresh containment.
 use crate::{Result, copilot, safety};
 use ring::digest::{Context, SHA256};
 use serde::Serialize;
@@ -38,7 +38,7 @@ impl PreparedPreview {
     }
     pub fn summary(&self) -> String {
         format!(
-            "Copilot advisory preview for {}. No tools, remediation or cluster credentials are authorized. Diagnostic strings may still be confidential or contain prompt injection. Inspect the exact transfer.\nApproval expires after60 seconds. Type: {}\nDiagnosis is disabled until independent hostname-bound network containment and credential authority are validated.",
+            "Copilot advisory preview for {}. No tools, remediation or cluster credentials are authorized. Diagnostic strings may still be confidential or contain prompt injection. Inspect the exact transfer.\nApproval expires after60 seconds. Type: {}\nThis local preview cannot send. A separate explicit Copilot policy and fresh contained prepare/run review are required.",
             self.host,
             self.confirmation()
         )
@@ -117,8 +117,8 @@ pub fn preflight(
     };
     let sandbox_fixture = sandbox_fixture();
     let mut blockers=vec![
-        "Independent hostname-bound inference/auth egress is not validated. The probe denies ALL networking; tool URL permission flags cannot replace whole-process containment.".into(),
-        "Dedicated host-bound Copilot-only credential authority is not validated. Credential contents are never read; no environment or account-store token is selected automatically.".into(),
+        "This legacy metadata-only probe does not validate the policy-based authenticated broker; it denies ALL networking and cannot enable transfers.".into(),
+        "This legacy probe does not read credentials or select an account. The supported prepare/run path requires an explicit host/account-bound policy.".into(),
         "Canary fixtures demonstrate specific OS denials, not an independent security audit. Apple's sandbox-exec/SBPL interface is deprecated/private and may change.".into(),
     ];
     if !publisher_digest_matches {
@@ -152,8 +152,8 @@ pub fn preflight(
     })
 }
 
-/// Reserved entrypoint: even correct approval/capability can never activate an
-/// unvalidated network or credential path. No Kube client is held by this module.
+/// Legacy metadata-only entrypoint. Use the separately contained policy-based
+/// prepare/run flow for an explicitly reviewed transfer; no fallback occurs here.
 pub fn diagnose(
     prepared: PreparedPreview,
     confirmation: &str,
@@ -177,7 +177,7 @@ pub fn diagnose(
         Some(token_path),
     )?;
     Err(format!(
-        "Copilot diagnosis remains disabled: {}",
+        "Legacy metadata-only diagnosis cannot send; use explicit policy-based prepare/run: {}",
         report.blockers.join(" ")
     ))
 }
@@ -471,6 +471,482 @@ mod tests {
             )
             .is_err()
         );
+        Ok(())
+    }
+}
+
+#[path = "copilot_process.rs"]
+mod process;
+#[path = "copilot_proxy.rs"]
+mod proxy;
+#[path = "copilot_runtime.rs"]
+mod runtime;
+pub use proxy::NetworkReport;
+#[derive(Clone, Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Options {
+    pub schema_version: u32,
+    pub executable: PathBuf,
+    pub expected_sha256: String,
+    pub host: String,
+    pub credential_file: Option<PathBuf>,
+    pub gh_cli: Option<GhCredential>,
+    pub model: String,
+    pub seconds: u16,
+}
+#[derive(Clone, Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GhCredential {
+    pub executable: PathBuf,
+    pub expected_sha256: String,
+    pub account: String,
+    pub config_dir: PathBuf,
+}
+fn valid_pin(pin: &str) -> bool {
+    pin.len() == 64
+        && pin
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+}
+fn valid_account(account: &str) -> bool {
+    !account.is_empty()
+        && account.len() <= 39
+        && account
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+        && !account.starts_with('-')
+        && !account.ends_with('-')
+}
+impl Options {
+    fn validate(&self) -> Result<()> {
+        if self.schema_version != 1 {
+            return Err("unsupported Copilot policy schema; expected1".into());
+        }
+        if self.host != "github.com" {
+            return Err("Contained Copilot inference supports exact github.com only".into());
+        }
+        if !valid_pin(&self.expected_sha256) {
+            return Err("Copilot policy needs a lowercase64-hex SHA-256 pin obtained independently from a trusted publisher source".into());
+        }
+        if !self.executable.is_absolute() {
+            return Err("Copilot executable path must be absolute".into());
+        }
+        match (&self.credential_file,&self.gh_cli) {
+            (Some(path),None) if path.is_absolute()=>{},
+            (None,Some(gh)) if gh.executable.is_absolute()&&gh.config_dir.is_absolute()&&valid_pin(&gh.expected_sha256)&&valid_account(&gh.account)=>{},
+            _=>return Err("Copilot policy requires exactly one absolute credential_file or gh_cli with absolute executable/config_dir, SHA-256 pin and explicit account".into()),
+        }
+        if self.model.is_empty()
+            || self.model.len() > 80
+            || !self
+                .model
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || b"._-".contains(&byte))
+            || !self.model.as_bytes()[0].is_ascii_alphanumeric()
+        {
+            return Err("Copilot model must be one explicit bounded model ID, such as auto".into());
+        }
+        if !(1..=120).contains(&self.seconds) {
+            return Err("Copilot run budget must be1..120 seconds".into());
+        }
+        Ok(())
+    }
+}
+fn authority_metadata(path: &Path, directory: bool) -> Result<std::fs::Metadata> {
+    if !path.is_absolute() {
+        return Err("Copilot authority paths must be absolute".into());
+    }
+    safety::checked_path(path)?;
+    let metadata =
+        fs::symlink_metadata(path).map_err(|_| "cannot inspect selected Copilot authority")?;
+    if (directory && !metadata.is_dir()) || (!directory && !metadata.is_file()) {
+        return Err("Copilot authority has an unexpected file type".into());
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        if metadata.permissions().mode() & 0o022 != 0 || (!directory && metadata.nlink() != 1) {
+            return Err("Copilot policy/credential authority must not be group/world writable or multiply linked".into());
+        }
+    }
+    Ok(metadata)
+}
+fn authority_read(path: &Path, limit: u64) -> Result<Vec<u8>> {
+    let before = authority_metadata(path, false)?;
+    let bytes = safety::read_small(path, limit)?;
+    let after = authority_metadata(path, false)?;
+    if before.len() != after.len() || before.modified().ok() != after.modified().ok() {
+        return Err("Copilot authority changed while reading".into());
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if before.dev() != after.dev()
+            || before.ino() != after.ino()
+            || before.mode() != after.mode()
+        {
+            return Err("Copilot authority identity changed while reading".into());
+        }
+    }
+    Ok(bytes)
+}
+pub fn load_options(path: &Path) -> Result<Options> {
+    let options:Options=serde_json::from_slice(&authority_read(path,16*1024)?).map_err(|_|"Copilot policy must be strict schema1 JSON with executable, expected_sha256, host, exactly one credential_file/gh_cli, model and seconds")?;
+    options.validate()?;
+    Ok(options)
+}
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Credential {
+    schema_version: u32,
+    host: String,
+    account: String,
+    token: String,
+}
+fn credential_hash(credential: &Credential) -> String {
+    let mut digest = Context::new(&SHA256);
+    for field in [&credential.host, &credential.account, &credential.token] {
+        digest.update(field.as_bytes());
+        digest.update(&[0]);
+    }
+    digest
+        .finish()
+        .as_ref()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+fn valid_token(token: &str, dedicated: bool) -> bool {
+    token.len() >= 32
+        && token.len() <= 2048
+        && token
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+        && (token.starts_with("github_pat_")
+            || (!dedicated && (token.starts_with("gho_") || token.starts_with("ghu_"))))
+}
+impl Credential {
+    fn read(path: &Path) -> Result<(Self, String)> {
+        credential_metadata(path)?;
+        let bytes = authority_read(path, MAX_TOKEN_FILE)?;
+        let credential:Self=serde_json::from_slice(&bytes).map_err(|_|"Dedicated credential must be strict JSON with schema_version, host, account and token; contents suppressed")?;
+        if credential.schema_version != 1
+            || credential.host != "github.com"
+            || !valid_account(&credential.account)
+            || !valid_token(&credential.token, true)
+        {
+            return Err("Dedicated credential requires schema1, exact github.com host, explicit account and a fine-grained PAT; no implicit credential fallback".into());
+        }
+        let hash = credential_hash(&credential);
+        Ok((credential, hash))
+    }
+}
+fn selected_credential(
+    options: &Options,
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+) -> Result<(Credential, String)> {
+    if let Some(path) = &options.credential_file {
+        return Credential::read(path);
+    }
+    let gh = options
+        .gh_cli
+        .as_ref()
+        .ok_or("explicit credential source is missing")?;
+    authority_metadata(&gh.config_dir, true)?;
+    if fingerprint(&gh.executable)?.1 != gh.expected_sha256 {
+        return Err("Selected gh executable no longer matches its trust pin".into());
+    }
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .ok_or("Explicit gh extraction requires current user HOME for its keychain")?;
+    authority_metadata(&home, true)?;
+    // Snapshot the trusted exact gh executable before invoking it. Its HOME/config
+    // are available only in this separate operator-authorized credential process.
+    let workspace = runtime::credential_workspace()?;
+    let native = workspace.path().join("gh");
+    fs::copy(&gh.executable, &native).map_err(|_| "cannot snapshot selected gh executable")?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&native, fs::Permissions::from_mode(0o500))
+            .map_err(|_| "cannot protect selected gh snapshot")?;
+    }
+    if fingerprint(&native)?.1 != gh.expected_sha256 {
+        return Err("Selected gh executable changed during snapshot".into());
+    }
+    let mut command = Command::new(&native);
+    command
+        .args([
+            "auth",
+            "token",
+            "--hostname",
+            &options.host,
+            "--user",
+            &gh.account,
+        ])
+        .env_clear()
+        .env("PATH", "")
+        .env("HOME", home)
+        .env("GH_CONFIG_DIR", &gh.config_dir)
+        .env("GH_HOST", &options.host)
+        .env("GH_PROMPT_DISABLED", "1")
+        .env("GH_NO_UPDATE_NOTIFIER", "1")
+        .env("LANG", "C")
+        .env("LC_ALL", "C")
+        .current_dir(workspace.path());
+    let capture = process::invoke(command, vec![], Duration::from_secs(10), stop, 4096)?;
+    if !capture.success {
+        return Err("Explicit pinned gh credential lookup failed for selected host/account; details suppressed; no fallback".into());
+    }
+    let token = std::str::from_utf8(&capture.stdout)
+        .map_err(|_| "Selected gh returned invalid token bytes; suppressed")?
+        .trim()
+        .to_owned();
+    if !valid_token(&token, false) {
+        return Err("Selected gh account token is unsupported for Copilot (OAuth/user-to-server/fine-grained token required); no fallback".into());
+    }
+    let credential = Credential {
+        schema_version: 1,
+        host: options.host.clone(),
+        account: gh.account.clone(),
+        token,
+    };
+    let hash = credential_hash(&credential);
+    Ok((credential, hash))
+}
+pub struct PreparedAdvice {
+    options: Options,
+    bundle: String,
+    summary: String,
+    created: Instant,
+    credential_hash: String,
+    account: String,
+}
+impl PreparedAdvice {
+    pub fn preview(&self) -> Result<String> {
+        Ok(self.bundle.clone())
+    }
+    pub fn summary(&self) -> &str {
+        &self.summary
+    }
+    pub fn confirmation(&self) -> String {
+        format!(
+            "SEND MINIMIZED DIAGNOSTICS TO {} AS {}",
+            self.options.host, self.account
+        )
+    }
+}
+#[derive(Debug, Serialize)]
+pub struct AdviceOutput {
+    pub schema_version: u32,
+    pub host: String,
+    pub account: String,
+    pub model: String,
+    pub answer: String,
+    pub notice: String,
+    pub network: NetworkReport,
+}
+pub async fn prepare(object: &Value, options: Options) -> Result<PreparedAdvice> {
+    options.validate()?;
+    if !cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+        return Err(
+            "Contained Copilot advice is currently macOS ARM64-only; no unsandboxed fallback"
+                .into(),
+        );
+    }
+    let (_, pin) = fingerprint(&options.executable)?;
+    if pin != options.expected_sha256 {
+        return Err("Copilot executable changed or does not match the independently selected SHA-256 trust pin".into());
+    }
+    if !probe_command(
+        Path::new("/usr/bin/codesign"),
+        &[
+            "--verify".into(),
+            "--strict".into(),
+            options.executable.to_string_lossy().into_owned(),
+        ],
+        None,
+    )?
+    .success
+    {
+        return Err("Copilot native code signature verification failed; a signature check does not establish publisher identity".into());
+    }
+    runtime::validate_native(&options)?;
+    let (credential, credential_hash) = selected_credential(
+        &options,
+        std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+    )?;
+    let bundle = serde_json::to_string_pretty(&copilot::minimize(object))
+        .map_err(|_| "cannot encode minimized Copilot bundle")?;
+    if bundle.len() > MAX_PREVIEW {
+        return Err("minimized Copilot bundle exceeds64KiB".into());
+    }
+    let mut prepared = PreparedAdvice {
+        options,
+        bundle,
+        summary: String::new(),
+        created: Instant::now(),
+        credential_hash,
+        account: credential.account,
+    };
+    prepared.summary = format!(
+        "COPILOT DIAGNOSTIC TRANSFER / NOT SENT\nHost: {}\nCredential account label: {} (operator supplied, not an independently verified account identity)\nModel: {} | wall/CPU budget {}s\nNative executable SHA-256: {}\nThe supplied pin must come from an independently trusted publisher source. Matching bytes and native code-sign validation do not establish publisher identity.\n\nOnly the exact minimized status bundle below is authorized. No Kubernetes credentials, resource names, messages, manifests or logs are included. Unknown strings are replaced with Other. Numeric counters can still be confidential.\n\nWhole-process macOS OS policy: empty private HOME, restricted reads, workspace-only writes, no child executables, and no direct networking. Authenticated local broker permits only exact approved TLS CONNECT authorities and matching SNI: {}. These provider services process the diagnostics.\nTool/MCP/instruction/auto-login switches are defense in depth, not a sandbox. The selected credential source is explicit and host/account-bound. A chosen gh account may have authority broader than Copilot; KBorg cannot independently introspect all grants. No ambient environment token or automatic account fallback is used. Only the separate pinned gh credential lookup, when explicitly selected, can access its user HOME/config and keychain. The Copilot child cannot access them.\n\nOutput is untrusted advice. No suggested command is executed or automatically approved. Approval expires after5minutes.\nType exactly: {}",
+        prepared.options.host,
+        prepared.account,
+        prepared.options.model,
+        prepared.options.seconds,
+        prepared.options.expected_sha256,
+        proxy::HOSTS.join(", "),
+        prepared.confirmation()
+    );
+    Ok(prepared)
+}
+pub async fn run(
+    prepared: PreparedAdvice,
+    confirmation: &str,
+    mut cancel: Option<tokio::sync::oneshot::Receiver<()>>,
+) -> Result<AdviceOutput> {
+    if confirmation != prepared.confirmation()
+        || prepared.created.elapsed() > Duration::from_secs(300)
+    {
+        return Err(
+            "Copilot transfer approval expired or exact host/account confirmation changed".into(),
+        );
+    }
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    struct Guard(
+        std::sync::Arc<std::sync::atomic::AtomicBool>,
+        std::sync::Arc<std::sync::atomic::AtomicBool>,
+    );
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            use std::sync::atomic::Ordering;
+            self.0.store(true, Ordering::Release);
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while !self.1.load(Ordering::Acquire) && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        }
+    }
+    struct Done(std::sync::Arc<std::sync::atomic::AtomicBool>);
+    impl Drop for Done {
+        fn drop(&mut self) {
+            self.0.store(true, std::sync::atomic::Ordering::Release);
+        }
+    }
+    let _guard = Guard(stop.clone(), done.clone());
+    let worker_stop = stop.clone();
+    let mut worker = tokio::task::spawn_blocking(move || {
+        let _done = Done(done);
+        runtime::execute(prepared, worker_stop)
+    });
+    let canceled = async {
+        if let Some(receiver) = &mut cancel {
+            let _ = receiver.await;
+        } else {
+            std::future::pending::<()>().await;
+        }
+    };
+    tokio::select! {result=&mut worker=>result.map_err(|_|"Copilot worker ended unexpectedly; no remediation is authorized".to_owned())?,_=canceled=>{stop.store(true,std::sync::atomic::Ordering::SeqCst);let _=worker.await;Err("Copilot request canceled; a reviewed diagnostic request may already have reached the provider".into())}}
+}
+#[cfg(test)]
+mod policy_tests {
+    use super::*;
+    fn policy() -> Value {
+        json!({"schema_version":1,"executable":"/native/copilot","expected_sha256":"a".repeat(64),"host":"github.com","gh_cli":{"executable":"/native/gh","expected_sha256":"b".repeat(64),"account":"c0dewars","config_dir":"/explicit/gh"},"model":"auto","seconds":60})
+    }
+    #[test]
+    fn strict_policy_selects_one_host_account_source_and_rejects_duplicates() -> Result<()> {
+        let valid = policy();
+        let options: Options =
+            serde_json::from_value(valid.clone()).map_err(|_| "valid policy failed")?;
+        options.validate()?;
+        for changed in [
+            json!({"host":"evil.example"}),
+            json!({"credential_file":"/second/source"}),
+            json!({"seconds":121}),
+        ] {
+            let mut value = valid.clone();
+            for (key, value2) in changed.as_object().ok_or("object")? {
+                value[key] = value2.clone();
+            }
+            let result = serde_json::from_value::<Options>(value);
+            assert!(result.is_err() || result.is_ok_and(|options| options.validate().is_err()));
+        }
+        let duplicate = serde_json::to_string(&valid)
+            .map_err(|_| "encode")?
+            .replacen(
+                "\"schema_version\":1",
+                "\"schema_version\":1,\"schema_version\":1",
+                1,
+            );
+        assert!(serde_json::from_str::<Options>(&duplicate).is_err());
+        let mut unknown = valid;
+        unknown["gh_cli"]["token"] = "ignored_secret".into();
+        assert!(serde_json::from_value::<Options>(unknown).is_err());
+        Ok(())
+    }
+    #[test]
+    fn token_sources_cannot_silently_accept_classic_or_ambient_authority() {
+        assert!(valid_token(&format!("gho_{}", "a".repeat(36)), false));
+        assert!(!valid_token(&format!("gho_{}", "a".repeat(36)), true));
+        assert!(!valid_token(&format!("ghp_{}", "a".repeat(36)), false));
+        assert!(!valid_token("secret\ncanary", false));
+        let first = Credential {
+            schema_version: 1,
+            host: "github.com".into(),
+            account: "first".into(),
+            token: format!("gho_{}", "a".repeat(36)),
+        };
+        let mut second = Credential {
+            schema_version: 1,
+            host: first.host.clone(),
+            account: first.account.clone(),
+            token: first.token.clone(),
+        };
+        assert_eq!(credential_hash(&first), credential_hash(&second));
+        second.account = "other".into();
+        assert_ne!(credential_hash(&first), credential_hash(&second));
+        second.account = first.account.clone();
+        second.token.push('b');
+        assert_ne!(credential_hash(&first), credential_hash(&second));
+    }
+}
+
+#[cfg(all(test, unix))]
+mod authority_tests {
+    use super::*;
+    #[test]
+    fn writable_or_linked_authority_is_rejected_before_parsing() -> Result<()> {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir()
+            .canonicalize()
+            .map_err(|_| "temp")?
+            .join(format!(
+                "kborg-policy-test-{}-{}",
+                std::process::id(),
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map_err(|_| "clock")?
+                    .as_nanos()
+            ));
+        safety::ensure_private_dir(&root)?;
+        struct Cleanup(PathBuf);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                let _ = fs::remove_dir_all(&self.0);
+            }
+        }
+        let _cleanup = Cleanup(root.clone());
+        let file = root.join("policy.json");
+        safety::write_new(&file, b"{}")?;
+        assert!(authority_read(&file, 4096).is_ok());
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o660)).map_err(|_| "mode")?;
+        assert!(authority_read(&file, 4096).is_err());
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o600)).map_err(|_| "mode")?;
+        fs::hard_link(&file, root.join("second-link")).map_err(|_| "link")?;
+        assert!(authority_read(&file, 4096).is_err());
         Ok(())
     }
 }

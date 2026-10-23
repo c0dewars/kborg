@@ -22,6 +22,7 @@ def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--binary",type=Path,required=True)
     parser.add_argument("--screenshots",type=Path,required=True)
+    parser.add_argument("--theme",default="flexoki-dark")
     args=parser.parse_args()
     binary=args.binary.resolve(strict=True)
     digest=hashlib.sha256(binary.read_bytes()).hexdigest()
@@ -31,9 +32,9 @@ def main():
         original=termios.tcgetattr(slave)
         fcntl.ioctl(slave,termios.TIOCSWINSZ,struct.pack("HHHH",34,120,0,0))
         environment=os.environ.copy()
-        environment.update(TERM="xterm-256color",COLORTERM="truecolor",KBORG_CONFIG_DIR=str(Path(temporary).resolve()))
+        environment.update(TERM="xterm-256color",COLORTERM="truecolor",LC_ALL="en_US.UTF-8",KBORG_CONFIG_DIR=str(Path(temporary).resolve()))
         environment.pop("NO_COLOR",None)
-        process=_spawn([str(binary),"--demo","--theme","catppuccin-mocha","--write","--allow-helm","--allow-helm-write","--allow-helm-hooks","--allow-helm-crds","--helm-tool","/demo/helm","--no-splash","--no-mouse","--color=always"],environment,slave)
+        process=_spawn([str(binary),"--demo","--theme",args.theme,"--write","--allow-helm","--allow-helm-write","--allow-helm-hooks","--allow-helm-crds","--helm-tool","/demo/helm","--no-splash","--no-mouse","--color=always"],environment,slave)
         screen=Screen(120,34)
         def drain(seconds=.12):
             end=time.monotonic()+seconds
@@ -42,13 +43,15 @@ def main():
                     try:data=os.read(master,65536)
                     except OSError:break
                     if not data:break
-                    screen.feed(data.decode("utf-8",errors="replace"))
+                    screen.feed(data)
         def keys(value=b"",expected=None):
             if value:os.write(master,value)
             end=time.monotonic()+8
             while time.monotonic()<end:
                 drain()
-                if expected is None or expected in screen.text():return
+                if expected is None or expected in screen.text():
+                    drain(.2)
+                    return
                 if process.poll() is not None:break
             raise RuntimeError(f"preview did not reach {expected!r}\n{screen.text()}")
         def capture(name):
@@ -63,7 +66,7 @@ def main():
             keys(b":helm\r","HELM / releases")
             capture("helm-releases")
             keys(b"i","INSTALL HELM RELEASE")
-            keys(b"\tdemo-new")
+            keys(b"\tdemo-new", "demo-new_")
             capture("helm-install-form")
             keys(b"\r","HELM REVIEW")
             capture("helm-review-overview")
@@ -73,14 +76,28 @@ def main():
             capture("helm-test-form")
             keys(b"\x1b","HELM / releases")
             keys(b":helm-crds-delete\r","DELETE CHART CRDS")
-            keys(b"\tdemo-schema")
+            keys(b"\tdemo-schema", "demo-schema_")
             capture("crd-delete-form")
+            keys(b"\x1b", "HELM / releases")
+            keys(b":helm-crds-migrate\r", "MIGRATE CRD STORAGE")
+            keys(b"\tdemo-schema", "demo-schema_")
+            capture("crd-migrate-form")
             fcntl.ioctl(slave,termios.TIOCSWINSZ,struct.pack("HHHH",12,48,0,0))
             screen=Screen(48,12)
             os.killpg(process.pid,signal.SIGWINCH)
             drain(.4)
-            capture("crd-delete-narrow")
+            capture("crd-migrate-narrow")
             keys(b"\x1b")
+            keys(b"\x1b")
+            fcntl.ioctl(slave,termios.TIOCSWINSZ,struct.pack("HHHH",34,120,0,0))
+            screen=Screen(120,34)
+            os.killpg(process.pid,signal.SIGWINCH)
+            drain(.3)
+            keys(b":pods\r", "api-7d4f9")
+            keys(b":copilot\r", "COPILOT / local preview only")
+            capture("copilot-local-preview")
+            keys(b"\r", "Local previews cannot send")
+            capture("copilot-demo-send-blocked")
             keys(b"\x1b")
             keys(b":q\r")
             end=time.monotonic()+6
@@ -94,7 +111,7 @@ def main():
             os.close(master)
             os.close(slave)
     assert hashlib.sha256(binary.read_bytes()).hexdigest()==digest,"binary changed during preview"
-    report={"passed":True,"binary_sha256":digest,"terminal_restored":True,"screens":captures}
+    report={"passed":True,"theme":args.theme,"binary_sha256":digest,"terminal_restored":True,"screens":captures}
     args.screenshots.mkdir(parents=True,exist_ok=True)
     (args.screenshots/"report.json").write_text(json.dumps(report,indent=2)+"\n")
     print(json.dumps(report,indent=2))
