@@ -14,6 +14,8 @@ For rollback, stop KBorg and select the previous versioned binary. This does not
 
 Supported fields: `schema_version` (1), `profile` (`read-only` or `operator`), optional `context`, `namespace`, `theme`, and booleans `no_splash`, `poll`, `allow_logs`, `allow_helm`, `allow_helm_write`, `allow_helm_hooks`, `allow_helm_crds`, `allow_exec`, `allow_attach`, `allow_forward`, `allow_tools`, `allow_extensions`, `allow_auth_helper`. Unknown/duplicate fields fail. Default generated config prohibits sensitive capabilities. Config never stores credentials. Helm lifecycle requires an `operator` profile permitting both Helm capabilities when a config file is supplied, plus all three explicit CLI flags.
 
+YAML editing and node maintenance currently use CLI-only capability flags (`--allow-yaml-edit` and `--allow-node-maintenance`) together with `--write`. Schema 1 does not define corresponding per-capability configuration fields. A read-only profile still rejects `--write`; an operator profile does not separately constrain these two flags. Each operation requires its complete review and exact confirmation, and Kubernetes RBAC/admission remains authoritative.
+
 `kborg completions bash|zsh|fish|powershell` emits a static script; review and load it through your shell's normal configuration. It makes no cluster calls.
 
 ## Unknown operations and audit
@@ -28,7 +30,7 @@ Start with a dedicated read-only identity and narrow namespace, then a small sta
 
 ## Local builds without paid CI
 
-GitHub Actions is manual-only at the owner's request; pushes and pull requests do not start hosted jobs. Run `./scripts/Check.ps1` and `cargo build --release --locked` locally, then `./scripts/Package-Release.ps1 -Target <installed-native-target> -SourceCommit <exact-clean-source-commit>` on the target operating system. The packaging script runs the binary, so use a native machine/VM with that architecture; a cross-compiled executable is not equivalent to native acceptance. Windows and WSL cover Windows x64 and Linux x64 here. Verified earlier Linux ARM64 and both macOS packages remain available with their original source records. New native macOS/ARM builds need access to those machines or a separately chosen free runner; no paid service is required for local development.
+GitHub Actions is manual-only at the owner's request; pushes and pull requests do not start hosted jobs. Run `./scripts/Check.ps1` locally, commit the reviewed source and documentation, then run `./scripts/Package-Release.ps1 -Target <installed-native-target> -SourceCommit <exact-clean-source-commit>` on the target operating system. The packager verifies clean HEAD and tracked inputs, builds in a fresh target directory and runs offline CLI/configuration smokes. It does not run the full test suite or inherit its result from another build. Use a native machine with the matching compiler and PowerShell process architecture; cross-compilation is not native acceptance. Current Mac ARM64 and historical other-platform results are linked from the [acceptance register](REMAINING_WORK.md). Publisher signing/notarization is a separate release step; no paid service is required for local development.
 
 ## Reviewed external views
 
@@ -100,9 +102,12 @@ deployment container. Requests must be positive and not exceed limits; limits
 are capped at 64 cores/128 GiB. Other resource keys, claims, containers and workload
 fields are preserved. Only equivalent spellings of these four quantities are
 normalized during dry-run comparison; all other spec/metadata effects remain
-strict. Generic YAML edits, resource removal and custom-resource writes remain
-excluded. Every approval displays the complete bounded review; oversized/control
-text is refused instead of clipped.
+strict. Existing namespaced non-Secret resource specs, including supported custom
+resources, can also use the separately enabled [YAML editor](YAML_EDITING.md).
+Resource creation, generic apply and metadata/status edits remain excluded.
+Every approval displays the complete bounded review. Non-ASCII values and literal
+backslashes use distinct escapes before wrapping and read-all accounting; oversized
+expanded reviews cannot be approved.
 
 Long follow keeps a rolling display and marks discarded/truncated lines. End
 resumes tail; Home/Page keys inspect older retained lines. Quiet streams remain
@@ -111,10 +116,12 @@ from 8 MiB ordinary documents, with 15-second headers and 10-second ordinary-bod
 budgets. Quiet eight-second watch intervals renew without permanently losing
 fresh counts; transient faults still reconnect and authorization denial stops.
 
-`o`/`overview --follow` watches at most four explicitly named contexts. Each owns
-its credentials/cache/error and one cancellable watch; summaries coalesce in one
-mailbox and close/scope changes abort all feeds. No object data or credentials are
-shared. Broader independent-cluster soak tests remain open.
+`D`/`overview --follow` watches at most four explicitly named contexts. Each owns
+its credentials, bounded Pod/Event caches and independent errors, with up to two
+cancellable watches per context. Summaries coalesce in one mailbox and close/scope
+changes abort all feeds. No object data or credentials are shared between contexts.
+See [dashboard controls](DASHBOARD.md) and [Mac v1 hardening acceptance](MAC_V1_HARDENING_ACCEPTANCE.md)
+for the current soak and terminal evidence and its limits.
 
 ## Helm lifecycle, workload logs and Desktop metrics
 

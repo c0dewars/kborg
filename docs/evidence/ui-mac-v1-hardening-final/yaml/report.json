@@ -1,0 +1,40 @@
+{
+  "passed": true,
+  "context": "docker-desktop",
+  "binary_sha256": "32a6b514bce9ab3edf247248c91e84abbce363b82980a06a6b440e9450bd4cd5",
+  "checks": [
+    "editor cancel preserves live resource",
+    "invalid YAML retains buffer",
+    "fully painted diff and exact target confirmation before apply",
+    "real JSON Patch preserves hidden fields and metadata",
+    "TUI exit restores terminal mode",
+    "interactive explicit-file CLI applies reviewed spec and preserves hidden fields"
+  ],
+  "captures": [
+    {
+      "name": "yaml-editor",
+      "path": "/Users/brunogarcia/Desktop/HyperMac/repos/kborg/docs/evidence/ui-mac-v1-hardening-final/yaml/yaml-editor.png",
+      "width": 140,
+      "height": 40
+    },
+    {
+      "name": "yaml-invalid-retained",
+      "path": "/Users/brunogarcia/Desktop/HyperMac/repos/kborg/docs/evidence/ui-mac-v1-hardening-final/yaml/yaml-invalid-retained.png",
+      "width": 140,
+      "height": 40
+    },
+    {
+      "name": "yaml-reviewed-diff",
+      "path": "/Users/brunogarcia/Desktop/HyperMac/repos/kborg/docs/evidence/ui-mac-v1-hardening-final/yaml/yaml-reviewed-diff.png",
+      "width": 140,
+      "height": 40
+    },
+    {
+      "name": "yaml-applied",
+      "path": "/Users/brunogarcia/Desktop/HyperMac/repos/kborg/docs/evidence/ui-mac-v1-hardening-final/yaml/yaml-applied.png",
+      "width": 140,
+      "height": 40
+    }
+  ],
+  "fixture_cleanup": true
+}

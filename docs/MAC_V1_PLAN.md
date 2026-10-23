@@ -11,8 +11,11 @@ Reviewed 2026-10-23. A v1 release means the documented Mac workflow is installab
 5. UI: quiet header with only `?` help, stable identity/status, continuous frames, visible mode, log severity text filters and clearer editor/review screens. Familiar commands remain available through the keyboard.
 6. Dashboard cards: independent context health and warning evidence, responsive layout, numbered focus and a contextual legend.
 7. Saved selections: opt-in context groups and resource/workload scopes, private bounded storage and destination/UID revalidation.
+8. Approval hardening: distinct Unicode/backslash review text, bounded expansion, minimum visible export dimensions and refusal when approval-time terminal size is unknown.
+9. Mac terminal evidence: 10 PTY profiles, narrow/wide resize recovery and an isolated real tmux session; persistent saved-picker controls.
+10. Native packaging: clean-source verification, fresh native build, honest smoke-test records and archives without macOS filesystem metadata.
 
-Acceptance and screenshots: [current report](DASHBOARD_ACCEPTANCE.md). Exact limits: [operations](MAC_V1_OPERATIONS.md).
+Acceptance and screenshots: [current hardening report](MAC_V1_HARDENING_ACCEPTANCE.md), [dashboard implementation](DASHBOARD_ACCEPTANCE.md). Exact limits: [operations](MAC_V1_OPERATIONS.md).
 
 ## k10s comparison and next implementation batches
 
@@ -33,10 +36,9 @@ Next feature batch: explicitly opted-in dynamic log membership, then direct warn
 
 ## Release gates after workflows
 
-- Repeatable native Mac package build; publisher signing/notarization and authenticated provenance require a configured signing identity.
-- First-run setup and diagnostics for optional tools; documented update/rollback/uninstall.
-- Multi-hour real-cluster soak: API outages, 429s, reconnects, token/certificate rotation, floods, memory growth and interruption recovery.
-- Actual Terminal/iTerm/SSH/tmux and narrow-font checks, accessibility review and broader Unicode handling.
-- Independent security review and realistic organizational pilot; dependency audit and local tests remain supporting evidence.
+- Publisher signing/notarization and authenticated provenance still require a signing identity and release authority. Native unsigned packaging and its offline first-run checks now have retained evidence.
+- Continuous local-cluster soak results are tracked in [the hardening acceptance](MAC_V1_HARDENING_ACCEPTANCE.md). Production-scale floods, provider token/certificate rotation, reconnect storms and deployment-specific latency remain separate acceptance work; synthetic HTTPS cases cover bounded protocol behavior only.
+- Native Terminal/iTerm font checks, remote SSH, screen readers and broader Unicode handling remain. The computer-use tool explicitly blocked native terminal applications; the PTY matrix and actual isolated tmux checks passed.
+- Independent external security assessment and a realistic organizational pilot remain. The internal review, known-advisory scan, reviewed operations guide and local tests support these gates without replacing them.
 
 Windows/cloud/enterprise Copilot expansion, arbitrary chart compatibility and advanced CRD conversion follow the scoped Mac release. Privileged node shell, automatic AI remediation and arbitrary in-process plugins remain excluded.

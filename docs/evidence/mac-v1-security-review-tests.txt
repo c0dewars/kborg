@@ -1,0 +1,39 @@
+   Compiling kborg v0.3.0 (/Users/brunogarcia/Desktop/HyperMac/repos/kborg)
+    Finished `test` profile [unoptimized] target(s) in 5.05s
+     Running unittests src/lib.rs (target/debug/deps/kborg-80fa7d9a9f38e3a8)
+
+running 32 tests
+test advice::tests::preview_is_minimized_host_bound_and_never_executable ... ok
+test auth::tests::reviewed_native_policy_binds_rotation_context_endpoint_ca_argv_and_environment ... ok
+test edit::tests::resource_edits_preserve_unreviewed_data_and_require_exact_bounded_quantities ... ok
+test edit::tests::unified_workload_edits_preserve_other_fields_and_emit_only_reviewed_patch ... ok
+test gateway::tests::atomic_container_edit_uses_workload_api_and_rejects_unreviewed_admission ... ok
+test gateway::tests::offline_image_edit_is_reviewed_and_updates_the_sample ... ok
+test gateway::tests::prepared_review_cannot_be_changed_after_dry_run ... ok
+test gateway::yaml_gateway_tests::yaml_demo_requires_separate_capability_and_expires_reviews ... ok
+test gateway::yaml_gateway_tests::yaml_patch_contains_only_reviewed_paths_and_atomic_uid_version_tests ... ok
+test helm_extensions::tests::stored_hook_omitted_defaults_cannot_change_the_reviewed_execution_policy ... ok
+test helm_lifecycle::tests::stored_release_review_never_implies_supplied_keyring_enforcement ... ok
+test helm_migration::tests::partial_rewrite_can_be_freshly_reviewed_and_stale_inventory_stops_before_switch ... ok
+test helm_sigstore::tests::trust_authority_permissions_are_checked_before_staging_and_after_review ... ok
+test navigation_views::tests::local_previews_redact_all_documents_and_bound_parser_work ... ok
+test node_maintenance::tests::complete_review_has_real_dry_run_and_no_pod_contents ... ok
+test node_maintenance::tests::dry_run_rejects_unreviewed_admission_scheduling_changes ... ok
+test ops::tests::rejects_invisible_arguments_and_truncated_reviews ... ok
+test policy::tests::atomic_container_edit_is_scoped_and_binds_every_reviewed_field ... ok
+test safety::tests::approval_preview_rejects_long_aliases_and_never_omits_effects ... ok
+test tui::advice_ui::tests::transfer_review_escapes_before_wrapping_and_refuses_excessive_display ... ok
+test tui::helm_ui::tests::helm_review_uses_escaped_text_for_both_layout_and_approval ... ok
+test tui::helm_ui::tests::review_overview_preserves_the_complete_plan_and_coverage_requirement ... ok
+test tui::helm_ui::tests::review_requires_every_painted_line_and_resets_for_resize_and_epoch ... ok
+test tui::layout_tests::copilot_closed_queue_and_late_previews_do_not_leave_loading_views ... ok
+test tui::layout_tests::helm_lifecycle_gates_cancel_review_stale_scope_and_unknown_outcome ... ok
+test tui::layout_tests::helm_status_tracks_current_draft_review_and_execution ... ok
+test tui::layout_tests::mutation_and_session_reviews_never_approve_lossy_unicode_or_overflow ... ok
+test tui::layout_tests::resize_reflows_details_and_confirmation_cannot_approve_hidden_review ... ok
+test tui::layout_tests::theme_creation_captures_preview_palette_and_cancel_restores_previous_theme ... ok
+test tui::review_ui::tests::full_painted_review_is_required_and_resizing_invalidates_it ... ok
+test tui::review_ui::tests::unicode_review_accounts_for_every_escaped_cell_and_overflow_blocks_approval ... ok
+test tui::review_ui::tests::wrapping_preserves_every_review_character_and_prefers_word_boundaries ... ok
+
+test result: ok. 32 passed; 0 failed; 0 ignored; 0 measured; 386 filtered out; finished in 0.49s

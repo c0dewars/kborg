@@ -1,0 +1,124 @@
+{
+  "schema": 1,
+  "passed": true,
+  "started_utc": "2026-10-23T12:54:23.573567+00:00",
+  "context": "kborg-soak-v1",
+  "namespace": "kborg-soak-2edfa920cf46",
+  "run_id": "f9ac6a5608be41d4a2a010d992f74a93",
+  "requested_seconds": 60,
+  "binary_sha256": "32a6b514bce9ab3edf247248c91e84abbce363b82980a06a6b440e9450bd4cd5",
+  "harness_sha256": "7453a3e6d0abfb8b779dc7c830bf4fa78ad56ad7877ed75e424f8e934e8c90dd",
+  "checks": [
+    "Three continuous read-only processes converged in the explicit fixture namespace",
+    "Continuous requested duration completed without process exit or panic",
+    "Owned periodic Pod additions/deletions reached resource and dashboard watches and final TUI counts",
+    "RSS stayed below 256 MiB per process and quarter-median growth below 64 MiB",
+    "Average CPU stayed below 25% of one core per process after the first 30 seconds",
+    "Output and JSON-record budgets held without retaining raw transcripts",
+    "Dashboard closed and quit successfully with exact terminal attributes restored"
+  ],
+  "captures": [
+    {
+      "name": "soak-start-dashboard",
+      "path": "/Users/brunogarcia/Desktop/HyperMac/repos/kborg/docs/evidence/soak-v1-smoke-minikube/soak-start-dashboard.png",
+      "columns": 120,
+      "rows": 32
+    },
+    {
+      "name": "soak-final-dashboard",
+      "path": "/Users/brunogarcia/Desktop/HyperMac/repos/kborg/docs/evidence/soak-v1-smoke-minikube/soak-final-dashboard.png",
+      "columns": 120,
+      "rows": 32
+    }
+  ],
+  "mutations": [
+    {
+      "elapsed_seconds": 5.524,
+      "expected_pods": 2
+    },
+    {
+      "elapsed_seconds": 20.912,
+      "expected_pods": 1
+    },
+    {
+      "elapsed_seconds": 36.508,
+      "expected_pods": 2
+    },
+    {
+      "elapsed_seconds": 51.788,
+      "expected_pods": 1
+    }
+  ],
+  "fault": null,
+  "limits": {
+    "rss_per_process_kib": 262144,
+    "rss_growth_kib": 65536,
+    "total_output_per_process_bytes": 536870912,
+    "json_record_bytes": 16777216,
+    "average_cpu_core_percent_after_30_seconds": 25
+  },
+  "claims_excluded": [
+    "429 throttling",
+    "credential/token rotation",
+    "certificate rotation",
+    "organizational production pilot",
+    "native terminal font rendering"
+  ],
+  "configured_current_context_before": "",
+  "kubernetes_version": "v1.35.9",
+  "fixture_namespace_uid": "95b988dc-e1c0-41a7-af47-65eccf4bfbf3",
+  "issued_token_remaining_seconds_at_start": 660,
+  "continuous_started_utc": "2026-10-23T12:54:25.823604+00:00",
+  "actual_continuous_seconds": 60.135,
+  "continuous_finished_utc": "2026-10-23T12:55:25.958411+00:00",
+  "processes": {
+    "resource": {
+      "samples": 12,
+      "rss_peak_kib": 13040,
+      "rss_early_quarter_median_kib": 12752,
+      "rss_late_quarter_median_kib": 13008,
+      "rss_growth_kib": 256,
+      "cpu_peak_percent": 0.1,
+      "cpu_last_sample_seconds": 0.02,
+      "output_bytes": 75238,
+      "records": 19,
+      "observed_counts": [
+        1,
+        2
+      ],
+      "stale_records": 0
+    },
+    "dashboard": {
+      "samples": 12,
+      "rss_peak_kib": 13552,
+      "rss_early_quarter_median_kib": 13280,
+      "rss_late_quarter_median_kib": 13552,
+      "rss_growth_kib": 272,
+      "cpu_peak_percent": 0.1,
+      "cpu_last_sample_seconds": 0.02,
+      "output_bytes": 22073,
+      "records": 46,
+      "observed_counts": [
+        1,
+        2
+      ],
+      "stale_records": 3
+    },
+    "tui": {
+      "samples": 12,
+      "rss_peak_kib": 15056,
+      "rss_early_quarter_median_kib": 14928,
+      "rss_late_quarter_median_kib": 15056,
+      "rss_growth_kib": 128,
+      "cpu_peak_percent": 0.4,
+      "cpu_last_sample_seconds": 0.06,
+      "output_bytes": 482315,
+      "records": 0,
+      "observed_counts": [],
+      "stale_records": 0
+    }
+  },
+  "configured_current_context_after": "",
+  "fixture_cleanup": true,
+  "finished_utc": "2026-10-23T12:55:31.390762+00:00"
+}

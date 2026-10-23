@@ -1,0 +1,12 @@
+{
+  "passed": true,
+  "validated_at_utc": "2026-10-23T12:59:02.397161+00:00",
+  "context": "docker-desktop",
+  "test_target": "manifest_edit_live",
+  "ignored_live_tests_passed": 1,
+  "test_reported_seconds": 3.11,
+  "tested_source_manifest": "mac-v1-hardening-source.json",
+  "release_binary_sha256": "32a6b514bce9ab3edf247248c91e84abbce363b82980a06a6b440e9450bd4cd5",
+  "fixture_scope": "fresh uniquely owned kborg-yaml-* namespace; zero-replica Deployment; namespace UID precondition on cleanup",
+  "fixture_cleanup_verified": true
+}

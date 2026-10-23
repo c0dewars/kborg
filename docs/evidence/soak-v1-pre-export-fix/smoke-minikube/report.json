@@ -1,0 +1,125 @@
+{
+  "schema": 1,
+  "passed": true,
+  "started_utc": "2026-10-23T12:20:14.175777+00:00",
+  "context": "kborg-soak-v1",
+  "namespace": "kborg-soak-d1131749496b",
+  "run_id": "51a8deaca12346bc933ba774d10fe1e6",
+  "requested_seconds": 60,
+  "binary_sha256": "3711c0fffb3cfe87cb6babd67ab7b6ff3233d83881df62e8a5c7b057043173d7",
+  "harness_sha256": "f0b8a2e09a0c3a0d71e943491fbee8c8e4cac3c8ae4793147ddf7ad08cc70542",
+  "checks": [
+    "Three continuous read-only processes converged in the explicit fixture namespace",
+    "Continuous requested duration completed without process exit or panic",
+    "Owned periodic Pod additions/deletions reached resource and dashboard watches and final TUI counts",
+    "RSS stayed below 256 MiB per process and quarter-median growth below 64 MiB",
+    "Average CPU stayed below 25% of one core per process after the first 30 seconds",
+    "Output and JSON-record budgets held without retaining raw transcripts",
+    "Dashboard closed and quit successfully with exact terminal attributes restored"
+  ],
+  "captures": [
+    {
+      "name": "soak-start-dashboard",
+      "path": "/Users/brunogarcia/Desktop/HyperMac/repos/kborg/docs/evidence/soak-v1-pre-export-fix/smoke-minikube/soak-start-dashboard.png",
+      "columns": 120,
+      "rows": 32
+    },
+    {
+      "name": "soak-final-dashboard",
+      "path": "/Users/brunogarcia/Desktop/HyperMac/repos/kborg/docs/evidence/soak-v1-pre-export-fix/smoke-minikube/soak-final-dashboard.png",
+      "columns": 120,
+      "rows": 32
+    }
+  ],
+  "mutations": [
+    {
+      "elapsed_seconds": 5.284,
+      "expected_pods": 2
+    },
+    {
+      "elapsed_seconds": 20.629,
+      "expected_pods": 1
+    },
+    {
+      "elapsed_seconds": 35.965,
+      "expected_pods": 2
+    },
+    {
+      "elapsed_seconds": 51.311,
+      "expected_pods": 1
+    }
+  ],
+  "fault": null,
+  "limits": {
+    "rss_per_process_kib": 262144,
+    "rss_growth_kib": 65536,
+    "total_output_per_process_bytes": 536870912,
+    "json_record_bytes": 16777216,
+    "average_cpu_core_percent_after_30_seconds": 25
+  },
+  "claims_excluded": [
+    "429 throttling",
+    "credential/token rotation",
+    "certificate rotation",
+    "organizational production pilot",
+    "native terminal font rendering"
+  ],
+  "configured_current_context_before": "",
+  "kubernetes_version": "v1.35.9",
+  "fixture_namespace_uid": "88bd9e8a-7515-42dc-9539-55be60a99d2a",
+  "issued_token_remaining_seconds_at_start": 660,
+  "continuous_started_utc": "2026-10-23T12:20:16.588330+00:00",
+  "actual_continuous_seconds": 60.097,
+  "continuous_finished_utc": "2026-10-23T12:21:16.685721+00:00",
+  "processes": {
+    "resource": {
+      "samples": 12,
+      "rss_peak_kib": 13248,
+      "rss_early_quarter_median_kib": 12832,
+      "rss_late_quarter_median_kib": 13248,
+      "rss_growth_kib": 416,
+      "cpu_peak_percent": 0.1,
+      "cpu_last_sample_seconds": 0.02,
+      "output_bytes": 80067,
+      "records": 20,
+      "observed_counts": [
+        1,
+        2
+      ],
+      "stale_records": 0
+    },
+    "dashboard": {
+      "samples": 12,
+      "rss_peak_kib": 13520,
+      "rss_early_quarter_median_kib": 13152,
+      "rss_late_quarter_median_kib": 13504,
+      "rss_growth_kib": 352,
+      "cpu_peak_percent": 0.1,
+      "cpu_last_sample_seconds": 0.02,
+      "output_bytes": 22584,
+      "records": 47,
+      "observed_counts": [
+        1,
+        2
+      ],
+      "stale_records": 3
+    },
+    "tui": {
+      "samples": 12,
+      "rss_peak_kib": 15088,
+      "rss_early_quarter_median_kib": 14896,
+      "rss_late_quarter_median_kib": 15088,
+      "rss_growth_kib": 192,
+      "cpu_peak_percent": 0.5,
+      "cpu_last_sample_seconds": 0.07,
+      "output_bytes": 462901,
+      "records": 0,
+      "observed_counts": [],
+      "stale_records": 0
+    }
+  },
+  "configured_current_context_after": "",
+  "fixture_cleanup": true,
+  "finished_utc": "2026-10-23T12:21:22.171143+00:00",
+  "archive_note": "Historical pre-export-fix smoke; capture paths updated after evidence relocation."
+}

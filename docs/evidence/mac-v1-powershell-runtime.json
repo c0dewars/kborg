@@ -1,0 +1,9 @@
+{
+  "downloaded_at_utc": "2026-10-23T12:24:16.021054+00:00",
+  "release": "https://github.com/PowerShell/PowerShell/releases/tag/v7.6.8",
+  "published_at": "2026-10-22T17:06:53Z",
+  "asset_url": "https://github.com/PowerShell/PowerShell/releases/download/v7.6.8/powershell-7.6.8-osx-arm64.tar.gz",
+  "asset_sha256": "c16a3f433966c6fd5a9c8a660a95c92cb5dbc4b1813416501d1ba30ca160da32",
+  "official_checksums_sha256": "8b1e273a18ab7b3ab0d3fb1dc9fdc8f9631fec092ef48ca4ccfcaf32d6012b24",
+  "verification": "Archive matches both GitHub official release asset digest and release hashes.sha256; no publisher signing claim; runtime extracted only under ignored repo-local .local/tools."
+}
