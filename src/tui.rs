@@ -142,6 +142,8 @@ enum WritePlan {
     Yaml(Box<crate::manifest_edit::PreparedYaml>),
     Node(Box<crate::node_maintenance::ReviewedNode>),
     Apply(Box<crate::manifest_apply::PreparedApply>),
+    /// A registered read-only extension; it runs outside the TUI screen.
+    Tool(Box<crate::handoff::Prepared>),
 }
 struct WriteReview {
     plan: WritePlan,
@@ -293,6 +295,7 @@ struct App {
     pending_session: Option<(Box<crate::ops::ReviewedOperation>, String)>,
     /// Ctrl-E in the YAML editor: hand the draft to $EDITOR on the next loop.
     pending_editor: bool,
+    pending_tool: Option<(Box<crate::handoff::Prepared>, String)>,
     worker: Worker,
 }
 impl App {
@@ -710,6 +713,7 @@ pub fn run(options: Options) -> Result<()> {
         selection_ui: Default::default(),
         pending_session: None,
         pending_editor: false,
+        pending_tool: None,
         worker,
     };
     if first_run {
@@ -782,6 +786,29 @@ pub fn run(options: Options) -> Result<()> {
                     Err(error) => error,
                 };
             }
+            dirty = true;
+        }
+        if let Some((prepared, typed)) = app.pending_tool.take() {
+            drop(terminal_guard.take());
+            let allowed = app.options.allow_extensions && app.options.allow_tools;
+            let result = crate::handoff::run(*prepared, &typed, allowed);
+            terminal_guard = Some(Terminal::enter(app.options.mouse)?);
+            app.modal = Modal::Detail(
+                match result {
+                    Ok(outcome) => format!(
+                        "TOOL OUTPUT ({})\n{}{}",
+                        outcome.status,
+                        outcome.stdout,
+                        if outcome.stderr.is_empty() {
+                            String::new()
+                        } else {
+                            format!("\n\nTool stderr:\n{}", outcome.stderr)
+                        }
+                    ),
+                    Err(error) => format!("Tool did not run\n{error}"),
+                },
+                0,
+            );
             dirty = true;
         }
         if let Some((prepared, typed)) = app.pending_session.take() {

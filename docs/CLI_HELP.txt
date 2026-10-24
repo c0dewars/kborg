@@ -60,6 +60,7 @@ KBorg 0.3 — Kubernetes operations, under your control
   kborg auth-helper review --executable ABS [--env NAME=VALUE] --output POLICY
   kborg extensions list | register NAME --tool ABS | remove NAME
   kborg extensions run NAME RESOURCE OBJECT --allow-extensions --allow-tools
+  kborg extensions import-k9s PLUGINS.yaml   Report which k9s plugins can be registered
   kborg copilot preflight --cli ABS_NATIVE --host HOST
   kborg copilot diagnose RESOURCE NAME --copilot-policy ABS
   kborg copilot preview RESOURCE NAME --host HOST

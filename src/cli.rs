@@ -1472,6 +1472,12 @@ fn extensions_command(opts: &Options) -> Result<()> {
             else { for entry in entries {outputln!("{}\t{}\t{}",entry.id,entry.executable.display(),entry.sha256);} }
             Ok(())
         },
+        Some("import-k9s") if args.len()==2 && !opts.json => {
+            let path=std::path::Path::new(&args[1]);
+            let bytes=safety::read_small(path,256*1024)?;
+            output!("{}",crate::extensions::import_k9s(std::str::from_utf8(&bytes).map_err(|_|"plugins.yaml must be UTF-8")?)?);
+            Ok(())
+        },
         Some("remove") if args.len()==2 && !opts.json => {
             crate::extensions::remove(&args[1])?; outputln!("Local extension registration removed."); Ok(())
         },
@@ -1509,7 +1515,7 @@ fn extensions_command(opts: &Options) -> Result<()> {
             if !outcome.success {return Err("extension tool exited unsuccessfully".into());}
             Ok(())
         },
-        _=>Err("usage: extensions list [--json] | register NAME --tool ABS [--tool-arg ARG] | remove NAME | run NAME RESOURCE OBJECT --allow-extensions --allow-tools".into()),
+        _=>Err("usage: extensions list [--json] | register NAME --tool ABS [--tool-arg ARG] | remove NAME | run NAME RESOURCE OBJECT --allow-extensions --allow-tools | import-k9s PLUGINS.yaml".into()),
     }
 }
 

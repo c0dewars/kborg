@@ -74,8 +74,14 @@ impl App {
                     let (width, height) =
                         approval_size().map_err(|_| "cannot read terminal size for approval")?;
                     if !self.busy && review.view.ready(width, height, self.epoch) {
+                        if let WritePlan::Tool(prepared) = review.plan {
+                            self.pending_tool = Some((prepared, review.view.typed));
+                            self.status = "Running the reviewed tool…".into();
+                            return Ok(false);
+                        }
                         self.modal = Modal::WriteRunning;
                         let task = match review.plan {
+                            WritePlan::Tool(_) => return Ok(false),
                             WritePlan::Yaml(prepared) => {
                                 Task::YamlExecute(prepared, review.view.typed)
                             }
@@ -1278,8 +1284,19 @@ impl App {
                                 }
                             }
                         } else if label == "Aliases" {
-                            if let Some(resource) = value.split_whitespace().next() {
+                            if let Some(hotkey) = value.strip_prefix("hotkey ") {
+                                if let Some(command) = hotkey
+                                    .split_once(" :")
+                                    .and_then(|(_, rest)| rest.split("  ").next())
+                                {
+                                    return self.command(command);
+                                }
+                            } else if let Some(resource) = value.split_whitespace().next() {
                                 return self.command(resource);
+                            }
+                        } else if label == "Extensions" {
+                            if let Some(name) = value.split_whitespace().next() {
+                                self.run_extension(name);
                             }
                         } else if label == selections_ui::PICKER_LABEL {
                             if let Some(selection) = self.selection_ui.records.get(index).cloned()

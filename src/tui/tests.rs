@@ -113,6 +113,7 @@ fn harness() -> Harness {
             selection_ui: Default::default(),
             pending_session: None,
             pending_editor: false,
+            pending_tool: None,
             worker: Worker {
                 tx,
                 rx,
@@ -1750,6 +1751,17 @@ fn human_overview_uses_redacted_object_fields_and_json_remains_accessible() {
     assert!(matches!(app.modal, Modal::Overview(..)));
     assert!(app.key(KeyCode::Char('J')).is_ok());
     assert!(matches!(app.modal, Modal::Detail(..)));
+}
+#[test]
+fn extensions_need_both_flags_and_unknown_names_do_not_open_a_review() {
+    let (mut app, _replies, _commands) = harness();
+    app.items = vec![object("api")];
+    assert!(app.command("ext viewer").is_ok());
+    assert!(app.status.contains("--allow-extensions --allow-tools"));
+    app.options.allow_extensions = true;
+    app.options.allow_tools = true;
+    assert!(app.command("ext Not_Valid").is_ok());
+    assert!(!matches!(app.modal, Modal::WriteReview(_)));
 }
 #[test]
 fn apply_requires_its_capability_and_queues_a_dry_run_review() {

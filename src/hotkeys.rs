@@ -42,7 +42,7 @@ const SHIFTED_DIGITS: &[u8; 10] = b")!@#$%^&*(";
 const RESERVED_CTRL: &str = "acdefhijkmnpqrsuwz";
 
 impl Shortcut {
-    fn parse(text: &str) -> Option<Self> {
+    pub fn parse(text: &str) -> Option<Self> {
         let (prefix, key) = text.split_once('-').unwrap_or(("", text));
         let mut chars = key.chars();
         let single = chars.next().filter(|_| chars.next().is_none());

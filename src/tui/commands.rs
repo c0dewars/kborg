@@ -73,6 +73,20 @@ impl App {
             ("restart", []) => self.prepare(Action::Restart),
             ("delete", []) => self.prepare(Action::Delete),
             ("kill", []) => self.kill(),
+            ("ext" | "extension" | "extensions", []) => match crate::extensions::list() {
+                Ok(entries) if entries.is_empty() => {
+                    self.status = "No extensions registered; see kborg extensions register.".into()
+                }
+                Ok(entries) => {
+                    let lines = entries
+                        .iter()
+                        .map(|entry| format!("{:<24} {}", entry.id, entry.executable.display()))
+                        .collect();
+                    self.modal = Modal::Picker("Extensions", lines, 0);
+                }
+                Err(error) => self.status = error,
+            },
+            ("ext" | "extension", [name]) => self.run_extension(name),
             ("apply", [path]) => self.apply_manifest(std::path::PathBuf::from(path)),
             ("apply", _) => self.status = "Use :apply FILE.yaml, or a in :dir on a manifest".into(),
             ("cp-from", [remote]) => self.copy_file(true, remote, None),
@@ -564,6 +578,43 @@ impl App {
             return;
         }
         self.prepare(Action::Kill);
+    }
+    /// Review handing the selected object to a registered read-only extension.
+    pub(super) fn run_extension(&mut self, name: &str) {
+        if !self.options.allow_extensions || !self.options.allow_tools {
+            self.status = "Extensions require --allow-extensions --allow-tools.".into();
+            return;
+        }
+        let Some(object) = self
+            .visible()
+            .get(self.selected)
+            .map(|object| (*object).clone())
+        else {
+            self.status = "Select an object to hand to the extension.".into();
+            return;
+        };
+        let review = crate::extensions::load(name).and_then(|registered| {
+            let prepared = registered.prepare(&object, crate::handoff::Format::Json)?;
+            let text = format!(
+                "{}\n{}\nINPUT\n{}",
+                registered.summary(),
+                prepared.summary(),
+                prepared.input_preview()
+            );
+            Ok((prepared, text))
+        });
+        match review {
+            Ok((prepared, text)) => {
+                let view =
+                    review_ui::Review::new(text, crate::handoff::CONFIRMATION.into(), self.epoch);
+                self.modal = Modal::WriteReview(Box::new(WriteReview {
+                    plan: WritePlan::Tool(Box::new(prepared)),
+                    view,
+                }));
+                self.status = "Read the whole input, then type RUN TOOL.".into();
+            }
+            Err(error) => self.status = error,
+        }
     }
     /// Dry-run and review a server-side apply of a local manifest.
     pub(super) fn apply_manifest(&mut self, path: std::path::PathBuf) {
