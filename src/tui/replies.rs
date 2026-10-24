@@ -729,9 +729,45 @@ impl App {
         Ok(())
     }
     pub(super) fn theme_picker(&mut self) -> Result<()> {
-        let all = themes::all()?;
+        // Previews keep ui.yaml color overrides; a theme they would make
+        // unreadable is previewed without them.
+        let all = themes::all()?
+            .into_iter()
+            .map(|theme| self.ui.apply(&theme).unwrap_or(theme))
+            .collect::<Vec<_>>();
         let index = all.iter().position(|t| t.id == self.theme.id).unwrap_or(0);
         self.modal = Modal::Themes(all, index, self.theme.clone());
+        Ok(())
+    }
+    /// `:ui reload`: re-read ui.yaml and re-apply its theme and colors. An
+    /// invalid file keeps the current settings and explains why.
+    pub(super) fn reload_ui(&mut self) -> Result<()> {
+        let ui = match crate::ui_config::load() {
+            Ok(ui) => ui,
+            Err(error) => {
+                self.modal = Modal::Detail(
+                    format!(
+                        "ui.yaml not reloaded\n{error}\n\nThe current layout and colors remain in use. Esc closes this notice."
+                    ),
+                    0,
+                );
+                return Ok(());
+            }
+        };
+        let (theme, error) = super::ui_theme(&ui, self.options.theme.as_deref())?;
+        self.ui = ui;
+        self.theme = theme;
+        match error {
+            Some(error) => {
+                self.modal = Modal::Detail(
+                    format!(
+                        "ui.yaml reloaded with a theme problem\n{error}\n\nThe saved theme is used without color overrides. Esc closes this notice."
+                    ),
+                    0,
+                )
+            }
+            None => self.status = "ui.yaml reloaded.".into(),
+        }
         Ok(())
     }
     pub(super) fn refresh_table_metrics(&mut self) {

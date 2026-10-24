@@ -183,6 +183,7 @@ pub const SPECIAL: &[&str] = &[
     "all",
     "overview",
     "themes",
+    "ui",
     "metrics",
     "scale",
     "image",

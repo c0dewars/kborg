@@ -3,6 +3,7 @@ KBorg 0.3 — Kubernetes operations, under your control
   kborg                          Interactive resource browser (READ ONLY)
   kborg demo                     Offline sample cluster; no credentials
   kborg startup on|off|preview   Startup animation preference, or play it now
+  kborg ui init|validate         Write a commented ui.yaml (never replaces) / check it
   kborg contexts                 List contexts without connecting
   kborg overview CONTEXT...       Snapshots 1..100; --follow watches up to 4 contexts
   kborg doctor                   Verify selected context and pod access

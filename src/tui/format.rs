@@ -113,6 +113,10 @@ pub(super) fn timestamp(object: &Value) -> Option<i64> {
         .map(|time| time.as_second())
 }
 pub(super) fn age(object: &Value, now: i64) -> String {
+    age_styled(object, now, false)
+}
+/// `long` adds the next smaller unit: `14d3h`, `5h12m`, `3m4s`.
+pub(super) fn age_styled(object: &Value, now: i64, long: bool) -> String {
     let Some(created) = timestamp(object) else {
         return "-".into();
     };
@@ -120,6 +124,17 @@ pub(super) fn age(object: &Value, now: i64) -> String {
         return "future".into();
     }
     let seconds = now.saturating_sub(created);
+    if long {
+        return if seconds < 60 {
+            format!("{seconds}s")
+        } else if seconds < 3600 {
+            format!("{}m{}s", seconds / 60, seconds % 60)
+        } else if seconds < 86400 {
+            format!("{}h{}m", seconds / 3600, seconds % 3600 / 60)
+        } else {
+            format!("{}d{}h", seconds / 86400, seconds % 86400 / 3600)
+        };
+    }
     if seconds < 60 {
         format!("{seconds}s")
     } else if seconds < 3600 {
@@ -398,20 +413,30 @@ pub(super) struct Rect {
 #[derive(Clone, Copy, Debug)]
 pub(super) struct Layout {
     pub(super) table: Rect,
+    /// Screen lines per table record (ui.yaml `table.density`).
+    pub(super) step: u16,
 }
 impl Layout {
     pub(super) fn new(width: u16, height: u16) -> Self {
+        Self::for_ui(width, height, &crate::ui_config::UiConfig::default())
+    }
+    /// The resource table below and above the chrome rows ui.yaml keeps.
+    pub(super) fn for_ui(width: u16, height: u16, ui: &crate::ui_config::UiConfig) -> Self {
+        let chrome = ui.chrome();
         Self {
             table: Rect {
                 x: 0,
-                y: 3,
+                y: chrome.top,
                 width,
-                height: height.saturating_sub(6),
+                height: height.saturating_sub(chrome.top + chrome.bottom),
             },
+            step: ui.table.step().max(1),
         }
     }
     pub(super) fn table_rows(self) -> usize {
-        usize::from(self.table.height.saturating_sub(3))
+        let lines = usize::from(self.table.height.saturating_sub(3));
+        let step = usize::from(self.step.max(1));
+        lines.div_ceil(step)
     }
 }
 #[derive(Clone, Copy)]
@@ -642,10 +667,12 @@ pub(super) fn columns(width: usize, namespaced: bool) -> Vec<(Column, usize)> {
     columns
 }
 /// Header with an ascending (^) or descending (v) marker on the sorted column.
+/// Sort markers and the column separator come from ui.yaml `table`.
 pub(super) fn header_line(
     columns: &[(Column, usize)],
     custom: &[crate::views::ColumnSpec],
     sorted: Option<(&str, bool)>,
+    style: &crate::ui_config::Table,
 ) -> String {
     columns
         .iter()
@@ -658,14 +685,21 @@ pub(super) fn header_line(
             };
             let text = match sorted {
                 Some((name, descending)) if column_matches(*column, title, name) => {
-                    format!("{title}{}", if descending { "v" } else { "^" })
+                    format!(
+                        "{title}{}",
+                        if descending {
+                            &style.sort_descending
+                        } else {
+                            &style.sort_ascending
+                        }
+                    )
                 }
                 _ => title.to_owned(),
             };
             format!("{:<width$}", display(&text, *width), width = *width)
         })
         .collect::<Vec<_>>()
-        .join(" ")
+        .join(&style.column_separator)
 }
 fn column_matches(column: Column, title: &str, sorted: &str) -> bool {
     title.eq_ignore_ascii_case(sorted)
@@ -674,12 +708,14 @@ fn column_matches(column: Column, title: &str, sorted: &str) -> bool {
                 && !matches!(column, Column::Custom(_))
         })
 }
+/// Age format and the column separator come from ui.yaml `table`.
 pub(super) fn table_line_custom(
     columns: &[(Column, usize)],
     object: &Value,
     now: i64,
     usage: Option<&table_metrics::Usage>,
     custom: &[crate::views::ColumnSpec],
+    style: &crate::ui_config::Table,
 ) -> String {
     columns
         .iter()
@@ -688,6 +724,7 @@ pub(super) fn table_line_custom(
                 Column::Custom(index) => custom
                     .get(usize::from(*index))
                     .map_or_else(|| "-".into(), |spec| custom_value(spec, object, now)),
+                Column::Age => age_styled(object, now, style.long_age()),
                 _ => {
                     return table_line_with_metrics(&[(*column, *width)], Some(object), now, usage);
                 }
@@ -695,7 +732,7 @@ pub(super) fn table_line_custom(
             format!("{:<width$}", display(&text, *width), width = *width)
         })
         .collect::<Vec<_>>()
-        .join(" ")
+        .join(&style.column_separator)
 }
 pub(super) fn table_line_with_metrics(
     columns: &[(Column, usize)],

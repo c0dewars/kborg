@@ -622,6 +622,31 @@ pub fn run_args(args: Vec<String>) -> Result<()> {
             }
             return Ok(());
         }
+        "ui" if opts.command.len() > 1 => {
+            match opts.command[1..]
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>()
+                .as_slice()
+            {
+                ["init"] => {
+                    let path = crate::ui_config::init()?;
+                    outputln!(
+                        "Wrote {}. Edit it, then :ui reload in a running KBorg.",
+                        safety::safe_text(&path.display().to_string(), 512)
+                    );
+                }
+                ["validate"] => {
+                    let path = crate::ui_config::validate_installed()?;
+                    outputln!(
+                        "{} OK (missing means built-in defaults).",
+                        safety::safe_text(&path.display().to_string(), 512)
+                    );
+                }
+                _ => return Err("usage: ui init|validate".into()),
+            }
+            return Ok(());
+        }
         "ui" => return tui::run(opts),
         "dashboard" | "dash" => {
             let mut opts = opts;
