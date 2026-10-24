@@ -151,6 +151,8 @@ enum Task {
     Namespaces,
     Pulses(String),
     Secrets(String),
+    /// RBAC subject list: namespace scope, subject kind filter, view title.
+    Subjects(String, Option<&'static str>, &'static str),
     SecretValue(String, String, String, String),
     Xray(String, String),
     Workloads(String),
@@ -196,6 +198,11 @@ enum Reply {
     Drill(Box<Value>),
     Directory(crate::navigation_views::Directory),
     Secrets(crate::secrets::SecretIndex),
+    Subjects(
+        &'static str,
+        String,
+        crate::navigation_views::SubjectIndex,
+    ),
     DashboardWorkloads(Vec<(String, Result<Vec<crate::workload_tail::WorkloadRef>>)>),
     SecretValue(String, String, Result<crate::secrets::Revealed>),
     Helm(u64, Result<helm_ui::Response>),
@@ -782,6 +789,7 @@ fn worker() -> Worker {
                                     Task::Xray(k,n)=>Reply::Detail(crate::insights::xray(g,&k,&n).await?),
                                     Task::Workloads(n)=>Reply::Detail(crate::insights::workloads(g,&n).await?),
                                     Task::Can(n,subject)=>Reply::Detail(crate::navigation_views::can(g,&n,&subject).await?),
+                                    Task::Subjects(n,kind,title)=>Reply::Subjects(title,n.clone(),crate::navigation_views::subjects(g,&n,kind).await?),
                                     Task::Get(k,n,name) => Reply::Detail(serde_json::to_string_pretty(&g.get(&k,&n,&name).await?).map_err(|_| "serialization failed")?),
                                     Task::Inspect(k,n,name) => Reply::Object(Box::new(g.get(&k,&n,&name).await?)),
                                     Task::Drill(k,n,name)=>Reply::Drill(Box::new(g.get(&k,&n,&name).await?)),
@@ -933,6 +941,7 @@ enum Modal {
     PodContainers(Box<Value>, usize),
     Directory(crate::navigation_views::Directory, usize),
     Secrets(Box<crate::ui_secrets::View>),
+    Subjects(Box<crate::ui_subjects::View>),
     ForwardForm(String, String, Option<String>, [String; 3], usize),
     ForwardView,
     Helm(Box<helm_ui::Table>),
@@ -1469,12 +1478,16 @@ impl App {
             ("containers"|"container",[])=>{if self.kind()=="pods"{self.drilldown();}else{self.status="Select a Pod before opening its containers.".into();}},
             ("workload"|"workloads"|"wk",[])=>self.send(Task::Workloads(self.namespace.clone())),
             ("can",[subject])=>self.send(Task::Can(self.namespace.clone(),subject.clone())),
+            ("subjects"|"subject"|"rbac",[])=>self.send(Task::Subjects(self.namespace.clone(),None,"RBAC SUBJECTS")),
+            ("users"|"user"|"usr",[])=>self.send(Task::Subjects(self.namespace.clone(),Some("User"),"RBAC USERS")),
+            ("groups"|"group"|"grp",[])=>self.send(Task::Subjects(self.namespace.clone(),Some("Group"),"RBAC GROUPS")),
             ("dir"|"dirs"|"d"|"ls",[path])=>self.send(Task::Directory(path.into())),
             ("dir"|"dirs"|"d"|"ls",[])=>self.send(Task::Directory(".".into())),
             ("screendump"|"screendumps"|"sd",[])=>match crate::screendump::list(){Ok(records)=>{let titles=records.iter().map(|record|record.title.clone()).collect();self.saved=records;self.modal=Modal::Picker("Saved resources",titles,0);},Err(error)=>self.status=error},
             ("cow",_)=>self.modal=Modal::Detail(format!(" {}\n < {} >\n  \\   ^__^\n   \\  (oo)\\_______\n      (__)\\       )\\\n          ||----w |\n          ||     ||", "_".repeat(args.join(" ").len().min(70)),safety::safe_text(&args.join(" "),70)),0),
             ("can",_)=>self.status="Use :can u:USER | g:GROUP | s:NAMESPACE:SERVICEACCOUNT".into(),
-            ("rbacs"|"policies"|"users"|"groups",_)=>self.status="Use :can u:USER, g:GROUP or s:NAMESPACE:SERVICEACCOUNT to inspect native RBAC policy. Subject-list views are unavailable.".into(),
+            ("rbacs"|"policies",[])=>self.send(Task::Subjects(self.namespace.clone(),None,"RBAC SUBJECTS")),
+            ("rbacs"|"policies"|"users"|"groups"|"subjects",_)=>self.status="Use :subjects, :users or :groups, then Enter on a subject; :can u:USER, g:GROUP or s:NAMESPACE:SA for one subject.".into(),
             ("logs",[selector])=>self.request_log_group(self.namespace.clone(),crate::logs::PodLogSelection::Selector(selector.clone()),false,true,false),
             ("logs-live",[selector])=>self.request_log_group(self.namespace.clone(),crate::logs::PodLogSelection::Selector(selector.clone()),false,true,true),
             ("logs-live",[])=>self.request_dynamic_workload_logs(),
@@ -2363,6 +2376,15 @@ impl App {
                 Reply::Object(object) => self.modal = Modal::Overview(object, 0),
                 Reply::Drill(object) => self.modal = Modal::PodContainers(object, 0),
                 Reply::Directory(directory) => self.modal = Modal::Directory(directory, 0),
+                Reply::Subjects(title, namespace, index) => {
+                    let modal = std::mem::replace(&mut self.modal, Modal::None);
+                    if !matches!(modal, Modal::None) {
+                        self.push_subview(modal);
+                    }
+                    self.modal = Modal::Subjects(Box::new(crate::ui_subjects::View::new(
+                        title, namespace, index,
+                    )));
+                }
                 Reply::Secrets(index) => {
                     let modal = std::mem::replace(&mut self.modal, Modal::None);
                     if !matches!(modal, Modal::None) {
@@ -3753,6 +3775,15 @@ impl App {
                     }
                 }
                 _ => self.modal = Modal::ForwardForm(namespace, pod, uid, fields, index),
+            },
+            Modal::Subjects(mut view) => match view.key(code) {
+                crate::ui_subjects::Outcome::Close => self.close_subview(),
+                crate::ui_subjects::Outcome::Stay => self.modal = Modal::Subjects(view),
+                crate::ui_subjects::Outcome::Open(subject) => {
+                    let namespace = view.namespace.clone();
+                    self.push_subview(Modal::Subjects(view));
+                    self.send(Task::Can(namespace, subject));
+                }
             },
             Modal::Secrets(mut view) => match view.key(code) {
                 crate::ui_secrets::Outcome::Close => self.close_subview(),
@@ -6864,6 +6895,7 @@ fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
                     "DIRECTORY / Enter open / YAML and JSON previews / Esc back"
                 }
                 Modal::Secrets(..) => "SECRETS / values hidden / x reveals one key",
+                Modal::Subjects(view) => view.title,
                 Modal::ForwardView => "PORT FORWARDS / independently reviewed sessions",
                 Modal::ForwardForm(..) => "PORT FORWARD / loopback only / review required",
                 Modal::None => "",
@@ -6933,6 +6965,7 @@ fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
                 }
                 Modal::Directory(directory,index)=>std::iter::once(format!("{}{}",directory.path.display(),if directory.truncated{" [TRUNCATED]"}else{""})).chain(std::iter::once("Read-only; Enter directory or redacted manifest preview".into())).chain(directory.entries.iter().enumerate().skip(index.saturating_sub(height.saturating_sub(3))).map(|(i,entry)|format!("{} {}{}",if i==*index{">"}else{" "},entry.name,if entry.directory{"/"}else{""}))).collect(),
                 Modal::Secrets(view)=>view.lines(usize::from(rect.width.saturating_sub(2)),height),
+                Modal::Subjects(view)=>view.lines(usize::from(rect.width.saturating_sub(2)),height),
                 Modal::ForwardView=>app.worker.forward.lines(app.forward_selected,usize::from(rect.width.saturating_sub(2)),height),
                 Modal::ForwardForm(namespace,pod,_,fields,index)=>{let mut lines=vec![format!("Pod {namespace}/{pod}"),"Tab field / Ctrl-U clear / Enter review / Esc cancel".into(),String::new()];for(i,label)in["Local port (1024..65535)","Remote port (1..65535)","Duration seconds (1..300)"].iter().enumerate(){lines.push(format!("{} {label}: {}{}",if i==*index{">"}else{" "},fields[i],if i==*index{"_"}else{""}));}lines},
                 Modal::LiveOverview(_) => Vec::new(),
@@ -7164,6 +7197,8 @@ fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
                 table.help()
             } else if matches!(modal, Modal::HelmDocument(..)) {
                 "Stored revision read | PgUp/PgDown scroll | Esc back"
+            } else if matches!(modal, Modal::Subjects(..)) {
+                "Enter bindings and rules | / filter | j k PgUp PgDn move | Esc back"
             } else if matches!(modal, Modal::Secrets(..)) {
                 "Enter open keys | x reveal or hide one key (30s) | j k move | Esc back"
             } else if matches!(modal, Modal::PodContainers(..)) {

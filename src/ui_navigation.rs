@@ -145,6 +145,7 @@ pub const SPECIAL: &[&str] = &[
     "popeye",
     "users",
     "groups",
+    "subjects",
     "rbacs",
     "policies",
     "ctx",

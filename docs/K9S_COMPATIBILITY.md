@@ -26,6 +26,7 @@ References: [command guide](https://k9scli.io/topics/commands/), [command interp
 | `:workload`, `:workloads`, `:wk` | Mixed workload snapshot. Individual workloads remain accessible through their normal resource tables. |
 | `:screendump`, `:screendumps`, `:sd`; Ctrl-S | Explicitly save/browse historical redacted resources. Private JSON storage and YAML preview; not k9s CSV files. Maximum 50 files, 256 KiB each; no automatic deletion. |
 | `:can u:NAME`, `:can g:NAME`, `:can s:NAME` | Read-only declared Role/Binding evidence. No impersonation, external group inference or effective-authorization guarantee. `s:NAMESPACE:NAME` explicitly selects an SA namespace. |
+| `:subjects`, `:users`, `:groups`, `:rbacs`, `:policies` | Read-only list of subjects named by RoleBindings (current namespace) and ClusterRoleBindings, with binding counts and roles; `/` filters, Enter opens that subject's `:can` evidence. Declared bindings only; group membership is not inferred. |
 | `:dir`, `:dirs`, `:d`, `:ls [PATH]` | Bounded local manifest browser and redacted YAML/JSON preview. No arbitrary manifest apply/delete or external editor. `e` edits an existing selected resource spec in the built-in editor, with separate capability and review. |
 | `:pf`, `:portforward`, `:portforwards` | View/cancel this session's reviewed loopback forwards. Up to eight independent TUI forwards; four simultaneous clients each; 1..300s per session. `j/k` select, `s` stops selected, `F` reviews another. Scope changes/exit cancel all. |
 | `:container`, `:containers` | Container drilldown for a selected Pod. |
@@ -34,8 +35,7 @@ References: [command guide](https://k9scli.io/topics/commands/), [command interp
 | `:cow` | Local novelty view; never a process invocation. |
 
 Helm lifecycle supports an explicitly reviewed subset, not arbitrary chart or
-storage parity: exact Helm 4.3.1 on Unix, deterministic local/OCI packaged charts, separately reviewed hooks/tests and namespaced-schema CRD operations. Other cluster/system targets and ordinary cross-namespace release resources, recognized GitOps resources and foreign adoption remain unsupported. Benchmarks (`:be`), scans/Popeye, RBAC subject-list
-pseudo-resources and references do not have full native equivalents. Ordinary
+storage parity: exact Helm 4.3.1 on Unix, deterministic local/OCI packaged charts, separately reviewed hooks/tests and namespaced-schema CRD operations. Other cluster/system targets and ordinary cross-namespace release resources, recognized GitOps resources and foreign adoption remain unsupported. Benchmarks (`:be`) and scans/Popeye do not have native equivalents. Ordinary
 Kubernetes Roles/Bindings are browsable, and `:can` supplies explicit-subject
 evidence. Generic Secret YAML/describe views, node shell, Pod file transfer/sanitization, arbitrary manifest creation/apply, k9s plugins and benchmark execution remain unsupported. Existing-resource namespaced YAML spec editing and reviewed node cordon/uncordon/drain are implemented in the [Mac v1 workflow batch](MAC_V1_OPERATIONS.md). These are material parity gaps, not alternate
 meanings for the same commands.
