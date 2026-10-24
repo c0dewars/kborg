@@ -1,6 +1,22 @@
 # KBorg — Architecture and Development Guide
 
-Status: implemented testing prerelease 0.3.0; production validation remains incomplete. Updated: 2026-10-10. Current capabilities: [IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md). Authoritative gaps: [REMAINING_WORK.md](REMAINING_WORK.md). Dated appendices describe their original versions.
+Status: 0.4.0 released, 0.5.0 in development; production validation (external audit, signing) remains incomplete. Updated: 2026-10-24. Current capabilities: [IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md). Authoritative gaps: [REMAINING_WORK.md](REMAINING_WORK.md). The design sections below were written for earlier versions; dated appendices describe their original versions.
+
+## Source map
+
+| Area | Modules |
+|---|---|
+| Entry and CLI | `main.rs`, `cli.rs` (flags, commands), `completions.rs`, `config.rs` (profiles) |
+| Cluster access | `gateway.rs` with `gateway/` (`catalog`, `kubeconfig`, `reads`, `log_streams`, `operations`, `apply`, `errors`, `demo`), `discovery.rs`, `watch.rs`, `transport.rs`, `auth.rs` |
+| Safety | `safety.rs` (sanitizing, redaction, private files), `policy.rs`, `audit.rs` |
+| Writes | `edit.rs`, `manifest_edit.rs` (YAML spec edit), `manifest_apply.rs` (apply), `node_maintenance.rs`, `ops.rs` (exec, attach, forward, copy, node shell), `file_copy.rs`, `archive.rs`, `node_shell.rs`, `session.rs` |
+| Reads and checks | `logs.rs` with `logs/`, `metrics.rs`, `insights.rs` (pulses, xray), `lint.rs`, `navigation_views.rs` (`:can`, `:dir`), `secrets.rs`, `overview.rs`, `cluster_health.rs`, `dashboard_health.rs`, `bench.rs` |
+| Helm | `helm*.rs` |
+| Copilot | `advice.rs`, `copilot*.rs` |
+| TUI | `tui.rs` with `tui/` (`worker`, `commands`, `keys`, `replies`, `render`, `format`, `startup`, `tty`), `ui_*.rs`, `themes.rs`, `splash.rs`, `hotkeys.rs`, `aliases.rs` |
+| Tools | `handoff.rs`, `extensions.rs`, `external_editor.rs`, `pager.rs` |
+
+Every new write path follows the same shape: a capability flag (and `config.rs` field), a prepare step that dry-runs and builds a complete review, a typed confirmation with expiry, a recheck of identity before the write, and an audit record. Run `cargo fmt`, `cargo clippy --locked --all-targets -- -D warnings` and `cargo test --locked` before committing.
 
 ## 1. Objective and assumptions
 

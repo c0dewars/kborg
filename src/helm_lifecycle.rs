@@ -219,6 +219,7 @@ impl Workspace {
             .canonicalize()
             .map_err(|_| "private temporary directory unavailable")?;
         safety::checked_path(&root)?;
+        sweep_stale_workspaces(&root);
         let stamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_err(|_| "invalid clock")?
@@ -242,6 +243,60 @@ impl Workspace {
         }
         Ok(Self(path))
     }
+}
+/// Workspaces hold a sealed static credential and are removed on drop; a
+/// crash or SIGKILL skips that. Remove this user's workspaces older than any
+/// possible lifecycle run before creating a new one.
+fn sweep_stale_workspaces(root: &Path) {
+    const STALE: std::time::Duration = std::time::Duration::from_secs(2 * 3600);
+    let Ok(entries) = fs::read_dir(root) else {
+        return;
+    };
+    #[cfg(unix)]
+    let uid = current_uid();
+    for entry in entries.flatten().take(10_000) {
+        if !entry
+            .file_name()
+            .to_string_lossy()
+            .starts_with("kborg-helm-")
+        {
+            continue;
+        }
+        let Ok(meta) = fs::symlink_metadata(entry.path()) else {
+            continue;
+        };
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            if meta.uid() != uid {
+                continue;
+            }
+        }
+        let old = meta
+            .modified()
+            .ok()
+            .and_then(|modified| modified.elapsed().ok())
+            .is_some_and(|age| age > STALE);
+        if meta.is_dir() && !meta.file_type().is_symlink() && old {
+            // Sealed 0400 files inside 0700 directories are removable by their owner.
+            let _ = fs::remove_dir_all(entry.path());
+        }
+    }
+}
+#[cfg(unix)]
+fn current_uid() -> u32 {
+    use std::os::unix::fs::MetadataExt;
+    // A file this process just created is owned by its effective uid.
+    let probe = std::env::temp_dir().join(format!("kborg-uid-{}", std::process::id()));
+    let uid = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&probe)
+        .and_then(|file| file.metadata())
+        .map(|meta| meta.uid())
+        .unwrap_or(u32::MAX);
+    let _ = fs::remove_file(&probe);
+    uid
 }
 impl Drop for Workspace {
     fn drop(&mut self) {

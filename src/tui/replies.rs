@@ -67,6 +67,48 @@ impl App {
                     }));
                     self.status = "Review the node and workload inventory before approval.".into();
                 }
+                Reply::NodeShellPrepared(prepared) => {
+                    let view = review_ui::Review::new(
+                        prepared.summary().into(),
+                        prepared.confirmation(),
+                        self.epoch,
+                    );
+                    self.modal = Modal::WriteReview(Box::new(WriteReview {
+                        plan: WritePlan::NodeShell(prepared),
+                        view,
+                    }));
+                    self.status =
+                        "Read the whole privileged Pod, then type the confirmation.".into();
+                }
+                Reply::DebugPrepared(prepared) => {
+                    let view = review_ui::Review::new(
+                        prepared.summary().into(),
+                        prepared.confirmation(),
+                        self.epoch,
+                    );
+                    self.modal = Modal::WriteReview(Box::new(WriteReview {
+                        plan: WritePlan::Debug(prepared),
+                        view,
+                    }));
+                    self.status = "Read the debug container, then type the confirmation.".into();
+                }
+                Reply::NodeShellReady(reviewed) => {
+                    let typed = reviewed.confirmation();
+                    self.modal = Modal::None;
+                    self.pending_session = Some((reviewed, typed));
+                }
+                Reply::ApplyPrepared(prepared) => {
+                    let view = review_ui::Review::new(
+                        prepared.summary().into(),
+                        prepared.confirmation(),
+                        self.epoch,
+                    );
+                    self.modal = Modal::WriteReview(Box::new(WriteReview {
+                        plan: WritePlan::Apply(prepared),
+                        view,
+                    }));
+                    self.status = "Read every change, then type the confirmation to apply.".into();
+                }
                 Reply::WriteOutcome(result) => {
                     self.subviews.clear();
                     self.stale = true;
@@ -1252,6 +1294,9 @@ impl App {
                     | "cronjobs.batch"
             ),
             Action::Kill => self.kind() == "pods",
+            Action::Trigger | Action::Suspend(_) => self.kind() == "cronjobs.batch",
+            Action::Rollback(_) => ["deployments.apps", "statefulsets.apps", "daemonsets.apps"]
+                .contains(&self.kind().as_str()),
         };
         if !allowed {
             self.status = "This operation is disabled for the selected resource.".into();

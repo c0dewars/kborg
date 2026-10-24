@@ -15,6 +15,14 @@ pub(super) enum Task {
     YamlDraft(String, String, String, Option<String>),
     YamlPrepare(Box<crate::ui_yaml::Editor>),
     YamlExecute(Box<crate::manifest_edit::PreparedYaml>, String),
+    ApplyPrepare(std::path::PathBuf, String),
+    NodeShellPrepare(String, String, String, u16),
+    Bench(crate::bench::Plan),
+    Lint(String),
+    NodeShellStart(Box<crate::node_shell::Prepared>, String),
+    DebugPrepare(String, String, Option<String>, String, u16),
+    DebugStart(Box<crate::debug_container::Prepared>, String),
+    ApplyExecute(Box<crate::manifest_apply::PreparedApply>, String),
     NodePrepare(String, Option<String>, crate::node_maintenance::Request),
     NodeExecute(Box<crate::node_maintenance::ReviewedNode>, String),
     Overview(Connection, Vec<String>),
@@ -91,6 +99,10 @@ pub(super) enum Reply {
         Result<crate::manifest_edit::PreparedYaml>,
     ),
     NodePrepared(Box<crate::node_maintenance::ReviewedNode>),
+    ApplyPrepared(Box<crate::manifest_apply::PreparedApply>),
+    NodeShellPrepared(Box<crate::node_shell::Prepared>),
+    NodeShellReady(Box<crate::ops::ReviewedOperation>),
+    DebugPrepared(Box<crate::debug_container::Prepared>),
     WriteOutcome(Result<String>),
     Drill(Box<Value>),
     Directory(crate::navigation_views::Directory),
@@ -406,6 +418,12 @@ impl ForwardSlot {
     pub(super) fn len(&self) -> usize {
         self.state.lock().map(|s| s.entries.len()).unwrap_or(0)
     }
+    /// Loopback port of the selected forward while it is listening.
+    pub(super) fn listening_port(&self, selected: usize) -> Option<u16> {
+        let state = self.state.lock().ok()?;
+        let entry = state.entries.get(selected)?;
+        matches!(entry.phase, ForwardPhase::Listening).then_some(entry.target.local_port)
+    }
     pub(super) fn index(&self, id: u64) -> usize {
         self.state
             .lock()
@@ -426,7 +444,9 @@ impl ForwardSlot {
             .filter(|entry| entry.phase.active())
             .count();
         let mut lines = vec![
-            format!("{count}/{MAX_FORWARDS} active   /   j k select   s stop   F new   Esc close"),
+            format!(
+                "{count}/{MAX_FORWARDS} active   /   j k select   s stop   b bench   F new   Esc close"
+            ),
             String::new(),
         ];
         if state.entries.is_empty() {
@@ -552,6 +572,44 @@ pub(super) fn worker() -> Worker {
                         Reply::YamlPrepared(editor,result)
                     }
                     Task::YamlExecute(prepared,typed)=>Reply::WriteOutcome(if let Some(g)=gateway.as_mut(){g.execute_yaml(*prepared,&typed).await}else{Err("Not connected; no YAML write started.".into())}),
+                    Task::ApplyPrepare(path,namespace)=>match gateway.as_ref() {
+                        Some(g)=>match tokio::time::timeout(Duration::from_secs(120),g.prepare_apply(&path,&namespace)).await {
+                            Ok(Ok(prepared))=>Reply::ApplyPrepared(Box::new(prepared)),
+                            Ok(Err(error))=>Reply::Failure(error),
+                            Err(_)=>Reply::Failure("Apply review timed out; nothing was written.".into()),
+                        },
+                        None=>Reply::Failure("Not connected.".into()),
+                    },
+                    Task::NodeShellPrepare(node,namespace,image,seconds)=>match gateway.as_ref() {
+                        Some(g)=>match crate::node_shell::prepare(g,&node,&namespace,&image,seconds).await {
+                            Ok(prepared)=>Reply::NodeShellPrepared(Box::new(prepared)),
+                            Err(error)=>Reply::Failure(error),
+                        },
+                        None=>Reply::Failure("Not connected.".into()),
+                    },
+                    Task::NodeShellStart(prepared,typed)=>match gateway.as_ref() {
+                        Some(g)=>match crate::node_shell::start(g,*prepared,&typed).await {
+                            Ok(reviewed)=>Reply::NodeShellReady(Box::new(reviewed)),
+                            Err(error)=>Reply::Failure(error),
+                        },
+                        None=>Reply::Failure("Not connected; nothing was created.".into()),
+                    },
+                    Task::Bench(plan)=>Reply::Detail(crate::bench::run(&plan).await.text(&plan)),
+                    Task::DebugPrepare(namespace,pod,target,image,seconds)=>match gateway.as_ref() {
+                        Some(g)=>match crate::debug_container::prepare(g,&namespace,&pod,target.as_deref(),&image,seconds).await {
+                            Ok(prepared)=>Reply::DebugPrepared(Box::new(prepared)),
+                            Err(error)=>Reply::Failure(error),
+                        },
+                        None=>Reply::Failure("Not connected.".into()),
+                    },
+                    Task::DebugStart(prepared,typed)=>match gateway.as_ref() {
+                        Some(g)=>match crate::debug_container::start(g,*prepared,&typed).await {
+                            Ok(reviewed)=>Reply::NodeShellReady(Box::new(reviewed)),
+                            Err(error)=>Reply::Failure(error),
+                        },
+                        None=>Reply::Failure("Not connected; nothing was added.".into()),
+                    },
+                    Task::ApplyExecute(prepared,typed)=>Reply::WriteOutcome(if let Some(g)=gateway.as_ref(){g.execute_apply(*prepared,&typed).await}else{Err("Not connected; nothing was applied.".into())}),
                     Task::NodeExecute(prepared,typed)=>Reply::WriteOutcome(if let Some(g)=gateway.as_ref(){crate::node_maintenance::execute(g,*prepared,&typed).await.map(|report|report.summary())}else{Err("Not connected; no node operation started.".into())}),
                     Task::RunSession(reviewed, typed) => {
                         if let Some(g) = gateway.as_ref() {
@@ -683,6 +741,7 @@ pub(super) fn worker() -> Worker {
                                     Task::Secrets(n)=>Reply::Secrets(g.secret_index(&n).await?),
                                     Task::SecretValue(n,name,uid,key)=>{let value=g.secret_value(&n,&name,&uid,&key).await;Reply::SecretValue(uid,key,value)},
                                     Task::Xray(k,n)=>Reply::Detail(crate::insights::xray(g,&k,&n).await?),
+                                    Task::Lint(n)=>{let (found,notes)=crate::lint::collect(g,&n).await?;Reply::Detail(crate::lint::report(&g.context,&n,&found,&notes))},
                                     Task::Workloads(n)=>Reply::Detail(crate::insights::workloads(g,&n).await?),
                                     Task::Can(n,subject)=>Reply::Detail(crate::navigation_views::can(g,&n,&subject).await?),
                                     Task::Subjects(n,kind,title)=>Reply::Subjects(title,n.clone(),crate::navigation_views::subjects(g,&n,kind).await?),
@@ -756,7 +815,7 @@ pub(super) fn worker() -> Worker {
                                         Reply::Prepared(Box::new(prepared))
                                     },
                                     Task::Execute(p,a) => Reply::Notice(g.execute(*p,a).await?),
-                                    Task::YamlPrepare(..) | Task::YamlExecute(..) | Task::NodeExecute(..) | Task::DashboardLogs(..) | Task::DashboardWorkloads(..) | Task::DashboardTail(..) | Task::Overview(..) | Task::Connect(_) | Task::Watch(..) | Task::Metrics(..) | Task::RunSession(..) | Task::RunForward(..) | Task::Directory(_) | Task::Manifest(_) | Task::Helm(..) | Task::HelmPrepare(..) | Task::HelmExecute(..) | Task::AdvicePrepare(..) | Task::AdviceExecute(..) => return Err("invalid worker task".into()),
+                                    Task::YamlPrepare(..) | Task::YamlExecute(..) | Task::ApplyPrepare(..) | Task::ApplyExecute(..) | Task::NodeShellPrepare(..) | Task::NodeShellStart(..) | Task::DebugPrepare(..) | Task::DebugStart(..) | Task::Bench(..) | Task::NodeExecute(..) | Task::DashboardLogs(..) | Task::DashboardWorkloads(..) | Task::DashboardTail(..) | Task::Overview(..) | Task::Connect(_) | Task::Watch(..) | Task::Metrics(..) | Task::RunSession(..) | Task::RunForward(..) | Task::Directory(_) | Task::Manifest(_) | Task::Helm(..) | Task::HelmPrepare(..) | Task::HelmExecute(..) | Task::AdvicePrepare(..) | Task::AdviceExecute(..) => return Err("invalid worker task".into()),
                                 })
                             };
                             match tokio::time::timeout(Duration::from_secs(25), future).await {
