@@ -274,8 +274,15 @@ fn parse(args: Vec<String>) -> Result<Options> {
                 opts.connection.context = Some(args.next().ok_or("--context needs a value")?)
             }
             "--namespace" | "-n" => {
-                opts.connection.namespace = args.next().ok_or("--namespace needs a value")?
+                let namespace = args.next().ok_or("--namespace needs a value")?;
+                // k9s and the docs use `all` for every namespace.
+                opts.connection.namespace = if namespace == "all" {
+                    "*".into()
+                } else {
+                    namespace
+                };
             }
+            "--all-namespaces" | "-A" => opts.connection.namespace = "*".into(),
             "--kubeconfig" => {
                 opts.connection.kubeconfig = Some(PathBuf::from(
                     args.next().ok_or("--kubeconfig needs a value")?,
@@ -1696,6 +1703,20 @@ fn theme_command(opts: &Options) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn all_namespaces_spellings_select_every_namespace() -> Result<()> {
+        for args in [["-n", "all"], ["--namespace", "all"], ["-A", "pods"]] {
+            let opts = parse(args.iter().map(|a| (*a).to_owned()).collect())?;
+            assert_eq!(opts.connection.namespace, "*", "{args:?}");
+        }
+        assert_eq!(
+            parse(vec!["-n".into(), "shop".into()])?
+                .connection
+                .namespace,
+            "shop"
+        );
+        Ok(())
+    }
     #[test]
     fn node_commands_route_to_terminal_approval_without_any_live_connection() {
         for command in ["cordon", "uncordon", "drain"] {

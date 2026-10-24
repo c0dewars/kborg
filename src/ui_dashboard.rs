@@ -136,8 +136,89 @@ impl TailPicker {
     }
 }
 
+/// Bounded per-card history for trend sparklines (15 minutes at 15 s).
+#[derive(Default)]
+pub(super) struct Trend {
+    at: Option<std::time::Instant>,
+    attention: std::collections::VecDeque<u64>,
+    cpu: std::collections::VecDeque<u64>,
+    memory: std::collections::VecDeque<u64>,
+}
+const TREND_SAMPLES: usize = 60;
+const TREND_INTERVAL: std::time::Duration = std::time::Duration::from_secs(15);
+fn push(values: &mut std::collections::VecDeque<u64>, value: u64) {
+    if values.len() == TREND_SAMPLES {
+        values.pop_front();
+    }
+    values.push_back(value);
+}
+/// ASCII sparkline: each sample is one of ten levels, scaled to `max`.
+pub(super) fn sparkline(values: &std::collections::VecDeque<u64>, max: u64) -> String {
+    const LEVELS: &[u8] = b" .:-=+*#%@";
+    let max = max.max(1);
+    values
+        .iter()
+        .map(|value| {
+            let level = (value.min(&max) * (LEVELS.len() as u64 - 1)).div_ceil(max);
+            char::from(LEVELS[usize::try_from(level).unwrap_or(0)])
+        })
+        .collect()
+}
+impl Trend {
+    fn sample(&mut self, summary: &ContextSummary, now: std::time::Instant) {
+        if self
+            .at
+            .is_some_and(|at| now.duration_since(at) < TREND_INTERVAL)
+        {
+            return;
+        }
+        let Some(attention) = summary.unhealthy else {
+            return;
+        };
+        self.at = Some(now);
+        push(&mut self.attention, attention as u64);
+        let nodes = summary.infra.as_ref().map(|infra| &infra.nodes);
+        if let Some(cpu) = nodes.and_then(|nodes| nodes.cpu_percent) {
+            push(&mut self.cpu, cpu);
+        }
+        if let Some(memory) = nodes.and_then(|nodes| nodes.memory_percent) {
+            push(&mut self.memory, memory);
+        }
+    }
+    /// One card line, once there are at least two samples.
+    pub fn line(&self, width: usize) -> Option<String> {
+        if self.attention.len() < 2 {
+            return None;
+        }
+        let span = (width.saturating_sub(40) / 3).clamp(6, TREND_SAMPLES);
+        let tail = |values: &std::collections::VecDeque<u64>| {
+            values
+                .iter()
+                .skip(values.len().saturating_sub(span))
+                .copied()
+                .collect::<std::collections::VecDeque<_>>()
+        };
+        let attention = tail(&self.attention);
+        let peak = attention.iter().copied().max().unwrap_or(0);
+        let mut line = format!(
+            "TREND {}m  attn [{}] max {peak}",
+            (attention.len() * TREND_INTERVAL.as_secs() as usize).div_ceil(60),
+            sparkline(&attention, peak)
+        );
+        if self.cpu.len() >= 2 {
+            line.push_str(&format!("  cpu [{}]", sparkline(&tail(&self.cpu), 100)));
+        }
+        if self.memory.len() >= 2 {
+            line.push_str(&format!("  mem [{}]", sparkline(&tail(&self.memory), 100)));
+        }
+        Some(line)
+    }
+}
+
 pub(super) struct Dashboard {
     pub rows: Vec<ContextSummary>,
+    /// Per-context trend history, kept across refreshes.
+    pub trends: std::collections::HashMap<String, Trend>,
     pub selected: usize,
     /// Index into the focused card's recent warnings, chosen with `w`.
     pub warning: Option<usize>,
@@ -156,6 +237,7 @@ impl Dashboard {
                 .cloned()
                 .map(|name| ContextSummary::connecting(name, demo))
                 .collect(),
+            trends: Default::default(),
             selected: 0,
             warning: None,
             help: false,
@@ -185,6 +267,15 @@ impl Dashboard {
             .selected_warning()
             .map(|w| (w.namespace.clone(), w.uid.clone(), w.reason.clone()));
         self.rows = rows;
+        let now = std::time::Instant::now();
+        for row in &self.rows {
+            self.trends
+                .entry(row.context.clone())
+                .or_default()
+                .sample(row, now);
+        }
+        self.trends
+            .retain(|context, _| self.rows.iter().any(|row| &row.context == context));
         self.selected = selected
             .and_then(|name| self.rows.iter().position(|row| row.context == name))
             .unwrap_or(self.selected.min(self.rows.len().saturating_sub(1)));
@@ -671,7 +762,14 @@ fn card(
         4
     };
     if let Some(infra) = infra {
-        let rows = infra_lines(infra, summary.health.as_ref(), summary.demo);
+        let mut rows = infra_lines(infra, summary.health.as_ref(), summary.demo);
+        if let Some(trend) = dashboard
+            .trends
+            .get(&summary.context)
+            .and_then(|trend| trend.line(usize::from(width)))
+        {
+            rows.push((trend, "muted"));
+        }
         let (start, limit) = if split {
             (7, rect.height.saturating_sub(3))
         } else if warning_row == 8 {
@@ -1013,6 +1111,26 @@ pub(super) fn render(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn trends_sample_every_interval_and_render_ascii_sparklines() {
+        let values: std::collections::VecDeque<u64> = [0, 1, 5, 10].into_iter().collect();
+        assert_eq!(sparkline(&values, 10), " .+@");
+        let mut trend = Trend::default();
+        let mut summary = ContextSummary::connecting("c".into(), false);
+        summary.unhealthy = Some(2);
+        let start = std::time::Instant::now();
+        trend.sample(&summary, start);
+        trend.sample(&summary, start + std::time::Duration::from_secs(5));
+        assert_eq!(trend.attention.len(), 1, "samples at most every 15 s");
+        summary.unhealthy = Some(4);
+        trend.sample(&summary, start + TREND_INTERVAL);
+        let line = trend.line(80).unwrap_or_default();
+        assert!(
+            line.starts_with("TREND 1m  attn [") && line.contains("max 4"),
+            "{line}"
+        );
+        assert!(line.is_ascii());
+    }
     #[test]
     fn number_again_toggles_focus_and_cards_show_node_and_app_readiness() {
         let names = vec!["north".into(), "south".into()];
