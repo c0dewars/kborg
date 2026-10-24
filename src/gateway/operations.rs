@@ -289,6 +289,24 @@ impl Gateway {
                 json!({"metadata":{"uid":target.uid,"resourceVersion":target.version},"spec":crate::edit::container_patch_spec(&object, container, Some(&edit.image), edit.resources.as_ref())?})
             }
             Action::Delete | Action::Kill => Value::Null,
+            Action::Suspend(suspend) => {
+                if object["spec"]["suspend"].as_bool().unwrap_or(false) == *suspend {
+                    return Err(format!(
+                        "CronJob is already {}",
+                        if *suspend { "suspended" } else { "active" }
+                    ));
+                }
+                json!({"metadata":{"uid":target.uid,"resourceVersion":target.version},"spec":{"suspend":suspend}})
+            }
+            Action::Trigger => crate::workload_actions::job_from_cronjob(&object, &timestamp)?,
+            Action::Rollback(wanted) => {
+                let (current, chosen) = self
+                    .rollback_revision(&kind.plural, ns, &object, *wanted)
+                    .await?;
+                json!({"metadata":{"uid":target.uid,"resourceVersion":target.version},
+                    "spec":{"template":{"$patch":"replace"}},
+                    "kborgRevision":{"from":current,"to":chosen.number,"template":chosen.template}})
+            }
         };
         let effect = match &action {
             Action::Scale(n) => format!("scale replicas {} -> {n}", object["spec"]["replicas"]),
@@ -307,6 +325,24 @@ impl Gateway {
                 "delete object; background cascading; server default grace period; no force".into()
             }
             Action::Kill => "FORCE KILL Pod: gracePeriodSeconds=0; the API object is removed at once without waiting for container shutdown; the kubelet may still be stopping processes and a controller may create a replacement".into(),
+            Action::Suspend(true) => "SUSPEND CronJob: no new Jobs are scheduled; Jobs already running continue".into(),
+            Action::Suspend(false) => "RESUME CronJob: scheduling restarts; missed runs within startingDeadlineSeconds may start at once".into(),
+            Action::Trigger => format!(
+                "TRIGGER CronJob now: create Job {}/{} from its jobTemplate (like kubectl create job --from=cronjob/{name}); it starts immediately and is owned by the CronJob",
+                ns,
+                patch["metadata"]["name"].as_str().unwrap_or("?")
+            ),
+            Action::Rollback(_) => {
+                let revision = &patch["kborgRevision"];
+                format!(
+                    "ROLL BACK {} to revision {} (current {}): the Pod template is replaced and a rollout starts\nimages now:  {}\nimages after: {}",
+                    kind.kind,
+                    revision["to"],
+                    revision["from"],
+                    crate::workload_actions::images(&object["spec"]["template"]).join(", "),
+                    crate::workload_actions::images(&revision["template"]).join(", ")
+                )
+            }
         };
         let summary = format!(
             "{}\nserver: {}\ncontext: {}\ntarget: {}/{} ({})\nUID: {}\nresourceVersion: {}\n{}\nType {}/{} to execute. Approval expires after 60 seconds.",
@@ -370,6 +406,15 @@ impl Gateway {
                         "admission changed the requested replica count; operation blocked".into(),
                     );
                 }
+                Action::Rollback(_) => {
+                    if crate::workload_actions::images(&response["spec"]["template"])
+                        != crate::workload_actions::images(
+                            &prepared.patch["kborgRevision"]["template"],
+                        )
+                    {
+                        return Err("admission changed the restored images during dry-run; operation blocked".into());
+                    }
+                }
                 Action::Restart => {
                     crate::edit::check_metadata(&response, &object)?;
                     let (expected, _) = crate::edit::expected_restart(&object, &timestamp)?;
@@ -381,6 +426,49 @@ impl Gateway {
             }
         }
         Ok(prepared)
+    }
+    /// Current revision number and the revision to restore, from owned
+    /// ReplicaSets (Deployments) or ControllerRevisions (StatefulSets, DaemonSets).
+    async fn rollback_revision(
+        &self,
+        plural: &str,
+        ns: &str,
+        object: &Value,
+        wanted: Option<u64>,
+    ) -> Result<(u64, crate::workload_actions::Revision)> {
+        let client = self
+            .client
+            .clone()
+            .ok_or("rollback needs a live cluster; demo mode keeps no revision history")?;
+        let uid = object["metadata"]["uid"].as_str().unwrap_or("");
+        let params = ListParams::default().limit(500);
+        let history = if plural == "deployments" {
+            let api: Api<k8s_openapi::api::apps::v1::ReplicaSet> = Api::namespaced(client, ns);
+            let items = tokio::time::timeout(OPERATION_BUDGET, api.list(&params))
+                .await
+                .map_err(|_| "reading revision history timed out")?
+                .map_err(api_error)?
+                .items
+                .into_iter()
+                .filter_map(|item| serde_json::to_value(item).ok())
+                .collect::<Vec<_>>();
+            crate::workload_actions::deployment_revisions(uid, &items)
+        } else {
+            let api: Api<k8s_openapi::api::apps::v1::ControllerRevision> =
+                Api::namespaced(client, ns);
+            let items = tokio::time::timeout(OPERATION_BUDGET, api.list(&params))
+                .await
+                .map_err(|_| "reading revision history timed out")?
+                .map_err(api_error)?
+                .items
+                .into_iter()
+                .filter_map(|item| serde_json::to_value(item).ok())
+                .collect::<Vec<_>>();
+            crate::workload_actions::controller_revisions(uid, &items)
+        };
+        let current = history.first().map_or(0, |r| r.number);
+        let chosen = crate::workload_actions::choose(&history, wanted)?.clone();
+        Ok((current, chosen))
     }
     pub(super) fn delete_params(prepared: &Prepared, dry_run: bool) -> DeleteParams {
         DeleteParams {
@@ -433,7 +521,7 @@ impl Gateway {
                     .map_err(api_error)?;
                 serde_json::to_value(response).map_err(|_| "cannot decode workload response".into())
             }
-            Action::Restart => {
+            Action::Restart | Action::Suspend(_) => {
                 let response = api
                     .patch(
                         &prepared.target.name,
@@ -445,8 +533,46 @@ impl Gateway {
                     )
                     .await
                     .map_err(api_error)?;
-                serde_json::to_value(response)
-                    .map_err(|_| "cannot decode deployment response".into())
+                serde_json::to_value(response).map_err(|_| "cannot decode workload response".into())
+            }
+            Action::Rollback(_) => {
+                // Strategic merge with $patch: replace swaps the whole template,
+                // as kubectl rollout undo does; uid/resourceVersion lock it.
+                let mut template = prepared.patch["kborgRevision"]["template"].clone();
+                template["$patch"] = json!("replace");
+                let body =
+                    json!({"metadata":prepared.patch["metadata"],"spec":{"template":template}});
+                let response = api
+                    .patch(
+                        &prepared.target.name,
+                        &PatchParams {
+                            dry_run,
+                            ..Default::default()
+                        },
+                        &Patch::Strategic(&body),
+                    )
+                    .await
+                    .map_err(api_error)?;
+                serde_json::to_value(response).map_err(|_| "cannot decode workload response".into())
+            }
+            Action::Trigger => {
+                let client = self.client.clone().ok_or("offline backend")?;
+                let jobs: Api<k8s_openapi::api::batch::v1::Job> =
+                    Api::namespaced(client, &prepared.target.namespace);
+                let job: k8s_openapi::api::batch::v1::Job =
+                    serde_json::from_value(prepared.patch.clone())
+                        .map_err(|_| "cannot build the Job")?;
+                let created = jobs
+                    .create(
+                        &kube::api::PostParams {
+                            dry_run,
+                            field_manager: Some("kborg".into()),
+                        },
+                        &job,
+                    )
+                    .await
+                    .map_err(api_error)?;
+                serde_json::to_value(created).map_err(|_| "cannot decode Job response".into())
             }
         }
     }
@@ -508,6 +634,23 @@ impl Gateway {
                         }
                     }
                 }
+                Action::Suspend(suspend) => {
+                    for object in &mut self.demo {
+                        if object["metadata"]["uid"] == prepared.target.uid {
+                            object["spec"]["suspend"] = json!(suspend);
+                        }
+                    }
+                }
+                Action::Trigger => {
+                    let mut job = prepared.patch.clone();
+                    job["metadata"]["uid"] = json!(format!(
+                        "demo-{}",
+                        job["metadata"]["name"].as_str().unwrap_or("job")
+                    ));
+                    job["status"] = json!({"active":1});
+                    self.demo.push(job);
+                }
+                Action::Rollback(_) => {}
                 Action::Restart => {
                     for object in &mut self.demo {
                         if object["metadata"]["uid"] == prepared.target.uid {

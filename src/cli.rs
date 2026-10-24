@@ -66,6 +66,10 @@ pub struct Options {
     pub interactive: bool,
     pub metrics_resources: bool,
     pub session_seconds: u16,
+    /// Image for node shell Pods (`--node-shell-image`).
+    pub node_shell_image: String,
+    /// `cp-from` / `cp-to --recursive`: copy a directory.
+    pub recursive: bool,
     pub command: Vec<String>,
 }
 
@@ -104,6 +108,8 @@ fn parse(args: Vec<String>) -> Result<Options> {
         interactive: false,
         metrics_resources: false,
         session_seconds: 900,
+        node_shell_image: crate::node_shell::DEFAULT_IMAGE.into(),
+        recursive: false,
         command: vec![],
     };
     let mut args = args.into_iter();
@@ -268,8 +274,15 @@ fn parse(args: Vec<String>) -> Result<Options> {
                 opts.connection.context = Some(args.next().ok_or("--context needs a value")?)
             }
             "--namespace" | "-n" => {
-                opts.connection.namespace = args.next().ok_or("--namespace needs a value")?
+                let namespace = args.next().ok_or("--namespace needs a value")?;
+                // k9s and the docs use `all` for every namespace.
+                opts.connection.namespace = if namespace == "all" {
+                    "*".into()
+                } else {
+                    namespace
+                };
             }
+            "--all-namespaces" | "-A" => opts.connection.namespace = "*".into(),
             "--kubeconfig" => {
                 opts.connection.kubeconfig = Some(PathBuf::from(
                     args.next().ok_or("--kubeconfig needs a value")?,
@@ -288,6 +301,18 @@ fn parse(args: Vec<String>) -> Result<Options> {
             "--allow-exec" => opts.connection.allow_exec = true,
             "--allow-attach" => opts.connection.allow_attach = true,
             "--allow-forward" => opts.connection.allow_port_forward = true,
+            "--allow-file-copy" => opts.connection.allow_file_copy = true,
+            "--allow-apply" => opts.connection.allow_apply = true,
+            "--recursive" => opts.recursive = true,
+            "--allow-node-shell" => opts.connection.allow_node_shell = true,
+            "--allow-debug" => opts.connection.allow_debug = true,
+            "--node-shell-image" => {
+                let image = args
+                    .next()
+                    .ok_or("--node-shell-image needs an image reference")?;
+                crate::node_shell::validate_image(&image)?;
+                opts.node_shell_image = image;
+            }
             "--allow-node-maintenance" => opts.connection.allow_node_maintenance = true,
             "--" => {
                 opts.command.extend(args);
@@ -453,6 +478,7 @@ fn parse(args: Vec<String>) -> Result<Options> {
                     | "logs"
                     | "helm"
                     | "history"
+                    | "lint"
             )
         })
     {
@@ -604,8 +630,10 @@ pub fn run_args(args: Vec<String>) -> Result<()> {
         }
         "helm" | "history" | "list" | "watch" | "metrics" | "get" | "view" | "logs"
         | "resources" | "doctor" | "scale" | "restart" | "delete" | "kill" | "set-image"
-        | "set-resources" | "exec" | "attach" | "forward" | "pulses" | "xray" | "workloads"
-        | "can" | "yaml-template" | "yaml-edit" | "cordon" | "uncordon" | "drain" => {}
+        | "trigger" | "suspend" | "resume" | "rollback" | "set-resources" | "exec" | "attach"
+        | "forward" | "cp-from" | "cp-to" | "apply" | "node-shell" | "debug" | "lint"
+        | "pulses" | "xray" | "workloads" | "can" | "yaml-template" | "yaml-edit" | "cordon"
+        | "uncordon" | "drain" => {}
         _ => return Err("unknown command; see --help".into()),
     }
     if cmd == "view"
@@ -652,11 +680,52 @@ pub fn run_args(args: Vec<String>) -> Result<()> {
                 outputln!("{}",report.summary());
                 if !report.complete {return Err("node maintenance incomplete; inspect the reported pending targets and scheduling state".into());}
             },
-            "exec"|"attach"|"forward" => {
+            "lint" => {
+                if !args.is_empty() {return Err("usage: lint [-n NAMESPACE] [--json]".into());}
+                let (found,notes)=tokio::time::timeout(Duration::from_secs(30),crate::lint::collect(&gateway,&ns)).await.map_err(|_|"lint timed out")??;
+                if opts.json {print_json(&serde_json::json!({"findings":found,"notes":notes}))?;}
+                else {output!("{}",crate::lint::report(&gateway.context,&ns,&found,&notes));}
+            },
+            "debug" => {
+                if args.is_empty() || args.len()>2 {return Err("usage: debug POD [TARGET_CONTAINER] --write --allow-debug [--node-shell-image IMAGE]".into());}
+                if !io::stdin().is_terminal() || !io::stdout().is_terminal() {return Err("debug requires interactive terminal approval".into());}
+                let prepared=crate::debug_container::prepare(&gateway,&ns,&args[0],args.get(1).map(String::as_str),&opts.node_shell_image,opts.session_seconds).await?;
+                outputln!("{}",safety::review_display(prepared.summary())?); output!("> ");io::stdout().flush().map_err(|_|"output failed")?;
+                let mut input=String::new();use std::io::BufRead;io::stdin().lock().take(320).read_line(&mut input).map_err(|_|"input failed")?;
+                outputln!("Adding the debug container and waiting for it to start…");
+                let reviewed=crate::debug_container::start(&gateway,prepared,input.trim_end()).await?;
+                let typed=reviewed.confirmation();
+                outputln!("{}",crate::ops::run(&gateway,reviewed,&typed).await?);
+            },
+            "node-shell" => {
+                if args.len()!=1 {return Err("usage: node-shell NODE --write --allow-node-shell [-n NAMESPACE] [--node-shell-image IMAGE]".into());}
+                if !io::stdin().is_terminal() || !io::stdout().is_terminal() {return Err("node shell requires interactive terminal approval".into());}
+                let namespace=if ns=="*"||ns.is_empty(){"default".to_owned()}else{ns.clone()};
+                let prepared=crate::node_shell::prepare(&gateway,&args[0],&namespace,&opts.node_shell_image,opts.session_seconds).await?;
+                outputln!("{}",safety::review_display(prepared.summary())?); output!("> ");io::stdout().flush().map_err(|_|"output failed")?;
+                let mut input=String::new();use std::io::BufRead;io::stdin().lock().take(320).read_line(&mut input).map_err(|_|"input failed")?;
+                outputln!("Creating the node shell Pod and waiting for it to start…");
+                let reviewed=crate::node_shell::start(&gateway,prepared,input.trim_end()).await?;
+                let typed=reviewed.confirmation();
+                outputln!("{}",crate::ops::run(&gateway,reviewed,&typed).await?);
+            },
+            "apply" => {
+                if args.len()!=1 {return Err("usage: apply FILE.yaml --write --allow-apply [-n NAMESPACE]".into());}
+                if !io::stdin().is_terminal() || !io::stdout().is_terminal() {return Err("apply requires interactive terminal approval".into());}
+                let prepared=tokio::time::timeout(Duration::from_secs(120),gateway.prepare_apply(std::path::Path::new(&args[0]),&ns)).await.map_err(|_|"apply review timed out")??;
+                outputln!("{}",safety::review_display(prepared.summary())?); output!("> ");io::stdout().flush().map_err(|_|"output failed")?;
+                let mut input=String::new();use std::io::BufRead;io::stdin().lock().take(256).read_line(&mut input).map_err(|_|"input failed")?;
+                outputln!("{}",gateway.execute_apply(prepared,input.trim_end()).await?);
+            },
+            "exec"|"attach"|"forward"|"cp-from"|"cp-to" => {
                 if !io::stdin().is_terminal() || !io::stdout().is_terminal() {return Err("subresource operations require interactive terminal approval".into());}
                 let request=match cmd {
                     "exec"=>{if args.len()<3{return Err("usage: exec POD CONTAINER -- COMMAND [ARG...] --write --allow-exec (put flags before --)".into());}
                     if opts.interactive {crate::ops::Request::InteractiveExec{container:args[1].clone(),argv:args[2..].to_vec(),seconds:opts.session_seconds}} else {crate::ops::Request::Exec{container:args[1].clone(),argv:args[2..].to_vec()}}},
+                    "cp-from"=>{if args.len()!=4{return Err("usage: cp-from POD CONTAINER /CONTAINER/FILE LOCAL_FILE_OR_DIR --write --allow-file-copy".into());}
+                    crate::ops::Request::CopyFrom{container:args[1].clone(),remote:args[2].clone(),local:std::path::PathBuf::from(&args[3]),recursive:opts.recursive}},
+                    "cp-to"=>{if args.len()!=4{return Err("usage: cp-to POD CONTAINER LOCAL_FILE /CONTAINER/FILE --write --allow-file-copy".into());}
+                    crate::ops::Request::CopyTo{container:args[1].clone(),upload:if opts.recursive {crate::file_copy::read_upload_dir(std::path::Path::new(&args[2]))?} else {crate::file_copy::read_upload(std::path::Path::new(&args[2]))?},remote:args[3].clone()}},
                     "attach"=>{if args.len()!=2{return Err("usage: attach POD CONTAINER --write --allow-attach (bounded output only)".into());}
                     if opts.interactive {crate::ops::Request::InteractiveAttach{container:args[1].clone(),seconds:opts.session_seconds}} else {crate::ops::Request::Attach{container:args[1].clone()}}},
                     _=>{if args.len()!=4{return Err("usage: forward POD LOCAL_PORT REMOTE_PORT SECONDS --write --allow-forward".into());}
@@ -745,13 +814,19 @@ if value["truncated"]==true {eprintln!("TRUNCATED: limit reached; narrow namespa
                 }
             },
             "logs"=>logs_command(&gateway,args,&opts).await?,
-            "scale"|"restart"|"delete"|"kill"|"set-image"|"set-resources"=>{
+            "scale"|"restart"|"delete"|"kill"|"set-image"|"set-resources"|"trigger"|"suspend"|"resume"|"rollback"=>{
                 if !io::stdin().is_terminal() || !io::stdout().is_terminal(){return Err("noninteractive writes are disabled; use the interactive TUI or terminal confirmation".into());}
                 let (resource,name,action)=match cmd {
                     "set-image"=>{let (resource,args)=write_args(args,3,"set-image [RESOURCE] NAME CONTAINER IMAGE --write")?;(resource,args[0].as_str(),Action::SetImage{container:args[1].clone(),image:args[2].clone()})},
                     "set-resources"=>{let (resource,args)=write_args(args,6,"set-resources [RESOURCE] NAME CONTAINER CPU_REQUEST MEMORY_REQUEST CPU_LIMIT MEMORY_LIMIT --write")?;(resource,args[0].as_str(),Action::SetResources{container:args[1].clone(),resources:crate::edit::ResourceEdit{cpu_request:args[2].clone(),memory_request:args[3].clone(),cpu_limit:args[4].clone(),memory_limit:args[5].clone()}})},
                     "scale"=>{let (resource,args)=write_args(args,2,"scale [RESOURCE] NAME REPLICAS --write")?;(resource,args[0].as_str(),Action::Scale(args[1].parse().map_err(|_|"invalid replicas")?))},
                     "restart"=>{let (resource,args)=write_args(args,1,"restart [RESOURCE] NAME --write")?;(resource,args[0].as_str(),Action::Restart)},
+                    "trigger"|"suspend"|"resume"=>{if args.len()!=1{return Err(format!("usage: {cmd} CRONJOB --write"));}("cronjobs",args[0].as_str(),match cmd {"trigger"=>Action::Trigger,"suspend"=>Action::Suspend(true),_=>Action::Suspend(false)})},
+                    "rollback"=>{
+                        let (resource,rest)=match args.len() {1|2 if args[0].parse::<u64>().is_err() && !["deployments","statefulsets","daemonsets","deploy","sts","ds"].contains(&args[0].as_str()) => ("deployments",args), 2|3 => (args[0].as_str(),&args[1..]), _ => return Err("usage: rollback [RESOURCE] NAME [REVISION] --write".into())};
+                        let revision=rest.get(1).map(|r|r.parse::<u64>().map_err(|_|"invalid revision")).transpose()?;
+                        (resource,rest[0].as_str(),Action::Rollback(revision))
+                    },
                     "kill"=>{if args.len()!=1{return Err("usage: kill POD --write --allow-force-kill".into());}("pods",args[0].as_str(),Action::Kill)},
                     _=>{if args.len()!=2{return Err("usage: delete <resource> <name> --write".into());}(args[0].as_str(),args[1].as_str(),Action::Delete)},
                 };
@@ -1457,6 +1532,12 @@ fn extensions_command(opts: &Options) -> Result<()> {
             else { for entry in entries {outputln!("{}\t{}\t{}",entry.id,entry.executable.display(),entry.sha256);} }
             Ok(())
         },
+        Some("import-k9s") if args.len()==2 && !opts.json => {
+            let path=std::path::Path::new(&args[1]);
+            let bytes=safety::read_small(path,256*1024)?;
+            output!("{}",crate::extensions::import_k9s(std::str::from_utf8(&bytes).map_err(|_|"plugins.yaml must be UTF-8")?)?);
+            Ok(())
+        },
         Some("remove") if args.len()==2 && !opts.json => {
             crate::extensions::remove(&args[1])?; outputln!("Local extension registration removed."); Ok(())
         },
@@ -1494,7 +1575,7 @@ fn extensions_command(opts: &Options) -> Result<()> {
             if !outcome.success {return Err("extension tool exited unsuccessfully".into());}
             Ok(())
         },
-        _=>Err("usage: extensions list [--json] | register NAME --tool ABS [--tool-arg ARG] | remove NAME | run NAME RESOURCE OBJECT --allow-extensions --allow-tools".into()),
+        _=>Err("usage: extensions list [--json] | register NAME --tool ABS [--tool-arg ARG] | remove NAME | run NAME RESOURCE OBJECT --allow-extensions --allow-tools | import-k9s PLUGINS.yaml".into()),
     }
 }
 
@@ -1622,6 +1703,20 @@ fn theme_command(opts: &Options) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn all_namespaces_spellings_select_every_namespace() -> Result<()> {
+        for args in [["-n", "all"], ["--namespace", "all"], ["-A", "pods"]] {
+            let opts = parse(args.iter().map(|a| (*a).to_owned()).collect())?;
+            assert_eq!(opts.connection.namespace, "*", "{args:?}");
+        }
+        assert_eq!(
+            parse(vec!["-n".into(), "shop".into()])?
+                .connection
+                .namespace,
+            "shop"
+        );
+        Ok(())
+    }
     #[test]
     fn node_commands_route_to_terminal_approval_without_any_live_connection() {
         for command in ["cordon", "uncordon", "drain"] {

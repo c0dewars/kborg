@@ -36,7 +36,7 @@ impl App {
             ("uncordon",[])=>self.node_maintenance(crate::node_maintenance::Request::Uncordon),
             ("drain",[])=>self.node_maintenance(crate::node_maintenance::Request::Drain{seconds:120}),
             ("ctx" | "context" | "contexts", []) => {
-                let list=contexts(&self.options.connection)?;
+                let list=self.recent.order_contexts(contexts(&self.options.connection)?);
                 let index=list.iter().position(|name|name==&self.context).unwrap_or(0);
                 self.modal=Modal::Picker("Context (Pod view)",list,index);
             }
@@ -58,6 +58,12 @@ impl App {
                 } else { self.status = "Invalid namespace.".into(); }
             }
             ("all", []) => return self.command("ns all"),
+            ("sort", [key, order]) if ["asc", "desc"].contains(&order.as_str()) => {
+                self.sort_by_title(key, Some(order == "desc"))
+            }
+            ("sort", [key]) if !["name", "namespace", "ns", "status", "restarts", "age", "ready", "cpu", "memory", "mem"].contains(&key.as_str()) => {
+                self.sort_by_title(key, None)
+            }
             ("sort", [key]) => {
                 let sort = match key.as_str() { "name" => Some(Sort::Name), "namespace" | "ns" => Some(Sort::Namespace), "status" => Some(Sort::Status), "restarts" => Some(Sort::Restarts), "age" => Some(Sort::Age), "ready"=>Some(Sort::Ready), "cpu"=>Some(Sort::Cpu),"memory"|"mem"=>Some(Sort::Memory), _ => None };
                 if let Some(sort) = sort { self.set_sort(sort); } else { self.status = "Sort: name | namespace | status | restarts | age | ready | cpu | memory".into(); }
@@ -73,6 +79,60 @@ impl App {
             ("restart", []) => self.prepare(Action::Restart),
             ("delete", []) => self.prepare(Action::Delete),
             ("kill", []) => self.kill(),
+            ("debug", []) => self.debug_container(None),
+            ("debug", [target]) => self.debug_container(Some(target.clone())),
+            ("trigger", []) => self.prepare(Action::Trigger),
+            ("suspend", []) => self.prepare(Action::Suspend(true)),
+            ("resume", []) => self.prepare(Action::Suspend(false)),
+            ("rollback" | "undo", []) => self.prepare(Action::Rollback(None)),
+            ("rollback" | "undo", [revision]) => match revision.parse::<u64>() {
+                Ok(revision) if revision > 0 => self.prepare(Action::Rollback(Some(revision))),
+                _ => self.status = "Use :rollback [REVISION]".into(),
+            },
+            ("faults" | "errors", []) => return self.key_event(KeyCode::Char('z'), crossterm::event::KeyModifiers::CONTROL),
+            ("ext" | "extension" | "extensions", []) => match crate::extensions::list() {
+                Ok(entries) if entries.is_empty() => {
+                    self.status = "No extensions registered; see kborg extensions register.".into()
+                }
+                Ok(entries) => {
+                    let lines = entries
+                        .iter()
+                        .map(|entry| format!("{:<24} {}", entry.id, entry.executable.display()))
+                        .collect();
+                    self.modal = Modal::Picker("Extensions", lines, 0);
+                }
+                Err(error) => self.status = error,
+            },
+            ("ext" | "extension", [name]) => self.run_extension(name),
+            ("bench" | "be" | "benchmark" | "benchmarks", []) => self.bench(200, 5, "/"),
+            ("bench" | "be" | "benchmark" | "benchmarks", [requests, concurrency, rest @ ..]) if rest.len() <= 1 => {
+                match (requests.parse(), concurrency.parse()) {
+                    (Ok(requests), Ok(concurrency)) => self.bench(
+                        requests,
+                        concurrency,
+                        rest.first().map_or("/", String::as_str),
+                    ),
+                    _ => self.status = "Use :bench [REQUESTS CONCURRENCY [PATH]]".into(),
+                }
+            }
+            ("bench" | "be" | "benchmark" | "benchmarks", _) => self.status = "Use :bench [REQUESTS CONCURRENCY [PATH]]".into(),
+            ("apply", [path]) => self.apply_manifest(std::path::PathBuf::from(path)),
+            ("apply", _) => self.status = "Use :apply FILE.yaml, or a in :dir on a manifest".into(),
+            ("cp-from", [remote]) => self.copy_file(true, false, remote, None),
+            ("cp-from", [remote, local]) if remote != "-r" => {
+                self.copy_file(true, false, remote, Some(local))
+            }
+            ("cp-from", [flag, remote]) if flag == "-r" => self.copy_file(true, true, remote, None),
+            ("cp-from", [flag, remote, local]) if flag == "-r" => {
+                self.copy_file(true, true, remote, Some(local))
+            }
+            ("cp-to", [local, remote]) => self.copy_file(false, false, local, Some(remote)),
+            ("cp-to", [flag, local, remote]) if flag == "-r" => {
+                self.copy_file(false, true, local, Some(remote))
+            }
+            ("cp" | "cp-from" | "cp-to", _) => {
+                self.status = "Use :cp-from [-r] /CONTAINER/PATH [LOCAL] or :cp-to [-r] LOCAL /CONTAINER/PATH".into()
+            }
             ("pulse"|"pulses"|"hz"|"pu",[])=>self.send(Task::Pulses(self.namespace.clone())),
             ("xray"|"xrays"|"xr"|"x",[resource])=>self.send(Task::Xray(resource.clone(),self.namespace.clone())),
             ("xray"|"xrays"|"xr"|"x",[resource,ns]) if ns=="all" || ns=="*" || safety::valid_id(ns)=>self.send(Task::Xray(resource.clone(),if ns=="all"{"*".into()}else{ns.clone()})),
@@ -122,7 +182,8 @@ impl App {
                 if let Some(release)=selected{self.request_helm(helm_ui::Request::History(release),false);}else{self.status="Use :history RELEASE or select a release in :helm and press Enter.".into();}
             }
             ("helm"|"history",_)=>self.status="Use :helm [NAMESPACE] or :history RELEASE; --allow-helm enables live release storage reads.".into(),
-            ("benchmarks"|"benchmark"|"be"|"scans"|"scan"|"pop"|"popeye",_)=>self.status="This k9s view requires an external scanner/benchmark integration; it is unavailable. No command was executed.".into(),
+            ("lint" | "popeye" | "pop" | "sanitize", []) => self.send(Task::Lint(self.namespace.clone())),
+            ("scans"|"scan",_)=>self.status="Image vulnerability scanning needs an external scanner; it is unavailable. :lint checks common misconfigurations. No command was executed.".into(),
             ("secrets"|"secret"|"sec",[])=>self.secrets(),
             ("secrets"|"secret"|"sec",_)=>self.status="Use :secrets in the current namespace; values stay hidden until one key is revealed.".into(),
             _ => {
@@ -373,6 +434,10 @@ impl App {
         connection.allow_exec = false;
         connection.allow_attach = false;
         connection.allow_port_forward = false;
+        connection.allow_file_copy = false;
+        connection.allow_apply = false;
+        connection.allow_node_shell = false;
+        connection.allow_debug = false;
         connection.allow_node_maintenance = false;
         connection.allow_yaml_edit = false;
         connection.allow_force_kill = false;
@@ -555,6 +620,209 @@ impl App {
         }
         self.prepare(Action::Kill);
     }
+    /// Review handing the selected object to a registered read-only extension.
+    pub(super) fn run_extension(&mut self, name: &str) {
+        if !self.options.allow_extensions || !self.options.allow_tools {
+            self.status = "Extensions require --allow-extensions --allow-tools.".into();
+            return;
+        }
+        let Some(object) = self
+            .visible()
+            .get(self.selected)
+            .map(|object| (*object).clone())
+        else {
+            self.status = "Select an object to hand to the extension.".into();
+            return;
+        };
+        let review = crate::extensions::load(name).and_then(|registered| {
+            let prepared = registered.prepare(&object, crate::handoff::Format::Json)?;
+            let text = format!(
+                "{}\n{}\nINPUT\n{}",
+                registered.summary(),
+                prepared.summary(),
+                prepared.input_preview()
+            );
+            Ok((prepared, text))
+        });
+        match review {
+            Ok((prepared, text)) => {
+                let view =
+                    review_ui::Review::new(text, crate::handoff::CONFIRMATION.into(), self.epoch);
+                self.modal = Modal::WriteReview(Box::new(WriteReview {
+                    plan: WritePlan::Tool(Box::new(prepared)),
+                    view,
+                }));
+                self.status = "Read the whole input, then type RUN TOOL.".into();
+            }
+            Err(error) => self.status = error,
+        }
+    }
+    /// Benchmark the selected listening port-forward over loopback.
+    pub(super) fn bench(&mut self, requests: u32, concurrency: u32, path: &str) {
+        let Some(port) = self.worker.forward.listening_port(self.forward_selected) else {
+            self.status = "Select a LISTENING forward in :pf to benchmark it.".into();
+            return;
+        };
+        match crate::bench::Plan::new(port, requests, concurrency, path) {
+            Ok(plan) => {
+                self.status = format!("Benchmarking 127.0.0.1:{port}{path}…");
+                self.send(Task::Bench(plan));
+            }
+            Err(error) => self.status = error,
+        }
+    }
+    /// Review an ephemeral debug container for the selected Pod.
+    pub(super) fn debug_container(&mut self, target: Option<String>) {
+        if !self.options.connection.writable || !self.options.connection.allow_debug {
+            self.status = "Debug containers require --write --allow-debug.".into();
+            return;
+        }
+        if self.options.connection.demo || self.kind() != "pods" {
+            self.status = "Select a live Pod in :pods to debug it.".into();
+            return;
+        }
+        let Some((_, namespace, pod)) = self.selected_target() else {
+            self.status = "Select a Pod first.".into();
+            return;
+        };
+        self.status = "Dry-running the debug container…".into();
+        self.send(Task::DebugPrepare(
+            namespace,
+            pod,
+            target,
+            self.options.node_shell_image.clone(),
+            self.options.session_seconds,
+        ));
+    }
+    /// Review a privileged node shell Pod for the selected Node.
+    pub(super) fn node_shell(&mut self) {
+        if !self.options.connection.writable || !self.options.connection.allow_node_shell {
+            self.status = "Node shell requires --write --allow-node-shell.".into();
+            return;
+        }
+        if self.options.connection.demo {
+            self.status = "Node shell needs a live cluster.".into();
+            return;
+        }
+        let Some((_, _, node)) = self.selected_target() else {
+            self.status = "Select a Node first.".into();
+            return;
+        };
+        let namespace = if self.namespace == "*" || self.namespace.is_empty() {
+            "default".to_owned()
+        } else {
+            self.namespace.clone()
+        };
+        self.status = "Dry-running the node shell Pod…".into();
+        self.send(Task::NodeShellPrepare(
+            node,
+            namespace,
+            self.options.node_shell_image.clone(),
+            self.options.session_seconds,
+        ));
+    }
+    /// Dry-run and review a server-side apply of a local manifest.
+    pub(super) fn apply_manifest(&mut self, path: std::path::PathBuf) {
+        if !self.options.connection.writable || !self.options.connection.allow_apply {
+            self.status = "Apply requires --write --allow-apply.".into();
+            return;
+        }
+        if self.options.connection.demo {
+            self.status = "Apply needs a live cluster; demo mode has no API server.".into();
+            return;
+        }
+        self.status = "Dry-running every object in the manifest…".into();
+        self.send(Task::ApplyPrepare(path, self.namespace.clone()));
+    }
+    /// Review a single-file copy for the selected Pod's default container.
+    pub(super) fn copy_file(
+        &mut self,
+        download: bool,
+        recursive: bool,
+        first: &str,
+        second: Option<&String>,
+    ) {
+        if self.busy {
+            self.status = "Wait for the current request before copying.".into();
+            return;
+        }
+        if !self.options.connection.writable
+            || !self.options.connection.allow_file_copy
+            || self.options.connection.demo
+        {
+            self.status = "File copy requires a live Pod, --write and --allow-file-copy.".into();
+            return;
+        }
+        if self.kind() != "pods" {
+            self.status = "Select a Pod in :pods first.".into();
+            return;
+        }
+        let Some(object) = self
+            .visible()
+            .get(self.selected)
+            .map(|object| (*object).clone())
+        else {
+            self.status = "Select a Pod first.".into();
+            return;
+        };
+        let containers = object["spec"]["containers"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|container| container["name"].as_str())
+            .collect::<Vec<_>>();
+        let annotated =
+            object["metadata"]["annotations"]["kubectl.kubernetes.io/default-container"]
+                .as_str()
+                .filter(|name| containers.contains(name));
+        let Some(container) = annotated.or(containers.first().copied()).map(str::to_owned) else {
+            self.status = "This Pod has no ordinary container.".into();
+            return;
+        };
+        let request = if download {
+            let local = second.map(std::path::PathBuf::from).unwrap_or_else(|| {
+                std::env::var_os("HOME")
+                    .map(|home| std::path::PathBuf::from(home).join("Downloads"))
+                    .filter(|dir| dir.is_dir())
+                    .unwrap_or_else(|| ".".into())
+            });
+            crate::ops::Request::CopyFrom {
+                container,
+                remote: first.to_owned(),
+                local,
+                recursive,
+            }
+        } else {
+            let Some(remote) = second else {
+                self.status = "Use :cp-to LOCAL_FILE /CONTAINER/FILE".into();
+                return;
+            };
+            let local = std::path::Path::new(first);
+            let upload = if recursive {
+                crate::file_copy::read_upload_dir(local)
+            } else {
+                crate::file_copy::read_upload(local)
+            };
+            match upload {
+                Ok(upload) => crate::ops::Request::CopyTo {
+                    container,
+                    upload,
+                    remote: remote.clone(),
+                },
+                Err(error) => {
+                    self.status = error;
+                    return;
+                }
+            }
+        };
+        let namespace = object["metadata"]["namespace"]
+            .as_str()
+            .unwrap_or(&self.namespace)
+            .to_owned();
+        let pod = object["metadata"]["name"].as_str().unwrap_or("").to_owned();
+        let uid = object["metadata"]["uid"].as_str().map(str::to_owned);
+        self.send(Task::PrepareSession(namespace, pod, uid, request));
+    }
     pub(super) fn yaml_editor(&mut self) {
         if self.busy {
             self.status = "Wait for the current request before editing.".into();
@@ -672,6 +940,9 @@ impl App {
             &task,
             Task::Execute(..)
                 | Task::YamlExecute(..)
+                | Task::ApplyExecute(..)
+                | Task::NodeShellStart(..)
+                | Task::DebugStart(..)
                 | Task::NodeExecute(..)
                 | Task::RunSession(..)
                 | Task::RunForward(..)

@@ -445,9 +445,143 @@ fn native_magic(magic: &[u8]) -> bool {
     )
 }
 
+/// Explain how each entry of a k9s `plugins.yaml` maps to KBorg. Nothing is
+/// registered or run: registration needs its own per-entry review, and k9s
+/// plugins that rely on variable substitution, PATH lookup or background
+/// shells do not fit the literal, reviewed handoff model.
+pub fn import_k9s(text: &str) -> Result<String> {
+    #[derive(Deserialize)]
+    struct PluginFile {
+        plugins: std::collections::BTreeMap<String, Value>,
+    }
+    if text.len() > 256 * 1024 {
+        return Err("plugins.yaml exceeds 256 KiB".into());
+    }
+    let options = serde_saphyr::options! {
+        budget: serde_saphyr::budget! {
+            max_reader_input_bytes: Some(256*1024), max_events: 50_000, max_aliases: 0, max_anchors: 0,
+            max_depth: 8, max_inclusion_depth: 0, max_documents: 1, max_nodes: 20_000,
+            max_total_scalar_bytes: 256*1024, max_total_comment_bytes: 256*1024, max_merge_keys: 0,
+        },
+        duplicate_keys: serde_saphyr::DuplicateKeyPolicy::Error,
+        merge_keys: serde_saphyr::MergeKeyPolicy::Error,
+        with_snippet: false,
+    };
+    let file: PluginFile = serde_saphyr::from_str_with_options(text, options)
+        .map_err(|_| "invalid plugins.yaml; expected a k9s plugins: mapping")?;
+    let mut ready = Vec::new();
+    let mut hotkeys = Vec::new();
+    let mut skipped = Vec::new();
+    for (name, plugin) in file.plugins.iter().take(256) {
+        let name = safety::safe_text(name, 63);
+        let id = name.to_ascii_lowercase().replace([' ', '_'], "-");
+        let command = plugin["command"].as_str().unwrap_or("");
+        let args = plugin["args"]
+            .as_array()
+            .map(|args| {
+                args.iter()
+                    .map(|arg| match arg {
+                        Value::String(text) => text.clone(),
+                        other => other.to_string(),
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let mut reasons = Vec::new();
+        if ["sh", "bash", "zsh", "/bin/sh", "/bin/bash", "/bin/zsh"].contains(&command) {
+            reasons.push("wraps a shell script; register a dedicated executable instead");
+        } else if !Path::new(command).is_absolute() {
+            reasons.push("command is looked up on PATH; KBorg needs an absolute executable path");
+        }
+        if args.iter().any(|arg| arg.contains('$')) || command.contains('$') {
+            reasons.push("uses $VARIABLES; KBorg sends the redacted object as JSON on stdin instead of substituting names");
+        }
+        if plugin["background"] == true {
+            reasons.push(
+                "runs in the background; KBorg tools run in the foreground with a 15-second limit",
+            );
+        }
+        if plugin.get("pipes").is_some() {
+            reasons.push("uses pipes; KBorg runs one executable with literal arguments");
+        }
+        if !safety::valid_id(&id) {
+            reasons.push("name cannot be a KBorg extension id (lowercase letters, digits and -)");
+        }
+        if !reasons.is_empty() {
+            skipped.push(format!("  {name}: {}", reasons.join("; ")));
+            continue;
+        }
+        let mut line = format!(
+            "kborg extensions register {id} --tool {}",
+            safety::safe_text(command, 4096)
+        );
+        for arg in &args {
+            line.push_str(&format!(" --tool-arg {:?}", safety::safe_text(arg, 4096)));
+        }
+        ready.push(line);
+        if let Some(shortcut) = plugin["shortCut"]
+            .as_str()
+            .and_then(crate::hotkeys::Shortcut::parse)
+        {
+            hotkeys.push(format!(
+                "  {id}:\n    shortCut: {shortcut}\n    description: {:?}\n    command: ext {id}",
+                safety::safe_text(plugin["description"].as_str().unwrap_or(&name), 120)
+            ));
+        }
+    }
+    let mut out = format!(
+        "k9s plugins: {} total, {} can be registered, {} need changes\n",
+        ready.len() + skipped.len(),
+        ready.len(),
+        skipped.len()
+    );
+    if !ready.is_empty() {
+        out.push_str("\nRegister each (every registration shows its own review):\n");
+        for line in &ready {
+            out.push_str(&format!("  {line}\n"));
+        }
+    }
+    if !hotkeys.is_empty() {
+        out.push_str("\nAdd to hotkeys.yaml to keep the k9s shortcuts:\nhotKeys:\n");
+        for entry in &hotkeys {
+            out.push_str(entry);
+            out.push('\n');
+        }
+    }
+    if !skipped.is_empty() {
+        out.push_str("\nNot importable as-is:\n");
+        for line in &skipped {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    out.push_str("\nExtensions are read-only views: they receive the selected object as redacted JSON on stdin, and their output is shown, never applied. Run them with :ext NAME and --allow-extensions --allow-tools.\n");
+    Ok(out)
+}
+
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+    #[test]
+    fn k9s_plugins_are_classified_without_registering_anything() -> Result<()> {
+        let report = import_k9s(
+            "plugins:\n  jq-view:\n    shortCut: Shift-J\n    description: Pretty JSON\n    scopes: [all]\n    command: /usr/bin/jq\n    args: [\".\"]\n  stern:\n    shortCut: Ctrl-L\n    command: stern\n    args: [\"--namespace\", \"$NAMESPACE\", \"$NAME\"]\n  bg:\n    command: /bin/bash\n    background: true\n    args: [-c, 'echo hi']\n",
+        )?;
+        assert!(report.starts_with("k9s plugins: 3 total, 1 can be registered, 2 need changes"));
+        assert!(
+            report
+                .contains("kborg extensions register jq-view --tool /usr/bin/jq --tool-arg \".\"")
+        );
+        assert!(report.contains("stern: command is looked up on PATH"));
+        assert!(report.contains("$VARIABLES"));
+        assert!(report.contains("bg: wraps a shell script"));
+        assert!(
+            !report.contains("shortCut: Shift-J"),
+            "Shift-letter is not a KBorg hotkey"
+        );
+        assert!(import_k9s("plugins:\n  a: &x {command: /x}\n  b: *x\n").is_err());
+        Ok(())
+    }
     use serde_json::json;
     use std::os::unix::fs::{PermissionsExt, symlink};
 
