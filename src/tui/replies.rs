@@ -14,7 +14,9 @@ impl App {
         }
         while let Ok((epoch, reply)) = self.worker.rx.try_recv() {
             changed = true;
-            let command_result = self.command_epoch == Some(epoch);
+            // Background replies never end a user request's busy/write state.
+            let command_result = self.command_epoch == Some(epoch)
+                && !matches!(&reply, Reply::Metrics(..) | Reply::Overview(..));
             let write_result = command_result && self.write_inflight;
             if command_result {
                 self.busy = false;
@@ -605,10 +607,6 @@ impl App {
         crate::overview::validate(&names)?;
         if names.len() > crate::overview::MAX_LIVE_CONTEXTS {
             return Err("The dashboard supports up to 9 explicit contexts.".into());
-        }
-        if self.busy {
-            self.status = "Wait for the current request before opening the dashboard.".into();
-            return Ok(());
         }
         self.overview = None;
         let mut connection = self.options.connection.clone();

@@ -2652,12 +2652,39 @@ fn watch_insertion_preserves_identity_and_scale_form_captures_name_and_uid() {
     }
 }
 #[test]
+fn background_replies_never_unlock_an_in_flight_write() -> Result<()> {
+    let (mut app, replies, mut commands) = harness();
+    app.busy = true;
+    app.write_inflight = true;
+    app.command_epoch = Some(app.epoch);
+    // A metrics refresh may still be queued behind the write...
+    app.send(Task::Metrics(
+        crate::metrics::MetricsScope::Pods,
+        "test".into(),
+        false,
+    ));
+    assert!(matches!(commands.try_recv(), Ok((_, Task::Metrics(..)))));
+    // ...but its reply must not end the write's busy state.
+    replies
+        .send((
+            app.epoch,
+            Reply::Metrics(
+                crate::metrics::MetricsScope::Pods,
+                "test".into(),
+                Err("Metrics API unavailable".into()),
+            ),
+        ))
+        .map_err(|_| "reply closed")?;
+    app.receive();
+    assert!(app.busy && app.write_inflight);
+    Ok(())
+}
+#[test]
 fn missing_metrics_does_not_invalidate_resource_data() {
     let (mut app, replies, _commands) = harness();
     app.last_table_metrics = Instant::now().checked_sub(Duration::from_secs(30));
     app.items = vec![object("a")];
-    app.command_epoch = Some(12);
-    app.busy = true;
+    // Metrics refreshes are background work: they never hold the busy gate.
     app.modal = Modal::Metrics("loading".into(), 0);
     assert!(
         replies
