@@ -641,6 +641,7 @@ impl App {
             )
         });
         self.items = items;
+        self.items_generation += 1;
         self.selected = identity
             .and_then(|(ns, name, uid)| {
                 self.visible().iter().position(|v| {
@@ -689,6 +690,7 @@ impl App {
         self.selection_ui.draft = None;
         self.epoch += 1;
         self.items.clear();
+        self.items_generation += 1;
         self.selected = 0;
         self.stale = true;
         self.refresh = true;
