@@ -64,6 +64,18 @@ impl Shortcut {
         }
     }
 
+    /// The key event this shortcut answers to (for conflict checks).
+    pub fn event(self) -> (KeyCode, KeyModifiers) {
+        match self {
+            Self::Shift(digit) => (
+                KeyCode::Char(char::from(SHIFTED_DIGITS[usize::from(digit)])),
+                KeyModifiers::NONE,
+            ),
+            Self::Alt(key) => (KeyCode::Char(key), KeyModifiers::ALT),
+            Self::Ctrl(key) => (KeyCode::Char(key), KeyModifiers::CONTROL),
+            Self::F(number) => (KeyCode::F(number), KeyModifiers::NONE),
+        }
+    }
     pub fn matches(self, code: KeyCode, modifiers: KeyModifiers) -> bool {
         match (self, code) {
             (Self::Shift(digit), KeyCode::Char(c)) => {

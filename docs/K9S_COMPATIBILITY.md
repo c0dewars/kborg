@@ -149,6 +149,33 @@ hotKeys:
 
 A hotkey types its `command` as if it were entered after `:`, so aliases, completion rules and every review gate still apply; nothing runs a shell. Hotkeys fire only in the main resource view, never while a prompt, filter, form or review is open. Supported shortcuts are `Shift-0`…`Shift-9`, `Alt-<letter or digit>`, `F1`…`F12`, and `Ctrl-<letter>` except keys KBorg or terminals already use (`a c d e f h i j k m n p q r s u w z`). `keepHistory` and `override` are accepted and ignored. Bounds are 64 KiB and 64 hotkeys; unknown fields, duplicate shortcuts, YAML anchors and control characters are rejected, and an invalid file shows a notice while built-in keys keep working. `Ctrl-A` (`:aliases`) lists the loaded hotkeys. `Shift-N` matches the US-layout symbol (`)`, `!` … `(`) or a terminal that reports Shift with the digit.
 
+## Custom keymap
+
+Every built-in key is a named action in one registry: a name, the view it works in, its default keys and a one-line description. `?` opens help for the view you are in (the resource table of the current kind, logs, dashboard, port forwards, Pod containers, describe/YAML documents, metrics); `Tab` inside help switches to every key of every view plus the command reference, and `/` filters. `:keymap` (or `:keys`, optionally `:keymap TEXT`) lists every action with its keys and view. The bottom hint rows, the dashboard legend and help are generated from the registry with your actual keys, and remapped keys are marked `*`. `hotkeys.yaml` entries are listed too.
+
+`keymap.yaml` in the same directory remaps actions. It is data only and can move keys between registered actions; it never adds behavior:
+
+```yaml
+keys:
+  logs: L                  # table: follow logs on L instead of l
+  logs.previous: [p, Alt-p] # a list binds several keys
+  sort.name: Shift-X
+  delete: [Ctrl-X, Delete]
+  toggle.wide: Alt-w
+  ns.recent: [Alt-1, Alt-2, Alt-3, Alt-4, Alt-5, Alt-6, Alt-7, Alt-8, Alt-9]
+  log.wrap: Alt-w          # other views use a prefix: log., dashboard., forward., ...
+  quit: []                 # an empty list unbinds an action (:q still quits)
+scopes:                    # optional per-view sections without the prefix
+  dashboard:
+    tail: T
+  editor:
+    review: Ctrl-R         # the YAML editor types plain keys; only Ctrl/Alt/F keys bind
+```
+
+Keys are written `L`, `Shift-N`, `Ctrl-D`, `Alt-x`, `F1`…`F12`, `Space`, `Ctrl-Space`, `Delete`, `Backspace`, `Tab`, `Shift-Tab`, arrows, `PgUp`, `PgDown`, `Home` or `End`. A binding replaces all of the action's default keys, and the replaced keys stop working in that view. Views: `global` (`help`, `command`), `table`, `log`, `dashboard`, `forward`, `containers`, `detail` (describe, YAML and documents; also active in `overview`, `metrics` and `help`), `editor` and `help`. Table actions that share a letter across resource kinds (`s` is shell on Pods, node shell on Nodes, suspend on CronJobs and scale on workloads) are separate actions and can be remapped independently.
+
+Validation is strict: unknown actions or views, unknown fields, the same key twice in one view (including against defaults you kept), more than 9 keys per action, YAML anchors, duplicate YAML keys, more than 256 bindings or 64 KiB are rejected, as is a remapped table key that `hotkeys.yaml` already uses. Esc, Enter, Ctrl-C, Ctrl-] and the Ctrl keys terminals fold into Enter/Tab/Backspace/Esc can never be bound, and review, approval, command-prompt and filter keys are fixed (shown in help as `(fixed)`), so remapping can never weaken a review or a typed confirmation. An invalid file shows a notice at start-up and KBorg keeps the default keys. Helm release views and forms keep their built-in keys.
+
 The broader release gates, platform coverage and external integrations remain in [REMAINING_WORK.md](REMAINING_WORK.md). Current validation is in [HELM_COMPLETION_ACCEPTANCE.md](HELM_COMPLETION_ACCEPTANCE.md); historical [Helm/Pod-log/metrics](HELM_LOGS_METRICS_ACCEPTANCE.md) and [navigation](K9S_ACCEPTANCE.md) reports preserve their original scope.
 
 ## Mac v1 workflow additions (2026-10-23)

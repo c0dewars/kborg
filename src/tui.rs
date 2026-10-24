@@ -28,6 +28,7 @@ mod dashboard_ui;
 mod format;
 #[path = "ui_helm.rs"]
 mod helm_ui;
+mod keyhelp;
 mod keys;
 #[path = "ui_navigation.rs"]
 mod nav;
@@ -38,6 +39,7 @@ mod review_ui;
 #[path = "ui_selections.rs"]
 mod selections_ui;
 mod startup;
+mod table_keys;
 #[path = "ui_metrics.rs"]
 mod table_metrics;
 #[cfg(test)]
@@ -96,7 +98,7 @@ enum Modal {
     SessionConfirm(Box<crate::ops::ReviewedOperation>, String),
     Scale(String, String, String, Option<String>, String),
     Resources(String, String, String, Option<String>, String),
-    Help(usize),
+    Help(Box<keyhelp::HelpView>),
     EditContainers(
         String,
         String,
@@ -249,6 +251,8 @@ struct App {
     saved: Vec<crate::screendump::Record>,
     aliases: crate::aliases::Aliases,
     hotkeys: crate::hotkeys::Hotkeys,
+    /// keymap.yaml: effective keys of every registered action.
+    keymap: crate::keymap::Keymap,
     /// Ctrl-Z: show only objects that need attention (k9s faults view).
     faults_only: bool,
     /// k9s-format views.yaml: per-resource columns and default sort.
@@ -337,7 +341,7 @@ impl App {
             )
             && topbar::help_at(width, mouse.column)
         {
-            if let Err(error) = self.key(KeyCode::Char('?')) {
+            if let Err(error) = self.press_help() {
                 self.status = error;
             }
             return;
@@ -809,6 +813,12 @@ pub fn run(options: Options) -> Result<()> {
         Ok(hotkeys) => (hotkeys, None),
         Err(error) => (Default::default(), Some(error)),
     };
+    let (keymap, keymap_error) = match crate::keymap::load()
+        .and_then(|keymap| keymap.check_hotkeys(&hotkeys).map(|()| keymap))
+    {
+        Ok(keymap) => (keymap, None),
+        Err(error) => (Default::default(), Some(error)),
+    };
     let (views, view_error) = match crate::views::load() {
         Ok(views) => (views, None),
         Err(error) => (Default::default(), Some(error)),
@@ -844,6 +854,7 @@ pub fn run(options: Options) -> Result<()> {
         saved: vec![],
         aliases,
         hotkeys,
+        keymap,
         faults_only: false,
         views,
         ui,
@@ -913,6 +924,14 @@ pub fn run(options: Options) -> Result<()> {
         app.modal = Modal::Detail(
             format!(
                 "Custom views unavailable\n{error}\n\nDefault columns remain available. Esc closes this notice."
+            ),
+            0,
+        );
+    }
+    if let Some(error) = keymap_error {
+        app.modal = Modal::Detail(
+            format!(
+                "Custom keymap unavailable\n{error}\n\nDefault keys remain available; :keymap lists them. Esc closes this notice."
             ),
             0,
         );
