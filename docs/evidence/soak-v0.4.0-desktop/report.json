@@ -1,0 +1,584 @@
+{
+  "schema": 1,
+  "passed": true,
+  "started_utc": "2026-10-24T13:36:01.451452+00:00",
+  "context": "docker-desktop",
+  "namespace": "kborg-soak-c7df3dc8b7af",
+  "run_id": "ceaf0ce39cdd4f27ad36fd96d0ac9628",
+  "requested_seconds": 7200,
+  "binary_sha256": "16f874c337b5df4465a097781de1ce001ef6925bac1b5f2798d9446d9e9f755c",
+  "harness_sha256": "7453a3e6d0abfb8b779dc7c830bf4fa78ad56ad7877ed75e424f8e934e8c90dd",
+  "checks": [
+    "Three continuous read-only processes converged in the explicit fixture namespace",
+    "Continuous requested duration completed without process exit or panic",
+    "Owned periodic Pod additions/deletions reached resource and dashboard watches and final TUI counts",
+    "RSS stayed below 256 MiB per process and quarter-median growth below 64 MiB",
+    "Average CPU stayed below 25% of one core per process after the first 30 seconds",
+    "Output and JSON-record budgets held without retaining raw transcripts",
+    "Dashboard closed and quit successfully with exact terminal attributes restored"
+  ],
+  "captures": [
+    {
+      "name": "soak-start-dashboard",
+      "path": "/Users/brunogarcia/Desktop/repos/kborg/docs/evidence/soak-v0.4.0-desktop/soak-start-dashboard.png",
+      "columns": 120,
+      "rows": 32
+    },
+    {
+      "name": "soak-final-dashboard",
+      "path": "/Users/brunogarcia/Desktop/repos/kborg/docs/evidence/soak-v0.4.0-desktop/soak-final-dashboard.png",
+      "columns": 120,
+      "rows": 32
+    }
+  ],
+  "mutations": [
+    {
+      "elapsed_seconds": 5.265,
+      "expected_pods": 2
+    },
+    {
+      "elapsed_seconds": 65.66,
+      "expected_pods": 1
+    },
+    {
+      "elapsed_seconds": 126.185,
+      "expected_pods": 2
+    },
+    {
+      "elapsed_seconds": 186.736,
+      "expected_pods": 1
+    },
+    {
+      "elapsed_seconds": 247.173,
+      "expected_pods": 2
+    },
+    {
+      "elapsed_seconds": 307.559,
+      "expected_pods": 1
+    },
+    {
+      "elapsed_seconds": 367.938,
+      "expected_pods": 2
+    },
+    {
+      "elapsed_seconds": 428.302,
+      "expected_pods": 1
+    },
+    {
+      "elapsed_seconds": 488.525,
+      "expected_pods": 2
+    },
+    {
+      "elapsed_seconds": 548.861,
+      "expected_pods": 1
+    },
+    {
+      "elapsed_seconds": 609.224,
+      "expected_pods": 2
+    },
+    {
+      "elapsed_seconds": 669.538,
+      "expected_pods": 1
+    },
+    {
+      "elapsed_seconds": 729.959,
+      "expected_pods": 2
+    },
+    {
+      "elapsed_seconds": 790.203,
+      "expected_pods": 1
+    },
+    {
+      "elapsed_seconds": 850.635,
+      "expected_pods": 2
+    },
+    {
+      "elapsed_seconds": 911.086,
+      "expected_pods": 1
+    },
+    {
+      "elapsed_seconds": 971.36,
+      "expected_pods": 2
+    },
+    {
+      "elapsed_seconds": 1032.612,
+      "expected_pods": 1
+    },
+    {
+      "elapsed_seconds": 1093.527,
+      "expected_pods": 2
+    },
+    {
+      "elapsed_seconds": 1154.42,
+      "expected_pods": 1
+    },
+    {
+      "elapsed_seconds": 1215.002,
+      "expected_pods": 2
+    },
+    {
+      "elapsed_seconds": 1276.527,
+      "expected_pods": 1
+    },
+    {
+      "elapsed_seconds": 1338.818,
+      "expected_pods": 2
+    },
+    {
+      "elapsed_seconds": 1399.367,
+      "expected_pods": 1
+    },
+    {
+      "elapsed_seconds": 1460.507,
+      "expected_pods": 2
+    },
+    {
+      "elapsed_seconds": 1523.701,
+      "expected_pods": 1
+    },
+    {
+      "elapsed_seconds": 1584.37,
+      "expected_pods": 2
+    },
+    {
+      "elapsed_seconds": 1645.35,
+      "expected_pods": 1
+    },
+    {
+      "elapsed_seconds": 1706.098,
+      "expected_pods": 2
+    },
+    {
+      "elapsed_seconds": 1766.83,
+      "expected_pods": 1
+    },
+    {
+      "elapsed_seconds": 1827.573,
+      "expected_pods": 2
+    },
+    {
+      "elapsed_seconds": 1888.176,
+      "expected_pods": 1
+    },
+    {
+      "elapsed_seconds": 1948.945,
+      "expected_pods": 2
+    },
+    {
+      "elapsed_seconds": 2009.563,
+      "expected_pods": 1
+    },
+    {
+      "elapsed_seconds": 2070.28,
+      "expected_pods": 2
+    },
+    {
+      "elapsed_seconds": 2130.837,
+      "expected_pods": 1
+    },
+    {
+      "elapsed_seconds": 2192.677,
+      "expected_pods": 2
+    },
+    {
+      "elapsed_seconds": 2253.225,
+      "expected_pods": 1
+    },
+    {
+      "elapsed_seconds": 2314.905,
+      "expected_pods": 2
+    },
+    {
+      "elapsed_seconds": 2376.97,
+      "expected_pods": 1
+    },
+    {
+      "elapsed_seconds": 2437.599,
+      "expected_pods": 2
+    },
+    {
+      "elapsed_seconds": 2498.138,
+      "expected_pods": 1
+    },
+    {
+      "elapsed_seconds": 2558.72,
+      "expected_pods": 2
+    },
+    {
+      "elapsed_seconds": 2619.335,
+      "expected_pods": 1
+    },
+    {
+      "elapsed_seconds": 2680.022,
+      "expected_pods": 2
+    },
+    {
+      "elapsed_seconds": 2740.618,
+      "expected_pods": 1
+    },
+    {
+      "elapsed_seconds": 2801.267,
+      "expected_pods": 2
+    },
+    {
+      "elapsed_seconds": 2862.053,
+      "expected_pods": 1
+    },
+    {
+      "elapsed_seconds": 2922.666,
+      "expected_pods": 2
+    },
+    {
+      "elapsed_seconds": 2983.337,
+      "expected_pods": 1
+    },
+    {
+      "elapsed_seconds": 3044.093,
+      "expected_pods": 2
+    },
+    {
+      "elapsed_seconds": 3104.899,
+      "expected_pods": 1
+    },
+    {
+      "elapsed_seconds": 3165.311,
+      "expected_pods": 2
+    },
+    {
+      "elapsed_seconds": 3225.64,
+      "expected_pods": 1
+    },
+    {
+      "elapsed_seconds": 3285.894,
+      "expected_pods": 2
+    },
+    {
+      "elapsed_seconds": 3346.177,
+      "expected_pods": 1
+    },
+    {
+      "elapsed_seconds": 3406.538,
+      "expected_pods": 2
+    },
+    {
+      "elapsed_seconds": 3466.981,
+      "expected_pods": 1
+    },
+    {
+      "elapsed_seconds": 3527.397,
+      "expected_pods": 2
+    },
+    {
+      "elapsed_seconds": 3587.826,
+      "expected_pods": 1
+    },
+    {
+      "elapsed_seconds": 3648.122,
+      "expected_pods": 2
+    },
+    {
+      "elapsed_seconds": 3708.403,
+      "expected_pods": 1
+    },
+    {
+      "elapsed_seconds": 3768.675,
+      "expected_pods": 2
+    },
+    {
+      "elapsed_seconds": 3828.949,
+      "expected_pods": 1
+    },
+    {
+      "elapsed_seconds": 3889.223,
+      "expected_pods": 2
+    },
+    {
+      "elapsed_seconds": 3949.628,
+      "expected_pods": 1
+    },
+    {
+      "elapsed_seconds": 4009.919,
+      "expected_pods": 2
+    },
+    {
+      "elapsed_seconds": 4070.175,
+      "expected_pods": 1
+    },
+    {
+      "elapsed_seconds": 4130.432,
+      "expected_pods": 2
+    },
+    {
+      "elapsed_seconds": 4190.68,
+      "expected_pods": 1
+    },
+    {
+      "elapsed_seconds": 4250.983,
+      "expected_pods": 2
+    },
+    {
+      "elapsed_seconds": 4311.26,
+      "expected_pods": 1
+    },
+    {
+      "elapsed_seconds": 4371.468,
+      "expected_pods": 2
+    },
+    {
+      "elapsed_seconds": 4431.722,
+      "expected_pods": 1
+    },
+    {
+      "elapsed_seconds": 4492.158,
+      "expected_pods": 2
+    },
+    {
+      "elapsed_seconds": 4552.583,
+      "expected_pods": 1
+    },
+    {
+      "elapsed_seconds": 4613.014,
+      "expected_pods": 2
+    },
+    {
+      "elapsed_seconds": 4673.281,
+      "expected_pods": 1
+    },
+    {
+      "elapsed_seconds": 4733.511,
+      "expected_pods": 2
+    },
+    {
+      "elapsed_seconds": 4793.827,
+      "expected_pods": 1
+    },
+    {
+      "elapsed_seconds": 4854.083,
+      "expected_pods": 2
+    },
+    {
+      "elapsed_seconds": 4914.423,
+      "expected_pods": 1
+    },
+    {
+      "elapsed_seconds": 4974.661,
+      "expected_pods": 2
+    },
+    {
+      "elapsed_seconds": 5034.916,
+      "expected_pods": 1
+    },
+    {
+      "elapsed_seconds": 5095.157,
+      "expected_pods": 2
+    },
+    {
+      "elapsed_seconds": 5155.388,
+      "expected_pods": 1
+    },
+    {
+      "elapsed_seconds": 5215.63,
+      "expected_pods": 2
+    },
+    {
+      "elapsed_seconds": 5276.085,
+      "expected_pods": 1
+    },
+    {
+      "elapsed_seconds": 5336.495,
+      "expected_pods": 2
+    },
+    {
+      "elapsed_seconds": 5396.764,
+      "expected_pods": 1
+    },
+    {
+      "elapsed_seconds": 5457.184,
+      "expected_pods": 2
+    },
+    {
+      "elapsed_seconds": 5517.592,
+      "expected_pods": 1
+    },
+    {
+      "elapsed_seconds": 5577.934,
+      "expected_pods": 2
+    },
+    {
+      "elapsed_seconds": 5638.328,
+      "expected_pods": 1
+    },
+    {
+      "elapsed_seconds": 5698.664,
+      "expected_pods": 2
+    },
+    {
+      "elapsed_seconds": 5759.096,
+      "expected_pods": 1
+    },
+    {
+      "elapsed_seconds": 5819.462,
+      "expected_pods": 2
+    },
+    {
+      "elapsed_seconds": 5879.893,
+      "expected_pods": 1
+    },
+    {
+      "elapsed_seconds": 5940.298,
+      "expected_pods": 2
+    },
+    {
+      "elapsed_seconds": 6000.683,
+      "expected_pods": 1
+    },
+    {
+      "elapsed_seconds": 6061.108,
+      "expected_pods": 2
+    },
+    {
+      "elapsed_seconds": 6121.547,
+      "expected_pods": 1
+    },
+    {
+      "elapsed_seconds": 6181.781,
+      "expected_pods": 2
+    },
+    {
+      "elapsed_seconds": 6242.193,
+      "expected_pods": 1
+    },
+    {
+      "elapsed_seconds": 6302.523,
+      "expected_pods": 2
+    },
+    {
+      "elapsed_seconds": 6362.952,
+      "expected_pods": 1
+    },
+    {
+      "elapsed_seconds": 6423.353,
+      "expected_pods": 2
+    },
+    {
+      "elapsed_seconds": 6483.804,
+      "expected_pods": 1
+    },
+    {
+      "elapsed_seconds": 6544.162,
+      "expected_pods": 2
+    },
+    {
+      "elapsed_seconds": 6604.534,
+      "expected_pods": 1
+    },
+    {
+      "elapsed_seconds": 6664.93,
+      "expected_pods": 2
+    },
+    {
+      "elapsed_seconds": 6725.305,
+      "expected_pods": 1
+    },
+    {
+      "elapsed_seconds": 6785.707,
+      "expected_pods": 2
+    },
+    {
+      "elapsed_seconds": 6845.966,
+      "expected_pods": 1
+    },
+    {
+      "elapsed_seconds": 6906.376,
+      "expected_pods": 2
+    },
+    {
+      "elapsed_seconds": 6966.751,
+      "expected_pods": 1
+    },
+    {
+      "elapsed_seconds": 7027.128,
+      "expected_pods": 2
+    },
+    {
+      "elapsed_seconds": 7087.492,
+      "expected_pods": 1
+    },
+    {
+      "elapsed_seconds": 7147.829,
+      "expected_pods": 2
+    }
+  ],
+  "fault": null,
+  "limits": {
+    "rss_per_process_kib": 262144,
+    "rss_growth_kib": 65536,
+    "total_output_per_process_bytes": 536870912,
+    "json_record_bytes": 16777216,
+    "average_cpu_core_percent_after_30_seconds": 25
+  },
+  "claims_excluded": [
+    "429 throttling",
+    "credential/token rotation",
+    "certificate rotation",
+    "organizational production pilot",
+    "native terminal font rendering"
+  ],
+  "configured_current_context_before": "docker-desktop",
+  "kubernetes_version": "v1.36.1",
+  "fixture_namespace_uid": "940ef34f-f182-4356-a6c9-706805a27a5a",
+  "issued_token_remaining_seconds_at_start": 7800,
+  "continuous_started_utc": "2026-10-24T13:36:02.911792+00:00",
+  "actual_continuous_seconds": 7200.077,
+  "continuous_finished_utc": "2026-10-24T15:36:03.019217+00:00",
+  "processes": {
+    "resource": {
+      "samples": 477,
+      "rss_peak_kib": 13328,
+      "rss_early_quarter_median_kib": 13264,
+      "rss_late_quarter_median_kib": 12112,
+      "rss_growth_kib": -1152,
+      "cpu_peak_percent": 0.5,
+      "cpu_last_sample_seconds": 0.9,
+      "output_bytes": 9141688,
+      "records": 2220,
+      "observed_counts": [
+        1,
+        2
+      ],
+      "stale_records": 0
+    },
+    "dashboard": {
+      "samples": 477,
+      "rss_peak_kib": 14784,
+      "rss_early_quarter_median_kib": 14688,
+      "rss_late_quarter_median_kib": 13472,
+      "rss_growth_kib": -1216,
+      "cpu_peak_percent": 0.6,
+      "cpu_last_sample_seconds": 1.77,
+      "output_bytes": 2649364,
+      "records": 5167,
+      "observed_counts": [
+        1,
+        2
+      ],
+      "stale_records": 4
+    },
+    "tui": {
+      "samples": 477,
+      "rss_peak_kib": 16256,
+      "rss_early_quarter_median_kib": 16064,
+      "rss_late_quarter_median_kib": 14832,
+      "rss_growth_kib": -1232,
+      "cpu_peak_percent": 1.2,
+      "cpu_last_sample_seconds": 6.83,
+      "output_bytes": 44346287,
+      "records": 0,
+      "observed_counts": [],
+      "stale_records": 0
+    }
+  },
+  "configured_current_context_after": "docker-desktop",
+  "fixture_cleanup": true,
+  "finished_utc": "2026-10-24T15:36:08.518026+00:00"
+}
