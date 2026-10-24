@@ -16,8 +16,8 @@ use tokio::time::{Instant, timeout_at};
 static FEED_SERIAL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 /// Live cache bounds. Objects are redacted (managedFields, data, annotations…)
 /// before they are measured, so the cap reflects what is actually held.
-const MAX_OBJECTS: usize = 5000;
-const MAX_BYTES: usize = 32 * 1024 * 1024;
+const MAX_OBJECTS: usize = 10_000;
+const MAX_BYTES: usize = 64 * 1024 * 1024;
 /// Objects per initial-list page; ten pages cover MAX_OBJECTS.
 const PAGE_SIZE: u32 = 500;
 const LIST_BUDGET: Duration = Duration::from_secs(15);
@@ -230,7 +230,7 @@ impl WatchFeed {
         let mut rv = None;
         let mut continuation = None;
         let mut seen = HashSet::new();
-        for _ in 0..10 {
+        for _ in 0..MAX_OBJECTS.div_ceil(PAGE_SIZE as usize) {
             let params = ListParams {
                 label_selector: (!self.selector.is_empty()).then(|| self.selector.clone()),
                 field_selector: (!self.fields.is_empty()).then(|| self.fields.clone()),
