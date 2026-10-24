@@ -198,11 +198,7 @@ enum Reply {
     Drill(Box<Value>),
     Directory(crate::navigation_views::Directory),
     Secrets(crate::secrets::SecretIndex),
-    Subjects(
-        &'static str,
-        String,
-        crate::navigation_views::SubjectIndex,
-    ),
+    Subjects(&'static str, String, crate::navigation_views::SubjectIndex),
     DashboardWorkloads(Vec<(String, Result<Vec<crate::workload_tail::WorkloadRef>>)>),
     SecretValue(String, String, Result<crate::secrets::Revealed>),
     Helm(u64, Result<helm_ui::Response>),
@@ -1083,6 +1079,9 @@ struct App {
     connecting_epoch: Option<u64>,
     watching: bool,
     watch_blocked: bool,
+    /// The scope exceeded the live-watch cap: show the first bounded page
+    /// through periodic lists instead of an empty, blocked table.
+    bounded_poll: bool,
     sticky_status: bool,
     namespace_override: bool,
     write_inflight: bool,
@@ -2092,6 +2091,7 @@ impl App {
         self.refresh = true;
         self.watching = false;
         self.watch_blocked = false;
+        self.bounded_poll = false;
         self.sticky_status = false;
         self.worker.watch.invalidate(self.epoch);
         self.worker.logs.cancel();
@@ -2249,10 +2249,17 @@ impl App {
                     self.truncated = value["truncated"] == true;
                     self.selected = self.selected.min(self.visible().len().saturating_sub(1));
                     self.stale = false;
-                    self.status = format!(
-                        "{} objects | cached filter | refresh every 5s",
-                        self.items.len()
-                    );
+                    self.status = if self.bounded_poll {
+                        format!(
+                            "Showing the first {} objects: this scope is too large to watch live. Refreshing every 15s; /-l LABELS or :ns narrows it.",
+                            self.items.len()
+                        )
+                    } else {
+                        format!(
+                            "{} objects | cached filter | refresh every 5s",
+                            self.items.len()
+                        )
+                    };
                 }
                 Reply::AdvicePrepared(result) => {
                     if !matches!(self.modal, Modal::AdviceLoading) {
@@ -2659,7 +2666,12 @@ impl App {
             self.truncated = snapshot.truncated;
             self.watching = !snapshot.terminal;
             self.watch_blocked = snapshot.terminal;
-            if self.watch_blocked {
+            if snapshot.terminal && snapshot.truncated {
+                // Too large to cache live: fall back to bounded periodic lists.
+                self.bounded_poll = true;
+                self.watch_blocked = false;
+                self.refresh = true;
+            } else if self.watch_blocked {
                 self.refresh = false;
             }
             if !self.write_inflight && !self.sticky_status {
@@ -7423,6 +7435,7 @@ pub fn run(options: Options) -> Result<()> {
         connecting_epoch: None,
         watching: false,
         watch_blocked: false,
+        bounded_poll: false,
         sticky_status: false,
         namespace_override: false,
         write_inflight: false,
@@ -7542,25 +7555,33 @@ pub fn run(options: Options) -> Result<()> {
             && (app.refresh
                 || (!app.watching
                     && app.last_refresh.elapsed()
-                        > Duration::from_secs(if app.stale { 10 } else { 5 })))
+                        > Duration::from_secs(if app.bounded_poll {
+                            15
+                        } else if app.stale {
+                            10
+                        } else {
+                            5
+                        })))
         {
             app.refresh = false;
             app.last_refresh = Instant::now();
-            app.send(if app.options.poll || app.options.connection.demo {
-                Task::List(
-                    app.kind(),
-                    app.namespace.clone(),
-                    app.selector.clone(),
-                    app.field_selector.clone(),
-                )
-            } else {
-                Task::Watch(
-                    app.kind(),
-                    app.namespace.clone(),
-                    app.selector.clone(),
-                    app.field_selector.clone(),
-                )
-            });
+            app.send(
+                if app.options.poll || app.options.connection.demo || app.bounded_poll {
+                    Task::List(
+                        app.kind(),
+                        app.namespace.clone(),
+                        app.selector.clone(),
+                        app.field_selector.clone(),
+                    )
+                } else {
+                    Task::Watch(
+                        app.kind(),
+                        app.namespace.clone(),
+                        app.selector.clone(),
+                        app.field_selector.clone(),
+                    )
+                },
+            );
             dirty = true;
         }
         if app.connected
@@ -7851,6 +7872,7 @@ mod layout_tests {
                 connecting_epoch: None,
                 watching: false,
                 watch_blocked: false,
+                bounded_poll: false,
                 sticky_status: false,
                 namespace_override: false,
                 write_inflight: false,
@@ -9838,6 +9860,39 @@ mod layout_tests {
             }
         }
         assert!(failures.is_empty(), "{failures:#?}");
+    }
+    #[test]
+    fn oversized_scope_falls_back_to_bounded_polling_instead_of_an_empty_table() -> Result<()> {
+        let (mut app, replies, _commands) = harness();
+        app.connected = true;
+        app.worker.watch.publish(
+            app.epoch,
+            crate::watch::WatchSnapshot {
+                objects: Vec::new(),
+                resource_version: String::new(),
+                stale: true,
+                message: "watch cache limit exceeded; narrow namespace scope".into(),
+                terminal: true,
+                truncated: true,
+            },
+        );
+        app.receive();
+        assert!(app.bounded_poll && !app.watch_blocked && app.refresh);
+        let items = (0..1000)
+            .map(|i| object(&format!("cfg-{i:04}")))
+            .collect::<Vec<_>>();
+        replies
+            .send((
+                app.epoch,
+                Reply::Items(serde_json::json!({"items": items, "truncated": true})),
+            ))
+            .map_err(|_| "reply closed")?;
+        app.receive();
+        assert_eq!(app.items.len(), 1000);
+        assert!(app.truncated && app.status.contains("Showing the first 1000 objects"));
+        app.changed();
+        assert!(!app.bounded_poll);
+        Ok(())
     }
     #[test]
     fn table_hints_show_only_actions_that_work_for_this_kind_and_session() -> Result<()> {

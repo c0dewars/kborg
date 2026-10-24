@@ -20,8 +20,10 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-pub const MAX_OBJECTS: usize = 1000;
-const MAX_BODY: usize = 8 * 1024 * 1024;
+pub const MAX_OBJECTS: usize = 5000;
+const MAX_BODY: usize = 32 * 1024 * 1024;
+/// Objects per list page; MAX_LIST_PAGES pages cover MAX_OBJECTS.
+const LIST_PAGE: u32 = 500;
 const MAX_LIST_PAGES: usize = 10;
 const OPERATION_BUDGET: Duration = Duration::from_secs(15);
 
@@ -292,7 +294,13 @@ fn merge_config_files(paths: Vec<PathBuf>) -> Result<Kubeconfig> {
     let single = paths.len() == 1;
     let mut merged: Option<Kubeconfig> = None;
     for path in paths {
-        if !single && !path.exists() {
+        if !path.exists() {
+            if single {
+                return Err(format!(
+                    "No kubeconfig found at {}. Try `kborg demo` to explore without a cluster, or point --kubeconfig / $KUBECONFIG at your cluster config.",
+                    safety::safe_text(&path.to_string_lossy(), 512)
+                ));
+            }
             continue;
         }
         let next = read_config_file(&path)?;
@@ -369,10 +377,25 @@ pub fn contexts(options: &Connection) -> Result<Vec<String>> {
     if options.demo {
         return Ok(vec!["demo".into()]);
     }
-    Ok(read_config(options)?
+    let raw = read_config(options)?;
+    Ok(raw
         .contexts
-        .into_iter()
-        .map(|c| c.name)
+        .iter()
+        .filter(|context| {
+            let server = context
+                .context
+                .as_ref()
+                .and_then(|c| {
+                    raw.clusters
+                        .iter()
+                        .find(|cluster| cluster.name == c.cluster)
+                })
+                .and_then(|cluster| cluster.cluster.as_ref())
+                .and_then(|cluster| cluster.server.as_deref())
+                .unwrap_or("");
+            crate::org_policy::check_server(server).is_ok()
+        })
+        .map(|context| context.name.clone())
         .take(100)
         .collect())
 }
@@ -541,6 +564,9 @@ impl Gateway {
             .and_then(|c| c.cluster.as_ref())
             .ok_or("cluster not found")?
             .clone();
+        // The organization policy binds to the server actually reached, not
+        // to the user-chosen context name.
+        crate::org_policy::check_server(cluster.server.as_deref().unwrap_or(""))?;
         let user = context
             .user
             .as_ref()
@@ -1033,7 +1059,7 @@ impl Gateway {
         let mut seen_tokens = std::collections::HashSet::new();
         loop {
             let params = ListParams {
-                limit: Some(200),
+                limit: Some(LIST_PAGE),
                 label_selector: (!selector.is_empty()).then(|| selector.to_owned()),
                 field_selector: (!fields.is_empty()).then(|| fields.to_owned()),
                 continue_token: continuation,
@@ -1067,7 +1093,7 @@ impl Gateway {
             {
                 return Err("server repeated a pagination token; listing stopped".into());
             }
-            tokio::time::timeout_at(deadline, tokio::time::sleep(Duration::from_millis(200)))
+            tokio::time::timeout_at(deadline, tokio::time::sleep(Duration::from_millis(50)))
                 .await
                 .map_err(|_| "list budget exceeded; narrow namespace scope")?;
         }
@@ -2305,8 +2331,49 @@ fn finish_audit(path: &std::path::Path, status: &str) -> Result<()> {
 }
 fn api_error(error: kube::Error) -> String {
     match error {
-        kube::Error::Api(response)=>format!("Kubernetes API {} ({}); server message suppressed",response.code,safety::safe_text(&response.reason,80)),
-        _=>"Kubernetes transport/response failure; data may be stale and write outcomes may be unknown".into(),
+        kube::Error::Api(response) => format!(
+            "Kubernetes API {} ({}); server message suppressed",
+            response.code,
+            safety::safe_text(&response.reason, 80)
+        ),
+        other => format!(
+            "{}. Data may be stale and any write outcome is unknown.",
+            transport_hint(&other)
+        ),
+    }
+}
+/// Names the likely cause of a transport failure without echoing raw error
+/// text, which can carry endpoints or credential-adjacent detail.
+fn transport_hint(error: &(dyn std::error::Error + 'static)) -> &'static str {
+    let mut chain = String::new();
+    let mut current = Some(error);
+    while let Some(error) = current {
+        chain.push_str(&error.to_string().to_ascii_lowercase());
+        chain.push(' ');
+        current = error.source();
+    }
+    if chain.contains("connection refused") {
+        "Cannot reach the Kubernetes API server (connection refused): is the cluster running? :ctx selects another context"
+    } else if chain.contains("dns")
+        || chain.contains("failed to lookup")
+        || chain.contains("nodename nor servname")
+    {
+        "Cannot resolve the API server host name: check the network, VPN or kubeconfig server"
+    } else if chain.contains("certificate")
+        || chain.contains("unknownissuer")
+        || chain.contains("tls")
+    {
+        "TLS verification of the API server failed: the cluster CA in kubeconfig does not match (verification is never skipped)"
+    } else if chain.contains("timed out") || chain.contains("deadline") || chain.contains("elapsed")
+    {
+        "The API server did not answer in time: the cluster may be overloaded or unreachable"
+    } else if chain.contains("unauthorized")
+        || chain.contains("credential")
+        || chain.contains("exec")
+    {
+        "Authentication with the API server failed: refresh your credentials (for example your cloud login)"
+    } else {
+        "Kubernetes transport or response failure"
     }
 }
 fn demo_objects() -> Vec<Value> {
@@ -3103,7 +3170,11 @@ mod tests {
         let second = file("b.yaml", "west", "https://second.example", "west")?;
         let merged = merge_config_files(vec![first, root.join("missing.yaml"), second])?;
         assert_eq!(merged.current_context.as_deref(), Some("shared"));
-        let names = merged.contexts.iter().map(|c| c.name.as_str()).collect::<Vec<_>>();
+        let names = merged
+            .contexts
+            .iter()
+            .map(|c| c.name.as_str())
+            .collect::<Vec<_>>();
         assert_eq!(names, ["shared", "east", "west"]);
         let shared = merged
             .clusters
@@ -3116,10 +3187,28 @@ mod tests {
             shared.certificate_authority.as_deref(),
             Some(root.join("ca.pem").to_string_lossy().as_ref())
         );
-        assert!(merge_config_files(vec![root.join("missing.yaml"), root.join("gone.yaml")]).is_err());
+        assert!(
+            merge_config_files(vec![root.join("missing.yaml"), root.join("gone.yaml")]).is_err()
+        );
         assert!(merge_config_files(vec![root.join("only-missing.yaml")]).is_err());
         let _ = std::fs::remove_dir_all(&root);
         Ok(())
+    }
+    #[test]
+    fn transport_failures_name_a_cause_without_echoing_raw_text() {
+        let refused = std::io::Error::new(
+            std::io::ErrorKind::ConnectionRefused,
+            "tcp connect error: Connection refused (os error 61) to https://10.0.0.1:6443?token=abc",
+        );
+        let hint = transport_hint(&refused);
+        assert!(hint.contains("connection refused") && !hint.contains("token"));
+        let timeout = std::io::Error::new(std::io::ErrorKind::TimedOut, "operation timed out");
+        assert!(transport_hint(&timeout).contains("did not answer in time"));
+        let other = std::io::Error::other("weird");
+        assert_eq!(
+            transport_hint(&other),
+            "Kubernetes transport or response failure"
+        );
     }
     #[test]
     fn force_kill_is_pod_only_opt_in_and_uses_zero_grace() {

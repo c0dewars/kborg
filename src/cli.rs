@@ -461,6 +461,11 @@ fn parse(args: Vec<String>) -> Result<Options> {
     if let Some(path) = config_path {
         crate::config::apply(crate::config::load(&path)?, &mut opts)?;
     }
+    // The organization policy is checked last, after every flag and config
+    // file, so nothing a user passes can loosen it.
+    if let Some(policy) = crate::org_policy::load()? {
+        policy.enforce(&opts)?;
+    }
     Ok(opts)
 }
 pub fn runtime() -> Result<tokio::runtime::Runtime> {
