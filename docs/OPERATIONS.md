@@ -8,39 +8,6 @@ Keep binaries in versioned directories and place only the selected directory on 
 
 For rollback, stop KBorg and select the previous versioned binary. This does not undo Kubernetes operations. Keep a protected backup of user settings before upgrades. Config schema 1 rejects unknown versions; migration is deliberate and never executes a config file. Uninstall by removing the chosen binary directory; retain or explicitly remove your settings/audit spool according to retention policy. No automatic cleanup of kubeconfig or cluster objects occurs.
 
-## Organization policy
-
-Administrators can cap what any KBorg session on a machine may do, regardless of the user's flags, `--config` file or environment. Install a JSON policy owned by root and writable only by root:
-
-| OS | Path |
-|---|---|
-| macOS | `/Library/Application Support/KBorg/policy.json` |
-| Linux | `/etc/kborg/policy.json` |
-
-```json
-{
-  "schema_version": 1,
-  "deny": ["write", "secret-reveal", "exec", "attach", "copilot", "external-editor"],
-  "allowed_servers": ["https://staging.k8s.example.com:6443", "https://prod-eu.k8s.example.com"],
-  "contact": "Need more access? Ask #platform-team."
-}
-```
-
-```sh
-sudo mkdir -p "/Library/Application Support/KBorg"
-sudo cp policy.json "/Library/Application Support/KBorg/policy.json"
-sudo chown -R root:wheel "/Library/Application Support/KBorg"
-sudo chmod 755 "/Library/Application Support/KBorg"
-sudo chmod 644 "/Library/Application Support/KBorg/policy.json"
-```
-
-- `deny` accepts: `write`, `logs`, `exec`, `attach`, `port-forward`, `node-maintenance`, `yaml-edit`, `force-kill`, `secret-reveal`, `helm`, `helm-write`, `helm-hooks`, `helm-crds`, `tools`, `extensions`, `auth-helper`, `external-editor`, `copilot`. Requesting a denied capability stops KBorg with a message naming the policy and your `contact` text.
-- `allowed_servers`, when present, lists the only Kubernetes API server URLs (`https://` only) any connection may reach: main view, dashboard cards, log panes and tails. It binds to the server KBorg actually connects to, not to the context name, which users can choose freely in their own kubeconfig; KBorg already refuses insecure TLS and proxies. Contexts for other servers are hidden from the picker and refused.
-- Unknown fields or capability names are rejected. If the file exists but is not owned by root, is group/world writable, is a symlink, or sits in such a directory, KBorg refuses to start rather than ignore it.
-- The policy limits the KBorg client only. Kubernetes RBAC and admission remain the authority; a user who can run another binary is not constrained by it.
-
-Distribute it with your MDM or configuration management alongside the binary.
-
 ## Configuration
 
 `kborg config init settings.json` creates a new strict JSON file. Pass it explicitly with `--config`; no project-local executable configuration is auto-loaded. `config validate` validates without connecting. CLI context/namespace/theme values override file defaults. Files can constrain capabilities but never enable writes or log/subresource access without their CLI flags. Profile `read-only` refuses `--write`; profile `operator` still requires `--write`, separate capability opt-ins, and target confirmation. These are local client controls, not a substitute for RBAC/admission or a policy against a user running another binary.
