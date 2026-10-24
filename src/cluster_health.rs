@@ -34,10 +34,22 @@ pub struct WorkloadEvidence {
     pub named: Vec<String>,
 }
 
+/// Recent Warning events about objects other than Pods (Nodes, ReplicaSets,
+/// Deployments, PersistentVolumeClaims…), which Pod-linked evidence omits.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct ObjectEvents {
+    pub state: EvidenceState,
+    pub count: usize,
+    /// "Reason / Kind/name", newest first, at most NAMED_EVENTS entries.
+    pub recent: Vec<String>,
+}
+pub const NAMED_EVENTS: usize = 3;
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct InfraSummary {
     pub nodes: NodeEvidence,
     pub workloads: WorkloadEvidence,
+    pub events: ObjectEvents,
 }
 
 impl InfraSummary {
@@ -58,6 +70,11 @@ impl InfraSummary {
                 statefulsets: 0,
                 degraded: 0,
                 named: Vec::new(),
+            },
+            events: ObjectEvents {
+                state: EvidenceState::Connecting,
+                count: 0,
+                recent: Vec::new(),
             },
         }
     }
@@ -129,6 +146,50 @@ pub fn degraded(kind: &str, object: &Value) -> bool {
     }
 }
 
+/// Warning events in the last 15 minutes whose subject is not a Pod, one
+/// entry per (kind, name, reason), newest first.
+pub fn object_events(events: &[Value], now: u64) -> ObjectEvents {
+    let mut latest: std::collections::BTreeMap<(String, String, String), u64> = Default::default();
+    for event in events {
+        let kind = event["involvedObject"]["kind"].as_str().unwrap_or("");
+        if event["type"] != "Warning" || kind.is_empty() || kind == "Pod" {
+            continue;
+        }
+        let Some(timestamp) = [
+            &event["series"]["lastObservedTime"],
+            &event["lastTimestamp"],
+            &event["eventTime"],
+            &event["firstTimestamp"],
+        ]
+        .into_iter()
+        .filter_map(crate::dashboard_health::parse_timestamp)
+        .max() else {
+            continue;
+        };
+        if now.saturating_sub(timestamp) > crate::dashboard_health::WARNING_WINDOW_SECONDS {
+            continue;
+        }
+        let key = (
+            crate::safety::safe_text(kind, 63),
+            crate::safety::safe_text(event["involvedObject"]["name"].as_str().unwrap_or("?"), 253),
+            crate::safety::safe_text(event["reason"].as_str().unwrap_or("Warning"), 80),
+        );
+        let entry = latest.entry(key).or_default();
+        *entry = (*entry).max(timestamp);
+    }
+    let mut entries = latest.into_iter().collect::<Vec<_>>();
+    entries.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    ObjectEvents {
+        state: EvidenceState::Live,
+        count: entries.len(),
+        recent: entries
+            .into_iter()
+            .take(NAMED_EVENTS)
+            .map(|((kind, name, reason), _)| format!("{reason} / {kind}/{name}"))
+            .collect(),
+    }
+}
+
 pub fn workloads(deployments: &[Value], statefulsets: &[Value]) -> WorkloadEvidence {
     let mut names = deployments
         .iter()
@@ -166,10 +227,24 @@ async fn list(gateway: &Gateway, key: &str, ns: &str) -> std::result::Result<Val
 /// One bounded poll. Nodes are cluster-scoped and commonly denied to
 /// namespace-scoped identities; that is reported, not hidden.
 pub async fn collect(gateway: &Gateway, namespace: &str) -> InfraSummary {
-    let (nodes, deployments, statefulsets, usage) = tokio::join!(
+    // Node events are recorded in "default"; also read it when the dashboard
+    // shows another single namespace.
+    let extra_events = if namespace == "*" || namespace == "default" {
+        None
+    } else {
+        Some("default")
+    };
+    let (nodes, deployments, statefulsets, events, node_events, usage) = tokio::join!(
         list(gateway, "nodes", "*"),
         list(gateway, "deployments", namespace),
         list(gateway, "statefulsets", namespace),
+        list(gateway, "events", namespace),
+        async {
+            match extra_events {
+                Some(ns) => Some(list(gateway, "events", ns).await),
+                None => None,
+            }
+        },
         tokio::time::timeout(
             READ_BUDGET,
             metrics::collect(gateway, metrics::MetricsScope::Nodes, "*")
@@ -215,7 +290,29 @@ pub async fn collect(gateway: &Gateway, namespace: &str) -> InfraSummary {
             ..InfraSummary::connecting().workloads
         },
     };
-    InfraSummary { nodes, workloads }
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |time| time.as_secs());
+    let events = match events {
+        Ok(list) => {
+            let mut all = items(&list).to_vec();
+            // A denied "default" read only hides Node events; namespace
+            // evidence stays live.
+            if let Some(Ok(extra)) = node_events {
+                all.extend(items(&extra).iter().cloned());
+            }
+            object_events(&all, now)
+        }
+        Err(state) => ObjectEvents {
+            state,
+            ..InfraSummary::connecting().events
+        },
+    };
+    InfraSummary {
+        nodes,
+        workloads,
+        events,
+    }
 }
 
 #[cfg(test)]
@@ -246,6 +343,54 @@ mod tests {
         assert_eq!(
             evidence.named,
             vec!["deploy/api", "deploy/stuck", "sts/cache[2J"]
+        );
+    }
+    #[test]
+    fn restart_alerts_name_the_busiest_pods_and_count_them_all() {
+        let pod = |name: &str, restarts: [u64; 2]| json!({"metadata":{"namespace":"shop","name":name,"uid":format!("uid-{name}")},"status":{"phase":"Running","containerStatuses":[{"restartCount":restarts[0]},{"restartCount":restarts[1]}]}});
+        let pods = vec![
+            pod("calm", [1, 4]),
+            pod("flappy", [0, 12]),
+            pod("loop", [5, 0]),
+            pod("hot", [9, 9]),
+            pod("worse", [30, 1]),
+        ];
+        let health = crate::dashboard_health::PodHealth::from_objects(&pods)
+            .with_warnings(&crate::dashboard_health::EventEvidence::connecting(), 0);
+        assert_eq!(health.restart_alert_count, 4);
+        assert_eq!(
+            health.restart_alerts,
+            vec![
+                ("shop/worse".to_owned(), 30),
+                ("shop/flappy".to_owned(), 12),
+                ("shop/hot".to_owned(), 9)
+            ]
+        );
+    }
+    #[test]
+    fn object_events_skip_pods_old_and_normal_events_and_dedupe_by_reason() {
+        let now = 1_800_000_000u64;
+        let at = |seconds_ago: u64| {
+            k8s_openapi::jiff::Timestamp::from_second((now - seconds_ago) as i64)
+                .map(|t| t.to_string())
+                .unwrap_or_default()
+        };
+        let events = vec![
+            json!({"type":"Warning","reason":"NodeNotReady","involvedObject":{"kind":"Node","name":"worker-1"},"lastTimestamp":at(30)}),
+            json!({"type":"Warning","reason":"NodeNotReady","involvedObject":{"kind":"Node","name":"worker-1"},"lastTimestamp":at(60)}),
+            json!({"type":"Warning","reason":"FailedCreate","involvedObject":{"kind":"ReplicaSet","name":"api-7d"},"lastTimestamp":at(10)}),
+            json!({"type":"Warning","reason":"BackOff","involvedObject":{"kind":"Pod","name":"api-1"},"lastTimestamp":at(5)}),
+            json!({"type":"Normal","reason":"Scheduled","involvedObject":{"kind":"Node","name":"worker-1"},"lastTimestamp":at(5)}),
+            json!({"type":"Warning","reason":"Old","involvedObject":{"kind":"Node","name":"worker-2"},"lastTimestamp":at(3600)}),
+        ];
+        let evidence = object_events(&events, now);
+        assert_eq!(evidence.count, 2);
+        assert_eq!(
+            evidence.recent,
+            vec![
+                "FailedCreate / ReplicaSet/api-7d",
+                "NodeNotReady / Node/worker-1"
+            ]
         );
     }
     #[test]

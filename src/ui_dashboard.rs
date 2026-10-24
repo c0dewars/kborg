@@ -219,7 +219,7 @@ impl Dashboard {
     }
     fn card_key(&mut self, key: KeyCode, count: usize) {
         match key {
-            KeyCode::Char('1'..='4') => {
+            KeyCode::Char('1'..='9') => {
                 if let KeyCode::Char(number) = key {
                     let selected = number as usize - '1' as usize;
                     if selected == self.selected && count > 1 {
@@ -316,9 +316,17 @@ fn cards(width: u16, height: u16, count: usize, selected: usize) -> Vec<(usize, 
         return vec![];
     }
     if count == 1 && width >= 96 {
-        area.height = area.height.min(14);
+        // Room for Node/app/restart/event detail under Pod health.
+        area.height = area.height.min(18);
     }
-    let columns = if width >= 76 && count > 1 { 2 } else { 1 };
+    // Three columns once five or more clusters share a wide terminal.
+    let columns = if width >= 150 && count >= 5 {
+        3
+    } else if width >= 76 && count > 1 {
+        2
+    } else {
+        1
+    };
     let rows = count.div_ceil(columns);
     if (usize::from(area.height) + 1) / rows < 9 {
         return vec![(selected.min(count - 1), area)];
@@ -416,6 +424,7 @@ fn log_pane(app: &App, pane: &LogPane, rect: Rect, out: &mut impl Write) -> Resu
 /// named degraded workloads. Unavailable evidence is labelled, never zero.
 fn infra_lines(
     infra: &crate::cluster_health::InfraSummary,
+    health: Option<&crate::dashboard_health::HealthSummary>,
     demo: bool,
 ) -> Vec<(String, &'static str)> {
     let label = |state: &EvidenceState| {
@@ -453,6 +462,7 @@ fn infra_lines(
     };
     let apps = &infra.workloads;
     let mut lines = vec![node_line];
+    let mut details = Vec::new();
     if matches!(apps.state, EvidenceState::Live) {
         lines.push((
             format!(
@@ -461,20 +471,63 @@ fn infra_lines(
             ),
             if apps.degraded > 0 { "warning" } else { "text" },
         ));
-        lines.extend(
+        details.extend(
             apps.named
                 .iter()
                 .map(|name| (format!("  {name}"), "warning")),
         );
         if apps.degraded > apps.named.len() {
-            lines.push((
-                format!("  +{} more", apps.degraded - apps.named.len()),
+            details.push((
+                format!("  +{} more degraded", apps.degraded - apps.named.len()),
                 "muted",
             ));
         }
     } else {
         lines.push((format!("APPS {}", label(&apps.state)), "muted"));
     }
+    if let Some(health) = health.filter(|health| health.restart_alert_count > 0) {
+        lines.push((
+            format!(
+                "RESTARTS {} Pod{} at >={} restarts",
+                health.restart_alert_count,
+                if health.restart_alert_count == 1 {
+                    ""
+                } else {
+                    "s"
+                },
+                crate::dashboard_health::RESTART_ALERT
+            ),
+            "warning",
+        ));
+        details.extend(
+            health
+                .restart_alerts
+                .iter()
+                .map(|(pod, count)| (format!("  {pod} ({count})"), "warning")),
+        );
+    }
+    let events = &infra.events;
+    match events.state {
+        EvidenceState::Live if events.count > 0 => {
+            lines.push((
+                format!(
+                    "EVENTS {} non-Pod warning{} / 15m",
+                    events.count,
+                    if events.count == 1 { "" } else { "s" }
+                ),
+                "warning",
+            ));
+            details.extend(
+                events
+                    .recent
+                    .iter()
+                    .map(|text| (format!("  {text}"), "warning")),
+            );
+        }
+        EvidenceState::Live | EvidenceState::Connecting => {}
+        ref state => lines.push((format!("EVENTS {}", label(state)), "muted")),
+    }
+    lines.extend(details);
     lines
 }
 
@@ -563,7 +616,7 @@ fn card(
         4
     };
     if let Some(infra) = infra {
-        let rows = infra_lines(infra, summary.demo);
+        let rows = infra_lines(infra, summary.health.as_ref(), summary.demo);
         let (start, limit) = if split {
             (7, rect.height.saturating_sub(3))
         } else if warning_row == 8 {
@@ -761,7 +814,7 @@ pub(super) fn render(
         };
         panel(out, rect, "DASHBOARD KEYS", true, color("accent"), bg).map_err(|_| "draw failed")?;
         let help = [
-            "1..4             Focus a card; its number again toggles full screen",
+            "1..9             Focus a card; its number again toggles full screen",
             "Arrows / Tab     Move between cards",
             "Enter            Open focused context Pods",
             "w                Select next recent warning",
@@ -770,7 +823,7 @@ pub(super) fn render(
             "t                Tail chosen workloads across every card's cluster",
             "e / W in a pane  Show only error / warning lines",
             "Esc on warning   Close the log pane, then clear the selection",
-            "c                Choose up to four context names",
+            "c                Choose up to nine context names",
             "s                Save these contexts and namespace",
             "B                Open saved selections",
             "? / Esc          Close this keymap",
@@ -893,7 +946,7 @@ pub(super) fn render(
         } else if dashboard.warning.is_some() {
             " w next warning   Enter Events   L live logs   Esc clear"
         } else {
-            " 1..4 focus   Enter Pods   w warnings   t tail workloads   ? keymap   Esc back"
+            " 1..9 focus   Enter Pods   w warnings   t tail workloads   ? keymap   Esc back"
         },
         color("accent"),
         bg,
@@ -921,7 +974,7 @@ mod tests {
         infra.nodes.total = 3;
         infra.nodes.metrics = EvidenceState::Denied;
         infra.workloads.state = EvidenceState::Denied;
-        let lines = infra_lines(&infra, false);
+        let lines = infra_lines(&infra, None, false);
         assert_eq!(lines[0].0, "NODES 2/3 ready   metrics DENIED");
         assert_eq!(lines[0].1, "warning");
         assert_eq!(lines[1].0, "APPS DENIED");
@@ -937,9 +990,12 @@ mod tests {
                 "sts/d".into(),
             ],
         };
-        let lines = infra_lines(&infra, false);
+        let lines = infra_lines(&infra, None, false);
         assert_eq!(lines[1].0, "APPS 9 deploy   1 sts   6 degraded");
-        assert_eq!(lines.last().map(|line| line.0.as_str()), Some("  +2 more"));
+        assert_eq!(
+            lines.last().map(|line| line.0.as_str()),
+            Some("  +2 more degraded")
+        );
     }
     #[test]
     fn focus_survives_updates_and_never_selects_missing_cards() {
@@ -981,6 +1037,8 @@ mod tests {
             unknown: 0,
             restarts: 0,
             oom_killed: 0,
+            restart_alerts: Vec::new(),
+            restart_alert_count: 0,
             warnings: crate::dashboard_health::WarningSummary {
                 state: EvidenceState::Live,
                 count: Some(uids.len()),
@@ -1045,7 +1103,7 @@ mod tests {
     fn grid_is_bounded_at_all_supported_terminal_sizes() {
         for width in 28..180 {
             for height in 10..55 {
-                for count in 1..=4 {
+                for count in 1..=crate::overview::MAX_LIVE_CONTEXTS {
                     let layout = cards(width, height, count, count - 1);
                     assert!(!layout.is_empty());
                     for (index, rect) in &layout {
@@ -1095,6 +1153,8 @@ mod tests {
             unknown: 0,
             restarts: 0,
             oom_killed: 0,
+            restart_alerts: Vec::new(),
+            restart_alert_count: 0,
             warnings: crate::dashboard_health::WarningSummary::connecting(),
         });
         assert_eq!(health_label(&row), ("COMPLETED / no active Pods", "muted"));

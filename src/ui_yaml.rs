@@ -1,4 +1,5 @@
-//! In-memory YAML editor; no shell, temporary file or external editor is involved.
+//! In-memory YAML editor. Ctrl-E can hand the draft to `$EDITOR` when the
+//! session opted in; the result returns through `replace_text` validation.
 use crate::{
     Result,
     manifest_edit::{Draft, MAX_DOCUMENT},
@@ -11,6 +12,8 @@ pub enum Event {
     Continue,
     Review,
     Cancel,
+    /// Ctrl-E: edit the draft in `$VISUAL`/`$EDITOR`.
+    External,
 }
 pub struct Editor {
     pub draft: Draft,
@@ -60,6 +63,7 @@ impl Editor {
             return Ok(match key.code {
                 KeyCode::Char('s') => Event::Review,
                 KeyCode::Char('c') => Event::Cancel,
+                KeyCode::Char('e') => Event::External,
                 KeyCode::Home => {
                     self.row = 0;
                     self.column = 0;
@@ -143,6 +147,31 @@ impl Editor {
             _ => {}
         }
         Ok(Event::Continue)
+    }
+    /// Replaces the whole draft with externally edited text under the same
+    /// plain-text and size rules as paste.
+    pub fn replace_text(&mut self, text: &str) -> Result<()> {
+        if text.len() > MAX_DOCUMENT {
+            return Err("YAML editor is limited to 64 KiB".into());
+        }
+        if text.chars().any(|c| {
+            !c.is_ascii() || (c != '\n' && safety::safe_text(&c.to_string(), 1).is_empty())
+        }) {
+            return Err(
+                "edited YAML must be plain ASCII text without controls; draft unchanged".into(),
+            );
+        }
+        let lines = text
+            .trim_end_matches('\n')
+            .split('\n')
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        self.lines = lines;
+        self.row = 0;
+        self.column = 0;
+        self.top.set(0);
+        self.left.set(0);
+        Ok(())
     }
     pub fn paste(&mut self, text: &str) -> Result<()> {
         if text.chars().any(|c| {

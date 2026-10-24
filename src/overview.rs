@@ -82,6 +82,9 @@ fn read_only(options: &Connection, context: &str) -> Connection {
     connection
 }
 
+/// Contexts one live dashboard watches at once (k10s keys 1..9).
+pub const MAX_LIVE_CONTEXTS: usize = 9;
+
 pub fn validate(names: &[String]) -> Result<()> {
     if names.is_empty() || names.len() > 100 {
         return Err("overview requires 1..100 explicit contexts".into());
@@ -285,8 +288,10 @@ pub struct OverviewFeed {
 impl OverviewFeed {
     pub fn new(options: &Connection, names: &[String]) -> Result<Self> {
         validate(names)?;
-        if names.len() > 4 {
-            return Err("live overview supports 1..4 explicitly selected contexts".into());
+        if names.len() > MAX_LIVE_CONTEXTS {
+            return Err(format!(
+                "live overview supports 1..{MAX_LIVE_CONTEXTS} explicitly selected contexts"
+            ));
         }
         let rows = std::sync::Arc::new(std::sync::Mutex::new(
             names
@@ -531,7 +536,7 @@ mod tests {
             assert!(
                 OverviewFeed::new(
                     &options,
-                    &["a".into(), "b".into(), "c".into(), "d".into(), "e".into()]
+                    &(0..10).map(|index| format!("c{index}")).collect::<Vec<_>>()
                 )
                 .is_err()
             );

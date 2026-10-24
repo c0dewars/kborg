@@ -46,6 +46,11 @@ pub struct Options {
     pub dynamic_membership: bool,
     /// `--contexts a,b`: open the TUI directly in the dashboard (k10s style).
     pub dashboard: Vec<String>,
+    /// `kborg dashboard` / `--dashboard`: reopen the last dashboard, or pick
+    /// clusters on first use.
+    pub dashboard_last: bool,
+    /// Opt-in: Ctrl-E in the YAML editor hands the draft to $VISUAL/$EDITOR.
+    pub external_editor: bool,
     pub helm_storage: Option<crate::helm::Storage>,
     pub helm_tool: Option<PathBuf>,
     pub helm_values: Option<PathBuf>,
@@ -82,6 +87,8 @@ fn parse(args: Vec<String>) -> Result<Options> {
         all_containers: false,
         dynamic_membership: false,
         dashboard: Vec::new(),
+        dashboard_last: false,
+        external_editor: false,
         helm_storage: None,
         helm_tool: None,
         helm_values: None,
@@ -111,6 +118,8 @@ fn parse(args: Vec<String>) -> Result<Options> {
             "--previous" => opts.previous = true,
             "--all-containers" => opts.all_containers = true,
             "--dynamic-membership" => opts.dynamic_membership = true,
+            "--dashboard" => opts.dashboard_last = true,
+            "--allow-external-editor" => opts.external_editor = true,
             "--contexts" => {
                 let names: Vec<String> = args
                     .next()
@@ -118,8 +127,8 @@ fn parse(args: Vec<String>) -> Result<Options> {
                     .split(',')
                     .map(|name| name.trim().to_owned())
                     .collect();
-                if names.len() > 4 {
-                    return Err("--contexts opens the dashboard with 1..4 contexts".into());
+                if names.len() > crate::overview::MAX_LIVE_CONTEXTS {
+                    return Err("--contexts opens the dashboard with 1..9 contexts".into());
                 }
                 crate::overview::validate(&names)?;
                 opts.dashboard = names;
@@ -587,6 +596,11 @@ pub fn run_args(args: Vec<String>) -> Result<()> {
             return Ok(());
         }
         "ui" => return tui::run(opts),
+        "dashboard" | "dash" => {
+            let mut opts = opts;
+            opts.dashboard_last = true;
+            return tui::run(opts);
+        }
         "helm" | "history" | "list" | "watch" | "metrics" | "get" | "view" | "logs"
         | "resources" | "doctor" | "scale" | "restart" | "delete" | "kill" | "set-image"
         | "set-resources" | "exec" | "attach" | "forward" | "pulses" | "xray" | "workloads"

@@ -8,7 +8,7 @@ use std::{
 };
 
 pub const MAX_RECORDS: usize = 16;
-pub const MAX_CONTEXTS: usize = 4;
+pub const MAX_CONTEXTS: usize = crate::overview::MAX_LIVE_CONTEXTS;
 const MAX_BYTES: u64 = 64 * 1024;
 const FILE_NAME: &str = "v1.json";
 const LOCK_NAME: &str = ".lock";
@@ -132,7 +132,9 @@ impl Selection {
                 namespace,
             } => {
                 if contexts.is_empty() || contexts.len() > MAX_CONTEXTS {
-                    return Err("a saved dashboard requires 1..4 contexts".into());
+                    return Err(format!(
+                        "a saved dashboard requires 1..{MAX_CONTEXTS} contexts"
+                    ));
                 }
                 let mut unique = std::collections::HashSet::new();
                 if contexts
@@ -536,7 +538,7 @@ mod tests {
         for contexts in [
             vec![],
             vec!["x".into(); 2],
-            vec!["a".into(), "b".into(), "c".into(), "d".into(), "e".into()],
+            (0..10).map(|index| format!("c{index}")).collect(),
             vec!["bad\ncontext".into()],
         ] {
             record.target = Target::Dashboard {
