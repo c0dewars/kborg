@@ -44,6 +44,8 @@ fn harness() -> Harness {
                 log_seconds: 3600,
                 interactive: false,
                 session_seconds: 900,
+                node_shell_image: String::new(),
+                recursive: false,
                 metrics_resources: false,
                 selector: String::new(),
                 log_read: crate::logs::ReadOptions::default(),
@@ -71,6 +73,14 @@ fn harness() -> Harness {
             marks: Default::default(),
             saved: vec![],
             aliases: Default::default(),
+            hotkeys: Default::default(),
+            faults_only: false,
+            views: Default::default(),
+            wide: false,
+            sort_desc: false,
+            sort_column: None,
+            recent: Default::default(),
+            last_scope: (String::new(), String::new(), usize::MAX),
             known_namespaces: vec![],
             restoring_uid: None,
             subviews: vec![],
@@ -112,6 +122,7 @@ fn harness() -> Harness {
             selection_ui: Default::default(),
             pending_session: None,
             pending_editor: false,
+            pending_tool: None,
             worker: Worker {
                 tx,
                 rx,
@@ -1201,6 +1212,50 @@ fn forward_view_selects_and_stops_only_highlighted_session() {
     ));
 }
 #[test]
+fn hotkeys_run_commands_only_from_the_main_view() {
+    use crate::hotkeys::{Hotkey, Shortcut};
+    let (mut app, _replies, _commands) = harness();
+    app.hotkeys = vec![
+        Hotkey {
+            shortcut: Shortcut::Shift(1),
+            description: "Deployments".into(),
+            command: "deploy".into(),
+        },
+        Hotkey {
+            shortcut: Shortcut::F(5),
+            description: "Nodes".into(),
+            command: "no".into(),
+        },
+    ];
+    assert!(
+        app.key_event(KeyCode::Char('!'), KeyModifiers::NONE)
+            .is_ok()
+    );
+    assert_eq!(app.kind(), "deployments.apps");
+    assert!(
+        app.key_event(KeyCode::Char(':'), KeyModifiers::NONE)
+            .is_ok()
+    );
+    assert!(
+        app.key_event(KeyCode::Char('!'), KeyModifiers::NONE)
+            .is_ok()
+    );
+    assert!(app.key_event(KeyCode::F(5), KeyModifiers::NONE).is_ok());
+    assert_eq!(
+        app.kind(),
+        "deployments.apps",
+        "typing in the prompt never fires hotkeys"
+    );
+    assert!(matches!(&app.modal, Modal::Input("Command", text) if text == "!"));
+    app.modal = Modal::None;
+    assert!(app.key_event(KeyCode::F(5), KeyModifiers::NONE).is_ok());
+    assert_eq!(app.kind(), "nodes");
+    app.aliases();
+    assert!(
+        matches!(&app.modal, Modal::Picker(_, lines, _) if lines.iter().any(|line| line.contains("hotkey F5") && line.contains(":no")))
+    );
+}
+#[test]
 fn familiar_commands_complete_recall_and_keep_scoped_back_history() {
     let (mut app, _replies, _commands) = harness();
     app.aliases
@@ -1705,6 +1760,225 @@ fn human_overview_uses_redacted_object_fields_and_json_remains_accessible() {
     assert!(matches!(app.modal, Modal::Overview(..)));
     assert!(app.key(KeyCode::Char('J')).is_ok());
     assert!(matches!(app.modal, Modal::Detail(..)));
+}
+#[test]
+fn extensions_need_both_flags_and_unknown_names_do_not_open_a_review() {
+    let (mut app, _replies, _commands) = harness();
+    app.items = vec![object("api")];
+    assert!(app.command("ext viewer").is_ok());
+    assert!(app.status.contains("--allow-extensions --allow-tools"));
+    app.options.allow_extensions = true;
+    app.options.allow_tools = true;
+    assert!(app.command("ext Not_Valid").is_ok());
+    assert!(!matches!(app.modal, Modal::WriteReview(_)));
+}
+#[test]
+fn node_shell_needs_its_capability_and_reviews_the_selected_node() {
+    let (mut app, _replies, mut commands) = harness();
+    app.command("nodes").unwrap_or(false);
+    app.items = vec![serde_json::json!({"kind":"Node","metadata":{"name":"worker-1","uid":"n1"}})];
+    assert!(app.key(KeyCode::Char('s')).is_ok());
+    assert!(app.status.contains("--allow-node-shell"));
+    while commands.try_recv().is_ok() {}
+    app.busy = false;
+    app.options.connection.writable = true;
+    app.options.connection.allow_node_shell = true;
+    app.namespace = "*".into();
+    assert!(app.key(KeyCode::Char('s')).is_ok());
+    match commands.try_recv() {
+        Ok((_, Task::NodeShellPrepare(node, namespace, _, seconds))) => {
+            assert_eq!(
+                (node.as_str(), namespace.as_str(), seconds),
+                ("worker-1", "default", 900)
+            )
+        }
+        _ => panic!("s on a Node did not request a node shell review"),
+    }
+}
+#[test]
+fn views_yaml_columns_custom_paths_and_sort_by_any_column() {
+    let (mut app, _replies, _commands) = harness();
+    app.views = crate::views::parse(
+        "views:\n  v1/pods:\n    sortColumn: IMAGE:desc\n    columns:\n      - NAME\n      - IMAGE:.spec.containers[0].image\n      - STATUS\n      - TEAM:.metadata.labels.team|W\n",
+    )
+    .unwrap_or_default();
+    app.command("pods").unwrap_or(false);
+    app.items = vec![
+        serde_json::json!({"kind":"Pod","metadata":{"name":"a","namespace":"x","uid":"1","labels":{"team":"red"}},"spec":{"containers":[{"image":"alpha:1"}]},"status":{"phase":"Running"}}),
+        serde_json::json!({"kind":"Pod","metadata":{"name":"b","namespace":"x","uid":"2","labels":{"team":"blue"}},"spec":{"containers":[{"image":"zulu:9"}]},"status":{"phase":"Running"}}),
+    ];
+    app.items_generation += 1;
+    app.sync_scope();
+    let text = screen(&app, 120, 14).join("\n");
+    assert!(text.contains("IMAGEv") && text.contains("zulu:9"), "{text}");
+    assert!(!text.contains("TEAM"), "wide-only column hidden by default");
+    assert_eq!(
+        app.visible().iter().map(|o| name(o)).collect::<Vec<_>>(),
+        vec!["b", "a"]
+    );
+    assert!(
+        app.key_event(KeyCode::Char('w'), KeyModifiers::CONTROL)
+            .is_ok()
+    );
+    assert!(screen(&app, 120, 14).join("\n").contains("TEAM"));
+    assert!(app.command("sort team asc").is_ok());
+    assert_eq!(
+        app.visible().iter().map(|o| name(o)).collect::<Vec<_>>(),
+        vec!["b", "a"]
+    );
+    assert!(app.command("sort team").is_ok());
+    assert_eq!(
+        app.visible().iter().map(|o| name(o)).collect::<Vec<_>>(),
+        vec!["a", "b"]
+    );
+    assert!(app.command("sort nosuch").is_ok());
+    assert!(app.status.starts_with("No column NOSUCH"));
+    assert!(app.key(KeyCode::Char('N')).is_ok());
+    assert!(app.key(KeyCode::Char('N')).is_ok());
+    assert!(
+        app.sort_desc && app.sort_column.is_none(),
+        "pressing N again reverses"
+    );
+}
+#[test]
+fn debug_needs_its_capability_and_reviews_the_selected_pod() {
+    let (mut app, _replies, mut commands) = harness();
+    app.items = vec![object("api")];
+    assert!(app.command("debug").is_ok());
+    assert!(app.status.contains("--allow-debug"));
+    app.options.connection.writable = true;
+    app.options.connection.allow_debug = true;
+    while commands.try_recv().is_ok() {}
+    app.busy = false;
+    assert!(app.command("debug app").is_ok());
+    match commands.try_recv() {
+        Ok((_, Task::DebugPrepare(_, pod, target, _, seconds))) => {
+            assert_eq!(
+                (pod.as_str(), target.as_deref(), seconds),
+                ("api", Some("app"), 900)
+            )
+        }
+        _ => panic!(":debug did not request a review"),
+    }
+}
+#[test]
+fn cronjob_keys_and_errors_only_toggle() {
+    let (mut app, _replies, mut commands) = harness();
+    app.options.connection.writable = true;
+    app.command("cronjobs").unwrap_or(false);
+    app.items = vec![
+        serde_json::json!({"kind":"CronJob","metadata":{"name":"tick","namespace":"ops","uid":"c1"},"spec":{"suspend":true}}),
+    ];
+    while commands.try_recv().is_ok() {}
+    app.busy = false;
+    assert!(app.key(KeyCode::Char('s')).is_ok());
+    assert!(matches!(
+        commands.try_recv(),
+        Ok((_, Task::Prepare(_, _, _, _, Action::Suspend(false))))
+    ));
+    app.busy = false;
+    assert!(app.key(KeyCode::Char('t')).is_ok());
+    assert!(matches!(
+        commands.try_recv(),
+        Ok((_, Task::Prepare(_, _, _, _, Action::Trigger)))
+    ));
+    app.command("pods").unwrap_or(false);
+    app.items = vec![
+        serde_json::json!({"kind":"Pod","metadata":{"name":"ok","namespace":"a","uid":"1"},"status":{"phase":"Running","containerStatuses":[{"ready":true}]}}),
+        serde_json::json!({"kind":"Pod","metadata":{"name":"bad","namespace":"a","uid":"2"},"status":{"phase":"Pending"}}),
+    ];
+    app.items_generation += 1;
+    assert_eq!(app.visible().len(), 2);
+    assert!(
+        app.key_event(KeyCode::Char('z'), KeyModifiers::CONTROL)
+            .is_ok()
+    );
+    assert_eq!(
+        app.visible().iter().map(|o| name(o)).collect::<Vec<_>>(),
+        vec!["bad"]
+    );
+    assert!(
+        app.key_event(KeyCode::Char('z'), KeyModifiers::CONTROL)
+            .is_ok()
+    );
+    assert_eq!(app.visible().len(), 2);
+}
+#[test]
+fn apply_requires_its_capability_and_queues_a_dry_run_review() {
+    let (mut app, _replies, mut commands) = harness();
+    assert!(app.command("apply deploy.yaml").is_ok());
+    assert!(app.status.contains("--allow-apply"));
+    assert!(commands.try_recv().is_err());
+    app.options.connection.writable = true;
+    app.options.connection.allow_apply = true;
+    app.namespace = "shop".into();
+    assert!(app.command("apply deploy.yaml").is_ok());
+    match commands.try_recv() {
+        Ok((_, Task::ApplyPrepare(path, namespace))) => {
+            assert_eq!((path, namespace.as_str()), ("deploy.yaml".into(), "shop"))
+        }
+        _ => panic!(":apply did not request a dry-run review"),
+    }
+    app.busy = false;
+    assert!(app.command("apply").is_ok());
+    assert!(app.status.starts_with("Use :apply"));
+}
+#[test]
+fn file_copy_commands_review_the_selected_pod_default_container() {
+    let (mut app, _replies, mut commands) = harness();
+    app.items = vec![
+        serde_json::json!({"kind":"Pod","metadata":{"name":"api","namespace":"shop","uid":"api-uid","annotations":{"kubectl.kubernetes.io/default-container":"app"}},"spec":{"containers":[{"name":"sidecar"},{"name":"app"}]}}),
+    ];
+    assert!(app.command("cp-from /etc/hosts").is_ok());
+    assert!(app.status.contains("--allow-file-copy"));
+    assert!(commands.try_recv().is_err());
+    app.options.connection.writable = true;
+    app.options.connection.allow_file_copy = true;
+    let dir = std::env::temp_dir();
+    assert!(
+        app.command(&format!("cp-from /etc/hosts {}", dir.display()))
+            .is_ok()
+    );
+    match commands.try_recv() {
+        Ok((
+            _,
+            Task::PrepareSession(
+                namespace,
+                pod,
+                uid,
+                crate::ops::Request::CopyFrom {
+                    container,
+                    remote,
+                    local,
+                    ..
+                },
+            ),
+        )) => assert_eq!(
+            (
+                namespace.as_str(),
+                pod.as_str(),
+                uid.as_deref(),
+                container.as_str(),
+                remote.as_str(),
+                local
+            ),
+            (
+                "shop",
+                "api",
+                Some("api-uid"),
+                "app",
+                "/etc/hosts",
+                dir.clone()
+            )
+        ),
+        _ => panic!("cp-from did not request a review"),
+    }
+    app.busy = false;
+    assert!(app.command("cp-to /definitely/missing/file /tmp/x").is_ok());
+    assert!(app.status.contains("cannot upload"));
+    assert!(commands.try_recv().is_err());
+    assert!(app.command("cp-to onlyone").is_ok());
+    assert!(app.status.starts_with("Use :cp-from"));
 }
 #[test]
 fn pod_shell_picker_preserves_captured_identity_and_capabilities() {

@@ -208,7 +208,7 @@ fn parse(text: &str) -> Result<Value> {
 fn pointer(parent: &str, key: &str) -> String {
     format!("{parent}/{}", key.replace('~', "~0").replace('/', "~1"))
 }
-fn escape_non_ascii(text: &str, yaml: bool) -> String {
+pub(crate) fn escape_non_ascii(text: &str, yaml: bool) -> String {
     let mut output = String::new();
     for c in text.chars() {
         if c.is_ascii() {

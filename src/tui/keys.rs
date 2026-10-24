@@ -74,13 +74,28 @@ impl App {
                     let (width, height) =
                         approval_size().map_err(|_| "cannot read terminal size for approval")?;
                     if !self.busy && review.view.ready(width, height, self.epoch) {
+                        if let WritePlan::Tool(prepared) = review.plan {
+                            self.pending_tool = Some((prepared, review.view.typed));
+                            self.status = "Running the reviewed tool…".into();
+                            return Ok(false);
+                        }
                         self.modal = Modal::WriteRunning;
                         let task = match review.plan {
+                            WritePlan::Tool(_) => return Ok(false),
                             WritePlan::Yaml(prepared) => {
                                 Task::YamlExecute(prepared, review.view.typed)
                             }
                             WritePlan::Node(prepared) => {
                                 Task::NodeExecute(prepared, review.view.typed)
+                            }
+                            WritePlan::Apply(prepared) => {
+                                Task::ApplyExecute(prepared, review.view.typed)
+                            }
+                            WritePlan::NodeShell(prepared) => {
+                                Task::NodeShellStart(prepared, review.view.typed)
+                            }
+                            WritePlan::Debug(prepared) => {
+                                Task::DebugStart(prepared, review.view.typed)
                             }
                         };
                         self.send(task);
@@ -365,6 +380,10 @@ impl App {
                     self.modal = Modal::ForwardView;
                     self.request_forward();
                 }
+                KeyCode::Char('b') => {
+                    self.modal = Modal::ForwardView;
+                    self.bench(200, 5, "/");
+                }
                 _ => self.modal = Modal::ForwardView,
             },
             Modal::ForwardForm(namespace, pod, uid, mut fields, mut index) => match code {
@@ -453,6 +472,19 @@ impl App {
                         } else {
                             Task::Manifest(path)
                         });
+                    }
+                }
+                KeyCode::Char('a') => {
+                    if let Some(entry) = directory
+                        .entries
+                        .get(index)
+                        .filter(|entry| !entry.directory)
+                    {
+                        let path = entry.path.clone();
+                        self.push_subview(Modal::Directory(directory, index));
+                        self.apply_manifest(path);
+                    } else {
+                        self.modal = Modal::Directory(directory, index);
                     }
                 }
                 _ => self.modal = Modal::Directory(directory, index),
@@ -1186,6 +1218,8 @@ impl App {
                         if prepared.is_port_forward() {
                             let generation = self.worker.forward.generation();
                             self.send(Task::RunForward(prepared, text, generation));
+                        } else if prepared.is_file_copy() {
+                            self.send(Task::RunSession(prepared, text));
                         } else {
                             self.pending_session = Some((prepared, text));
                         }
@@ -1260,8 +1294,19 @@ impl App {
                                 }
                             }
                         } else if label == "Aliases" {
-                            if let Some(resource) = value.split_whitespace().next() {
+                            if let Some(hotkey) = value.strip_prefix("hotkey ") {
+                                if let Some(command) = hotkey
+                                    .split_once(" :")
+                                    .and_then(|(_, rest)| rest.split("  ").next())
+                                {
+                                    return self.command(command);
+                                }
+                            } else if let Some(resource) = value.split_whitespace().next() {
                                 return self.command(resource);
+                            }
+                        } else if label == "Extensions" {
+                            if let Some(name) = value.split_whitespace().next() {
+                                self.run_extension(name);
                             }
                         } else if label == selections_ui::PICKER_LABEL {
                             if let Some(selection) = self.selection_ui.records.get(index).cloned()
@@ -1555,7 +1600,11 @@ impl App {
                     }
                 }
                 KeyCode::Char('t') => {
-                    self.status = "File transfer is unavailable. Use :themes for appearance.".into()
+                    if self.kind() == "cronjobs.batch" {
+                        self.prepare(Action::Trigger);
+                    } else {
+                        self.status = "Copy files with :cp-from / :cp-to (--allow-file-copy). t triggers a selected CronJob.".into()
+                    }
                 }
                 KeyCode::Char('b') => self.save_resource_selection()?,
                 KeyCode::Char('B') => self.open_saved_selections()?,
@@ -1613,10 +1662,27 @@ impl App {
                     }
                 }
                 KeyCode::Char('0') => return self.command("ns all"),
-                KeyCode::Char('1'..='9') => {
-                    self.status =
-                        "Namespace favorites are not configured; :ns opens the namespace picker."
-                            .into()
+                KeyCode::Char(digit @ '1'..='9') => {
+                    let index = usize::from(digit as u8 - b'1');
+                    let recent = self.recent.namespaces(&self.context);
+                    match recent.get(index).cloned() {
+                        Some(namespace) => return self.command(&format!("ns {namespace}")),
+                        None => {
+                            self.status = if recent.is_empty() {
+                                "No recent namespaces yet; :ns opens the picker. 1-9 then jump to the last nine.".into()
+                            } else {
+                                format!(
+                                    "Recent: {}",
+                                    recent
+                                        .iter()
+                                        .enumerate()
+                                        .map(|(i, ns)| format!("{} {ns}", i + 1))
+                                        .collect::<Vec<_>>()
+                                        .join("  ")
+                                )
+                            }
+                        }
+                    }
                 }
                 KeyCode::Char(' ') => {
                     if let Some(uid) = self.selected_uid() {
@@ -1672,8 +1738,13 @@ impl App {
                     if self.kind() == "pods" {
                         self.request_shell();
                     } else if self.kind() == "nodes" {
-                        self.status =
-                            "Node shell is unavailable; select a Pod for a reviewed shell.".into();
+                        self.node_shell();
+                    } else if self.kind() == "cronjobs.batch" {
+                        let suspended = self
+                            .visible()
+                            .get(self.selected)
+                            .is_some_and(|cron| cron["spec"]["suspend"] == true);
+                        self.prepare(Action::Suspend(!suspended));
                     } else {
                         return self.scale();
                     }
@@ -1740,6 +1811,12 @@ impl App {
                 }
             }
             return Ok(false);
+        }
+        if matches!(self.modal, Modal::None)
+            && let Some(hotkey) = crate::hotkeys::find(&self.hotkeys, code, modifiers)
+        {
+            let command = hotkey.command.clone();
+            return self.command(&command);
         }
         if modifiers.contains(KeyModifiers::CONTROL) {
             if let Modal::WriteReview(review) = &mut self.modal {
@@ -1830,6 +1907,25 @@ impl App {
             if matches!(self.modal, Modal::None) {
                 match code {
                     KeyCode::Char('a') => self.aliases(),
+                    KeyCode::Char('w') => {
+                        self.wide = !self.wide;
+                        self.status = if self.wide {
+                            "Wide columns on (Node, IP and |W view columns). Ctrl-W turns them off."
+                        } else {
+                            "Wide columns off."
+                        }
+                        .into();
+                    }
+                    KeyCode::Char('z') => {
+                        self.faults_only = !self.faults_only;
+                        self.selected = 0;
+                        self.status = if self.faults_only {
+                            "Errors only: unhealthy Pods, degraded workloads, NotReady Nodes, warnings. Ctrl-Z shows all."
+                        } else {
+                            "Showing all objects."
+                        }
+                        .into();
+                    }
                     KeyCode::Char('d') => self.prepare(Action::Delete),
                     KeyCode::Char('k') => self.kill(),
                     KeyCode::Char('r') => {

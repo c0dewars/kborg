@@ -24,10 +24,10 @@
 
 ## Why KBorg
 
-- **You already know the keys.** `:pods`, `:deploy`, `/filter`, `l` logs, `s` shell, Ctrl-D delete — k9s navigation, commands and aliases work the way you expect.
+- **You already know the keys.** `:pods`, `:deploy`, `/filter`, `l` logs, `s` shell, Ctrl-D delete — k9s navigation, commands, aliases and `hotkeys.yaml` work the way you expect.
 - **See all your clusters at once.** Up to nine clusters side by side: Pod health, restarts, OOM kills, Node readiness and CPU/memory, degraded Deployments and StatefulSets, and recent warnings, each updating independently.
 - **Follow one workload across every cluster.** Pick Deployments from any cluster and tail them together in one pane, merged in timestamp order and tagged by cluster.
-- **Change things without fear.** Read-only by default. Every change gets a server dry run, a readable diff, identity checks and typed confirmation. Nothing is applied by surprise.
+- **Change things without fear.** Read-only by default. Every change, from a scale to a multi-object `kborg apply`, gets a server dry run, a readable diff, identity checks and typed confirmation. Nothing is applied by surprise.
 - **Ask Copilot, safely.** Optional advice from GitHub Copilot on GitHub.com, GHE.com or GitHub Enterprise Server, with a minimized, reviewed payload and a sandboxed runtime.
 - **Fast, and light on your laptop and your API server.** In side-by-side tests KBorg showed data in 0.06 s (k9s 0.69 s), used about a quarter of k9s's memory and half its CPU at 5,000 live objects, and a fraction of k10s's network traffic ([numbers](docs/PERFORMANCE_COMPARISON.md)).
 - **Looks good in any terminal.** 19 hand-tuned themes that meet WCAG AA contrast everywhere they're drawn (plus your terminal's own palette), 24-bit color with graceful fallback, and a quiet layout with contextual key hints.
@@ -39,12 +39,13 @@
 | **Browse** | 35 built-in resource types, CRDs via discovery, context/namespace switching, regex/fuzzy/label filters, sorting, redacted describe/YAML/JSON, live watches |
 | **Dashboard** | 1–9 clusters, full-screen focus, Pod health, restart hotspots, OOM evidence, Node readiness + CPU/memory, degraded workloads, Pod and non-Pod warning events, warning → exact Pod Events drilldown |
 | **Logs** | Container, workload and selector logs; merged multi-container streams; live rollout following (`:logs-live`); cross-cluster workload tail; time ranges, search, error/warning filters, export |
-| **Operate** | Scale, restart, delete, force kill, YAML spec editing (in-app or `$EDITOR`), image/resource forms, cordon/uncordon/drain, port forwards, shell/attach — each behind its own opt-in and review |
+| **Operate** | Scale, restart, rollback, delete, force kill, CronJob trigger and suspend/resume, YAML spec editing (in-app or `$EDITOR`), server-side apply of local manifests, image/resource forms, cordon/uncordon/drain, node shell, ephemeral debug containers, port forwards, shell/attach, file and directory copy — each behind its own opt-in and review |
+| **Check** | `:lint` misconfiguration report, Ctrl-Z errors-only view, `:pulses` health, `:xray` relationships, per-Node usage and 15-minute trend sparklines on dashboard cards, port-forward benchmark |
 | **Helm** | Release browsing and history; reviewed install, upgrade, rollback, uninstall and tests for packaged and OCI charts with optional OpenPGP/Sigstore verification |
 | **Secrets** | Opt-in key listing; reveal one value for 30 seconds; never exported or copied |
 | **Metrics** | Pod/Node CPU and memory tables, exact values, requests/limits comparisons, bounded history |
 | **Copilot** | Minimized diagnostic preview, exact account approval, contained native runtime (macOS ARM64) |
-| **Workspace** | Saved context groups and scopes, remembered dashboard (`kborg dashboard`), custom aliases, 20 themes plus custom palettes, shell completions |
+| **Workspace** | Saved context groups and scopes, remembered dashboard (`kborg dashboard`), k9s-format `views.yaml` columns, sort by any column, recent namespaces on `1`–`9`, custom aliases and k9s-format hotkeys, reviewed read-only extensions (`:ext`, k9s `plugins.yaml` import), 20 themes plus custom palettes, shell completions |
 
 ![Cross-cluster tail: two clusters' checkout services merged in timestamp order](docs/screenshots/cross-cluster-tail.png)
 
@@ -121,6 +122,16 @@ kborg --context docker-desktop --allow-logs \
   --write --allow-yaml-edit --allow-node-maintenance --allow-forward --allow-exec
 ```
 
+More opt-ins, each reviewed:
+
+| Flag | Adds |
+|---|---|
+| `--allow-apply` | `kborg apply FILE` / `:apply FILE`: dry run, field-level diff, server-side apply that never forces ownership |
+| `--allow-file-copy` | `:cp-from` / `:cp-to` (`-r` for directories); neither side ever overwrites |
+| `--allow-node-shell` | `s` on a Node: a reviewed privileged Pod and a root shell, deleted afterwards |
+| `--allow-debug` | `:debug [CONTAINER]`: a reviewed ephemeral debug container and a shell in it |
+| `--allow-extensions --allow-tools` | `:ext NAME`: hand the selected object to a registered read-only tool |
+
 KBorg uses your kubeconfig directly: the current context unless you pass `--context`, and every file in `$KUBECONFIG` merged the way kubectl does (first definition wins). kubectl, Helm, Python and an AI account are not needed for browsing. Server-side RBAC and admission always have the final say.
 
 ## Keys for k9s users
@@ -138,7 +149,15 @@ KBorg uses your kubeconfig directly: the current context unless you pass `--cont
 | Ctrl-D, Ctrl-K | Reviewed delete, reviewed force kill |
 | `c` `u` `r` on Nodes | Cordon, uncordon, drain |
 | `:secrets`, `x` | Secret keys, reveal one value |
-| `:helm`, `:pulses`, `:xray` | Releases, health, relationships |
+| `:helm`, `:pulses`, `:xray`, `:lint` | Releases, health, relationships, misconfigurations |
+| `s` on Nodes, `:apply FILE`, `:dir` then `a` | Node shell, reviewed apply of a manifest |
+| `:cp-from` `:cp-to` (`-r`) | Copy files or directories to and from the selected Pod |
+| `:pf` then `b`, `:bench` | Benchmark a port forward |
+| `:ext NAME`, `hotkeys.yaml` | Run a registered extension; bind keys like k9s |
+| `t` `s` on CronJobs, `:rollback [REV]` | Trigger now, suspend/resume; roll back a workload |
+| `:debug [CONTAINER]` | Ephemeral debug container in the selected Pod |
+| Ctrl-Z, Ctrl-W, `1`–`9` | Errors only, wide columns, recent namespaces |
+| `N` `A` `S` `R` (again to reverse), `:sort COL` | Sort by any column; `views.yaml` sets columns |
 | `:subjects` `:users` `:groups`, `:can` | RBAC subjects with their roles; one subject's bindings and rules |
 | `D` / `kborg dashboard` | Dashboard |
 | Dashboard `1`–`9`, `w`, `L`, `t` | Focus (again = full screen), select warning, Pod logs, cross-cluster tail |
@@ -195,7 +214,7 @@ Ghostty's shortcuts use Cmd on macOS, so Ctrl-D/K/S/R reach KBorg, and `c` copie
 
 ## Security model
 
-- Read-only until you pass `--write`; every risky capability (exec, attach, port forward, node maintenance, YAML edit, force kill, Secret reveal, Helm writes, external editor) has its own opt-in.
+- Read-only until you pass `--write`; every risky capability (exec, attach, port forward, file copy, apply, node shell, debug containers, node maintenance, YAML edit, force kill, Secret reveal, Helm writes, external editor, extensions) has its own opt-in, and a `--config` profile can forbid any of them.
 - Every mutation: server dry run, UID/resourceVersion preconditions, full review that must be displayed, exact typed confirmation, local intent record.
 - Known sensitive fields are masked; Secrets are excluded unless you opt in. No telemetry.
 - Dashboard and log-pane connections strip all write and interactive capabilities.
@@ -207,6 +226,7 @@ Details: [SECURITY.md](SECURITY.md) and the [security review](docs/MAC_V1_SECURI
 
 | Guide | Contents |
 |---|---|
+| [Testing guide](docs/TESTING.md) | For colleagues trying a release candidate: install, tour, what to report |
 | [Dashboard](docs/DASHBOARD.md) | Health meanings, freshness, cross-cluster tail, card controls |
 | [k9s compatibility](docs/K9S_COMPATIBILITY.md) | Commands, keys and differences |
 | [Operations](docs/OPERATIONS.md) | Configuration, install, update, rollback, recovery |
@@ -218,7 +238,7 @@ Details: [SECURITY.md](SECURITY.md) and the [security review](docs/MAC_V1_SECURI
 | [Performance comparison](docs/PERFORMANCE_COMPARISON.md) | Memory, CPU and API traffic vs k9s and k10s |
 | [Remaining work](docs/REMAINING_WORK.md) | What's done, partial and planned |
 
-**Release 0.4.0**, targeting macOS + Docker Desktop for v1. Packages are unsigned; signing, an external security audit and an organizational pilot are open release gates.
+**Release 0.4.0**, targeting macOS + Docker Desktop for v1. The next release (0.5.0, see [release notes](docs/RELEASE_NOTES.md)) adds apply, node shell, directory copy, `:lint`, extensions in the TUI and hotkeys. Packages are unsigned; signing, an external security audit and an organizational pilot are open release gates.
 
 ## Credits
 
