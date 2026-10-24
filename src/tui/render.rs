@@ -99,14 +99,21 @@ pub(super) fn panel(
 }
 
 /// The actions that actually work for the selected resource type with the
-/// capabilities this session was started with. Disabled actions are omitted
-/// so the row never advertises a key that would only print a refusal.
-pub(super) fn table_hints(app: &App) -> Vec<(&'static str, &'static str)> {
+/// capabilities this session was started with, shown with the user's keys
+/// from keymap.yaml. Disabled or unbound actions are omitted so the row never
+/// advertises a key that would only print a refusal.
+pub(super) fn table_hints(app: &App) -> Vec<(String, &'static str)> {
     let connection = &app.options.connection;
     let kind = app.kind();
     let write = connection.writable;
     let logs = connection.logs || connection.demo;
-    let mut hints = vec![("?", "all keys")];
+    let mut hints = Vec::new();
+    let push = |hints: &mut Vec<(String, &'static str)>, action: &str, label| {
+        if let Some(key) = app.keymap.primary(action) {
+            hints.push((key, label));
+        }
+    };
+    push(&mut hints, "help", "all keys");
     let drill = match kind.as_str() {
         "pods" => Some("containers"),
         "nodes" | "namespaces" => Some("pods"),
@@ -114,46 +121,52 @@ pub(super) fn table_hints(app: &App) -> Vec<(&'static str, &'static str)> {
         _ => None,
     };
     if let Some(drill) = drill {
-        hints.push(("Enter", drill));
+        hints.push(("Enter".into(), drill));
     }
     match kind.as_str() {
         "pods" => {
             if logs {
-                hints.push(("l", "logs"));
+                push(&mut hints, "logs", "logs");
             }
             if write && connection.allow_exec {
-                hints.push(("s", "shell"));
+                push(&mut hints, "shell", "shell");
             }
             if write && connection.allow_port_forward {
-                hints.push(("F", "forward"));
+                push(&mut hints, "forward", "forward");
             }
         }
         "nodes" => {
             if write && connection.allow_node_maintenance {
-                hints.extend([("c", "cordon"), ("u", "uncordon"), ("r", "drain")]);
+                push(&mut hints, "cordon", "cordon");
+                push(&mut hints, "uncordon", "uncordon");
+                push(&mut hints, "drain", "drain");
+            }
+        }
+        "cronjobs.batch" => {
+            if write {
+                push(&mut hints, "trigger", "trigger");
+                push(&mut hints, "suspend", "suspend");
             }
         }
         kind if supports_group_logs(kind) => {
             if logs {
-                hints.push(("l", "logs"));
+                push(&mut hints, "logs", "logs");
             }
             if write && ["deployments.apps", "statefulsets.apps"].contains(&kind) {
-                hints.push(("s", "scale"));
+                push(&mut hints, "scale", "scale");
             }
             if write && crate::edit::supports_resource(kind) {
-                hints.push(("r", "restart"));
+                push(&mut hints, "restart", "restart");
             }
         }
         _ => {}
     }
-    hints.extend([
-        ("d", "describe"),
-        ("y", "yaml"),
-        ("/", "filter"),
-        (":", "command"),
-    ]);
+    push(&mut hints, "describe", "describe");
+    push(&mut hints, "yaml", "yaml");
+    push(&mut hints, "filter", "filter");
+    push(&mut hints, "command", "command");
     if write && connection.allow_yaml_edit {
-        hints.push(("e", "edit"));
+        push(&mut hints, "edit", "edit");
     }
     let deletable = matches!(
         kind.as_str(),
@@ -166,25 +179,26 @@ pub(super) fn table_hints(app: &App) -> Vec<(&'static str, &'static str)> {
             | "cronjobs.batch"
     );
     if write && deletable {
-        hints.push(("Ctrl-D", "delete"));
+        push(&mut hints, "delete", "delete");
     }
     if write && connection.allow_force_kill && kind == "pods" {
-        hints.push(("Ctrl-K", "kill"));
+        push(&mut hints, "kill", "kill");
     }
-    hints.push(("D", "dashboard"));
+    push(&mut hints, "dashboard", "dashboard");
     hints
 }
 pub(super) fn key_hints(
     out: &mut impl Write,
     y: u16,
     width: u16,
-    hints: &[(&str, &str)],
+    hints: &[(impl AsRef<str>, impl AsRef<str>)],
     colors: [Color; 3],
 ) -> io::Result<()> {
     let [key, text, bg] = colors;
     row(out, y, width, "", text, bg)?;
     let mut x = 1;
     for (shortcut, label) in hints {
+        let (shortcut, label) = (shortcut.as_ref(), label.as_ref());
         let label = format!(" {label}{}", if width < 50 { " " } else { "   " });
         // Keep complete actions together; a clipped shortcut is misleading.
         if x + shortcut.len() as u16 + label.len() as u16 > width {
@@ -512,16 +526,14 @@ pub(super) fn render_log_modal(
         cell(out, 1, y + 1 + index as u16, w - 2, line, color(role), bg)
             .map_err(|_| "draw failed")?;
     }
-    row(out, h - 2, w, view.help(), color("accent"), bg).map_err(|_| "draw failed")?;
-    row(
-        out,
-        h - 1,
-        w,
-        "0 tail 1 head 2 1m 3 5m 4 15m 5 30m 6 1h | Esc back",
-        color("muted"),
-        bg,
-    )
-    .map_err(|_| "draw failed")?;
+    let (actions, ranges) = keyhelp::log_hints(app);
+    let actions = if view.is_filtering() {
+        view.help()
+    } else {
+        actions.as_str()
+    };
+    row(out, h - 2, w, actions, color("accent"), bg).map_err(|_| "draw failed")?;
+    row(out, h - 1, w, &ranges, color("muted"), bg).map_err(|_| "draw failed")?;
     out.flush().map_err(|_| "draw failed".into())
 }
 pub(super) fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
@@ -1092,7 +1104,7 @@ pub(super) fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<
                 Modal::Confirm(..) => "REVIEW MUTATION / explicit confirmation required",
                 Modal::Scale(..) => "SCALE DEPLOYMENT",
                 Modal::Resources(..) => "RESOURCE BUDGET / reviewed deployment edit",
-                Modal::Help(..) => "HELP / PgUp PgDown / Esc close",
+                Modal::Help(..) => "HELP / KEYMAP",
                 Modal::EditContainers(..) => "EDIT WORKLOAD / choose ordinary container",
                 Modal::Editor(..) => "EDIT CONTAINER / server dry-run and review required",
                 Modal::Export(_) => "EXPORT / review local file",
@@ -1301,11 +1313,14 @@ pub(super) fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<
                 Modal::SessionConfirm(prepared, text) => {
                     confirmation_lines(prepared.summary(), text, w.saturating_sub(1))
                 }
-                Modal::Help(offset) => {
-                    let wrapped = wrap_text(TUI_HELP, usize::from(rect.width.saturating_sub(2)));
+                Modal::Help(view) => {
+                    let wrapped = wrap_text(
+                        &keyhelp::help_body(app, view),
+                        usize::from(rect.width.saturating_sub(2)),
+                    );
                     wrapped
                         .lines()
-                        .skip((*offset).min(wrapped.lines().count().saturating_sub(1)))
+                        .skip(view.offset.min(wrapped.lines().count().saturating_sub(1)))
                         .map(str::to_owned)
                         .collect()
                 }
@@ -1362,7 +1377,10 @@ pub(super) fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<
                 )
                 .map_err(|_| "draw failed")?;
             }
-            let hints = if let Modal::Confirm(prepared, text) = modal {
+            let generated = keyhelp::modal_hint(app, modal);
+            let hints = if let Some(generated) = generated.as_deref() {
+                generated
+            } else if let Modal::Confirm(prepared, text) = modal {
                 if confirmation_fits(&prepared.summary, text, w, h) {
                     "Enter execute | Esc cancel"
                 } else {
@@ -1374,8 +1392,6 @@ pub(super) fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<
                 } else {
                     "Esc cancel | Enlarge terminal to review complete session."
                 }
-            } else if matches!(modal, Modal::YamlEditor(_)) {
-                "Arrows move  Tab indent  Ctrl-S review  Ctrl-E $EDITOR  Esc cancel"
             } else if matches!(modal, Modal::WriteReview(_)) {
                 "PgUp/PgDown read all changes  Type target  Enter apply  Esc back"
             } else if matches!(modal, Modal::WriteRunning) {
@@ -1384,8 +1400,6 @@ pub(super) fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<
                 "Esc cancel | Enter run | :pods :deploy :svc :nodes | :ns NAME | :sort FIELD"
             } else if matches!(modal, Modal::LiveOverview(..)) {
                 "1..9 focus | Enter Pods | w warnings | ? keymap | Esc back"
-            } else if matches!(modal, Modal::Overview(..)) {
-                "Esc close | J redacted JSON | y YAML | PgUp/PgDown scroll"
             } else if matches!(modal, Modal::AdviceRunning) {
                 "Ctrl-C cancel | waiting for advice | no automatic execution"
             } else if matches!(modal, Modal::AdviceDocument(..) | Modal::AdviceLoading) {
@@ -1410,8 +1424,6 @@ pub(super) fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<
                 "Enter bindings and rules | / filter | j k PgUp PgDn move | Esc back"
             } else if matches!(modal, Modal::Secrets(..)) {
                 "Enter open keys | x reveal or hide one key (30s) | j k move | Esc back"
-            } else if matches!(modal, Modal::PodContainers(..)) {
-                "Enter logs | s shell | a attach | d describe | j k move | Esc back"
             } else if matches!(
                 modal,
                 Modal::Picker(..)
@@ -1422,14 +1434,8 @@ pub(super) fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<
                 "Enter choose | j k move | Esc cancel"
             } else if matches!(modal, Modal::Directory(..)) {
                 "Enter open | j k move | Esc back"
-            } else if matches!(modal, Modal::ForwardView) {
-                "F new forward | s stop selected | j k move | Esc back"
             } else if matches!(modal, Modal::Themes(..)) {
                 "Arrows preview | Enter save | N new custom theme | Esc restore"
-            } else if matches!(modal, Modal::Detail(..) | Modal::Help(..)) {
-                "PgUp PgDown scroll | : command | Esc close"
-            } else if matches!(modal, Modal::Metrics(..)) {
-                "Esc close | m refresh | M requests/limits (extra reads) | PgUp/PgDown"
             } else {
                 "Esc close | Enter select | arrows / j k | PgUp PgDown scroll"
             };

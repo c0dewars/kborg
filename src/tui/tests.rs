@@ -74,6 +74,7 @@ fn harness() -> Harness {
             saved: vec![],
             aliases: Default::default(),
             hotkeys: Default::default(),
+            keymap: Default::default(),
             faults_only: false,
             views: Default::default(),
             wide: false,
@@ -2422,9 +2423,9 @@ fn table_hints_show_only_actions_that_work_for_this_kind_and_session() -> Result
     };
     app.desired_resource = Some("pods".into());
     let read_only = keys(&app);
-    assert!(read_only.contains(&"?") && read_only.contains(&"Enter"));
+    assert!(read_only.contains(&"?".to_owned()) && read_only.contains(&"Enter".to_owned()));
     for hidden in ["l", "s", "Ctrl-D", "Ctrl-K", "e"] {
-        assert!(!read_only.contains(&hidden), "{hidden}");
+        assert!(!read_only.contains(&hidden.to_owned()), "{hidden}");
     }
     app.options.connection.logs = true;
     app.options.connection.writable = true;
@@ -2432,16 +2433,19 @@ fn table_hints_show_only_actions_that_work_for_this_kind_and_session() -> Result
     app.options.connection.allow_force_kill = true;
     let pods = keys(&app);
     for shown in ["l", "s", "Ctrl-D", "Ctrl-K"] {
-        assert!(pods.contains(&shown), "{shown}");
+        assert!(pods.contains(&shown.to_owned()), "{shown}");
     }
     app.desired_resource = Some("deployments.apps".into());
     let deployments = table_hints(&app);
-    assert!(deployments.contains(&("s", "scale")) && deployments.contains(&("r", "restart")));
+    assert!(
+        deployments.contains(&("s".to_owned(), "scale"))
+            && deployments.contains(&("r".to_owned(), "restart"))
+    );
     assert!(!deployments.iter().any(|(key, _)| *key == "Ctrl-K"));
     app.desired_resource = Some("nodes".into());
-    assert!(!keys(&app).contains(&"c"));
+    assert!(!keys(&app).contains(&"c".to_owned()));
     app.options.connection.allow_node_maintenance = true;
-    assert!(table_hints(&app).contains(&("c", "cordon")));
+    assert!(table_hints(&app).contains(&("c".to_owned(), "cordon")));
     app.modal = Modal::None;
     let bottom = screen(&app, 120, 24).pop().unwrap_or_default();
     assert!(bottom.contains("? all keys") && bottom.contains("c cordon"));
@@ -3115,4 +3119,146 @@ fn saved_picker_keeps_its_actions_when_watch_status_changes() {
         assert!(frame.contains("Enter open | d remove | Esc back"));
         assert!(frame.contains("Watch updated"));
     }
+}
+
+#[test]
+fn remapped_table_keys_run_their_action_and_the_old_key_stops() -> Result<()> {
+    let (mut app, _replies, _commands) = harness();
+    app.keymap = crate::keymap::parse("keys:\n  sort.age: Z\n  toggle.wide: Alt-w\n  help: F1\n")?;
+    app.key(KeyCode::Char('A'))?;
+    assert_eq!(app.sort, Sort::Name, "the replaced key no longer sorts");
+    app.key(KeyCode::Char('Z'))?;
+    assert_eq!(app.sort, Sort::Age);
+    app.key_event(KeyCode::Char('w'), KeyModifiers::CONTROL)?;
+    assert!(!app.wide && app.status.contains("F1 lists supported actions"));
+    app.key_event(KeyCode::Char('w'), KeyModifiers::ALT)?;
+    assert!(app.wide && app.status.contains("Alt-w turns them off"));
+    app.key(KeyCode::Char('?'))?;
+    assert!(matches!(app.modal, Modal::None));
+    app.key_event(KeyCode::F(1), KeyModifiers::NONE)?;
+    assert!(matches!(&app.modal, Modal::Help(view) if view.mode == keyhelp::Mode::Context));
+    let frame = screen(&app, 120, 40).join("\n");
+    assert!(frame.contains("KEYS FOR THE PODS TABLE"), "{frame}");
+    assert!(frame.contains("Shell into the selected Pod"), "{frame}");
+    let Modal::Help(view) = &app.modal else {
+        return Err("help closed".into());
+    };
+    let help = keyhelp::help_body(&app, view);
+    assert!(help.contains("Z                Sort by age *"), "{help}");
+    assert!(help.contains("Alt-w") && !help.contains("Ctrl-W"), "{help}");
+    assert!(!help.contains("Node: "), "only Pod table keys: {help}");
+    app.key(KeyCode::Esc)?;
+    assert!(matches!(app.modal, Modal::None));
+    let bottom = screen(&app, 120, 24).pop().unwrap_or_default();
+    assert!(bottom.contains("F1 all keys"), "{bottom}");
+    Ok(())
+}
+
+#[test]
+fn remapped_log_keys_translate_and_help_opens_for_the_current_view() -> Result<()> {
+    let (mut app, _replies, _commands) = harness();
+    app.keymap = crate::keymap::parse("scopes:\n  log:\n    wrap: Alt-w\n")?;
+    app.modal = Modal::Follow(Box::new(crate::ui_logs::LogView::new(
+        "line".into(),
+        crate::logs::ReadOptions::default(),
+    )));
+    app.key_event(KeyCode::Char('w'), KeyModifiers::NONE)?;
+    assert!(matches!(&app.modal, Modal::Follow(view) if !view.wrap));
+    app.key_event(KeyCode::Char('w'), KeyModifiers::ALT)?;
+    assert!(matches!(&app.modal, Modal::Follow(view) if view.wrap));
+    assert!(screen(&app, 120, 20).join("\n").contains("Alt-w wrap"));
+    app.key_event(KeyCode::Char('?'), KeyModifiers::NONE)?;
+    assert!(matches!(&app.modal, Modal::Help(view) if view.scope == crate::keymap::Scope::Log));
+    let Modal::Help(view) = &app.modal else {
+        return Err("help closed".into());
+    };
+    let context = keyhelp::help_body(&app, view);
+    assert!(context.contains("KEYS FOR LOG VIEWER") && context.contains("Alt-w"));
+    assert!(context.contains("remapped in keymap.yaml"));
+    // Tab shows every key, including the newer commands and actions.
+    app.key_event(KeyCode::Tab, KeyModifiers::NONE)?;
+    let Modal::Help(view) = &app.modal else {
+        return Err("help closed".into());
+    };
+    let all = keyhelp::help_body(&app, view);
+    for expected in [
+        ":apply",
+        ":cp-from",
+        ":cp-to",
+        ":debug",
+        ":rollback",
+        ":lint",
+        ":bench",
+        ":ext",
+        ":sort",
+        ":keymap",
+        "Reviewed node shell",
+        "Trigger a Job",
+        "Suspend or resume",
+        "Ctrl-Z",
+        "Ctrl-W",
+        "1..9",
+        "Benchmark the selected forward",
+        "Approve after typing",
+    ] {
+        assert!(all.contains(expected), "{expected}");
+    }
+    app.key_event(KeyCode::Esc, KeyModifiers::NONE)?;
+    assert!(
+        matches!(app.modal, Modal::Follow(_)),
+        "help returns to logs"
+    );
+    Ok(())
+}
+
+#[test]
+fn keymap_command_lists_every_action_and_filters() -> Result<()> {
+    let (mut app, _replies, _commands) = harness();
+    app.keymap = crate::keymap::parse("keys:\n  delete: Ctrl-X\n")?;
+    app.hotkeys = vec![crate::hotkeys::Hotkey {
+        shortcut: crate::hotkeys::Shortcut::F(3),
+        description: "Deployments".into(),
+        command: "dp".into(),
+    }];
+    app.command("keymap")?;
+    let Modal::Help(view) = &app.modal else {
+        return Err("keymap did not open".into());
+    };
+    let body = keyhelp::help_body(&app, view);
+    for action in crate::keymap::ACTIONS {
+        assert!(body.contains(action.name), "{}", action.name);
+    }
+    assert!(body.contains("Ctrl-X") && body.contains(":dp Deployments"));
+    for key in "/delete".chars() {
+        app.key(KeyCode::Char(key))?;
+    }
+    let Modal::Help(view) = &app.modal else {
+        return Err("keymap closed".into());
+    };
+    let filtered = keyhelp::help_body(&app, view);
+    assert!(filtered.contains("Ctrl-X") && filtered.contains("Reviewed deletion *"));
+    assert!(!filtered.contains("sort.name") && !filtered.contains("Ctrl-D"));
+    app.key(KeyCode::Enter)?;
+    app.key(KeyCode::Esc)?;
+    assert!(matches!(&app.modal, Modal::Help(view) if view.filter.is_empty()));
+    app.key(KeyCode::Esc)?;
+    assert!(matches!(app.modal, Modal::None));
+    Ok(())
+}
+
+#[test]
+fn dashboard_legend_and_hints_follow_the_keymap() -> Result<()> {
+    let (mut app, _replies, _commands) = harness();
+    app.keymap = crate::keymap::parse("scopes:\n  dashboard:\n    tail: T\n")?;
+    let mut dashboard = dashboard_ui::Dashboard::new(&["local".into()], false);
+    dashboard.help = true;
+    app.modal = Modal::LiveOverview(dashboard);
+    let legend = screen(&app, 120, 36).join("\n");
+    assert!(legend.contains("DASHBOARD KEYS") && legend.contains("T                Tail"));
+    if let Modal::LiveOverview(dashboard) = &mut app.modal {
+        dashboard.help = false;
+    }
+    let bottom = screen(&app, 120, 36).pop().unwrap_or_default();
+    assert!(bottom.contains("T tail workloads") && bottom.contains("1..9 focus"));
+    Ok(())
 }

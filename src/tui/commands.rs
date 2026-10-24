@@ -24,7 +24,23 @@ impl App {
         let args = &words[1..];
         match (cmd.as_str(), args) {
             ("q" | "q!" | "qa" | "quit" | "exit", []) => return Ok(true),
-            ("?" | "h" | "help", []) => self.modal = Modal::Help(0),
+            ("?" | "h" | "help", []) => {
+                let scope = self
+                    .subviews
+                    .last()
+                    .and_then(keyhelp::help_scope)
+                    .unwrap_or(crate::keymap::Scope::Table);
+                self.open_help(scope, keyhelp::Mode::Context);
+            }
+            ("keymap" | "keys", []) => {
+                self.open_help(crate::keymap::Scope::Table, keyhelp::Mode::Keymap)
+            }
+            ("keymap" | "keys", [filter]) => {
+                self.open_help(crate::keymap::Scope::Table, keyhelp::Mode::Keymap);
+                if let Modal::Help(view) = &mut self.modal {
+                    view.filter = filter.chars().take(64).collect();
+                }
+            }
             ("a" | "alias" | "aliases", []) => self.aliases(),
             ("actions", []) => self.modal = Modal::Picker("Actions", self.action_menu(), 0),
             ("export", []) => self.request_export(),

@@ -43,6 +43,7 @@ pub mod favorites;
 pub mod file_copy;
 pub mod hotkeys;
 pub mod insights;
+pub mod keymap;
 pub mod lint;
 pub mod manifest_apply;
 pub mod navigation_views;
