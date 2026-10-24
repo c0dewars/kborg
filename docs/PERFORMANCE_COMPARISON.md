@@ -14,21 +14,34 @@ Start in `kube-system` Pods, then switch to a namespace holding 1,000 ConfigMaps
 
 | Metric | KBorg | k9s |
 |---|---|---|
-| Time to first data | 0.73 s | 0.69 s |
+| Time to first data | **0.06 s** | 0.69 s |
 | Switch to 1,000 ConfigMaps | **0.18 s** | 0.37 s |
 | Memory, median | **28 MiB** | 118 MiB |
-| CPU, average | **0.5 %** | 1.8 % |
+| CPU, average | **0.2–0.5 %** | 1.8 % |
 | Network in | **4.8 KiB/min** | 80 KiB/min |
+
+## Company scale: 5,000 live objects with churn
+
+A namespace with 5,001 ConfigMaps while one of them is updated every second, so the watch keeps streaming changes. Switch with `:cm kborg-scale`, then 30 s idle.
+
+| Metric | KBorg | k9s |
+|---|---|---|
+| Switch to 5,000 ConfigMaps | **0.22 s** | 0.38 s |
+| Memory, median | **71 MiB** | 174 MiB |
+| CPU, average | **2.8 %** | 6.8 % |
+| Network in | 101 KiB/min | 56 KiB/min |
+
+Demo mode can generate thousands of synthetic Pods (`KBORG_DEMO_SCALE=N`): 5,000 Pods load in 0.13 s, filter in 0.17 s and sort in 0.07 s; 20,000 Pods load in 0.38 s.
 
 ## Multi-cluster dashboard: KBorg vs k10s
 
-Both tools watch Docker Desktop and minikube across all namespaces (`kborg -n all --contexts …`, `k10s -c …`), from the same flattened kubeconfig.
+Both tools watch Docker Desktop and minikube across all namespaces (`kborg -n all --contexts …`, `k10s -c …`), from the same flattened kubeconfig. Time to data is measured to the Pod health line on both cards.
 
 | Metric | KBorg | k10s |
 |---|---|---|
-| Time to both clusters' health | 0.33 s | 0.12 s |
+| Time to both clusters' health | **0.12 s** | 0.11–0.20 s |
 | Memory, median | **16 MiB** | 38 MiB |
-| CPU, average | **0.15 %** | 1.5 % |
+| CPU, average | **0.15–0.3 %** | 1.5 % |
 | Network in | **154 KiB/min** | 2,095 KiB/min |
 
 KBorg keeps Pod and Event data live through watches and polls Node/workload readiness every 15 s; k10s re-polls cluster state. Lower steady traffic matters on shared API servers and for users watching several production clusters all day.
@@ -43,6 +56,13 @@ The first run exposed a scale problem: a namespace with more than 1,000 objects 
 - The CLI list uses the same bounds with a shorter page pause.
 
 Result for the 1,000-ConfigMap view: switch time 1.32 s → 0.18 s, network 3.8 MB/min → 4.8 KiB/min.
+
+Startup work in the same round:
+
+- The first watch starts before API discovery instead of queueing behind it, and a discovery result no longer restarts a watch whose resource is unchanged (first data 0.73 s → 0.06 s).
+- `--contexts` opens the dashboard immediately; cards never wait for the main view's connection.
+- The event loop runs at 60 fps only while a request is in flight, the view is loading or the user just typed, and at 100 ms otherwise, so updates reach the screen without a 100 ms hop per step and idle CPU stays near zero.
+- The table's filter-and-sort order is memoized and sorts with precomputed keys, so a 5,000-object view is not re-sorted on every frame.
 
 Other findings: k10s does not accept a multi-file `KUBECONFIG` (it treats the list as one path); KBorg merges the files the way kubectl does.
 
