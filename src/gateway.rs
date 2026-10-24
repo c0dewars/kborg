@@ -1,3 +1,4 @@
+mod apply;
 mod catalog;
 mod demo;
 #[path = "discovery.rs"]
@@ -59,8 +60,16 @@ pub struct Connection {
     pub allow_exec: bool,
     pub allow_attach: bool,
     pub allow_port_forward: bool,
+    /// Opt-in: reviewed single-file copy to and from Pod containers.
+    pub allow_file_copy: bool,
+    /// Opt-in: reviewed privileged node shell Pods.
+    pub allow_node_shell: bool,
+    /// Opt-in: reviewed ephemeral debug containers.
+    pub allow_debug: bool,
     pub allow_node_maintenance: bool,
     pub allow_yaml_edit: bool,
+    /// Opt-in: reviewed server-side apply of local manifest files.
+    pub allow_apply: bool,
     pub allow_force_kill: bool,
     pub allow_secret_reveal: bool,
     pub allow_auth_helper: bool,
@@ -81,9 +90,10 @@ pub struct Gateway {
     allow_helm_hooks: bool,
     allow_helm_crds: bool,
     lifecycle_connection: Option<crate::helm_lifecycle::StaticConnection>,
-    operation_capabilities: [bool; 3],
+    operation_capabilities: [bool; 6],
     allow_node_maintenance: bool,
     allow_yaml_edit: bool,
+    allow_apply: bool,
     allow_force_kill: bool,
     allow_secret_reveal: bool,
     demo: Vec<Value>,
@@ -130,12 +140,16 @@ impl Gateway {
                 lifecycle_connection: None,
                 allow_node_maintenance: options.allow_node_maintenance,
                 allow_yaml_edit: options.allow_yaml_edit,
+                allow_apply: options.allow_apply,
                 allow_force_kill: options.allow_force_kill,
                 allow_secret_reveal: options.allow_secret_reveal,
                 operation_capabilities: [
                     options.allow_exec,
                     options.allow_attach,
                     options.allow_port_forward,
+                    options.allow_file_copy,
+                    options.allow_node_shell,
+                    options.allow_debug,
                 ],
                 demo: demo_objects(),
                 kinds: kinds(),
@@ -296,12 +310,16 @@ impl Gateway {
             lifecycle_connection,
             allow_node_maintenance: options.allow_node_maintenance,
             allow_yaml_edit: options.allow_yaml_edit,
+            allow_apply: options.allow_apply,
             allow_force_kill: options.allow_force_kill,
             allow_secret_reveal: options.allow_secret_reveal,
             operation_capabilities: [
                 options.allow_exec,
                 options.allow_attach,
                 options.allow_port_forward,
+                options.allow_file_copy,
+                options.allow_node_shell,
+                options.allow_debug,
             ],
             demo: vec![],
             kinds: kinds(),
@@ -366,9 +384,10 @@ impl Gateway {
             allow_helm_hooks: false,
             allow_helm_crds: false,
             lifecycle_connection: None,
-            operation_capabilities: [false; 3],
+            operation_capabilities: [false; 6],
             allow_node_maintenance: false,
             allow_yaml_edit: false,
+            allow_apply: false,
             allow_force_kill: false,
             allow_secret_reveal: false,
             demo: Vec::new(),

@@ -72,6 +72,10 @@ fn read_only(options: &Connection, context: &str) -> Connection {
     connection.allow_exec = false;
     connection.allow_attach = false;
     connection.allow_port_forward = false;
+    connection.allow_file_copy = false;
+    connection.allow_apply = false;
+    connection.allow_node_shell = false;
+    connection.allow_debug = false;
     connection.allow_node_maintenance = false;
     connection.allow_yaml_edit = false;
     connection.allow_force_kill = false;
