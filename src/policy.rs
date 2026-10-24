@@ -18,6 +18,8 @@ pub enum Action {
     },
     Restart,
     Delete,
+    /// Pod-only delete with gracePeriodSeconds=0 (k9s Ctrl-K).
+    Kill,
 }
 
 impl Action {
@@ -26,6 +28,7 @@ impl Action {
             Self::Scale(_) => "scale",
             Self::Restart => "restart",
             Self::Delete => "delete",
+            Self::Kill => "kill",
             Self::SetImage { .. } => "set-image",
             Self::SetResources { .. } => "set-resources",
             Self::SetContainer { .. } => "edit-container",
@@ -116,6 +119,7 @@ impl Policy {
             {
                 Ok(())
             }
+            Action::Kill if target.resource == "pods" => Ok(()),
             _ => Err("operation family is disabled by policy (scale range: 0..20)".into()),
         }
     }

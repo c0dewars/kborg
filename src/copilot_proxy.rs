@@ -13,14 +13,6 @@ use std::{
     thread::{self, JoinHandle},
     time::{Duration, Instant},
 };
-pub const HOSTS: &[&str] = &[
-    "api.github.com",
-    "api.githubcopilot.com",
-    "api.individual.githubcopilot.com",
-    "api.business.githubcopilot.com",
-    "api.enterprise.githubcopilot.com",
-    "copilot-proxy.githubusercontent.com",
-];
 const BYTE_LIMIT: usize = 4 * 1024 * 1024;
 const CONNECTION_LIMIT: usize = 24;
 #[derive(Clone, Default, Debug, Serialize)]
@@ -31,6 +23,10 @@ pub struct NetworkReport {
     pub received_bytes: usize,
 }
 struct Shared {
+    /// Exact approved TLS authorities for this session's deployment.
+    authorities: Vec<String>,
+    /// GitHub Enterprise Server opt-in: RFC 1918/CGNAT/ULA destinations.
+    private_network: bool,
     stop: AtomicBool,
     deadline: Instant,
     nonce: String,
@@ -47,7 +43,10 @@ pub struct Broker {
     worker: Option<JoinHandle<()>>,
 }
 impl Broker {
-    pub fn start(seconds: u16) -> Result<Self> {
+    pub fn start(seconds: u16, authorities: Vec<String>, private_network: bool) -> Result<Self> {
+        if authorities.is_empty() || authorities.len() > 8 {
+            return Err("Copilot broker needs 1..8 exact approved authorities".into());
+        }
         let mut random = [0u8; 32];
         SystemRandom::new()
             .fill(&mut random)
@@ -66,6 +65,8 @@ impl Broker {
             .map_err(|_| "cannot identify Copilot broker")?
             .port();
         let shared = Arc::new(Shared {
+            authorities,
+            private_network,
             stop: AtomicBool::new(false),
             deadline: Instant::now() + Duration::from_secs(u64::from(seconds)),
             nonce: nonce.clone(),
@@ -198,7 +199,7 @@ fn read_until(
     }
     Ok(())
 }
-fn authority(header: &[u8], nonce: &str) -> Result<String> {
+fn authority(header: &[u8], nonce: &str, approved: &[String]) -> Result<String> {
     use base64::Engine;
     let text = std::str::from_utf8(header).map_err(|_| "invalid proxy header")?;
     let mut lines = text.split("\r\n");
@@ -209,7 +210,7 @@ fn authority(header: &[u8], nonce: &str) -> Result<String> {
     }
     let host = words[1]
         .strip_suffix(":443")
-        .filter(|host| HOSTS.contains(host))
+        .filter(|host| approved.iter().any(|approved| approved == host))
         .ok_or("unapproved Copilot egress authority")?;
     let expected = format!(
         "Basic {}",
@@ -353,6 +354,18 @@ fn public(ip: IpAddr) -> bool {
     }
 }
 
+/// Internal enterprise ranges a GitHub Enterprise Server may use. Loopback,
+/// link-local (including cloud metadata), multicast and unspecified addresses
+/// are never reachable, even with the opt-in.
+fn enterprise_private(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(ip) => {
+            let [a, b, _, _] = ip.octets();
+            ip.is_private() || (a == 100 && (64..=127).contains(&b))
+        }
+        IpAddr::V6(ip) => (ip.segments()[0] & 0xfe00) == 0xfc00,
+    }
+}
 fn resolve(host: &str, state: &Shared) -> Result<Vec<SocketAddr>> {
     // The system resolver is a supervised fixed subprocess, not an unbounded
     // getaddrinfo thread that could keep a dropped UI runtime alive forever.
@@ -405,7 +418,12 @@ fn resolve(host: &str, state: &Shared) -> Result<Vec<SocketAddr>> {
         })
         .filter_map(|ip| ip.parse::<IpAddr>().ok())
         .collect::<Vec<_>>();
-    if addresses.is_empty() || addresses.len() > 16 || addresses.iter().any(|ip| !public(*ip)) {
+    if addresses.is_empty()
+        || addresses.len() > 16
+        || addresses
+            .iter()
+            .any(|ip| !public(*ip) && !(state.private_network && enterprise_private(*ip)))
+    {
         return Err("Copilot DNS returned absent/private/oversized addresses".into());
     }
     Ok(addresses
@@ -424,7 +442,7 @@ fn tunnel(mut client: TcpStream, state: &Shared) -> Result<()> {
         let target = header.len() + 1;
         read_until(&mut client, state, &mut header, target, deadline)?;
     }
-    let host = match authority(&header, &state.nonce) {
+    let host = match authority(&header, &state.nonce, &state.authorities) {
         Ok(host) => host,
         Err(error) => {
             let _ = client.write_all(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n");
@@ -520,9 +538,26 @@ mod tests {
         let good = format!(
             "CONNECT api.github.com:443 HTTP/1.1\r\nHost: api.github.com:443\r\nProxy-Authorization: Basic {auth}\r\n\r\n"
         );
+        let approved = crate::copilot::Deployment::GitHub.authorities();
         assert_eq!(
-            authority(good.as_bytes(), nonce).ok(),
+            authority(good.as_bytes(), nonce, &approved).ok(),
             Some("api.github.com".into())
+        );
+        let tenant =
+            crate::copilot::Deployment::EnterpriseCloud("acme.ghe.com".into()).authorities();
+        assert!(authority(good.as_bytes(), nonce, &tenant).is_err());
+        let ghe = good.replace("api.github.com", "copilot-api.acme.ghe.com");
+        assert_eq!(
+            authority(ghe.as_bytes(), nonce, &tenant).ok(),
+            Some("copilot-api.acme.ghe.com".into())
+        );
+        assert!(
+            authority(
+                ghe.replace("acme.ghe.com", "other.ghe.com").as_bytes(),
+                nonce,
+                &tenant
+            )
+            .is_err()
         );
         for bad in [
             good.replace(":443", ":80"),
@@ -531,7 +566,7 @@ mod tests {
             good.replace(&auth, "invalid"),
             good.replace("Host: api.github.com:443", "Host: evil.example:443"),
         ] {
-            assert!(authority(bad.as_bytes(), nonce).is_err());
+            assert!(authority(bad.as_bytes(), nonce, &approved).is_err());
         }
     }
     #[test]
@@ -565,8 +600,37 @@ mod tests {
         assert!(public(IpAddr::from([140, 82, 112, 5])));
     }
     #[test]
+    fn enterprise_private_opt_in_never_reaches_loopback_link_local_or_metadata() {
+        for allowed in [
+            "10.1.2.3",
+            "172.16.0.9",
+            "192.168.1.1",
+            "100.64.0.1",
+            "fd00::1",
+        ] {
+            assert!(
+                enterprise_private(allowed.parse().unwrap_or(IpAddr::from([0, 0, 0, 0]))),
+                "{allowed}"
+            );
+        }
+        for denied in [
+            "127.0.0.1",
+            "169.254.169.254",
+            "0.0.0.0",
+            "224.0.0.1",
+            "::1",
+            "fe80::1",
+            "::ffff:10.0.0.1",
+        ] {
+            assert!(
+                !enterprise_private(denied.parse().unwrap_or(IpAddr::from([127, 0, 0, 1]))),
+                "{denied}"
+            );
+        }
+    }
+    #[test]
     fn unauthenticated_local_clients_cannot_use_broker() -> Result<()> {
-        let broker = Broker::start(5)?;
+        let broker = Broker::start(5, crate::copilot::Deployment::GitHub.authorities(), false)?;
         let mut stream = TcpStream::connect(("127.0.0.1", broker.port))
             .map_err(|_| "test broker unavailable")?;
         stream

@@ -22,6 +22,10 @@ pub struct ContextSummary {
     pub state: EvidenceState,
     pub observed_unix_seconds: Option<u64>,
     pub health: Option<HealthSummary>,
+    /// Node and workload readiness from the dashboard's bounded poll; not
+    /// part of the versioned CLI overview projection.
+    #[serde(skip)]
+    pub infra: Option<crate::cluster_health::InfraSummary>,
 }
 
 impl ContextSummary {
@@ -37,6 +41,7 @@ impl ContextSummary {
             state: EvidenceState::Connecting,
             observed_unix_seconds: None,
             health: None,
+            infra: None,
         }
     }
     fn fail(&mut self, message: &str) {
@@ -69,11 +74,16 @@ fn read_only(options: &Connection, context: &str) -> Connection {
     connection.allow_port_forward = false;
     connection.allow_node_maintenance = false;
     connection.allow_yaml_edit = false;
+    connection.allow_force_kill = false;
+    connection.allow_secret_reveal = false;
     connection.allow_helm_write = false;
     connection.allow_helm_hooks = false;
     connection.allow_helm_crds = false;
     connection
 }
+
+/// Contexts one live dashboard watches at once (k10s keys 1..9).
+pub const MAX_LIVE_CONTEXTS: usize = 9;
 
 pub fn validate(names: &[String]) -> Result<()> {
     if names.is_empty() || names.len() > 100 {
@@ -278,8 +288,10 @@ pub struct OverviewFeed {
 impl OverviewFeed {
     pub fn new(options: &Connection, names: &[String]) -> Result<Self> {
         validate(names)?;
-        if names.len() > 4 {
-            return Err("live overview supports 1..4 explicitly selected contexts".into());
+        if names.len() > MAX_LIVE_CONTEXTS {
+            return Err(format!(
+                "live overview supports 1..{MAX_LIVE_CONTEXTS} explicitly selected contexts"
+            ));
         }
         let rows = std::sync::Arc::new(std::sync::Mutex::new(
             names
@@ -320,6 +332,7 @@ impl OverviewFeed {
                 if gateway.is_demo() {
                     loop {
                         row = collect_context(connection.clone(), row.context.clone()).await;
+                        row.infra = Some(crate::cluster_health::collect(&gateway, &gateway.namespace).await);
                         publish(&row);
                         tokio::time::sleep(Duration::from_secs(5)).await;
                     }
@@ -356,8 +369,24 @@ impl OverviewFeed {
                 let mut pods: Option<PodHealth> = None;
                 let mut pod_terminal = false;
                 let mut tick = tokio::time::interval(Duration::from_secs(5));
+                // Node/workload readiness is polled separately so a slow or
+                // denied read never delays the Pod and Event watches.
+                let infra_namespace = gateway.namespace.clone();
+                let infra = |delay: u64| {
+                    let gateway = &gateway;
+                    let namespace = &infra_namespace;
+                    Box::pin(async move {
+                        tokio::time::sleep(Duration::from_secs(delay)).await;
+                        crate::cluster_health::collect(gateway, namespace).await
+                    })
+                };
+                let mut infra_poll = infra(0);
                 loop {
                     tokio::select! {
+                        summary = &mut infra_poll => {
+                            row.infra = Some(summary);
+                            infra_poll = infra(15);
+                        },
                         Some(snapshot) = pod_stream.next(), if !pod_terminal => {
                             pod_terminal = snapshot.terminal;
                             row.truncated = snapshot.truncated;
@@ -507,7 +536,7 @@ mod tests {
             assert!(
                 OverviewFeed::new(
                     &options,
-                    &["a".into(), "b".into(), "c".into(), "d".into(), "e".into()]
+                    &(0..10).map(|index| format!("c{index}")).collect::<Vec<_>>()
                 )
                 .is_err()
             );

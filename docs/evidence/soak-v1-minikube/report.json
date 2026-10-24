@@ -1,0 +1,600 @@
+{
+  "schema": 1,
+  "passed": true,
+  "started_utc": "2026-10-23T19:59:23.211228+00:00",
+  "context": "kborg-soak-v1",
+  "namespace": "kborg-soak-fb08cd32220b",
+  "run_id": "3d3b82bdd8584473a3f2b9a8e20d5763",
+  "requested_seconds": 7200,
+  "binary_sha256": "32a6b514bce9ab3edf247248c91e84abbce363b82980a06a6b440e9450bd4cd5",
+  "harness_sha256": "7453a3e6d0abfb8b779dc7c830bf4fa78ad56ad7877ed75e424f8e934e8c90dd",
+  "checks": [
+    "Three continuous read-only processes converged in the explicit fixture namespace",
+    "Continuous requested duration completed without process exit or panic",
+    "Owned periodic Pod additions/deletions reached resource and dashboard watches and final TUI counts",
+    "RSS stayed below 256 MiB per process and quarter-median growth below 64 MiB",
+    "Average CPU stayed below 25% of one core per process after the first 30 seconds",
+    "Output and JSON-record budgets held without retaining raw transcripts",
+    "Dashboard closed and quit successfully with exact terminal attributes restored"
+  ],
+  "captures": [
+    {
+      "name": "soak-start-dashboard",
+      "path": "/Users/brunogarcia/Desktop/repos/kborg/docs/evidence/soak-v1-minikube/soak-start-dashboard.png",
+      "columns": 120,
+      "rows": 32
+    },
+    {
+      "name": "soak-recovered-dashboard",
+      "path": "/Users/brunogarcia/Desktop/repos/kborg/docs/evidence/soak-v1-minikube/soak-recovered-dashboard.png",
+      "columns": 120,
+      "rows": 32
+    },
+    {
+      "name": "soak-final-dashboard",
+      "path": "/Users/brunogarcia/Desktop/repos/kborg/docs/evidence/soak-v1-minikube/soak-final-dashboard.png",
+      "columns": 120,
+      "rows": 32
+    }
+  ],
+  "mutations": [
+    {
+      "elapsed_seconds": 5.27,
+      "expected_pods": 2
+    },
+    {
+      "elapsed_seconds": 65.651,
+      "expected_pods": 1
+    },
+    {
+      "elapsed_seconds": 125.993,
+      "expected_pods": 2
+    },
+    {
+      "elapsed_seconds": 186.251,
+      "expected_pods": 1
+    },
+    {
+      "elapsed_seconds": 246.558,
+      "expected_pods": 2
+    },
+    {
+      "elapsed_seconds": 307.1,
+      "expected_pods": 1
+    },
+    {
+      "elapsed_seconds": 367.445,
+      "expected_pods": 2
+    },
+    {
+      "elapsed_seconds": 427.834,
+      "expected_pods": 1
+    },
+    {
+      "elapsed_seconds": 488.164,
+      "expected_pods": 2
+    },
+    {
+      "elapsed_seconds": 548.38,
+      "expected_pods": 1
+    },
+    {
+      "elapsed_seconds": 608.752,
+      "expected_pods": 2
+    },
+    {
+      "elapsed_seconds": 669.163,
+      "expected_pods": 1
+    },
+    {
+      "elapsed_seconds": 729.568,
+      "expected_pods": 2
+    },
+    {
+      "elapsed_seconds": 789.833,
+      "expected_pods": 1
+    },
+    {
+      "elapsed_seconds": 850.158,
+      "expected_pods": 2
+    },
+    {
+      "elapsed_seconds": 910.403,
+      "expected_pods": 1
+    },
+    {
+      "elapsed_seconds": 970.749,
+      "expected_pods": 2
+    },
+    {
+      "elapsed_seconds": 1030.994,
+      "expected_pods": 1
+    },
+    {
+      "elapsed_seconds": 1091.3,
+      "expected_pods": 2
+    },
+    {
+      "elapsed_seconds": 1151.675,
+      "expected_pods": 1
+    },
+    {
+      "elapsed_seconds": 1211.998,
+      "expected_pods": 2
+    },
+    {
+      "elapsed_seconds": 1272.362,
+      "expected_pods": 1
+    },
+    {
+      "elapsed_seconds": 1332.731,
+      "expected_pods": 2
+    },
+    {
+      "elapsed_seconds": 1393.058,
+      "expected_pods": 1
+    },
+    {
+      "elapsed_seconds": 1453.309,
+      "expected_pods": 2
+    },
+    {
+      "elapsed_seconds": 1513.621,
+      "expected_pods": 1
+    },
+    {
+      "elapsed_seconds": 1573.874,
+      "expected_pods": 2
+    },
+    {
+      "elapsed_seconds": 1634.155,
+      "expected_pods": 1
+    },
+    {
+      "elapsed_seconds": 1694.397,
+      "expected_pods": 2
+    },
+    {
+      "elapsed_seconds": 1754.615,
+      "expected_pods": 1
+    },
+    {
+      "elapsed_seconds": 1941.001,
+      "expected_pods": 2
+    },
+    {
+      "elapsed_seconds": 2001.248,
+      "expected_pods": 1
+    },
+    {
+      "elapsed_seconds": 2061.489,
+      "expected_pods": 2
+    },
+    {
+      "elapsed_seconds": 2121.754,
+      "expected_pods": 1
+    },
+    {
+      "elapsed_seconds": 2182.017,
+      "expected_pods": 2
+    },
+    {
+      "elapsed_seconds": 2242.3,
+      "expected_pods": 1
+    },
+    {
+      "elapsed_seconds": 2302.604,
+      "expected_pods": 2
+    },
+    {
+      "elapsed_seconds": 2362.93,
+      "expected_pods": 1
+    },
+    {
+      "elapsed_seconds": 2423.293,
+      "expected_pods": 2
+    },
+    {
+      "elapsed_seconds": 2483.627,
+      "expected_pods": 1
+    },
+    {
+      "elapsed_seconds": 2543.992,
+      "expected_pods": 2
+    },
+    {
+      "elapsed_seconds": 2604.233,
+      "expected_pods": 1
+    },
+    {
+      "elapsed_seconds": 2664.526,
+      "expected_pods": 2
+    },
+    {
+      "elapsed_seconds": 2724.919,
+      "expected_pods": 1
+    },
+    {
+      "elapsed_seconds": 2785.317,
+      "expected_pods": 2
+    },
+    {
+      "elapsed_seconds": 2845.681,
+      "expected_pods": 1
+    },
+    {
+      "elapsed_seconds": 2905.921,
+      "expected_pods": 2
+    },
+    {
+      "elapsed_seconds": 2966.239,
+      "expected_pods": 1
+    },
+    {
+      "elapsed_seconds": 3026.648,
+      "expected_pods": 2
+    },
+    {
+      "elapsed_seconds": 3086.899,
+      "expected_pods": 1
+    },
+    {
+      "elapsed_seconds": 3147.21,
+      "expected_pods": 2
+    },
+    {
+      "elapsed_seconds": 3207.5,
+      "expected_pods": 1
+    },
+    {
+      "elapsed_seconds": 3267.719,
+      "expected_pods": 2
+    },
+    {
+      "elapsed_seconds": 3328.126,
+      "expected_pods": 1
+    },
+    {
+      "elapsed_seconds": 3388.363,
+      "expected_pods": 2
+    },
+    {
+      "elapsed_seconds": 3448.59,
+      "expected_pods": 1
+    },
+    {
+      "elapsed_seconds": 3508.869,
+      "expected_pods": 2
+    },
+    {
+      "elapsed_seconds": 3569.213,
+      "expected_pods": 1
+    },
+    {
+      "elapsed_seconds": 3629.62,
+      "expected_pods": 2
+    },
+    {
+      "elapsed_seconds": 3689.865,
+      "expected_pods": 1
+    },
+    {
+      "elapsed_seconds": 3750.165,
+      "expected_pods": 2
+    },
+    {
+      "elapsed_seconds": 3810.427,
+      "expected_pods": 1
+    },
+    {
+      "elapsed_seconds": 3870.703,
+      "expected_pods": 2
+    },
+    {
+      "elapsed_seconds": 3931.091,
+      "expected_pods": 1
+    },
+    {
+      "elapsed_seconds": 3991.456,
+      "expected_pods": 2
+    },
+    {
+      "elapsed_seconds": 4051.759,
+      "expected_pods": 1
+    },
+    {
+      "elapsed_seconds": 4112.043,
+      "expected_pods": 2
+    },
+    {
+      "elapsed_seconds": 4172.411,
+      "expected_pods": 1
+    },
+    {
+      "elapsed_seconds": 4232.664,
+      "expected_pods": 2
+    },
+    {
+      "elapsed_seconds": 4293.004,
+      "expected_pods": 1
+    },
+    {
+      "elapsed_seconds": 4353.294,
+      "expected_pods": 2
+    },
+    {
+      "elapsed_seconds": 4413.664,
+      "expected_pods": 1
+    },
+    {
+      "elapsed_seconds": 4473.899,
+      "expected_pods": 2
+    },
+    {
+      "elapsed_seconds": 4534.227,
+      "expected_pods": 1
+    },
+    {
+      "elapsed_seconds": 4594.476,
+      "expected_pods": 2
+    },
+    {
+      "elapsed_seconds": 4654.754,
+      "expected_pods": 1
+    },
+    {
+      "elapsed_seconds": 4715.031,
+      "expected_pods": 2
+    },
+    {
+      "elapsed_seconds": 4775.421,
+      "expected_pods": 1
+    },
+    {
+      "elapsed_seconds": 4835.716,
+      "expected_pods": 2
+    },
+    {
+      "elapsed_seconds": 4896.072,
+      "expected_pods": 1
+    },
+    {
+      "elapsed_seconds": 4956.45,
+      "expected_pods": 2
+    },
+    {
+      "elapsed_seconds": 5016.756,
+      "expected_pods": 1
+    },
+    {
+      "elapsed_seconds": 5077.094,
+      "expected_pods": 2
+    },
+    {
+      "elapsed_seconds": 5137.485,
+      "expected_pods": 1
+    },
+    {
+      "elapsed_seconds": 5197.713,
+      "expected_pods": 2
+    },
+    {
+      "elapsed_seconds": 5257.987,
+      "expected_pods": 1
+    },
+    {
+      "elapsed_seconds": 5318.298,
+      "expected_pods": 2
+    },
+    {
+      "elapsed_seconds": 5378.624,
+      "expected_pods": 1
+    },
+    {
+      "elapsed_seconds": 5438.942,
+      "expected_pods": 2
+    },
+    {
+      "elapsed_seconds": 5499.354,
+      "expected_pods": 1
+    },
+    {
+      "elapsed_seconds": 5559.582,
+      "expected_pods": 2
+    },
+    {
+      "elapsed_seconds": 5619.978,
+      "expected_pods": 1
+    },
+    {
+      "elapsed_seconds": 5680.22,
+      "expected_pods": 2
+    },
+    {
+      "elapsed_seconds": 5740.57,
+      "expected_pods": 1
+    },
+    {
+      "elapsed_seconds": 5800.88,
+      "expected_pods": 2
+    },
+    {
+      "elapsed_seconds": 5861.259,
+      "expected_pods": 1
+    },
+    {
+      "elapsed_seconds": 5921.503,
+      "expected_pods": 2
+    },
+    {
+      "elapsed_seconds": 5981.925,
+      "expected_pods": 1
+    },
+    {
+      "elapsed_seconds": 6042.188,
+      "expected_pods": 2
+    },
+    {
+      "elapsed_seconds": 6102.48,
+      "expected_pods": 1
+    },
+    {
+      "elapsed_seconds": 6162.774,
+      "expected_pods": 2
+    },
+    {
+      "elapsed_seconds": 6223.082,
+      "expected_pods": 1
+    },
+    {
+      "elapsed_seconds": 6283.383,
+      "expected_pods": 2
+    },
+    {
+      "elapsed_seconds": 6343.701,
+      "expected_pods": 1
+    },
+    {
+      "elapsed_seconds": 6403.99,
+      "expected_pods": 2
+    },
+    {
+      "elapsed_seconds": 6464.227,
+      "expected_pods": 1
+    },
+    {
+      "elapsed_seconds": 6524.528,
+      "expected_pods": 2
+    },
+    {
+      "elapsed_seconds": 6584.77,
+      "expected_pods": 1
+    },
+    {
+      "elapsed_seconds": 6644.998,
+      "expected_pods": 2
+    },
+    {
+      "elapsed_seconds": 6705.386,
+      "expected_pods": 1
+    },
+    {
+      "elapsed_seconds": 6765.642,
+      "expected_pods": 2
+    },
+    {
+      "elapsed_seconds": 6826.038,
+      "expected_pods": 1
+    },
+    {
+      "elapsed_seconds": 6886.349,
+      "expected_pods": 2
+    },
+    {
+      "elapsed_seconds": 6946.598,
+      "expected_pods": 1
+    },
+    {
+      "elapsed_seconds": 7006.817,
+      "expected_pods": 2
+    },
+    {
+      "elapsed_seconds": 7067.13,
+      "expected_pods": 1
+    },
+    {
+      "elapsed_seconds": 7127.41,
+      "expected_pods": 2
+    },
+    {
+      "elapsed_seconds": 7187.753,
+      "expected_pods": 1
+    }
+  ],
+  "fault": {
+    "kind": "pause-owned-minikube-container",
+    "container_id": "1ef7c3f7a1448e46c67d32d2d27362400e9da78c932b03842d50475bbda02239",
+    "start_seconds": 1800.396,
+    "requested_pause_seconds": 45,
+    "recovery_settle_seconds": 20,
+    "resource_stale_before": 0,
+    "dashboard_stale_before": 4,
+    "recovered": true,
+    "resumed_seconds": 1845.699,
+    "actual_pause_seconds": 45.303,
+    "resource_stale_observed": true,
+    "dashboard_stale_observed": true,
+    "recovery_seconds": 20.014
+  },
+  "limits": {
+    "rss_per_process_kib": 262144,
+    "rss_growth_kib": 65536,
+    "total_output_per_process_bytes": 536870912,
+    "json_record_bytes": 16777216,
+    "average_cpu_core_percent_after_30_seconds": 25
+  },
+  "claims_excluded": [
+    "429 throttling",
+    "credential/token rotation",
+    "certificate rotation",
+    "organizational production pilot",
+    "native terminal font rendering"
+  ],
+  "configured_current_context_before": "kborg-soak-v1",
+  "kubernetes_version": "v1.35.9",
+  "fixture_namespace_uid": "ca278dfc-3de0-41a4-a5e3-3fc7646cdb53",
+  "issued_token_remaining_seconds_at_start": 7800,
+  "continuous_started_utc": "2026-10-23T19:59:28.320906+00:00",
+  "actual_continuous_seconds": 7200.08,
+  "continuous_finished_utc": "2026-10-23T21:59:28.399687+00:00",
+  "processes": {
+    "resource": {
+      "samples": 476,
+      "rss_peak_kib": 13184,
+      "rss_early_quarter_median_kib": 11968,
+      "rss_late_quarter_median_kib": 12384,
+      "rss_growth_kib": 416,
+      "cpu_peak_percent": 0.1,
+      "cpu_last_sample_seconds": 1.1,
+      "output_bytes": 9108036,
+      "records": 2281,
+      "observed_counts": [
+        1,
+        2
+      ],
+      "stale_records": 5
+    },
+    "dashboard": {
+      "samples": 476,
+      "rss_peak_kib": 13568,
+      "rss_early_quarter_median_kib": 12400,
+      "rss_late_quarter_median_kib": 12880,
+      "rss_growth_kib": 480,
+      "cpu_peak_percent": 0.2,
+      "cpu_last_sample_seconds": 1.49,
+      "output_bytes": 2421457,
+      "records": 4742,
+      "observed_counts": [
+        1,
+        2
+      ],
+      "stale_records": 22
+    },
+    "tui": {
+      "samples": 476,
+      "rss_peak_kib": 15168,
+      "rss_early_quarter_median_kib": 13936,
+      "rss_late_quarter_median_kib": 14240,
+      "rss_growth_kib": 304,
+      "cpu_peak_percent": 0.4,
+      "cpu_last_sample_seconds": 8.81,
+      "output_bytes": 54766251,
+      "records": 0,
+      "observed_counts": [],
+      "stale_records": 0
+    }
+  },
+  "configured_current_context_after": "kborg-soak-v1",
+  "fixture_cleanup": true,
+  "finished_utc": "2026-10-23T21:59:33.854606+00:00"
+}

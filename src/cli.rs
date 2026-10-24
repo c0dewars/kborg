@@ -42,6 +42,15 @@ pub struct Options {
     pub follow: bool,
     pub previous: bool,
     pub all_containers: bool,
+    /// Explicit opt-in: announced Pod joins/departures for followed workload logs.
+    pub dynamic_membership: bool,
+    /// `--contexts a,b`: open the TUI directly in the dashboard (k10s style).
+    pub dashboard: Vec<String>,
+    /// `kborg dashboard` / `--dashboard`: reopen the last dashboard, or pick
+    /// clusters on first use.
+    pub dashboard_last: bool,
+    /// Opt-in: Ctrl-E in the YAML editor hands the draft to $VISUAL/$EDITOR.
+    pub external_editor: bool,
     pub helm_storage: Option<crate::helm::Storage>,
     pub helm_tool: Option<PathBuf>,
     pub helm_values: Option<PathBuf>,
@@ -76,6 +85,10 @@ fn parse(args: Vec<String>) -> Result<Options> {
         follow: false,
         previous: false,
         all_containers: false,
+        dynamic_membership: false,
+        dashboard: Vec::new(),
+        dashboard_last: false,
+        external_editor: false,
         helm_storage: None,
         helm_tool: None,
         helm_values: None,
@@ -104,9 +117,27 @@ fn parse(args: Vec<String>) -> Result<Options> {
             "--follow" => opts.follow = true,
             "--previous" => opts.previous = true,
             "--all-containers" => opts.all_containers = true,
+            "--dynamic-membership" => opts.dynamic_membership = true,
+            "--dashboard" => opts.dashboard_last = true,
+            "--allow-external-editor" => opts.external_editor = true,
+            "--contexts" => {
+                let names: Vec<String> = args
+                    .next()
+                    .ok_or("--contexts needs a comma-separated list")?
+                    .split(',')
+                    .map(|name| name.trim().to_owned())
+                    .collect();
+                if names.len() > crate::overview::MAX_LIVE_CONTEXTS {
+                    return Err("--contexts opens the dashboard with 1..9 contexts".into());
+                }
+                crate::overview::validate(&names)?;
+                opts.dashboard = names;
+            }
             "--allow-helm" => opts.connection.allow_helm = true,
             "--allow-helm-write" => opts.connection.allow_helm_write = true,
             "--allow-yaml-edit" => opts.connection.allow_yaml_edit = true,
+            "--allow-force-kill" => opts.connection.allow_force_kill = true,
+            "--allow-secret-reveal" => opts.connection.allow_secret_reveal = true,
             "--allow-helm-hooks" => opts.connection.allow_helm_hooks = true,
             "--allow-helm-crds" => opts.connection.allow_helm_crds = true,
             "--copilot-policy" => {
@@ -372,6 +403,12 @@ fn parse(args: Vec<String>) -> Result<Options> {
     if opts.log_read.head && opts.follow {
         return Err("--head is a snapshot and cannot be followed".into());
     }
+    if opts.dynamic_membership && (!opts.follow || opts.command.first().is_none_or(|v| v != "logs"))
+    {
+        return Err(
+            "--dynamic-membership requires logs --follow on a workload or --selector".into(),
+        );
+    }
     crate::selectors::validate(&opts.selector)?;
     if !opts.selector.is_empty()
         && opts
@@ -520,7 +557,8 @@ pub fn run_args(args: Vec<String>) -> Result<()> {
             match opts.command.get(1).map(String::as_str) {
                 Some("on") => themes::set_animation(true)?,
                 Some("off") => themes::set_animation(false)?,
-                _ => return Err("usage: startup on|off".into()),
+                Some("preview") => tui::play_startup_animation(opts.theme.as_deref(), opts.color)?,
+                _ => return Err("usage: startup on|off|preview".into()),
             }
             outputln!("Startup preference saved.");
             return Ok(());
@@ -559,8 +597,13 @@ pub fn run_args(args: Vec<String>) -> Result<()> {
             return Ok(());
         }
         "ui" => return tui::run(opts),
+        "dashboard" | "dash" => {
+            let mut opts = opts;
+            opts.dashboard_last = true;
+            return tui::run(opts);
+        }
         "helm" | "history" | "list" | "watch" | "metrics" | "get" | "view" | "logs"
-        | "resources" | "doctor" | "scale" | "restart" | "delete" | "set-image"
+        | "resources" | "doctor" | "scale" | "restart" | "delete" | "kill" | "set-image"
         | "set-resources" | "exec" | "attach" | "forward" | "pulses" | "xray" | "workloads"
         | "can" | "yaml-template" | "yaml-edit" | "cordon" | "uncordon" | "drain" => {}
         _ => return Err("unknown command; see --help".into()),
@@ -702,13 +745,14 @@ if value["truncated"]==true {eprintln!("TRUNCATED: limit reached; narrow namespa
                 }
             },
             "logs"=>logs_command(&gateway,args,&opts).await?,
-            "scale"|"restart"|"delete"|"set-image"|"set-resources"=>{
+            "scale"|"restart"|"delete"|"kill"|"set-image"|"set-resources"=>{
                 if !io::stdin().is_terminal() || !io::stdout().is_terminal(){return Err("noninteractive writes are disabled; use the interactive TUI or terminal confirmation".into());}
                 let (resource,name,action)=match cmd {
                     "set-image"=>{let (resource,args)=write_args(args,3,"set-image [RESOURCE] NAME CONTAINER IMAGE --write")?;(resource,args[0].as_str(),Action::SetImage{container:args[1].clone(),image:args[2].clone()})},
                     "set-resources"=>{let (resource,args)=write_args(args,6,"set-resources [RESOURCE] NAME CONTAINER CPU_REQUEST MEMORY_REQUEST CPU_LIMIT MEMORY_LIMIT --write")?;(resource,args[0].as_str(),Action::SetResources{container:args[1].clone(),resources:crate::edit::ResourceEdit{cpu_request:args[2].clone(),memory_request:args[3].clone(),cpu_limit:args[4].clone(),memory_limit:args[5].clone()}})},
                     "scale"=>{let (resource,args)=write_args(args,2,"scale [RESOURCE] NAME REPLICAS --write")?;(resource,args[0].as_str(),Action::Scale(args[1].parse().map_err(|_|"invalid replicas")?))},
                     "restart"=>{let (resource,args)=write_args(args,1,"restart [RESOURCE] NAME --write")?;(resource,args[0].as_str(),Action::Restart)},
+                    "kill"=>{if args.len()!=1{return Err("usage: kill POD --write --allow-force-kill".into());}("pods",args[0].as_str(),Action::Kill)},
                     _=>{if args.len()!=2{return Err("usage: delete <resource> <name> --write".into());}(args[0].as_str(),args[1].as_str(),Action::Delete)},
                 };
                 let prepared=tokio::time::timeout(Duration::from_secs(15),gateway.prepare(resource,&ns,name,action)).await.map_err(|_|"dry-run timed out")??;
@@ -813,25 +857,47 @@ async fn logs_command(gateway: &Gateway, args: &[String], opts: &Options) -> Res
         }
         _ => None,
     };
+    if selection.is_none() && opts.dynamic_membership {
+        return Err("--dynamic-membership requires a workload or --selector, not one Pod".into());
+    }
     if let Some(selection) = selection {
-        let membership = gateway.capture_log_membership(namespace, selection).await?;
+        let membership = gateway
+            .capture_log_membership(namespace, selection.clone())
+            .await?;
+        let membership = if opts.dynamic_membership {
+            membership.into_dynamic(selection)
+        } else {
+            membership
+        };
         let description = membership.description();
         if !opts.json {
             outputln!("{description}");
         }
         if opts.follow {
-            let mut feed = gateway
-                .follow_membership_logs(
-                    &membership,
-                    FollowOptions {
-                        seconds: opts.log_seconds,
-                    },
-                    opts.log_read,
+            let follow = FollowOptions {
+                seconds: opts.log_seconds,
+            };
+            let mut feed = if membership.is_dynamic() {
+                crate::logs::WorkloadLogFeed::Dynamic(Box::new(
+                    gateway
+                        .follow_dynamic_logs(&membership, follow, opts.log_read)
+                        .await?,
+                ))
+            } else {
+                crate::logs::WorkloadLogFeed::Merged(
+                    gateway
+                        .follow_membership_logs(&membership, follow, opts.log_read)
+                        .await?,
                 )
-                .await?;
+            };
+            let pod_scope = if membership.is_dynamic() {
+                "dynamic-membership"
+            } else {
+                "fixed-membership"
+            };
             while let Some(line) = feed.next().await? {
                 let record = if opts.json {
-                    serde_json::json!({"line":line,"container_scope":"all-ordinary","pod_scope":"fixed-membership","membership":membership}).to_string()
+                    serde_json::json!({"line":line,"container_scope":"all-ordinary","pod_scope":pod_scope,"membership":membership}).to_string()
                 } else {
                     line
                 };

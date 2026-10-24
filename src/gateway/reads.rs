@@ -1,0 +1,335 @@
+//! Bounded reads: watches, lists, gets, discovery and opt-in Secret inspection.
+use super::*;
+
+impl Gateway {
+    pub fn watch(&self, key: &str, ns: &str) -> Result<crate::watch::WatchFeed> {
+        self.watch_selector(key, ns, "")
+    }
+    pub fn watch_selector(
+        &self,
+        key: &str,
+        ns: &str,
+        selector: &str,
+    ) -> Result<crate::watch::WatchFeed> {
+        self.watch_fields(key, ns, selector, "")
+    }
+    pub fn watch_fields(
+        &self,
+        key: &str,
+        ns: &str,
+        selector: &str,
+        fields: &str,
+    ) -> Result<crate::watch::WatchFeed> {
+        crate::selectors::validate(selector)?;
+        let scope = crate::selectors::field_scope(fields)?;
+        let kind = self.find(key)?.clone();
+        if let Some(scope) = scope
+            && (kind.kind != scope.kind() || !kind.group.is_empty())
+        {
+            return Err(format!(
+                "this field selector requires core {}s",
+                scope.kind()
+            ));
+        }
+        Ok(crate::watch::WatchFeed::with_filters(
+            self.api(&kind, ns)?,
+            kind,
+            selector.into(),
+            fields.into(),
+        ))
+    }
+    pub(crate) fn metrics_api(
+        &self,
+        scope: crate::metrics::MetricsScope,
+        ns: &str,
+    ) -> Result<Api<DynamicObject>> {
+        let kind = Kind {
+            plural: if matches!(scope, crate::metrics::MetricsScope::Pods) {
+                "pods"
+            } else {
+                "nodes"
+            }
+            .into(),
+            kind: if matches!(scope, crate::metrics::MetricsScope::Pods) {
+                "PodMetrics"
+            } else {
+                "NodeMetrics"
+            }
+            .into(),
+            group: "metrics.k8s.io".into(),
+            version: "v1beta1".into(),
+            namespaced: matches!(scope, crate::metrics::MetricsScope::Pods),
+            short_names: Vec::new(),
+        };
+        self.api(&kind, ns)
+    }
+    pub(crate) fn find(&self, key: &str) -> Result<&Kind> {
+        if let Some(kind) = self.kinds.iter().find(|k| {
+            k.key() == key
+                || (if k.group.is_empty() {
+                    format!("{}/{}", k.version, k.plural)
+                } else {
+                    format!("{}/{}/{}", k.group, k.version, k.plural)
+                }) == key
+        }) {
+            return Ok(kind);
+        }
+        let mut matches = self.kinds.iter().filter(|k| {
+            k.plural == key
+                || k.kind.eq_ignore_ascii_case(key)
+                || k.short_names.iter().any(|name| name == key)
+        });
+        let first = matches
+            .next()
+            .ok_or("resource kind not available; Secrets are never exposed")?;
+        if matches.next().is_some() {
+            return Err("resource alias is ambiguous; use resource.group".into());
+        }
+        Ok(first)
+    }
+    pub(super) fn api(&self, k: &Kind, ns: &str) -> Result<Api<DynamicObject>> {
+        if ns != "*" && !safety::valid_id(ns) {
+            return Err("invalid namespace".into());
+        }
+        let client = self.client.clone().ok_or("offline backend")?;
+        if k.plural == "secrets" || k.kind == "Secret" {
+            return Err("Secret access is disabled".into());
+        }
+        Ok(if k.namespaced && ns != "*" {
+            Api::namespaced_with(client, ns, &k.ar())
+        } else {
+            Api::all_with(client, &k.ar())
+        })
+    }
+    pub(super) fn secret_api(
+        &self,
+        ns: &str,
+    ) -> Result<Option<Api<k8s_openapi::api::core::v1::Secret>>> {
+        if !self.allow_secret_reveal {
+            return Err("Secret inspection requires --allow-secret-reveal".into());
+        }
+        if ns == "*" || !safety::valid_id(ns) {
+            return Err("Secret inspection requires one explicit namespace".into());
+        }
+        if self.is_demo() {
+            return Ok(None);
+        }
+        let client = self.client.clone().ok_or("offline backend")?;
+        Ok(Some(Api::namespaced(client, ns)))
+    }
+    /// Secret names, types and key sizes for one namespace. Values are dropped
+    /// before this returns.
+    pub async fn secret_index(&self, ns: &str) -> Result<crate::secrets::SecretIndex> {
+        let Some(api) = self.secret_api(ns)? else {
+            let data = crate::secrets::demo_data();
+            return Ok(crate::secrets::SecretIndex {
+                namespace: ns.into(),
+                items: vec![crate::secrets::entry(
+                    "api-credentials",
+                    "demo-secret-uid",
+                    Some("Opaque"),
+                    Some(&data),
+                )],
+                truncated: false,
+            });
+        };
+        let params = ListParams::default().limit(crate::secrets::MAX_SECRETS as u32);
+        let list = tokio::time::timeout(OPERATION_BUDGET, api.list(&params))
+            .await
+            .map_err(|_| "Secret list timed out")?
+            .map_err(api_error)?;
+        let truncated = list
+            .metadata
+            .continue_
+            .as_deref()
+            .is_some_and(|c| !c.is_empty());
+        let items = list
+            .items
+            .iter()
+            .map(|secret| {
+                let data = secret.data.as_ref().map(|data| {
+                    data.iter()
+                        .map(|(key, value)| (key.clone(), value.0.clone()))
+                        .collect()
+                });
+                crate::secrets::entry(
+                    secret.metadata.name.as_deref().unwrap_or(""),
+                    secret.metadata.uid.as_deref().unwrap_or(""),
+                    secret.type_.as_deref(),
+                    data.as_ref(),
+                )
+            })
+            .collect();
+        Ok(crate::secrets::SecretIndex {
+            namespace: ns.into(),
+            items,
+            truncated,
+        })
+    }
+    /// Fetches one key of one Secret, refusing a replacement with another UID.
+    pub async fn secret_value(
+        &self,
+        ns: &str,
+        name: &str,
+        uid: &str,
+        key: &str,
+    ) -> Result<crate::secrets::Revealed> {
+        crate::secrets::validate_request(ns, name, key)?;
+        let Some(api) = self.secret_api(ns)? else {
+            if name != "api-credentials" || uid != "demo-secret-uid" {
+                return Err("Secret not found".into());
+            }
+            return crate::secrets::demo_data()
+                .get(key)
+                .map(|bytes| crate::secrets::reveal(bytes))
+                .ok_or_else(|| "Secret key not found".into());
+        };
+        let secret = tokio::time::timeout(OPERATION_BUDGET, api.get(name))
+            .await
+            .map_err(|_| "Secret read timed out")?
+            .map_err(api_error)?;
+        if secret.metadata.uid.as_deref() != Some(uid) {
+            return Err("Secret was replaced; reopen :secrets".into());
+        }
+        secret
+            .data
+            .as_ref()
+            .and_then(|data| data.get(key))
+            .map(|bytes| crate::secrets::reveal(&bytes.0))
+            .ok_or_else(|| "Secret key not found".into())
+    }
+    pub async fn discover(&mut self) -> Result<Vec<Kind>> {
+        if let Some(client) = &self.client {
+            self.kinds = discovery::collect(client).await?;
+        }
+        Ok(self.kinds.clone())
+    }
+    pub async fn list(&self, key: &str, ns: &str) -> Result<Value> {
+        self.list_selector(key, ns, "").await
+    }
+    pub async fn list_selector(&self, key: &str, ns: &str, selector: &str) -> Result<Value> {
+        self.list_fields(key, ns, selector, "").await
+    }
+    pub async fn list_fields(
+        &self,
+        key: &str,
+        ns: &str,
+        selector: &str,
+        fields: &str,
+    ) -> Result<Value> {
+        crate::selectors::validate(selector)?;
+        let scope = crate::selectors::field_scope(fields)?;
+        let kind = self.find(key)?;
+        if let Some(scope) = scope
+            && (kind.kind != scope.kind() || !kind.group.is_empty())
+        {
+            return Err(format!(
+                "this field selector requires core {}s",
+                scope.kind()
+            ));
+        }
+        if self.is_demo() {
+            let mut items: Vec<Value> = self
+                .demo
+                .iter()
+                .filter(|v| {
+                    v["kind"] == kind.kind
+                        && (ns == "*" || v["metadata"]["namespace"] == ns || !kind.namespaced)
+                        && crate::selectors::matches(selector, &v["metadata"]["labels"])
+                        && scope.is_none_or(|scope| scope.matches(v))
+                })
+                .cloned()
+                .collect();
+            items.iter_mut().for_each(safety::redact);
+            return Ok(json!({"items":items,"truncated":false,"source":"demo"}));
+        }
+        let api = self.api(kind, ns)?;
+        let mut items = Vec::new();
+        let mut continuation = None;
+        let mut total_bytes = 0;
+        let deadline = tokio::time::Instant::now() + OPERATION_BUDGET;
+        let mut pages = 0;
+        let mut seen_tokens = std::collections::HashSet::new();
+        loop {
+            let params = ListParams {
+                limit: Some(LIST_PAGE),
+                label_selector: (!selector.is_empty()).then(|| selector.to_owned()),
+                field_selector: (!fields.is_empty()).then(|| fields.to_owned()),
+                continue_token: continuation,
+                ..Default::default()
+            };
+            let list = tokio::time::timeout_at(deadline, api.list(&params))
+                .await
+                .map_err(|_| "list budget exceeded; narrow namespace scope")?
+                .map_err(api_error)?;
+            pages += 1;
+            for item in list.items {
+                let mut value = serde_json::to_value(item).map_err(|_| "cannot decode object")?;
+                value["kind"] = json!(kind.kind);
+                value["apiVersion"] = json!(kind.ar().api_version);
+                safety::redact(&mut value);
+                total_bytes += value.to_string().len();
+                if items.len() >= MAX_OBJECTS || total_bytes > MAX_BODY {
+                    return Ok(json!({"items":items,"truncated":true,"source":"cluster"}));
+                }
+                items.push(value);
+            }
+            continuation = list.metadata.continue_.filter(|s| !s.is_empty());
+            if continuation.is_none() {
+                break;
+            }
+            if pages >= MAX_LIST_PAGES {
+                return Ok(json!({"items":items,"truncated":true,"source":"cluster"}));
+            }
+            if let Some(token) = &continuation
+                && !seen_tokens.insert(token.clone())
+            {
+                return Err("server repeated a pagination token; listing stopped".into());
+            }
+            tokio::time::timeout_at(deadline, tokio::time::sleep(Duration::from_millis(50)))
+                .await
+                .map_err(|_| "list budget exceeded; narrow namespace scope")?;
+        }
+        Ok(json!({"items":items,"truncated":false,"source":"cluster"}))
+    }
+    pub(super) async fn raw_get(&self, key: &str, ns: &str, name: &str) -> Result<Value> {
+        if name.is_empty()
+            || name.len() > 253
+            || !name
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'.')
+        {
+            return Err("invalid object name".into());
+        }
+        let kind = self.find(key)?;
+        if self.is_demo() {
+            if kind.namespaced && ns == "*" {
+                return Err("select a concrete namespace".into());
+            }
+            return self
+                .demo
+                .iter()
+                .find(|v| {
+                    v["kind"] == kind.kind
+                        && v["metadata"]["name"] == name
+                        && (!kind.namespaced || v["metadata"]["namespace"] == ns)
+                })
+                .cloned()
+                .ok_or_else(|| "demo object not found".into());
+        }
+        if kind.namespaced && ns == "*" {
+            return Err("select a concrete namespace".into());
+        }
+        let mut value =
+            serde_json::to_value(self.api(kind, ns)?.get(name).await.map_err(api_error)?)
+                .map_err(|_| "cannot decode object")?;
+        value["kind"] = json!(kind.kind);
+        value["apiVersion"] = json!(kind.ar().api_version);
+        Ok(value)
+    }
+    pub async fn get(&self, key: &str, ns: &str, name: &str) -> Result<Value> {
+        let mut value = self.raw_get(key, ns, name).await?;
+        safety::redact(&mut value);
+        Ok(value)
+    }
+}
