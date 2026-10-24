@@ -13,8 +13,9 @@ pub fn safe_text(input: &str, max_chars: usize) -> String {
         .filter(|c| {
             !c.is_control()
                 && !matches!(*c,
-        '\u{061c}' | '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' |
-        '\u{2060}'..='\u{206f}' | '\u{feff}')
+        '\u{00ad}' | '\u{061c}' | '\u{180e}' | '\u{200b}'..='\u{200f}' |
+        '\u{2028}'..='\u{202e}' | '\u{2060}'..='\u{206f}' | '\u{feff}' |
+        '\u{fff9}'..='\u{fffb}' | '\u{e0000}'..='\u{e007f}')
         })
         .take(max_chars)
         .collect()
@@ -208,6 +209,13 @@ pub fn write_new(path: &Path, bytes: &[u8]) -> Result<()> {
 pub fn redact(value: &mut Value) {
     match value {
         Value::Object(map) => {
+            // Keys reach terminals and JSON output too (CRDs choose them).
+            if map.keys().any(|key| safe_text(key, 253) != *key) {
+                *map = std::mem::take(map)
+                    .into_iter()
+                    .map(|(key, v)| (safe_text(&key, 253), v))
+                    .collect();
+            }
             for (key, v) in map {
                 let lower = key.to_ascii_lowercase();
                 if [
@@ -315,6 +323,19 @@ pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn invisible_characters_and_hostile_keys_are_removed() {
+        assert_eq!(
+            safe_text("a\u{00ad}b\u{2028}c\u{e0041}d\u{fffa}e\u{180e}f", 64),
+            "abcdef"
+        );
+        let mut value = serde_json::json!({"spec":{"evil\u{202e}key\u{1b}[2J":"x","ok":"y"}});
+        redact(&mut value);
+        assert_eq!(
+            value,
+            serde_json::json!({"spec":{"evilkey[2J":"x","ok":"y"}})
+        );
+    }
     #[test]
     fn approval_display_is_unambiguous_ascii_and_bounds_expansion() -> Result<()> {
         let input = "context: pröd\narg: 東京\\u{e9}\u{1b}]52;c;canary\u{7}\u{202e}";

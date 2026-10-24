@@ -392,8 +392,8 @@ pub fn directory(path: &Path) -> Result<Directory> {
     })
 }
 
-/// Parse a bounded local manifest stream and redact every document before display.
-pub fn preview_manifest(path: &Path) -> Result<String> {
+/// Parse a bounded local manifest stream; Secret documents become `OmittedSecret`.
+pub fn manifest_documents(path: &Path) -> Result<(PathBuf, Vec<Value>)> {
     let path = local_path(path)?;
     if !manifest(&path) {
         return Err("choose a .yaml, .yml or .json manifest".into());
@@ -414,12 +414,21 @@ pub fn preview_manifest(path: &Path) -> Result<String> {
     };
     let mut documents: Vec<Value> = serde_saphyr::from_multiple_with_options(text,options)
         .map_err(|_| "manifest is malformed or exceeds document, nesting, alias or scalar limits; source details withheld")?;
+    documents.retain(|document| !document.is_null());
+    for document in &mut documents {
+        validate_manifest(document, 0)?;
+    }
+    Ok((path, documents))
+}
+
+/// Parse a bounded local manifest stream and redact every document before display.
+pub fn preview_manifest(path: &Path) -> Result<String> {
+    let (path, mut documents) = manifest_documents(path)?;
     let mut out = format!(
-        "LOCAL MANIFEST | {}\nRead-only redacted preview; no cluster operation.\n",
+        "LOCAL MANIFEST | {}\nRedacted preview. `a` reviews a server-side apply (--write --allow-apply).\n",
         path.display()
     );
     for document in &mut documents {
-        validate_manifest(document, 0)?;
         safety::redact(document);
         let rendered = crate::inspect::yaml(document)?;
         if out.len() + rendered.len() + 8 > MAX_OUTPUT {
