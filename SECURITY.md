@@ -1,6 +1,12 @@
 # Security policy
 
-KBorg 0.4 has had internal security reviews but no independent audit; do not describe it as audited. The audit scope and known limitations are in [docs/SECURITY_AUDIT_PACK.md](docs/SECURITY_AUDIT_PACK.md). Public vulnerability reporting infrastructure is not configured yet; discuss security findings privately with the project owner and avoid placing credentials or real cluster objects in reports.
+## Reporting a vulnerability
+
+Please report vulnerabilities privately through [GitHub private vulnerability reporting](https://github.com/c0dewars/kborg/security/advisories/new), not in a public issue or pull request. Include the KBorg version (`kborg --version`), your OS and terminal, and steps to reproduce. Never include credentials, kubeconfigs or real cluster objects; synthetic reproductions are enough. You should get an acknowledgement within 7 days. Fixes are released for the latest version only.
+
+## Status
+
+KBorg has had internal security reviews but no independent audit; do not describe it as audited. The audit scope and known limitations are in [docs/SECURITY_AUDIT_PACK.md](docs/SECURITY_AUDIT_PACK.md).
 
 Use dedicated least-privilege identities. Never use CI production credentials. Do not assume read-only access protects confidentiality. Never publish `.local/`, kubeconfigs, logs, audit metadata or crash dumps containing private data. TLS verification cannot be disabled through application flags.
 
