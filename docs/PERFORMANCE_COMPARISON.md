@@ -46,9 +46,34 @@ Result for the 1,000-ConfigMap view: switch time 1.32 s → 0.18 s, network 3.8 
 
 Other findings: k10s does not accept a multi-file `KUBECONFIG` (it treats the list as one path); KBorg merges the files the way kubectl does.
 
+## Regression gate
+
+`scripts/bench-tui.py` is the harness behind these numbers (Python standard library only; Pillow just for `--screenshots`). It starts each tool in a 130×40 pseudo-terminal with its own controlling tty and a throwaway HOME, `KBORG_CONFIG_DIR`, `K9S_CONFIG_DIR` and `XDG_*` directories, so your settings are never read or changed. It answers terminal queries (OSC 10/11 colors, cursor position, device attributes) the way a real emulator does, waits for regex markers on the emulated screen, then samples memory and CPU (`ps` on macOS, `/proc` on Linux) and, on macOS only, network (`nettop`) over an idle window.
+
+`gate` runs three demo-mode scenarios that need no cluster and fails (exit 1) when a median exceeds its budget in `scripts/bench-budgets.json`:
+
+| Scenario | What it does |
+|---|---|
+| `demo-startup` | `kborg --demo --no-splash`, waits for Pod `api-7d4f9`, 10 s idle |
+| `demo-scale` | the same with `KBORG_DEMO_SCALE=5000` (5,000 extra Pods); SKIPPED if the binary ignores the variable |
+| `demo-dashboard` | demo, then `D` until `CONTEXT OVERVIEW` |
+
+Budgets are about 3× the baseline measured on an Apple M2 Pro (stored next to each budget), with floors of 1 s and 1 % CPU, because CI runners are slower and noisier. The `bench` CI job runs the gate after `checks` on `ubuntu-24.04` and uploads the JSON results.
+
+```sh
+cargo build --release --locked
+python3 scripts/bench-tui.py gate --repeat 3            # uses target/release/kborg and scripts/bench-budgets.json
+python3 scripts/bench-tui.py run --name kborg --first api-7d4f9 --seconds 30 --out /tmp/bench \
+  -- target/release/kborg --demo --no-splash
+python3 scripts/bench-tui.py compare --context docker-desktop -n kube-system --first coredns \
+  --step ':cm kborg-perf\r' 'kborg-perf' --k9s k9s --k10s ~/go/bin/k10s   # live cluster; prints a Markdown table
+```
+
+If a change raises a metric on purpose, re-measure with `gate --repeat 3` and update both `baseline` and `budget` in `scripts/bench-budgets.json` in the same commit.
+
 ## Reproduce
 
-The harness (Python, PTY, `ps`, `nettop`) answers terminal queries such as background-color requests the way a real emulator does, which k10s requires to start. It is kept outside the repository; the scenarios are:
+The harness (`scripts/bench-tui.py`, see above) answers terminal queries such as background-color requests the way a real emulator does, which k10s requires to start. The scenarios are:
 
 ```sh
 kborg --context docker-desktop -n kube-system   # then :cm kborg-perf
