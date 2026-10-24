@@ -71,6 +71,7 @@ fn harness() -> Harness {
             marks: Default::default(),
             saved: vec![],
             aliases: Default::default(),
+            hotkeys: Default::default(),
             known_namespaces: vec![],
             restoring_uid: None,
             subviews: vec![],
@@ -1199,6 +1200,50 @@ fn forward_view_selects_and_stops_only_highlighted_session() {
         a.try_recv(),
         Err(tokio::sync::oneshot::error::TryRecvError::Closed)
     ));
+}
+#[test]
+fn hotkeys_run_commands_only_from_the_main_view() {
+    use crate::hotkeys::{Hotkey, Shortcut};
+    let (mut app, _replies, _commands) = harness();
+    app.hotkeys = vec![
+        Hotkey {
+            shortcut: Shortcut::Shift(1),
+            description: "Deployments".into(),
+            command: "deploy".into(),
+        },
+        Hotkey {
+            shortcut: Shortcut::F(5),
+            description: "Nodes".into(),
+            command: "no".into(),
+        },
+    ];
+    assert!(
+        app.key_event(KeyCode::Char('!'), KeyModifiers::NONE)
+            .is_ok()
+    );
+    assert_eq!(app.kind(), "deployments.apps");
+    assert!(
+        app.key_event(KeyCode::Char(':'), KeyModifiers::NONE)
+            .is_ok()
+    );
+    assert!(
+        app.key_event(KeyCode::Char('!'), KeyModifiers::NONE)
+            .is_ok()
+    );
+    assert!(app.key_event(KeyCode::F(5), KeyModifiers::NONE).is_ok());
+    assert_eq!(
+        app.kind(),
+        "deployments.apps",
+        "typing in the prompt never fires hotkeys"
+    );
+    assert!(matches!(&app.modal, Modal::Input("Command", text) if text == "!"));
+    app.modal = Modal::None;
+    assert!(app.key_event(KeyCode::F(5), KeyModifiers::NONE).is_ok());
+    assert_eq!(app.kind(), "nodes");
+    app.aliases();
+    assert!(
+        matches!(&app.modal, Modal::Picker(_, lines, _) if lines.iter().any(|line| line.contains("hotkey F5") && line.contains(":no")))
+    );
 }
 #[test]
 fn familiar_commands_complete_recall_and_keep_scoped_back_history() {

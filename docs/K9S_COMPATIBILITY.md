@@ -71,7 +71,29 @@ aliases:
   prodpods: "pod default @production"
 ```
 
-Aliases return to the command parser and never execute a shell. Bounds are 64 KiB, 256 aliases, 2,048 expanded command bytes and 16 expansion steps. Cycles, duplicate keys, YAML anchors and replacement of identity/exit commands are rejected. Context-specific k9s alias files, hotkeys and plugin files are not imported automatically.
+Aliases return to the command parser and never execute a shell. Bounds are 64 KiB, 256 aliases, 2,048 expanded command bytes and 16 expansion steps. Cycles, duplicate keys, YAML anchors and replacement of identity/exit commands are rejected. Context-specific k9s alias files and plugin files are not imported automatically.
+
+## Custom hotkeys
+
+`hotkeys.yaml` in the same directory uses the k9s format, so an existing k9s `hotkeys.yaml` can be copied in unchanged when its shortcuts are in the supported set:
+
+```yaml
+hotKeys:
+  shift-0:
+    shortCut: Shift-0
+    description: Viewing pods
+    command: pods
+  shift-1:
+    shortCut: Shift-1
+    description: Production deployments
+    command: "dp @production"
+  f5:
+    shortCut: F5
+    description: Nodes
+    command: no
+```
+
+A hotkey types its `command` as if it were entered after `:`, so aliases, completion rules and every review gate still apply; nothing runs a shell. Hotkeys fire only in the main resource view, never while a prompt, filter, form or review is open. Supported shortcuts are `Shift-0`…`Shift-9`, `Alt-<letter or digit>`, `F1`…`F12`, and `Ctrl-<letter>` except keys KBorg or terminals already use (`a c d e f h i j k m n p q r s u w z`). `keepHistory` and `override` are accepted and ignored. Bounds are 64 KiB and 64 hotkeys; unknown fields, duplicate shortcuts, YAML anchors and control characters are rejected, and an invalid file shows a notice while built-in keys keep working. `Ctrl-A` (`:aliases`) lists the loaded hotkeys. `Shift-N` matches the US-layout symbol (`)`, `!` … `(`) or a terminal that reports Shift with the digit.
 
 The broader release gates, platform coverage and external integrations remain in [REMAINING_WORK.md](REMAINING_WORK.md). Current validation is in [HELM_COMPLETION_ACCEPTANCE.md](HELM_COMPLETION_ACCEPTANCE.md); historical [Helm/Pod-log/metrics](HELM_LOGS_METRICS_ACCEPTANCE.md) and [navigation](K9S_ACCEPTANCE.md) reports preserve their original scope.
 

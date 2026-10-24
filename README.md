@@ -24,7 +24,7 @@
 
 ## Why KBorg
 
-- **You already know the keys.** `:pods`, `:deploy`, `/filter`, `l` logs, `s` shell, Ctrl-D delete — k9s navigation, commands and aliases work the way you expect.
+- **You already know the keys.** `:pods`, `:deploy`, `/filter`, `l` logs, `s` shell, Ctrl-D delete — k9s navigation, commands, aliases and `hotkeys.yaml` work the way you expect.
 - **See all your clusters at once.** Up to nine clusters side by side: Pod health, restarts, OOM kills, Node readiness and CPU/memory, degraded Deployments and StatefulSets, and recent warnings, each updating independently.
 - **Follow one workload across every cluster.** Pick Deployments from any cluster and tail them together in one pane, merged in timestamp order and tagged by cluster.
 - **Change things without fear.** Read-only by default. Every change gets a server dry run, a readable diff, identity checks and typed confirmation. Nothing is applied by surprise.
@@ -44,7 +44,7 @@
 | **Secrets** | Opt-in key listing; reveal one value for 30 seconds; never exported or copied |
 | **Metrics** | Pod/Node CPU and memory tables, exact values, requests/limits comparisons, bounded history |
 | **Copilot** | Minimized diagnostic preview, exact account approval, contained native runtime (macOS ARM64) |
-| **Workspace** | Saved context groups and scopes, remembered dashboard (`kborg dashboard`), custom aliases, 20 themes plus custom palettes, shell completions |
+| **Workspace** | Saved context groups and scopes, remembered dashboard (`kborg dashboard`), custom aliases and k9s-format hotkeys, 20 themes plus custom palettes, shell completions |
 
 ![Cross-cluster tail: two clusters' checkout services merged in timestamp order](docs/screenshots/cross-cluster-tail.png)
 

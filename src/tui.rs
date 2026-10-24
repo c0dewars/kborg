@@ -243,6 +243,7 @@ struct App {
     marks: std::collections::BTreeSet<String>,
     saved: Vec<crate::screendump::Record>,
     aliases: crate::aliases::Aliases,
+    hotkeys: crate::hotkeys::Hotkeys,
     known_namespaces: Vec<String>,
     restoring_uid: Option<String>,
     subviews: Vec<Modal>,
@@ -609,6 +610,14 @@ impl App {
                 .iter()
                 .map(|(alias, target)| format!("{alias:<34} {target}")),
         );
+        lines.extend(self.hotkeys.iter().map(|hotkey| {
+            format!(
+                "{:<34} :{}  {}",
+                format!("hotkey {}", hotkey.shortcut),
+                hotkey.command,
+                hotkey.description
+            )
+        }));
         self.modal = Modal::Picker("Aliases", lines, 0);
     }
 }
@@ -622,6 +631,10 @@ pub fn run(options: Options) -> Result<()> {
     }
     let (aliases, alias_error) = match crate::aliases::load() {
         Ok(aliases) => (aliases, None),
+        Err(error) => (Default::default(), Some(error)),
+    };
+    let (hotkeys, hotkey_error) = match crate::hotkeys::load() {
+        Ok(hotkeys) => (hotkeys, None),
         Err(error) => (Default::default(), Some(error)),
     };
     let initial_selector = options.selector.clone();
@@ -654,6 +667,7 @@ pub fn run(options: Options) -> Result<()> {
         marks: Default::default(),
         saved: vec![],
         aliases,
+        hotkeys,
         known_namespaces: vec![],
         restoring_uid: None,
         subviews: vec![],
@@ -701,6 +715,14 @@ pub fn run(options: Options) -> Result<()> {
         themes::use_theme(themes::DEFAULT_THEME)?;
         app.theme_picker()?;
         app.status = "Welcome! Arrows preview, Enter chooses; Esc keeps Flexoki Dark.".into();
+    }
+    if let Some(error) = hotkey_error {
+        app.modal = Modal::Detail(
+            format!(
+                "Custom hotkeys unavailable\n{error}\n\nBuilt-in keys remain available. Esc closes this notice."
+            ),
+            0,
+        );
     }
     if let Some(error) = alias_error {
         app.modal = Modal::Detail(

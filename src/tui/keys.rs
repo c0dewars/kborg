@@ -1741,6 +1741,12 @@ impl App {
             }
             return Ok(false);
         }
+        if matches!(self.modal, Modal::None)
+            && let Some(hotkey) = crate::hotkeys::find(&self.hotkeys, code, modifiers)
+        {
+            let command = hotkey.command.clone();
+            return self.command(&command);
+        }
         if modifiers.contains(KeyModifiers::CONTROL) {
             if let Modal::WriteReview(review) = &mut self.modal {
                 if matches!(code, KeyCode::Char('u' | 'w')) {
