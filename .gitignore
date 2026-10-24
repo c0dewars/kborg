@@ -35,3 +35,6 @@ kubeconfig*
 
 # Local agent/assistant settings
 .claude/settings.local.json
+
+# Agent worktrees created by Claude Code
+.claude/worktrees/
