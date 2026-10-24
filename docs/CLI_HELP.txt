@@ -54,6 +54,7 @@ KBorg 0.3 — Kubernetes operations, under your control
   kborg cp-from POD CONTAINER /PATH LOCAL   Reviewed copy of one file to a new local file
   kborg apply FILE.yaml           Reviewed server-side apply (dry run, diff, no force)
   kborg node-shell NODE           Reviewed privileged Pod + nsenter root shell; deleted after
+  kborg lint [--json]             Read-only misconfiguration check (k9s popeye-style)
   kborg cp-to POD CONTAINER LOCAL /PATH     Reviewed copy of one file; never replaces
   kborg audit pending             Uncertain local outcomes; never auto-retries
   kborg config init|validate FILE Strict schema-1 JSON configuration

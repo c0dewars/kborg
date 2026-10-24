@@ -40,6 +40,7 @@ pub mod extensions;
 pub mod file_copy;
 pub mod hotkeys;
 pub mod insights;
+pub mod lint;
 pub mod manifest_apply;
 pub mod navigation_views;
 pub mod node_shell;

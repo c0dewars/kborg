@@ -466,6 +466,7 @@ fn parse(args: Vec<String>) -> Result<Options> {
                     | "logs"
                     | "helm"
                     | "history"
+                    | "lint"
             )
         })
     {
@@ -618,7 +619,7 @@ pub fn run_args(args: Vec<String>) -> Result<()> {
         "helm" | "history" | "list" | "watch" | "metrics" | "get" | "view" | "logs"
         | "resources" | "doctor" | "scale" | "restart" | "delete" | "kill" | "set-image"
         | "set-resources" | "exec" | "attach" | "forward" | "cp-from" | "cp-to" | "apply"
-        | "node-shell" | "pulses" | "xray" | "workloads" | "can" | "yaml-template"
+        | "node-shell" | "lint" | "pulses" | "xray" | "workloads" | "can" | "yaml-template"
         | "yaml-edit" | "cordon" | "uncordon" | "drain" => {}
         _ => return Err("unknown command; see --help".into()),
     }
@@ -665,6 +666,12 @@ pub fn run_args(args: Vec<String>) -> Result<()> {
                 let report=crate::node_maintenance::execute(&gateway,reviewed,input.trim_end()).await?;
                 outputln!("{}",report.summary());
                 if !report.complete {return Err("node maintenance incomplete; inspect the reported pending targets and scheduling state".into());}
+            },
+            "lint" => {
+                if !args.is_empty() {return Err("usage: lint [-n NAMESPACE] [--json]".into());}
+                let (found,notes)=tokio::time::timeout(Duration::from_secs(30),crate::lint::collect(&gateway,&ns)).await.map_err(|_|"lint timed out")??;
+                if opts.json {print_json(&serde_json::json!({"findings":found,"notes":notes}))?;}
+                else {output!("{}",crate::lint::report(&gateway.context,&ns,&found,&notes));}
             },
             "node-shell" => {
                 if args.len()!=1 {return Err("usage: node-shell NODE --write --allow-node-shell [-n NAMESPACE] [--node-shell-image IMAGE]".into());}

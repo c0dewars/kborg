@@ -156,6 +156,7 @@ impl App {
                 if let Some(release)=selected{self.request_helm(helm_ui::Request::History(release),false);}else{self.status="Use :history RELEASE or select a release in :helm and press Enter.".into();}
             }
             ("helm"|"history",_)=>self.status="Use :helm [NAMESPACE] or :history RELEASE; --allow-helm enables live release storage reads.".into(),
+            ("lint" | "popeye" | "pop" | "sanitize", []) => self.send(Task::Lint(self.namespace.clone())),
             ("scans"|"scan",_)=>self.status="Image vulnerability scanning needs an external scanner; it is unavailable. :lint checks common misconfigurations. No command was executed.".into(),
             ("secrets"|"secret"|"sec",[])=>self.secrets(),
             ("secrets"|"secret"|"sec",_)=>self.status="Use :secrets in the current namespace; values stay hidden until one key is revealed.".into(),
