@@ -19,6 +19,27 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy --locked --all-targets -- -D warnings
       - run: cargo test --locked
+  bench:
+    needs: checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - name: Install pinned toolchain
+        run: rustup toolchain install 1.99.0 --profile minimal
+      - name: Build release
+        run: cargo build --release --locked
+      - name: Performance regression gate (demo mode, no cluster)
+        run: python3 scripts/bench-tui.py gate --budgets scripts/bench-budgets.json --binary target/release/kborg --repeat 3 --out bench-results
+      - if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: bench-results
+          path: bench-results/
+          if-no-files-found: ignore
+          retention-days: 14
   build:
     needs: checks
     timeout-minutes: 45

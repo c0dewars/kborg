@@ -1,0 +1,20 @@
+{
+  "schema": 1,
+  "notes": "Upper limits checked by `scripts/bench-tui.py gate`. Budgets are roughly 3x the baseline (2.5x for demo-scale memory), with floors of 1.0 s for first data and 1.0 % CPU (macOS ps CPU time has 10 ms resolution, about 0.1 % over 10 s) so that sub-second, near-idle values do not fail on noisy CI runners. Baselines: medians of 3 runs, 10 s idle window, 130x40 PTY. Re-measure with `scripts/bench-tui.py gate --repeat 3 --budgets scripts/bench-budgets.json` and update both fields together.",
+  "baseline_machine": "Apple M2 Pro, macOS 27.0.1, KBorg 0.3.0 release build (14.7 MiB) of the working tree including KBORG_DEMO_SCALE",
+  "baseline_date": "2026-10-24",
+  "scenarios": {
+    "demo-startup": {
+      "baseline": {"first_data_seconds": 0.058, "rss_mib_median": 9.8, "cpu_percent_avg": 0.07},
+      "budget": {"first_data_seconds": 1.0, "rss_mib_median": 30, "cpu_percent_avg": 1.0}
+    },
+    "demo-scale": {
+      "baseline": {"first_data_seconds": 0.174, "rss_mib_median": 126.3, "cpu_percent_avg": 2.49},
+      "budget": {"first_data_seconds": 1.5, "rss_mib_median": 320, "cpu_percent_avg": 10.0}
+    },
+    "demo-dashboard": {
+      "baseline": {"first_data_seconds": 0.056, "rss_mib_median": 11.0, "cpu_percent_avg": 0.0},
+      "budget": {"first_data_seconds": 1.0, "rss_mib_median": 30, "cpu_percent_avg": 1.0}
+    }
+  }
+}
