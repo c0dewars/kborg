@@ -660,7 +660,11 @@ impl App {
         }
     }
     pub(super) fn send(&mut self, task: Task) {
-        if self.busy && !matches!(&task, Task::Connect(_)) {
+        // Background refreshes (metrics) and the dashboard, which opens its
+        // own connections, never hold the busy gate: user requests queue
+        // behind them in the worker instead of being refused.
+        let background = matches!(&task, Task::Metrics(..) | Task::Overview(..));
+        if self.busy && !background && !matches!(&task, Task::Connect(_)) {
             self.status = "Busy; wait for the current request.".into();
             return;
         }
@@ -675,6 +679,7 @@ impl App {
                 | Task::AdviceExecute(..)
         );
         match self.worker.tx.try_send((self.epoch, task)) {
+            Ok(()) if background => {}
             Ok(()) => {
                 self.busy = true;
                 self.command_epoch = Some(self.epoch);
