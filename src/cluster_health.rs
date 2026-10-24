@@ -22,6 +22,63 @@ pub struct NodeEvidence {
     pub cpu_percent: Option<u64>,
     pub memory_percent: Option<u64>,
     pub metrics: EvidenceState,
+    /// Nodes that most need attention: not ready or cordoned first, then the
+    /// highest CPU or memory share of their own allocatable.
+    pub busiest: Vec<NodeUsage>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct NodeUsage {
+    pub name: String,
+    pub ready: bool,
+    pub cordoned: bool,
+    pub cpu_percent: Option<u64>,
+    pub memory_percent: Option<u64>,
+}
+
+/// Nodes named on a card.
+pub const NAMED_NODES: usize = 3;
+
+/// Per-Node usage against each Node's own allocatable, ordered so that
+/// unhealthy and busiest Nodes come first.
+pub fn node_usage(nodes: &[Value], usage: &[metrics::MetricsRow]) -> Vec<NodeUsage> {
+    let mut rows = nodes
+        .iter()
+        .map(|node| {
+            let name = node["metadata"]["name"].as_str().unwrap_or("?");
+            let sample = usage.iter().find(|row| row.name == name);
+            let share =
+                |field: &str, used: Option<u64>, parse: fn(&str) -> crate::Result<(u64, bool)>| {
+                    let available = parse(node["status"]["allocatable"][field].as_str()?)
+                        .ok()?
+                        .0;
+                    percent(used?, available)
+                };
+            NodeUsage {
+                name: crate::safety::safe_text(name, 63),
+                ready: condition(node, "Ready") == Some(true),
+                cordoned: node["spec"]["unschedulable"] == true,
+                cpu_percent: share(
+                    "cpu",
+                    sample.map(|s| s.cpu_nanocores),
+                    metrics::normalize_cpu_quantity,
+                ),
+                memory_percent: share(
+                    "memory",
+                    sample.map(|s| s.memory_bytes),
+                    metrics::normalize_memory_quantity,
+                ),
+            }
+        })
+        .collect::<Vec<_>>();
+    rows.sort_by_key(|row| {
+        (
+            row.ready && !row.cordoned,
+            std::cmp::Reverse(row.cpu_percent.max(row.memory_percent)),
+            row.name.clone(),
+        )
+    });
+    rows
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -56,6 +113,7 @@ impl InfraSummary {
     pub fn connecting() -> Self {
         Self {
             nodes: NodeEvidence {
+                busiest: Vec::new(),
                 state: EvidenceState::Connecting,
                 ready: 0,
                 total: 0,
@@ -254,6 +312,10 @@ pub async fn collect(gateway: &Gateway, namespace: &str) -> InfraSummary {
         Ok(list) => {
             let nodes = items(&list);
             let (ready, cordoned, cpu, memory) = node_counts(nodes);
+            let busiest = match &usage {
+                Ok(Ok(snapshot)) => node_usage(nodes, &snapshot.items),
+                _ => node_usage(nodes, &[]),
+            };
             let (metrics_state, cpu_percent, memory_percent) = match usage {
                 Ok(Ok(snapshot)) if !snapshot.truncated => {
                     let used_cpu = snapshot.items.iter().map(|row| row.cpu_nanocores).sum();
@@ -276,6 +338,7 @@ pub async fn collect(gateway: &Gateway, namespace: &str) -> InfraSummary {
                 cpu_percent,
                 memory_percent,
                 metrics: metrics_state,
+                busiest,
             }
         }
         Err(state) => NodeEvidence {
@@ -319,6 +382,53 @@ pub async fn collect(gateway: &Gateway, namespace: &str) -> InfraSummary {
 mod tests {
     use super::*;
     use serde_json::json;
+    #[test]
+    fn node_usage_puts_unhealthy_then_busiest_nodes_first() {
+        let node = |name: &str, ready: &str, cordoned: bool| json!({"metadata":{"name":name},"spec":{"unschedulable":cordoned},"status":{"allocatable":{"cpu":"4","memory":"8Gi"},"conditions":[{"type":"Ready","status":ready}]}});
+        let sample = |name: &str, cpu: u64, memory: u64| metrics::MetricsRow {
+            name: name.into(),
+            namespace: None,
+            container: None,
+            timestamp: String::new(),
+            window: String::new(),
+            cpu_raw: String::new(),
+            memory_raw: String::new(),
+            cpu_nanocores: cpu,
+            cpu_millicores: String::new(),
+            memory_bytes: memory,
+            rounded_up: false,
+            identity_uid: None,
+            allocations: None,
+        };
+        let nodes = vec![
+            node("calm", "True", false),
+            node("hot", "True", false),
+            node("down", "False", false),
+            node("drain", "True", true),
+            node("\u{1b}[2Jnew", "True", false),
+        ];
+        let usage = vec![
+            sample("calm", 400_000_000, 1 << 30),
+            sample("hot", 3_600_000_000, 2 << 30),
+            sample("drain", 0, 0),
+        ];
+        let rows = node_usage(&nodes, &usage);
+        let summary = rows
+            .iter()
+            .map(|row| (row.name.as_str(), row.cpu_percent, row.memory_percent))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            summary,
+            vec![
+                ("drain", Some(0), Some(0)),
+                ("down", None, None),
+                ("hot", Some(90), Some(25)),
+                ("calm", Some(10), Some(12)),
+                ("[2Jnew", None, None),
+            ]
+        );
+        assert!(rows[0].cordoned && !rows[1].ready);
+    }
     #[test]
     fn degraded_workloads_are_named_counted_and_scaled_to_zero_is_healthy() {
         let deploys = vec![

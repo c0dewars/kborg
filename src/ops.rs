@@ -13,6 +13,8 @@ use std::{
 };
 use tokio::io::{AsyncRead, AsyncReadExt};
 
+pub const NODE_SHELL_CAPABILITY: usize = 4;
+pub const DEBUG_CAPABILITY: usize = 5;
 pub enum Request {
     Exec {
         container: String,
@@ -35,6 +37,30 @@ pub enum Request {
         remote_port: u16,
         seconds: u16,
     },
+    /// Interactive root shell in a KBorg node-shell Pod; the Pod is deleted after.
+    NodeShell {
+        node: String,
+        seconds: u16,
+    },
+    /// Interactive shell in a KBorg ephemeral debug container.
+    Debug {
+        container: String,
+        seconds: u16,
+    },
+    /// Copy one container file to a new local file.
+    CopyFrom {
+        container: String,
+        remote: String,
+        local: PathBuf,
+        /// Copy a directory as a strict tar stream.
+        recursive: bool,
+    },
+    /// Copy one local file, read at review time, to a new container file.
+    CopyTo {
+        container: String,
+        upload: crate::file_copy::Upload,
+        remote: String,
+    },
 }
 impl Request {
     fn capability(&self) -> usize {
@@ -42,6 +68,9 @@ impl Request {
             Self::Exec { .. } | Self::InteractiveExec { .. } => 0,
             Self::Attach { .. } | Self::InteractiveAttach { .. } => 1,
             Self::PortForward { .. } => 2,
+            Self::CopyFrom { .. } | Self::CopyTo { .. } => 3,
+            Self::NodeShell { .. } => NODE_SHELL_CAPABILITY,
+            Self::Debug { .. } => DEBUG_CAPABILITY,
         }
     }
     fn name(&self) -> &'static str {
@@ -51,6 +80,10 @@ impl Request {
             Self::InteractiveExec { .. } => "interactive-exec",
             Self::InteractiveAttach { .. } => "interactive-attach",
             Self::PortForward { .. } => "port-forward",
+            Self::CopyFrom { .. } => "copy-from-pod",
+            Self::CopyTo { .. } => "copy-to-pod",
+            Self::NodeShell { .. } => "node-shell",
+            Self::Debug { .. } => "debug-container",
         }
     }
     fn validate(&self) -> Result<()> {
@@ -86,9 +119,30 @@ impl Request {
                     return Err("forwarding requires local port 1024..65535, remote port 1..65535 and duration 1..300 seconds".into());
                 }
             }
+            Self::NodeShell { node, .. } => {
+                if node.is_empty() || node.len() > 253 {
+                    return Err("invalid Node name".into());
+                }
+            }
+            Self::Debug { container, .. } => {
+                if !container.starts_with(crate::debug_container::NAME_PREFIX) {
+                    return Err("debug sessions only target KBorg debug containers".into());
+                }
+            }
+            Self::CopyFrom {
+                container, remote, ..
+            }
+            | Self::CopyTo {
+                container, remote, ..
+            } => {
+                crate::edit::validate(container, "placeholder:1")?;
+                crate::file_copy::validate_remote(remote)?;
+            }
         }
-        if let Self::InteractiveExec { seconds, .. } | Self::InteractiveAttach { seconds, .. } =
-            self
+        if let Self::InteractiveExec { seconds, .. }
+        | Self::InteractiveAttach { seconds, .. }
+        | Self::NodeShell { seconds, .. }
+        | Self::Debug { seconds, .. } = self
         {
             crate::session::validate_lifetime(*seconds)?;
         }
@@ -123,6 +177,12 @@ impl ReviewedOperation {
     }
     pub fn confirmation(&self) -> String {
         format!("{}/{}", self.namespace, self.pod)
+    }
+    pub fn is_file_copy(&self) -> bool {
+        matches!(
+            self.request,
+            Request::CopyFrom { .. } | Request::CopyTo { .. }
+        )
     }
     pub fn is_port_forward(&self) -> bool {
         matches!(self.request, Request::PortForward { .. })
@@ -166,7 +226,8 @@ pub async fn prepare(
         .metadata
         .resource_version
         .ok_or("target has no resourceVersion")?;
-    let details = match &request {
+    let mut request = request;
+    let details = match &mut request {
         Request::Exec { container, argv } => {
             verify_container(object.spec.as_ref(), container)?;
             format!(
@@ -213,6 +274,109 @@ pub async fn prepare(
         } => format!(
             "127.0.0.1:{local_port} -> pod:{remote_port}; {seconds} seconds; at most 4 simultaneous clients. Other local users can access the listener."
         ),
+        Request::NodeShell { node, seconds } => {
+            verify_container(object.spec.as_ref(), crate::node_shell::CONTAINER)?;
+            let labels = object.metadata.labels.clone().unwrap_or_default();
+            if labels
+                .get("app.kubernetes.io/component")
+                .map(String::as_str)
+                != Some(crate::node_shell::COMPONENT_LABEL)
+                || object
+                    .spec
+                    .as_ref()
+                    .and_then(|spec| spec.node_name.as_deref())
+                    != Some(node.as_str())
+            {
+                return Err(
+                    "node shell sessions only target KBorg node-shell Pods on the reviewed Node"
+                        .into(),
+                );
+            }
+            format!(
+                "node: {node}\nDirect argv: {}\n{}\nThe Pod is deleted when the session ends.",
+                serde_json::to_string(&crate::node_shell::argv())
+                    .map_err(|_| "cannot review arguments")?,
+                crate::session::review(*seconds)
+            )
+        }
+        Request::Debug { container, seconds } => {
+            if !object.spec.as_ref().is_some_and(|spec| {
+                spec.ephemeral_containers
+                    .iter()
+                    .flatten()
+                    .any(|c| c.name == *container)
+            }) {
+                return Err("the debug container is not part of this Pod".into());
+            }
+            format!(
+                "debug container: {container}\nDirect argv: {}\n{}",
+                serde_json::to_string(&crate::debug_container::argv())
+                    .map_err(|_| "cannot review arguments")?,
+                crate::session::review(*seconds)
+            )
+        }
+        Request::CopyFrom {
+            container,
+            remote,
+            local,
+            recursive,
+        } => {
+            verify_container(object.spec.as_ref(), container)?;
+            let target = crate::file_copy::download_target(remote, local)?;
+            let details = format!(
+                "container: {container}\nCopy FROM the container: {remote}{}\nTo a NEW local {}: {}\nRuns {} in the container; at most {} MiB, {} seconds.\n{}",
+                if *recursive { " (directory)" } else { "" },
+                if *recursive { "directory" } else { "file" },
+                target.display(),
+                serde_json::to_string(&crate::file_copy::read_argv(remote, *recursive))
+                    .map_err(|_| "cannot review arguments")?,
+                crate::file_copy::MAX_BYTES >> 20,
+                crate::file_copy::DEADLINE.as_secs(),
+                if *recursive {
+                    "Only regular files and directories are extracted, with owner-only permissions; links, devices and paths outside the directory are refused. A failed extraction removes the new directory."
+                } else {
+                    "The file is written only after the whole transfer succeeds, with owner-only permissions; existing files are never replaced."
+                }
+            );
+            *local = target;
+            details
+        }
+        Request::CopyTo {
+            container,
+            upload,
+            remote,
+        } => {
+            verify_container(object.spec.as_ref(), container)?;
+            format!(
+                "container: {container}\nCopy TO the container: {remote}\nFrom local {}: {} ({} bytes{}, SHA-256 {})\nRuns {} in the container; {} The bytes reviewed here are the bytes sent; later local changes are ignored.\nA failed or interrupted copy can leave a partial container {}.",
+                if upload.files.is_some() {
+                    "directory"
+                } else {
+                    "file"
+                },
+                upload.local.display(),
+                upload.bytes.len(),
+                upload.files.map_or(String::new(), |files| format!(
+                    " as an archive of {files} files"
+                )),
+                upload.sha256,
+                serde_json::to_string(&crate::file_copy::write_argv(
+                    remote,
+                    upload.files.is_some()
+                ))
+                .map_err(|_| "cannot review arguments")?,
+                if upload.files.is_some() {
+                    "mkdir refuses an existing directory and the extracted file count is checked."
+                } else {
+                    "set -C refuses to replace an existing file and the written size is checked."
+                },
+                if upload.files.is_some() {
+                    "directory"
+                } else {
+                    "file"
+                },
+            )
+        }
     };
     let summary = safety::review_text(
         &format!(
@@ -281,6 +445,22 @@ async fn connect_interactive(
                 api.attach(&reviewed.pod, &crate::session::parameters(container))
                     .await
             }
+            Request::NodeShell { .. } => {
+                api.exec(
+                    &reviewed.pod,
+                    crate::node_shell::argv(),
+                    &crate::session::parameters(crate::node_shell::CONTAINER),
+                )
+                .await
+            }
+            Request::Debug { container, .. } => {
+                api.exec(
+                    &reviewed.pod,
+                    crate::debug_container::argv(),
+                    &crate::session::parameters(container),
+                )
+                .await
+            }
             _ => return Err("review does not authorize an interactive session".into()),
         }
         .map_err(connection_error)
@@ -300,9 +480,10 @@ pub async fn run_interactive(
     emit: impl FnMut(&str) -> Result<()>,
 ) -> Result<crate::session::Outcome> {
     let seconds = match &reviewed.request {
-        Request::InteractiveExec { seconds, .. } | Request::InteractiveAttach { seconds, .. } => {
-            *seconds
-        }
+        Request::InteractiveExec { seconds, .. }
+        | Request::InteractiveAttach { seconds, .. }
+        | Request::NodeShell { seconds, .. }
+        | Request::Debug { seconds, .. } => *seconds,
         _ => return Err("review does not authorize an interactive session".into()),
     };
     let api = verify_review(gateway, &reviewed, typed).await?;
@@ -328,7 +509,10 @@ pub async fn run(gateway: &Gateway, reviewed: ReviewedOperation, typed: &str) ->
     let api = verify_review(gateway, &reviewed, typed).await?;
     if matches!(
         &reviewed.request,
-        Request::InteractiveExec { .. } | Request::InteractiveAttach { .. }
+        Request::InteractiveExec { .. }
+            | Request::InteractiveAttach { .. }
+            | Request::NodeShell { .. }
+            | Request::Debug { .. }
     ) {
         crate::session::ensure_terminal()?;
     }
@@ -355,16 +539,112 @@ pub async fn run(gateway: &Gateway, reviewed: ReviewedOperation, typed: &str) ->
                 Err(error) => Err(connection_error(error)),
             }
         }
-        Request::InteractiveExec { seconds, .. } | Request::InteractiveAttach { seconds, .. } => {
-            match connect_interactive(&api, &reviewed).await {
-                Ok(process) => match crate::session::terminal(process, *seconds).await {
-                    Ok(outcome) => {
-                        session_unknown = outcome.remote_outcome_unknown();
-                        Ok(outcome.summary())
-                    }
-                    Err(error) => Err(error),
-                },
+        Request::InteractiveExec { seconds, .. }
+        | Request::InteractiveAttach { seconds, .. }
+        | Request::NodeShell { seconds, .. }
+        | Request::Debug { seconds, .. } => match connect_interactive(&api, &reviewed).await {
+            Ok(process) => match crate::session::terminal(process, *seconds).await {
+                Ok(outcome) => {
+                    session_unknown = outcome.remote_outcome_unknown();
+                    Ok(outcome.summary())
+                }
                 Err(error) => Err(error),
+            },
+            Err(error) => Err(error),
+        },
+        Request::CopyFrom {
+            container,
+            remote,
+            local,
+            recursive,
+        } => {
+            let params = AttachParams {
+                container: Some(container.clone()),
+                stdin: false,
+                stdout: true,
+                stderr: true,
+                tty: false,
+                ..Default::default()
+            };
+            match api
+                .exec(
+                    &reviewed.pod,
+                    crate::file_copy::read_argv(remote, *recursive),
+                    &params,
+                )
+                .await
+            {
+                Ok(process) => crate::file_copy::receive(process).await.and_then(|bytes| {
+                    if *recursive {
+                        let done = crate::archive::extract(
+                            &bytes,
+                            crate::file_copy::remote_name(remote),
+                            local,
+                        )?;
+                        return Ok(format!(
+                            "Copied {remote} to {} ({} files, {} directories, {} bytes{})",
+                            local.display(),
+                            done.files,
+                            done.directories,
+                            done.bytes,
+                            if done.skipped > 0 {
+                                format!("; {} links or special files skipped", done.skipped)
+                            } else {
+                                String::new()
+                            }
+                        ));
+                    }
+                    crate::file_copy::write_download(local, &bytes)?;
+                    Ok(format!(
+                        "Copied {remote} to {} ({} bytes, SHA-256 {})",
+                        local.display(),
+                        bytes.len(),
+                        crate::file_copy::sha256(&bytes)
+                    ))
+                }),
+                Err(error) => Err(connection_error(error)),
+            }
+        }
+        Request::CopyTo {
+            container,
+            upload,
+            remote,
+        } => {
+            let params = AttachParams {
+                container: Some(container.clone()),
+                stdin: true,
+                stdout: true,
+                stderr: true,
+                tty: false,
+                max_stdin_buf_size: Some(crate::file_copy::STDIN_CHUNK),
+                ..Default::default()
+            };
+            match api
+                .exec(
+                    &reviewed.pod,
+                    crate::file_copy::write_argv(remote, upload.files.is_some()),
+                    &params,
+                )
+                .await
+            {
+                Ok(process) => crate::file_copy::send(
+                    process,
+                    &upload.bytes,
+                    upload.files.unwrap_or(upload.bytes.len()),
+                )
+                .await
+                .map(|()| {
+                    format!(
+                        "Copied {} to {remote} ({}{} bytes, SHA-256 {})",
+                        upload.local.display(),
+                        upload
+                            .files
+                            .map_or(String::new(), |files| format!("{files} files, archive ")),
+                        upload.bytes.len(),
+                        upload.sha256
+                    )
+                }),
+                Err(error) => Err(connection_error(error)),
             }
         }
         Request::PortForward {
@@ -373,7 +653,7 @@ pub async fn run(gateway: &Gateway, reviewed: ReviewedOperation, typed: &str) ->
             seconds,
         } => {
             forward(
-                api,
+                api.clone(),
                 &reviewed.pod,
                 *local_port,
                 *remote_port,
@@ -386,6 +666,25 @@ pub async fn run(gateway: &Gateway, reviewed: ReviewedOperation, typed: &str) ->
             )
             .await
         }
+    };
+    let result = if matches!(reviewed.request, Request::NodeShell { .. }) {
+        let deleted = tokio::time::timeout(
+            Duration::from_secs(15),
+            api.delete(
+                &reviewed.pod,
+                &kube::api::DeleteParams::default().grace_period(0),
+            ),
+        )
+        .await
+        .is_ok_and(|outcome| outcome.is_ok());
+        let note = if deleted {
+            "Node shell Pod deleted."
+        } else {
+            "Node shell Pod deletion failed; it ends at its activeDeadlineSeconds. Check for kborg-shell Pods."
+        };
+        result.map(|summary| format!("{summary}\n{note}"))
+    } else {
+        result
     };
     finish_audit(
         &audit,

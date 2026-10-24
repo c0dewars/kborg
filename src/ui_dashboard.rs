@@ -136,8 +136,89 @@ impl TailPicker {
     }
 }
 
+/// Bounded per-card history for trend sparklines (15 minutes at 15 s).
+#[derive(Default)]
+pub(super) struct Trend {
+    at: Option<std::time::Instant>,
+    attention: std::collections::VecDeque<u64>,
+    cpu: std::collections::VecDeque<u64>,
+    memory: std::collections::VecDeque<u64>,
+}
+const TREND_SAMPLES: usize = 60;
+const TREND_INTERVAL: std::time::Duration = std::time::Duration::from_secs(15);
+fn push(values: &mut std::collections::VecDeque<u64>, value: u64) {
+    if values.len() == TREND_SAMPLES {
+        values.pop_front();
+    }
+    values.push_back(value);
+}
+/// ASCII sparkline: each sample is one of ten levels, scaled to `max`.
+pub(super) fn sparkline(values: &std::collections::VecDeque<u64>, max: u64) -> String {
+    const LEVELS: &[u8] = b" .:-=+*#%@";
+    let max = max.max(1);
+    values
+        .iter()
+        .map(|value| {
+            let level = (value.min(&max) * (LEVELS.len() as u64 - 1)).div_ceil(max);
+            char::from(LEVELS[usize::try_from(level).unwrap_or(0)])
+        })
+        .collect()
+}
+impl Trend {
+    fn sample(&mut self, summary: &ContextSummary, now: std::time::Instant) {
+        if self
+            .at
+            .is_some_and(|at| now.duration_since(at) < TREND_INTERVAL)
+        {
+            return;
+        }
+        let Some(attention) = summary.unhealthy else {
+            return;
+        };
+        self.at = Some(now);
+        push(&mut self.attention, attention as u64);
+        let nodes = summary.infra.as_ref().map(|infra| &infra.nodes);
+        if let Some(cpu) = nodes.and_then(|nodes| nodes.cpu_percent) {
+            push(&mut self.cpu, cpu);
+        }
+        if let Some(memory) = nodes.and_then(|nodes| nodes.memory_percent) {
+            push(&mut self.memory, memory);
+        }
+    }
+    /// One card line, once there are at least two samples.
+    pub fn line(&self, width: usize) -> Option<String> {
+        if self.attention.len() < 2 {
+            return None;
+        }
+        let span = (width.saturating_sub(40) / 3).clamp(6, TREND_SAMPLES);
+        let tail = |values: &std::collections::VecDeque<u64>| {
+            values
+                .iter()
+                .skip(values.len().saturating_sub(span))
+                .copied()
+                .collect::<std::collections::VecDeque<_>>()
+        };
+        let attention = tail(&self.attention);
+        let peak = attention.iter().copied().max().unwrap_or(0);
+        let mut line = format!(
+            "TREND {}m  attn [{}] max {peak}",
+            (attention.len() * TREND_INTERVAL.as_secs() as usize).div_ceil(60),
+            sparkline(&attention, peak)
+        );
+        if self.cpu.len() >= 2 {
+            line.push_str(&format!("  cpu [{}]", sparkline(&tail(&self.cpu), 100)));
+        }
+        if self.memory.len() >= 2 {
+            line.push_str(&format!("  mem [{}]", sparkline(&tail(&self.memory), 100)));
+        }
+        Some(line)
+    }
+}
+
 pub(super) struct Dashboard {
     pub rows: Vec<ContextSummary>,
+    /// Per-context trend history, kept across refreshes.
+    pub trends: std::collections::HashMap<String, Trend>,
     pub selected: usize,
     /// Index into the focused card's recent warnings, chosen with `w`.
     pub warning: Option<usize>,
@@ -156,6 +237,7 @@ impl Dashboard {
                 .cloned()
                 .map(|name| ContextSummary::connecting(name, demo))
                 .collect(),
+            trends: Default::default(),
             selected: 0,
             warning: None,
             help: false,
@@ -185,6 +267,15 @@ impl Dashboard {
             .selected_warning()
             .map(|w| (w.namespace.clone(), w.uid.clone(), w.reason.clone()));
         self.rows = rows;
+        let now = std::time::Instant::now();
+        for row in &self.rows {
+            self.trends
+                .entry(row.context.clone())
+                .or_default()
+                .sample(row, now);
+        }
+        self.trends
+            .retain(|context, _| self.rows.iter().any(|row| &row.context == context));
         self.selected = selected
             .and_then(|name| self.rows.iter().position(|row| row.context == name))
             .unwrap_or(self.selected.min(self.rows.len().saturating_sub(1)));
@@ -422,6 +513,61 @@ fn log_pane(app: &App, pane: &LogPane, rect: Rect, out: &mut impl Write) -> Resu
 
 /// Node and app readiness lines: headline Node and app rows first, then
 /// named degraded workloads. Unavailable evidence is labelled, never zero.
+/// Busiest or unhealthy Nodes, named when a cluster has more than one Node
+/// or its only Node needs attention.
+fn node_details(nodes: &crate::cluster_health::NodeEvidence) -> Vec<(String, &'static str)> {
+    use crate::cluster_health::NAMED_NODES;
+    if !matches!(nodes.state, EvidenceState::Live) {
+        return Vec::new();
+    }
+    let attention = |node: &crate::cluster_health::NodeUsage| {
+        !node.ready || node.cordoned || node.cpu_percent.max(node.memory_percent) >= Some(85)
+    };
+    if nodes.busiest.len() < 2 && !nodes.busiest.iter().any(attention) {
+        return Vec::new();
+    }
+    let width = nodes
+        .busiest
+        .iter()
+        .take(NAMED_NODES)
+        .map(|node| node.name.chars().count())
+        .max()
+        .unwrap_or(0)
+        .min(28);
+    let mut lines = nodes
+        .busiest
+        .iter()
+        .take(NAMED_NODES)
+        .map(|node| {
+            let mut name = node.name.chars().take(width).collect::<String>();
+            if node.name.chars().count() > width {
+                name.pop();
+                name.push('…');
+            }
+            let usage = match (node.cpu_percent, node.memory_percent) {
+                (Some(cpu), Some(memory)) => format!("CPU {cpu:>3}%  MEM {memory:>3}%"),
+                _ => "usage unknown".into(),
+            };
+            let flag = match (node.ready, node.cordoned) {
+                (false, _) => "  NotReady",
+                (true, true) => "  cordoned",
+                _ => "",
+            };
+            (
+                format!("  {name:<width$}  {usage}{flag}"),
+                if attention(node) { "warning" } else { "muted" },
+            )
+        })
+        .collect::<Vec<_>>();
+    if nodes.busiest.len() > NAMED_NODES {
+        lines.push((
+            format!("  +{} more Nodes", nodes.busiest.len() - NAMED_NODES),
+            "muted",
+        ));
+    }
+    lines
+}
+
 fn infra_lines(
     infra: &crate::cluster_health::InfraSummary,
     health: Option<&crate::dashboard_health::HealthSummary>,
@@ -462,7 +608,7 @@ fn infra_lines(
     };
     let apps = &infra.workloads;
     let mut lines = vec![node_line];
-    let mut details = Vec::new();
+    let mut details = node_details(nodes);
     if matches!(apps.state, EvidenceState::Live) {
         lines.push((
             format!(
@@ -616,7 +762,14 @@ fn card(
         4
     };
     if let Some(infra) = infra {
-        let rows = infra_lines(infra, summary.health.as_ref(), summary.demo);
+        let mut rows = infra_lines(infra, summary.health.as_ref(), summary.demo);
+        if let Some(trend) = dashboard
+            .trends
+            .get(&summary.context)
+            .and_then(|trend| trend.line(usize::from(width)))
+        {
+            rows.push((trend, "muted"));
+        }
         let (start, limit) = if split {
             (7, rect.height.saturating_sub(3))
         } else if warning_row == 8 {
@@ -959,6 +1112,26 @@ pub(super) fn render(
 mod tests {
     use super::*;
     #[test]
+    fn trends_sample_every_interval_and_render_ascii_sparklines() {
+        let values: std::collections::VecDeque<u64> = [0, 1, 5, 10].into_iter().collect();
+        assert_eq!(sparkline(&values, 10), " .+@");
+        let mut trend = Trend::default();
+        let mut summary = ContextSummary::connecting("c".into(), false);
+        summary.unhealthy = Some(2);
+        let start = std::time::Instant::now();
+        trend.sample(&summary, start);
+        trend.sample(&summary, start + std::time::Duration::from_secs(5));
+        assert_eq!(trend.attention.len(), 1, "samples at most every 15 s");
+        summary.unhealthy = Some(4);
+        trend.sample(&summary, start + TREND_INTERVAL);
+        let line = trend.line(80).unwrap_or_default();
+        assert!(
+            line.starts_with("TREND 1m  attn [") && line.contains("max 4"),
+            "{line}"
+        );
+        assert!(line.is_ascii());
+    }
+    #[test]
     fn number_again_toggles_focus_and_cards_show_node_and_app_readiness() {
         let names = vec!["north".into(), "south".into()];
         let mut dashboard = Dashboard::new(&names, false);
@@ -996,6 +1169,44 @@ mod tests {
             lines.last().map(|line| line.0.as_str()),
             Some("  +2 more degraded")
         );
+    }
+    #[test]
+    fn busiest_nodes_are_named_under_the_nodes_line() {
+        use crate::cluster_health::NodeUsage;
+        let node = |name: &str, ready, cordoned, cpu, memory| NodeUsage {
+            name: name.into(),
+            ready,
+            cordoned,
+            cpu_percent: cpu,
+            memory_percent: memory,
+        };
+        let mut infra = crate::cluster_health::InfraSummary::connecting();
+        infra.nodes.state = EvidenceState::Live;
+        infra.nodes.busiest = vec![node("solo", true, false, Some(20), Some(30))];
+        assert!(
+            node_details(&infra.nodes).is_empty(),
+            "one healthy Node adds no detail"
+        );
+        infra.nodes.busiest = vec![
+            node("worker-down", false, false, None, None),
+            node("worker-a", true, false, Some(91), Some(40)),
+            node("worker-b", true, false, Some(12), Some(30)),
+            node("worker-c", true, false, Some(5), Some(8)),
+            node("worker-d", true, false, Some(1), Some(2)),
+        ];
+        let lines = node_details(&infra.nodes);
+        let text = lines.iter().map(|line| line.0.as_str()).collect::<Vec<_>>();
+        assert_eq!(
+            text,
+            vec![
+                "  worker-down  usage unknown  NotReady",
+                "  worker-a     CPU  91%  MEM  40%",
+                "  worker-b     CPU  12%  MEM  30%",
+                "  +2 more Nodes",
+            ]
+        );
+        let styles = lines.iter().map(|line| line.1).collect::<Vec<_>>();
+        assert_eq!(styles, vec!["warning", "warning", "muted", "muted"]);
     }
     #[test]
     fn focus_survives_updates_and_never_selects_missing_cards() {

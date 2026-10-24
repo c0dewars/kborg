@@ -45,18 +45,27 @@ KBorg 0.3 — Kubernetes operations, under your control
   kborg set-resources [RESOURCE] NAME CONTAINER CPU_REQ MEM_REQ CPU_LIMIT MEM_LIMIT
   kborg delete RESOURCE NAME      Guarded deletion; no force
   kborg kill POD                  Reviewed zero-grace Pod kill (--write --allow-force-kill)
+  kborg trigger|suspend|resume CRONJOB   Run a CronJob now, or pause/resume its schedule
+  kborg rollback [RESOURCE] NAME [REV]   Reviewed rollback to a previous revision
   kborg cordon NODE               Review and disable node scheduling
   kborg uncordon NODE             Review and enable node scheduling
   kborg drain NODE [SECONDS]      Reviewed eviction; default 120s, maximum 300s
   kborg exec POD CONTAINER -- COMMAND [ARG...]   Reviewed exec; --interactive enables stdin/TTY
   kborg attach POD CONTAINER      Output-only; --interactive enables stdin/TTY
   kborg forward POD LOCAL REMOTE SECONDS   Loopback only, up to 300 seconds
+  kborg cp-from POD CONTAINER /PATH LOCAL   Reviewed copy of one file (or --recursive directory) to a new local path
+  kborg apply FILE.yaml           Reviewed server-side apply (dry run, diff, no force)
+  kborg node-shell NODE           Reviewed privileged Pod + nsenter root shell; deleted after
+  kborg debug POD [TARGET]        Reviewed ephemeral debug container + shell (--allow-debug)
+  kborg lint [--json]             Read-only misconfiguration check (k9s popeye-style)
+  kborg cp-to POD CONTAINER LOCAL /PATH     Reviewed copy of one file (or --recursive directory); never replaces
   kborg audit pending             Uncertain local outcomes; never auto-retries
   kborg config init|validate FILE Strict schema-1 JSON configuration
   kborg completions bash|zsh|fish|powershell   Static completion script
   kborg auth-helper review --executable ABS [--env NAME=VALUE] --output POLICY
   kborg extensions list | register NAME --tool ABS | remove NAME
   kborg extensions run NAME RESOURCE OBJECT --allow-extensions --allow-tools
+  kborg extensions import-k9s PLUGINS.yaml   Report which k9s plugins can be registered
   kborg copilot preflight --cli ABS_NATIVE --host HOST
   kborg copilot diagnose RESOURCE NAME --copilot-policy ABS
   kborg copilot preview RESOURCE NAME --host HOST
@@ -83,11 +92,15 @@ Options (put KBorg flags before exec's -- separator):
   --allow-node-maintenance                     Reviewed cordon/uncordon/drain
   --allow-force-kill                           Reviewed Pod kill with zero grace period
   --allow-secret-reveal                        :secrets key list and per-key reveal (TUI)
+  --allow-file-copy                            Reviewed single-file copy to/from Pods (cp-from, cp-to, :cp)
+  --allow-apply                                Reviewed server-side apply of local manifests (apply, :apply)
+  --allow-node-shell [--node-shell-image IMG] Reviewed root shell on a Node (node-shell, s in :nodes)
+  --allow-debug                                Reviewed ephemeral debug containers (debug, :debug); image from --node-shell-image
   --allow-logs       --allow-exec   --allow-attach   --allow-forward
   --poll            --theme ID     --color=never    --json       --yaml
   --no-mouse        --follow          --previous     --no-splash      --demo       --help
 
-Exec/attach/forward require --write AND their separate --allow-* flag.
+Exec/attach/forward/file copy require --write AND their separate --allow-* flag.
 Helm lifecycle requires --write --allow-helm --allow-helm-write and a trusted
 Helm 4.3.1 executable. Sources are local deterministic .tgz charts or exact
 oci://HOST/repository/chart:TAG or @sha256:<64 lowercase hex> references.

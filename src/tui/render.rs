@@ -713,7 +713,19 @@ pub(super) fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<
                 if attention > 0 { "warning" } else { "muted" },
             ),
             (
-                format!(" sort: {}{}", app.sort.label(), filter_hint,),
+                format!(
+                    " sort: {}{}{}{}",
+                    app.sort_column
+                        .as_deref()
+                        .map_or_else(|| app.sort.label().to_owned(), str::to_ascii_lowercase),
+                    if app.sort_desc { " desc" } else { "" },
+                    if app.faults_only {
+                        " | errors only"
+                    } else {
+                        ""
+                    },
+                    filter_hint,
+                ),
                 "muted",
             ),
         ]
@@ -779,30 +791,55 @@ pub(super) fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<
             .get(app.kind_index)
             .is_some_and(|kind| kind.namespaced);
         let column_width = usize::from(rect.width - 5);
-        let measured = matches!(app.kind().as_str(), "pods" | "nodes") && column_width >= 70;
-        let node_columns = app.kind() == "pods" && column_width >= 130;
-        let ip_column = node_columns && column_width >= 155;
-        let reserved = if measured { 20 } else { 0 }
-            + if node_columns { 23 } else { 0 }
-            + if ip_column { 17 } else { 0 };
-        let mut cols = columns(column_width.saturating_sub(reserved), namespaced);
-        if measured {
-            cols.push((Column::Cpu, 9));
-            cols.push((Column::Memory, 9));
-        }
-        if node_columns {
-            cols.push((Column::Node, 22));
-        }
-        if ip_column {
-            cols.push((Column::Ip, 16));
-        }
+        let view = app.current_view();
+        let custom: &[crate::views::ColumnSpec] = view.map_or(&[], |view| view.columns.as_slice());
+        let cols = if let Some(view) = view {
+            view_columns(view, column_width, app.wide)
+        } else {
+            let measured = matches!(app.kind().as_str(), "pods" | "nodes") && column_width >= 70;
+            let node_columns =
+                app.kind() == "pods" && (column_width >= 130 || (app.wide && column_width >= 90));
+            let ip_column =
+                node_columns && (column_width >= 155 || (app.wide && column_width >= 110));
+            let reserved = if measured { 20 } else { 0 }
+                + if node_columns { 23 } else { 0 }
+                + if ip_column { 17 } else { 0 };
+            let mut cols = columns(column_width.saturating_sub(reserved), namespaced);
+            if measured {
+                cols.push((Column::Cpu, 9));
+                cols.push((Column::Memory, 9));
+            }
+            if node_columns {
+                cols.push((Column::Node, 22));
+            }
+            if ip_column {
+                cols.push((Column::Ip, 16));
+            }
+            cols
+        };
         let now = k8s_openapi::jiff::Timestamp::now().as_second();
+        let sort_title = app.sort_column.clone().unwrap_or_else(|| {
+            match app.sort {
+                Sort::Name => "NAME",
+                Sort::Namespace => "NAMESPACE",
+                Sort::Status => "STATUS",
+                Sort::Restarts => "RSTS",
+                Sort::Age => "AGE",
+                Sort::Ready => "READY",
+                Sort::Cpu => "CPU",
+                Sort::Memory => "MEM",
+            }
+            .into()
+        });
         cell(
             out,
             rect.x + 1,
             rect.y + 1,
             rect.width - 2,
-            &format!("   {}", table_line(&cols, None, now)),
+            &format!(
+                "   {}",
+                header_line(&cols, custom, Some((sort_title.as_str(), app.sort_desc)))
+            ),
             color("muted"),
             surface,
         )
@@ -838,11 +875,12 @@ pub(super) fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<
                     } else {
                         " "
                     },
-                    table_line_with_metrics(
+                    table_line_custom(
                         &cols,
-                        Some(object),
+                        object,
                         now,
-                        app.table_metrics.usage(object, Instant::now())
+                        app.table_metrics.usage(object, Instant::now()),
+                        custom
                     )
                 ),
                 if selected {
@@ -1040,6 +1078,9 @@ pub(super) fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<
                 Modal::SessionContainers(..) => "POD SHELL / choose ordinary container",
                 Modal::SessionConfirm(prepared, _) if prepared.is_port_forward() => {
                     "REVIEW PORT FORWARD / loopback listener"
+                }
+                Modal::SessionConfirm(prepared, _) if prepared.is_file_copy() => {
+                    "REVIEW FILE COPY / one file, never replaces"
                 }
                 Modal::SessionConfirm(..) => "REVIEW POD SHELL / privileged interactive session",
                 Modal::Metrics(..) if app.metrics_resources => {
