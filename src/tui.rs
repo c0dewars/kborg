@@ -721,6 +721,9 @@ fn worker() -> Worker {
                         let result=if let Some(gateway)=gateway.as_ref(){match tokio::time::timeout(Duration::from_secs(23),helm_ui::read(gateway,request)).await{Ok(result)=>result,Err(_)=>Err("Helm read deadline exceeded; metadata may be incomplete. Retry explicitly.".into())}}else{Err("Not connected; select a context before reading Helm releases.".into())};
                         Reply::Helm(generation,result)
                     }
+                    // Each dashboard card opens its own read-only connection, so the
+                    // dashboard never waits for the main view's connection.
+                    Task::Overview(options,names)=>match crate::overview::OverviewFeed::new(&options,&names){Ok(feed)=>Reply::Overview(feed),Err(error)=>Reply::Failure(error)},
                     Task::DashboardWorkloads(contexts)=>{
                         let lists=futures_util::future::join_all(contexts.into_iter().map(|(context,connection)| async move {
                             let result=crate::workload_tail::list_workloads(*connection,context.clone()).await;
@@ -802,7 +805,6 @@ fn worker() -> Worker {
                                         if uid.as_deref().is_none_or(|uid|uid!=prepared.uid()) {return Err("Selected node was replaced; select it again.".into());}
                                         Reply::NodePrepared(Box::new(prepared))
                                     },
-                                    Task::Overview(options,names) => Reply::Overview(crate::overview::OverviewFeed::new(&options,&names)?),
                                     Task::PrepareSession(n,name,uid,request) => {
                                         let prepared = crate::ops::prepare(g,&n,&name,request).await?;
                                         if uid.as_deref().is_none_or(|uid| uid != prepared.uid()) { return Err("Selected pod was replaced; select and review again.".into()); }
@@ -857,7 +859,7 @@ fn worker() -> Worker {
                                         Reply::Prepared(Box::new(prepared))
                                     },
                                     Task::Execute(p,a) => Reply::Notice(g.execute(*p,a).await?),
-                                    Task::YamlPrepare(..) | Task::YamlExecute(..) | Task::NodeExecute(..) | Task::DashboardLogs(..) | Task::DashboardWorkloads(..) | Task::DashboardTail(..) | Task::Connect(_) | Task::Watch(..) | Task::Metrics(..) | Task::RunSession(..) | Task::RunForward(..) | Task::Directory(_) | Task::Manifest(_) | Task::Helm(..) | Task::HelmPrepare(..) | Task::HelmExecute(..) | Task::AdvicePrepare(..) | Task::AdviceExecute(..) => return Err("invalid worker task".into()),
+                                    Task::YamlPrepare(..) | Task::YamlExecute(..) | Task::NodeExecute(..) | Task::DashboardLogs(..) | Task::DashboardWorkloads(..) | Task::DashboardTail(..) | Task::Overview(..) | Task::Connect(_) | Task::Watch(..) | Task::Metrics(..) | Task::RunSession(..) | Task::RunForward(..) | Task::Directory(_) | Task::Manifest(_) | Task::Helm(..) | Task::HelmPrepare(..) | Task::HelmExecute(..) | Task::AdvicePrepare(..) | Task::AdviceExecute(..) => return Err("invalid worker task".into()),
                                 })
                             };
                             match tokio::time::timeout(Duration::from_secs(25), future).await {
@@ -1082,6 +1084,9 @@ struct App {
     /// The scope exceeded the live-watch cap: show the first bounded page
     /// through periodic lists instead of an empty, blocked table.
     bounded_poll: bool,
+    /// API discovery waits until the first watch has been requested, so the
+    /// initial rows never queue behind a slow catalog.
+    pending_discovery: bool,
     sticky_status: bool,
     namespace_override: bool,
     write_inflight: bool,
@@ -2236,9 +2241,14 @@ impl App {
                     }
                     .into();
                     if !self.options.connection.demo {
-                        self.send(Task::Discover);
-                        if self.selection_ui.restoring.is_some() {
-                            self.refresh = false;
+                        if retained_kind.is_some() && self.selection_ui.restoring.is_none() {
+                            // Show rows first; discovery follows the watch.
+                            self.pending_discovery = true;
+                        } else {
+                            self.send(Task::Discover);
+                            if self.selection_ui.restoring.is_some() {
+                                self.refresh = false;
+                            }
                         }
                     } else {
                         self.finish_saved_selection_restore();
@@ -2528,13 +2538,22 @@ impl App {
                 }
                 Reply::Following => {}
                 Reply::Catalog(k) => {
-                    let resource = self.desired_resource.take().unwrap_or_else(|| self.kind());
+                    let pending = self.desired_resource.take();
+                    let current = self.kind();
+                    let resource = pending.clone().unwrap_or_else(|| current.clone());
                     self.kinds = k;
                     if let Ok(index) = self.resolve_resource(&resource) {
                         self.kind_index = index;
-                        let restoring = self.selection_ui.restoring.take();
-                        self.changed();
-                        self.selection_ui.restoring = restoring;
+                        // The resource already on screen keeps its live watch;
+                        // only a pending or restored selection restarts it.
+                        let same_view = pending.is_none()
+                            && self.selection_ui.restoring.is_none()
+                            && self.kind() == current;
+                        if !same_view {
+                            let restoring = self.selection_ui.restoring.take();
+                            self.changed();
+                            self.selection_ui.restoring = restoring;
+                        }
                         self.status="API discovery complete; all discovered aliases available (Secrets excluded).".into();
                         self.finish_saved_selection_restore();
                     } else {
@@ -7436,6 +7455,7 @@ pub fn run(options: Options) -> Result<()> {
         watching: false,
         watch_blocked: false,
         bounded_poll: false,
+        pending_discovery: false,
         sticky_status: false,
         namespace_override: false,
         write_inflight: false,
@@ -7466,7 +7486,6 @@ pub fn run(options: Options) -> Result<()> {
             0,
         );
     }
-    app.connect();
     if app.options.dashboard_last && app.options.dashboard.is_empty() {
         match crate::dashboard_memory::load() {
             Ok(Some(last)) => {
@@ -7480,8 +7499,22 @@ pub fn run(options: Options) -> Result<()> {
             Err(error) => app.status = format!("Last dashboard unavailable: {error}"),
         }
     }
+    if !app.options.dashboard.is_empty() && matches!(app.modal, Modal::None) {
+        // Open the dashboard at once and connect the main view alongside it,
+        // so the cards never wait for the default context.
+        let names = std::mem::take(&mut app.options.dashboard);
+        if let Err(error) = app.open_dashboard(names) {
+            app.status = error;
+        }
+        app.connecting_epoch = Some(app.epoch);
+        app.server = "connecting...".into();
+        app.send(Task::Connect(app.options.connection.clone()));
+    } else {
+        app.connect();
+    }
     draw(&mut app)?;
     let mut dirty = false;
+    let mut last_activity = Instant::now();
     loop {
         if app.receive() {
             dirty = true;
@@ -7584,6 +7617,10 @@ pub fn run(options: Options) -> Result<()> {
             );
             dirty = true;
         }
+        if app.pending_discovery && app.connected && !app.busy {
+            app.pending_discovery = false;
+            app.send(Task::Discover);
+        }
         if app.connected
             && !app.busy
             && !app.stale
@@ -7607,8 +7644,10 @@ pub fn run(options: Options) -> Result<()> {
         if dirty {
             draw(&mut app)?;
             dirty = false;
+            last_activity = Instant::now();
         }
-        if event::poll(Duration::from_millis(100)).map_err(|_| "input failed")? {
+        if event::poll(loop_tick(&app, last_activity)).map_err(|_| "input failed")? {
+            last_activity = Instant::now();
             match event::read().map_err(|_| "input failed")? {
                 Event::Key(key) if key.kind == KeyEventKind::Press => {
                     if key.modifiers.contains(KeyModifiers::CONTROL)
@@ -7755,6 +7794,15 @@ fn startup_animation(theme: &Theme, color: bool) -> Result<bool> {
     Ok(true)
 }
 
+/// Event-loop wake interval: 60 fps while work is in flight, data is still
+/// arriving or the user was just active, otherwise a calm 100 ms tick that
+/// keeps idle CPU near zero.
+fn loop_tick(app: &App, last_activity: Instant) -> Duration {
+    let lively =
+        app.busy || app.stale || !app.connected || last_activity.elapsed() < Duration::from_secs(1);
+    Duration::from_millis(if lively { 16 } else { 100 })
+}
+
 /// `kborg startup preview`: play the animation once, even if disabled.
 pub fn play_startup_animation(theme_id: Option<&str>, color: bool) -> Result<()> {
     let theme = themes::find(theme_id.unwrap_or(&themes::selected()))?;
@@ -7894,6 +7942,7 @@ mod layout_tests {
                 watching: false,
                 watch_blocked: false,
                 bounded_poll: false,
+                pending_discovery: false,
                 sticky_status: false,
                 namespace_override: false,
                 write_inflight: false,
@@ -10369,7 +10418,8 @@ mod layout_tests {
         app.receive();
         assert_eq!(app.context, "current");
         assert_eq!(app.namespace, "different");
-        assert!(app.connected && app.busy); // Automatic discovery follows the connection.
+        // Rows come first: the watch is requested, then discovery follows it.
+        assert!(app.connected && !app.busy && app.refresh && app.pending_discovery);
     }
     #[test]
     fn obsolete_watch_is_dropped_and_revocation_clears_the_view() {
