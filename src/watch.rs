@@ -14,8 +14,12 @@ use std::{
 use tokio::time::{Instant, timeout_at};
 
 static FEED_SERIAL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-const MAX_OBJECTS: usize = 1000;
-const MAX_BYTES: usize = 8 * 1024 * 1024;
+/// Live cache bounds. Objects are redacted (managedFields, data, annotations…)
+/// before they are measured, so the cap reflects what is actually held.
+const MAX_OBJECTS: usize = 5000;
+const MAX_BYTES: usize = 32 * 1024 * 1024;
+/// Objects per initial-list page; ten pages cover MAX_OBJECTS.
+const PAGE_SIZE: u32 = 500;
 const LIST_BUDGET: Duration = Duration::from_secs(15);
 const WATCH_BUDGET: Duration = Duration::from_secs(12);
 type Events = Pin<Box<dyn Stream<Item = Result<WatchEvent<DynamicObject>, kube::Error>> + Send>>;
@@ -78,29 +82,22 @@ impl Cache {
             return Err("Secret watch objects are forbidden");
         }
         let uid = uid.to_owned();
-        let mut value = serde_json::to_value(object).map_err(|_| "invalid watch object")?;
-        let bytes = serde_json::to_vec(&value)
-            .map_err(|_| "invalid watch object")?
-            .len();
         let old_bytes = self.objects.get(&key).map_or(0, |old| old.2);
-        if (!self.objects.contains_key(&key) && self.objects.len() >= MAX_OBJECTS)
-            || bytes > MAX_BYTES
-            || self.bytes - old_bytes > MAX_BYTES - bytes
-        {
+        if !self.objects.contains_key(&key) && self.objects.len() >= MAX_OBJECTS {
             return Err("watch cache limit exceeded; narrow namespace scope");
         }
+        let mut value = serde_json::to_value(object).map_err(|_| "invalid watch object")?;
         value["kind"] = json!(kind.kind);
         value["apiVersion"] = json!(if kind.group.is_empty() {
             kind.version.clone()
         } else {
             format!("{}/{}", kind.group, kind.version)
         });
+        // Redact first: the cache bound then measures what is actually held.
         safety::redact(&mut value);
-        let bytes = bytes.max(
-            serde_json::to_vec(&value)
-                .map_err(|_| "invalid watch object")?
-                .len(),
-        );
+        let bytes = serde_json::to_vec(&value)
+            .map_err(|_| "invalid watch object")?
+            .len();
         if bytes > MAX_BYTES || self.bytes - old_bytes > MAX_BYTES - bytes {
             return Err("watch cache limit exceeded; narrow namespace scope");
         }
@@ -237,7 +234,7 @@ impl WatchFeed {
             let params = ListParams {
                 label_selector: (!self.selector.is_empty()).then(|| self.selector.clone()),
                 field_selector: (!self.fields.is_empty()).then(|| self.fields.clone()),
-                limit: Some(200),
+                limit: Some(PAGE_SIZE),
                 continue_token: continuation.take(),
                 ..Default::default()
             };
@@ -656,7 +653,12 @@ mod tests {
         assert_eq!(cache.objects.len(), MAX_OBJECTS);
         let mut cache = Cache::default();
         let mut huge = object("huge", "huge", "2");
-        huge.data = json!({"spec":{"text":"x".repeat(MAX_BYTES)}});
+        // Redaction bounds each line to 4096 characters, so exceed the cache
+        // with many large fields rather than one giant string.
+        let fields = (0..MAX_BYTES / 4_000 + 64)
+            .map(|i| (format!("k{i}"), json!("x".repeat(4_000))))
+            .collect::<serde_json::Map<_, _>>();
+        huge.data = json!({ "spec": fields });
         assert!(cache.apply(huge, false, &kind()).is_err());
         assert_eq!(cache.bytes, 0);
         let mut invalid = object("a", "a", "3");
@@ -721,7 +723,7 @@ mod tests {
             let (mut scope, _) = feed(vec![(200,list("1")), (200,event)]);
             scope.next().await;
             assert!(scope.next().await.terminal);
-            let items: Vec<_> = (0..1001).map(|i| object(&format!("a-{i}"),&format!("a-{i}"),"1")).collect();
+            let items: Vec<_> = (0..=MAX_OBJECTS).map(|i| object(&format!("a-{i}"),&format!("a-{i}"),"1")).collect();
             let listing=json!({"apiVersion":"v1","kind":"PodList","metadata":{"resourceVersion":"1"},"items":items}).to_string();
             let (mut bounded,_) = feed(vec![(200,listing)]);
             let snapshot=bounded.next().await;

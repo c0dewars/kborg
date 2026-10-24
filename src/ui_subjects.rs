@@ -40,7 +40,10 @@ impl View {
                 filter.is_empty()
                     || row.name.to_lowercase().contains(&filter)
                     || row.namespace.to_lowercase().contains(&filter)
-                    || row.roles.iter().any(|role| role.to_lowercase().contains(&filter))
+                    || row
+                        .roles
+                        .iter()
+                        .any(|role| role.to_lowercase().contains(&filter))
             })
             .collect()
     }
@@ -55,7 +58,9 @@ impl View {
                 KeyCode::Backspace => {
                     self.filter.pop();
                 }
-                KeyCode::Char(c) if !c.is_control() && self.filter.len() < 64 => self.filter.push(c),
+                KeyCode::Char(c) if !c.is_control() && self.filter.len() < 64 => {
+                    self.filter.push(c)
+                }
                 _ => {}
             }
             self.selected = 0;
@@ -92,7 +97,11 @@ impl View {
         let mut lines = vec![clip(format!(
             "{} subjects{} | namespace scope {} | declared bindings only, not an authorization decision",
             rows.len(),
-            if self.index.incomplete { " [INCOMPLETE]" } else { "" },
+            if self.index.incomplete {
+                " [INCOMPLETE]"
+            } else {
+                ""
+            },
             self.namespace
         ))];
         for error in &self.index.errors {
@@ -103,7 +112,10 @@ impl View {
         } else if self.filter.is_empty() {
             "Enter show bindings and rules | / filter | j k move | Esc back".into()
         } else {
-            format!("Filter: {} | Esc clears | Enter show bindings and rules", self.filter)
+            format!(
+                "Filter: {} | Esc clears | Enter show bindings and rules",
+                self.filter
+            )
         }));
         lines.push(clip(format!(
             "   {:<15} {:<34} {:<18} {:>8}  ROLES",
@@ -118,10 +130,18 @@ impl View {
                 if index == self.selected { ">" } else { " " },
                 row.kind,
                 row.name.chars().take(34).collect::<String>(),
-                if row.namespace.is_empty() { "-" } else { row.namespace.as_str() },
+                if row.namespace.is_empty() {
+                    "-"
+                } else {
+                    row.namespace.as_str()
+                },
                 row.bindings,
                 row.roles.join(", "),
-                if more > 0 { format!(" +{more}") } else { String::new() }
+                if more > 0 {
+                    format!(" +{more}")
+                } else {
+                    String::new()
+                }
             )));
         }
         if rows.is_empty() {
@@ -139,7 +159,9 @@ impl View {
 mod tests {
     use super::*;
     fn view() -> View {
-        let bindings = vec![serde_json::json!({"metadata":{"namespace":"shop"},"roleRef":{"kind":"ClusterRole","name":"view"},"subjects":[{"kind":"User","name":"alice"},{"kind":"Group","name":"devs"},{"kind":"ServiceAccount","name":"api"}]})];
+        let bindings = vec![
+            serde_json::json!({"metadata":{"namespace":"shop"},"roleRef":{"kind":"ClusterRole","name":"view"},"subjects":[{"kind":"User","name":"alice"},{"kind":"Group","name":"devs"},{"kind":"ServiceAccount","name":"api"}]}),
+        ];
         View::new(
             "RBAC SUBJECTS",
             "shop".into(),

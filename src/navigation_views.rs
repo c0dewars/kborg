@@ -734,10 +734,16 @@ mod subject_tests {
         ];
         let rows = subject_rows(&bindings, None);
         let alice = rows.iter().find(|r| r.name == "alice").cloned();
-        assert_eq!(alice.as_ref().map(|r| (r.bindings, r.role_count)), Some((2, 2)));
+        assert_eq!(
+            alice.as_ref().map(|r| (r.bindings, r.role_count)),
+            Some((2, 2))
+        );
         assert_eq!(
             alice.map(|r| r.roles),
-            Some(vec!["ClusterRole/view".to_owned(), "Role/reader".to_owned()])
+            Some(vec![
+                "ClusterRole/view".to_owned(),
+                "Role/reader".to_owned()
+            ])
         );
         let accounts = rows
             .iter()

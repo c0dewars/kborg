@@ -155,7 +155,7 @@ pub fn init(path: &Path) -> Result<()> {
     )
 }
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     #[test]
     fn rejects_executable_unknown_and_future_schema_fields() {
@@ -177,7 +177,7 @@ mod tests {
         }
     }
 
-    fn options() -> Options {
+    pub(crate) fn options() -> Options {
         Options {
             connection: crate::gateway::Connection::default(),
             theme: None,

@@ -29,6 +29,7 @@
 - **Follow one workload across every cluster.** Pick Deployments from any cluster and tail them together in one pane, merged in timestamp order and tagged by cluster.
 - **Change things without fear.** Read-only by default. Every change gets a server dry run, a readable diff, identity checks and typed confirmation. Nothing is applied by surprise.
 - **Ask Copilot, safely.** Optional advice from GitHub Copilot on GitHub.com, GHE.com or GitHub Enterprise Server, with a minimized, reviewed payload and a sandboxed runtime.
+- **Light on your laptop and your API server.** In side-by-side tests KBorg used about a quarter of k9s's memory and a fraction of k10s's network traffic ([numbers](docs/PERFORMANCE_COMPARISON.md)).
 - **Looks good in any terminal.** 19 hand-tuned themes that meet WCAG AA contrast everywhere they're drawn (plus your terminal's own palette), 24-bit color with graceful fallback, and a quiet layout with contextual key hints.
 
 ## Features
@@ -188,6 +189,8 @@ Ghostty's shortcuts use Cmd on macOS, so Ctrl-D/K/S/R reach KBorg, and `c` copie
 - Every mutation: server dry run, UID/resourceVersion preconditions, full review that must be displayed, exact typed confirmation, local intent record.
 - Known sensitive fields are masked; Secrets are excluded unless you opt in. No telemetry.
 - Dashboard and log-pane connections strip all write and interactive capabilities.
+- Organizations can install a root-owned policy that denies capabilities and limits which API servers any user can reach; it can't be loosened by flags or config ([Operations](docs/OPERATIONS.md#organization-policy)).
+- Dependencies are checked against RustSec on every release review (currently zero known advisories).
 
 Details: [SECURITY.md](SECURITY.md) and the [security review](docs/MAC_V1_SECURITY_REVIEW.md).
 
@@ -203,6 +206,7 @@ Details: [SECURITY.md](SECURITY.md) and the [security review](docs/MAC_V1_SECURI
 | [Copilot](docs/COPILOT_INTEGRATION.md) | Account setup, enterprise deployments, containment |
 | [CLI help](docs/CLI_HELP.txt) · [CLI output](docs/CLI_OUTPUT.md) | Scripting with `--json` |
 | [Hardening acceptance](docs/MAC_V1_HARDENING_ACCEPTANCE.md) | Soak, terminal and security evidence |
+| [Performance comparison](docs/PERFORMANCE_COMPARISON.md) | Memory, CPU and API traffic vs k9s and k10s |
 | [Remaining work](docs/REMAINING_WORK.md) | What's done, partial and planned |
 
 **Development release 0.3.0**, targeting macOS + Docker Desktop for v1. Packages are unsigned; signing, an external security audit and an organizational pilot are open release gates.
