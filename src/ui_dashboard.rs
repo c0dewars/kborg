@@ -422,6 +422,61 @@ fn log_pane(app: &App, pane: &LogPane, rect: Rect, out: &mut impl Write) -> Resu
 
 /// Node and app readiness lines: headline Node and app rows first, then
 /// named degraded workloads. Unavailable evidence is labelled, never zero.
+/// Busiest or unhealthy Nodes, named when a cluster has more than one Node
+/// or its only Node needs attention.
+fn node_details(nodes: &crate::cluster_health::NodeEvidence) -> Vec<(String, &'static str)> {
+    use crate::cluster_health::NAMED_NODES;
+    if !matches!(nodes.state, EvidenceState::Live) {
+        return Vec::new();
+    }
+    let attention = |node: &crate::cluster_health::NodeUsage| {
+        !node.ready || node.cordoned || node.cpu_percent.max(node.memory_percent) >= Some(85)
+    };
+    if nodes.busiest.len() < 2 && !nodes.busiest.iter().any(attention) {
+        return Vec::new();
+    }
+    let width = nodes
+        .busiest
+        .iter()
+        .take(NAMED_NODES)
+        .map(|node| node.name.chars().count())
+        .max()
+        .unwrap_or(0)
+        .min(28);
+    let mut lines = nodes
+        .busiest
+        .iter()
+        .take(NAMED_NODES)
+        .map(|node| {
+            let mut name = node.name.chars().take(width).collect::<String>();
+            if node.name.chars().count() > width {
+                name.pop();
+                name.push('…');
+            }
+            let usage = match (node.cpu_percent, node.memory_percent) {
+                (Some(cpu), Some(memory)) => format!("CPU {cpu:>3}%  MEM {memory:>3}%"),
+                _ => "usage unknown".into(),
+            };
+            let flag = match (node.ready, node.cordoned) {
+                (false, _) => "  NotReady",
+                (true, true) => "  cordoned",
+                _ => "",
+            };
+            (
+                format!("  {name:<width$}  {usage}{flag}"),
+                if attention(node) { "warning" } else { "muted" },
+            )
+        })
+        .collect::<Vec<_>>();
+    if nodes.busiest.len() > NAMED_NODES {
+        lines.push((
+            format!("  +{} more Nodes", nodes.busiest.len() - NAMED_NODES),
+            "muted",
+        ));
+    }
+    lines
+}
+
 fn infra_lines(
     infra: &crate::cluster_health::InfraSummary,
     health: Option<&crate::dashboard_health::HealthSummary>,
@@ -462,7 +517,7 @@ fn infra_lines(
     };
     let apps = &infra.workloads;
     let mut lines = vec![node_line];
-    let mut details = Vec::new();
+    let mut details = node_details(nodes);
     if matches!(apps.state, EvidenceState::Live) {
         lines.push((
             format!(
@@ -996,6 +1051,44 @@ mod tests {
             lines.last().map(|line| line.0.as_str()),
             Some("  +2 more degraded")
         );
+    }
+    #[test]
+    fn busiest_nodes_are_named_under_the_nodes_line() {
+        use crate::cluster_health::NodeUsage;
+        let node = |name: &str, ready, cordoned, cpu, memory| NodeUsage {
+            name: name.into(),
+            ready,
+            cordoned,
+            cpu_percent: cpu,
+            memory_percent: memory,
+        };
+        let mut infra = crate::cluster_health::InfraSummary::connecting();
+        infra.nodes.state = EvidenceState::Live;
+        infra.nodes.busiest = vec![node("solo", true, false, Some(20), Some(30))];
+        assert!(
+            node_details(&infra.nodes).is_empty(),
+            "one healthy Node adds no detail"
+        );
+        infra.nodes.busiest = vec![
+            node("worker-down", false, false, None, None),
+            node("worker-a", true, false, Some(91), Some(40)),
+            node("worker-b", true, false, Some(12), Some(30)),
+            node("worker-c", true, false, Some(5), Some(8)),
+            node("worker-d", true, false, Some(1), Some(2)),
+        ];
+        let lines = node_details(&infra.nodes);
+        let text = lines.iter().map(|line| line.0.as_str()).collect::<Vec<_>>();
+        assert_eq!(
+            text,
+            vec![
+                "  worker-down  usage unknown  NotReady",
+                "  worker-a     CPU  91%  MEM  40%",
+                "  worker-b     CPU  12%  MEM  30%",
+                "  +2 more Nodes",
+            ]
+        );
+        let styles = lines.iter().map(|line| line.1).collect::<Vec<_>>();
+        assert_eq!(styles, vec!["warning", "warning", "muted", "muted"]);
     }
     #[test]
     fn focus_survives_updates_and_never_selects_missing_cards() {
