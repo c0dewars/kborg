@@ -18,7 +18,7 @@ test-results/
 
 # Credentials and local environment; never commit cluster or account material
 *.kubeconfig
-kubeconfig*
+/kubeconfig*
 .env
 .env.*
 *.pem
