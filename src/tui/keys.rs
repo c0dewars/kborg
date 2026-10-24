@@ -1659,10 +1659,27 @@ impl App {
                     }
                 }
                 KeyCode::Char('0') => return self.command("ns all"),
-                KeyCode::Char('1'..='9') => {
-                    self.status =
-                        "Namespace favorites are not configured; :ns opens the namespace picker."
-                            .into()
+                KeyCode::Char(digit @ '1'..='9') => {
+                    let index = usize::from(digit as u8 - b'1');
+                    let recent = self.recent.namespaces(&self.context);
+                    match recent.get(index).cloned() {
+                        Some(namespace) => return self.command(&format!("ns {namespace}")),
+                        None => {
+                            self.status = if recent.is_empty() {
+                                "No recent namespaces yet; :ns opens the picker. 1-9 then jump to the last nine.".into()
+                            } else {
+                                format!(
+                                    "Recent: {}",
+                                    recent
+                                        .iter()
+                                        .enumerate()
+                                        .map(|(i, ns)| format!("{} {ns}", i + 1))
+                                        .collect::<Vec<_>>()
+                                        .join("  ")
+                                )
+                            }
+                        }
+                    }
                 }
                 KeyCode::Char(' ') => {
                     if let Some(uid) = self.selected_uid() {
@@ -1887,6 +1904,15 @@ impl App {
             if matches!(self.modal, Modal::None) {
                 match code {
                     KeyCode::Char('a') => self.aliases(),
+                    KeyCode::Char('w') => {
+                        self.wide = !self.wide;
+                        self.status = if self.wide {
+                            "Wide columns on (Node, IP and |W view columns). Ctrl-W turns them off."
+                        } else {
+                            "Wide columns off."
+                        }
+                        .into();
+                    }
                     KeyCode::Char('z') => {
                         self.faults_only = !self.faults_only;
                         self.selected = 0;

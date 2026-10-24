@@ -250,6 +250,18 @@ struct App {
     hotkeys: crate::hotkeys::Hotkeys,
     /// Ctrl-Z: show only objects that need attention (k9s faults view).
     faults_only: bool,
+    /// k9s-format views.yaml: per-resource columns and default sort.
+    views: crate::views::Views,
+    /// Ctrl-W: wide columns.
+    wide: bool,
+    /// Reverse the current sort (pressing the same sort key again).
+    sort_desc: bool,
+    /// Sort by a column outside `Sort`, by its title (custom or NODE/IP/…).
+    sort_column: Option<String>,
+    /// Recently used namespaces and contexts for digit favorites and :ctx.
+    recent: crate::favorites::Recent,
+    /// Last (context, namespace, kind) seen by `sync_scope`.
+    last_scope: (String, String, usize),
     known_namespaces: Vec<String>,
     restoring_uid: Option<String>,
     subviews: Vec<Modal>,
@@ -372,6 +384,9 @@ impl App {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         self.filter.hash(&mut hasher);
         self.faults_only.hash(&mut hasher);
+        self.sort_desc.hash(&mut hasher);
+        self.sort_column.hash(&mut hasher);
+        self.kind_index.hash(&mut hasher);
         (self.sort as u8).hash(&mut hasher);
         // O(1): every replacement of `items` bumps the generation; the
         // allocation address and length guard direct reassignment.
@@ -405,6 +420,21 @@ impl App {
             let usage = |pick: fn(&table_metrics::Usage) -> u64| {
                 std::cmp::Reverse(self.table_metrics.sort_usage(object).map(pick))
             };
+            if let Some(title) = &self.sort_column {
+                let text = self.column_text(object, title);
+                let primary = match text
+                    .trim_end_matches(|c: char| c.is_ascii_alphabetic())
+                    .parse::<i64>()
+                {
+                    Ok(number) if !text.is_empty() => SortKey::Number(number),
+                    _ => SortKey::Text(text),
+                };
+                return (
+                    primary,
+                    namespace(object).to_owned(),
+                    name(object).to_owned(),
+                );
+            }
             let primary = match self.sort {
                 Sort::Name => SortKey::Text(name(object).to_owned()),
                 Sort::Namespace => SortKey::Text(namespace(object).to_owned()),
@@ -421,14 +451,105 @@ impl App {
                 name(object).to_owned(),
             )
         });
+        if self.sort_desc {
+            order.reverse();
+        }
         let order = std::rc::Rc::new(order);
         if !metrics_sort {
             *self.visible_cache.borrow_mut() = Some((fingerprint, order.clone()));
         }
         order
     }
+    /// The configured view for the current resource, if any.
+    fn current_view(&self) -> Option<&crate::views::View> {
+        let kind = self.kinds.get(self.kind_index)?;
+        crate::views::find(&self.views, &kind.group, &kind.version, &kind.plural)
+    }
+    /// Text of the column titled `title` for sorting by any column.
+    fn column_text(&self, object: &Value, title: &str) -> String {
+        let now = k8s_openapi::jiff::Timestamp::now().as_second();
+        if let Some(spec) = self
+            .current_view()
+            .and_then(|view| view.columns.iter().find(|spec| spec.title == title))
+            && spec.path.is_some()
+        {
+            return format::custom_value(spec, object, now);
+        }
+        format::builtin_column(title).map_or_else(String::new, |column| column.value(object, now))
+    }
+    /// Record recent namespaces/contexts and apply a view's default sort when
+    /// the resource changes. Called once per loop iteration; cheap when idle.
+    fn sync_scope(&mut self) {
+        if self.connected
+            && (self.context != self.last_scope.0 || self.namespace != self.last_scope.1)
+            && self.recent.visit(&self.context, &self.namespace)
+        {
+            let _ = crate::favorites::save(&self.recent);
+        }
+        if self.kind_index != self.last_scope.2 {
+            if let Some((title, descending)) =
+                self.current_view().and_then(|view| view.sort.clone())
+            {
+                self.sort_column = Some(title);
+                self.sort_desc = descending;
+            } else if self.sort_column.is_some() {
+                self.sort_column = None;
+                self.sort_desc = false;
+            }
+        }
+        self.last_scope = (
+            self.context.clone(),
+            self.namespace.clone(),
+            self.kind_index,
+        );
+    }
+    /// Sort by any column title; `None` order toggles when already sorted by it.
+    fn sort_by_title(&mut self, title: &str, descending: Option<bool>) {
+        let title = title.to_ascii_uppercase();
+        let enum_sort = match title.as_str() {
+            "NAME" => Some(Sort::Name),
+            "NAMESPACE" | "NS" => Some(Sort::Namespace),
+            "STATUS" => Some(Sort::Status),
+            "RSTS" | "RESTARTS" => Some(Sort::Restarts),
+            "AGE" => Some(Sort::Age),
+            "READY" => Some(Sort::Ready),
+            "CPU" | "CPU(M)" => Some(Sort::Cpu),
+            "MEM" | "MEMORY" => Some(Sort::Memory),
+            _ => None,
+        };
+        if let Some(sort) = enum_sort {
+            self.set_sort(sort);
+            if let Some(descending) = descending {
+                self.sort_desc = descending;
+            }
+            return;
+        }
+        let known = format::builtin_column(&title).is_some()
+            || self
+                .current_view()
+                .is_some_and(|view| view.columns.iter().any(|spec| spec.title == title));
+        if !known {
+            self.status =
+                format!("No column {title} here; :sort takes a column title from the header.");
+            return;
+        }
+        let toggled = self.sort_column.as_deref() == Some(title.as_str());
+        self.sort_desc = descending.unwrap_or(toggled && !self.sort_desc);
+        self.sort_column = Some(title.clone());
+        self.selected = 0;
+        self.status = format!(
+            "Sorted by {title} {}.",
+            if self.sort_desc {
+                "descending"
+            } else {
+                "ascending"
+            }
+        );
+    }
     fn set_sort(&mut self, sort: Sort) {
         let uid = self.selected_uid();
+        self.sort_desc = self.sort == sort && self.sort_column.is_none() && !self.sort_desc;
+        self.sort_column = None;
         self.sort = sort;
         self.selected = uid
             .and_then(|uid| {
@@ -438,12 +559,14 @@ impl App {
             })
             .unwrap_or(0);
         self.status = format!(
-            "Sorted by {}{}.",
+            "Sorted by {}{}. Press again to reverse.",
             sort.label(),
-            if matches!(sort, Sort::Restarts | Sort::Cpu | Sort::Memory) {
-                " (highest first)"
-            } else {
-                ""
+            match (
+                matches!(sort, Sort::Restarts | Sort::Cpu | Sort::Memory),
+                self.sort_desc
+            ) {
+                (true, false) | (false, true) => " (highest first)",
+                _ => "",
             }
         );
     }
@@ -648,6 +771,10 @@ pub fn run(options: Options) -> Result<()> {
         Ok(hotkeys) => (hotkeys, None),
         Err(error) => (Default::default(), Some(error)),
     };
+    let (views, view_error) = match crate::views::load() {
+        Ok(views) => (views, None),
+        Err(error) => (Default::default(), Some(error)),
+    };
     let initial_selector = options.selector.clone();
     let worker = worker();
     let mut app = App {
@@ -680,6 +807,12 @@ pub fn run(options: Options) -> Result<()> {
         aliases,
         hotkeys,
         faults_only: false,
+        views,
+        wide: false,
+        sort_desc: false,
+        sort_column: None,
+        recent: crate::favorites::load(),
+        last_scope: (String::new(), String::new(), usize::MAX),
         known_namespaces: vec![],
         restoring_uid: None,
         subviews: vec![],
@@ -728,6 +861,14 @@ pub fn run(options: Options) -> Result<()> {
         themes::use_theme(themes::DEFAULT_THEME)?;
         app.theme_picker()?;
         app.status = "Welcome! Arrows preview, Enter chooses; Esc keeps Flexoki Dark.".into();
+    }
+    if let Some(error) = view_error {
+        app.modal = Modal::Detail(
+            format!(
+                "Custom views unavailable\n{error}\n\nDefault columns remain available. Esc closes this notice."
+            ),
+            0,
+        );
     }
     if let Some(error) = hotkey_error {
         app.modal = Modal::Detail(
@@ -981,6 +1122,7 @@ pub fn run(options: Options) -> Result<()> {
         if app.receive() {
             dirty = true;
         }
+        app.sync_scope();
     }
     Ok(())
 }

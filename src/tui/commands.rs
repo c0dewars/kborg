@@ -36,7 +36,7 @@ impl App {
             ("uncordon",[])=>self.node_maintenance(crate::node_maintenance::Request::Uncordon),
             ("drain",[])=>self.node_maintenance(crate::node_maintenance::Request::Drain{seconds:120}),
             ("ctx" | "context" | "contexts", []) => {
-                let list=contexts(&self.options.connection)?;
+                let list=self.recent.order_contexts(contexts(&self.options.connection)?);
                 let index=list.iter().position(|name|name==&self.context).unwrap_or(0);
                 self.modal=Modal::Picker("Context (Pod view)",list,index);
             }
@@ -58,6 +58,12 @@ impl App {
                 } else { self.status = "Invalid namespace.".into(); }
             }
             ("all", []) => return self.command("ns all"),
+            ("sort", [key, order]) if ["asc", "desc"].contains(&order.as_str()) => {
+                self.sort_by_title(key, Some(order == "desc"))
+            }
+            ("sort", [key]) if !["name", "namespace", "ns", "status", "restarts", "age", "ready", "cpu", "memory", "mem"].contains(&key.as_str()) => {
+                self.sort_by_title(key, None)
+            }
             ("sort", [key]) => {
                 let sort = match key.as_str() { "name" => Some(Sort::Name), "namespace" | "ns" => Some(Sort::Namespace), "status" => Some(Sort::Status), "restarts" => Some(Sort::Restarts), "age" => Some(Sort::Age), "ready"=>Some(Sort::Ready), "cpu"=>Some(Sort::Cpu),"memory"|"mem"=>Some(Sort::Memory), _ => None };
                 if let Some(sort) = sort { self.set_sort(sort); } else { self.status = "Sort: name | namespace | status | restarts | age | ready | cpu | memory".into(); }

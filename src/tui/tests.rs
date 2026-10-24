@@ -75,6 +75,12 @@ fn harness() -> Harness {
             aliases: Default::default(),
             hotkeys: Default::default(),
             faults_only: false,
+            views: Default::default(),
+            wide: false,
+            sort_desc: false,
+            sort_column: None,
+            recent: Default::default(),
+            last_scope: (String::new(), String::new(), usize::MAX),
             known_namespaces: vec![],
             restoring_uid: None,
             subviews: vec![],
@@ -1788,6 +1794,51 @@ fn node_shell_needs_its_capability_and_reviews_the_selected_node() {
         }
         _ => panic!("s on a Node did not request a node shell review"),
     }
+}
+#[test]
+fn views_yaml_columns_custom_paths_and_sort_by_any_column() {
+    let (mut app, _replies, _commands) = harness();
+    app.views = crate::views::parse(
+        "views:\n  v1/pods:\n    sortColumn: IMAGE:desc\n    columns:\n      - NAME\n      - IMAGE:.spec.containers[0].image\n      - STATUS\n      - TEAM:.metadata.labels.team|W\n",
+    )
+    .unwrap_or_default();
+    app.command("pods").unwrap_or(false);
+    app.items = vec![
+        serde_json::json!({"kind":"Pod","metadata":{"name":"a","namespace":"x","uid":"1","labels":{"team":"red"}},"spec":{"containers":[{"image":"alpha:1"}]},"status":{"phase":"Running"}}),
+        serde_json::json!({"kind":"Pod","metadata":{"name":"b","namespace":"x","uid":"2","labels":{"team":"blue"}},"spec":{"containers":[{"image":"zulu:9"}]},"status":{"phase":"Running"}}),
+    ];
+    app.items_generation += 1;
+    app.sync_scope();
+    let text = screen(&app, 120, 14).join("\n");
+    assert!(text.contains("IMAGEv") && text.contains("zulu:9"), "{text}");
+    assert!(!text.contains("TEAM"), "wide-only column hidden by default");
+    assert_eq!(
+        app.visible().iter().map(|o| name(o)).collect::<Vec<_>>(),
+        vec!["b", "a"]
+    );
+    assert!(
+        app.key_event(KeyCode::Char('w'), KeyModifiers::CONTROL)
+            .is_ok()
+    );
+    assert!(screen(&app, 120, 14).join("\n").contains("TEAM"));
+    assert!(app.command("sort team asc").is_ok());
+    assert_eq!(
+        app.visible().iter().map(|o| name(o)).collect::<Vec<_>>(),
+        vec!["b", "a"]
+    );
+    assert!(app.command("sort team").is_ok());
+    assert_eq!(
+        app.visible().iter().map(|o| name(o)).collect::<Vec<_>>(),
+        vec!["a", "b"]
+    );
+    assert!(app.command("sort nosuch").is_ok());
+    assert!(app.status.starts_with("No column NOSUCH"));
+    assert!(app.key(KeyCode::Char('N')).is_ok());
+    assert!(app.key(KeyCode::Char('N')).is_ok());
+    assert!(
+        app.sort_desc && app.sort_column.is_none(),
+        "pressing N again reverses"
+    );
 }
 #[test]
 fn cronjob_keys_and_errors_only_toggle() {

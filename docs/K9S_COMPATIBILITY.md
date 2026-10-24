@@ -92,6 +92,37 @@ k9s's node shell creates a privileged Pod on the Node. KBorg does the same behin
 
 k9s plugins run shell commands with `$NAME`-style substitution. KBorg's equivalent is a registered read-only extension: an absolute executable with literal arguments that receives the selected object as redacted JSON on stdin after a whole-input review (`RUN TOOL`), with a 15-second limit and captured output that is never applied. Register with `kborg extensions register`, run with `:ext NAME` (`--allow-extensions --allow-tools`), and bind a key in `hotkeys.yaml` (`command: ext NAME`). `kborg extensions import-k9s ~/.config/k9s/plugins.yaml` reports which k9s plugins fit this model, prints their register commands and a hotkeys snippet, and explains the rest.
 
+## Custom views (columns and sort)
+
+`views.yaml` in the configuration directory uses the k9s format, so an existing k9s file works:
+
+```yaml
+views:
+  v1/pods:
+    sortColumn: RSTS:desc
+    columns:
+      - NAMESPACE
+      - NAME
+      - READY
+      - STATUS
+      - RSTS
+      - IMAGE:.spec.containers[0].image
+      - TEAM:.metadata.labels['team']|W
+      - AGE
+  apps/v1/deployments:
+    columns: [NAME, READY, IMAGES, AGE]
+```
+
+Keys can be `v1/pods`, `apps/v1/deployments`, `deployments.apps` or `deployments`. Built-in columns: `NAMESPACE`, `NAME`, `READY`, `STATUS`, `RSTS`, `AGE`, `NODE`, `IP`, `CPU`, `MEM`, `LABELS`, `IMAGES`. A custom column is `TITLE:.json.path`: dotted fields, `[N]` indexes, `[*]` for every element and `['key.with.dots']`. Attributes after `|`: `W` shows the column only in wide mode (Ctrl-W), `H` hides it, `N` sorts it numerically, `T` shows a timestamp as an age. Paths are only read, never evaluated as code; bounds are 64 KiB, 128 views and 24 columns per view. Columns that don't fit are dropped from the right; NAME always stays.
+
+Sorting: `N` `A` `S` `R` `C` `M` sort by name, age, status, readiness, CPU and memory, and pressing the same key again reverses the order. `:sort COLUMN [asc|desc]` sorts by any column in the header, including custom ones. The header marks the sorted column with `^` (ascending) or `v` (descending). A view's `sortColumn` applies when you open that resource.
+
+Other k9s table keys: Ctrl-W wide columns, Ctrl-Z (or `:faults`) only objects that need attention, `0` all namespaces and `1`–`9` your nine most recently used namespaces in this context. `:ctx` lists recently used contexts first.
+
+## CronJobs and rollbacks
+
+On CronJobs, `t` (or `:trigger`, `kborg trigger`) creates a Job now from the jobTemplate, owned by the CronJob, and `s` suspends or resumes the schedule (`:suspend`, `:resume`). `:rollback [REVISION]` (or `kborg rollback`) restores a Deployment, StatefulSet or DaemonSet to a previous revision, by default the one before the current, showing the image change in the review. All of these need `--write`, are dry-run first and are locked to the reviewed UID and resourceVersion.
+
 ## Custom hotkeys
 
 `hotkeys.yaml` in the same directory uses the k9s format, so an existing k9s `hotkeys.yaml` can be copied in unchanged when its shortcuts are in the supported set:

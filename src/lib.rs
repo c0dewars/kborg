@@ -38,6 +38,7 @@ pub mod archive;
 pub mod auth;
 pub mod bench;
 pub mod extensions;
+pub mod favorites;
 pub mod file_copy;
 pub mod hotkeys;
 pub mod insights;
@@ -56,6 +57,7 @@ pub mod transport;
 pub mod ui_logs;
 pub mod ui_secrets;
 pub mod ui_subjects;
+pub mod views;
 pub mod workload_actions;
 
 pub mod helm;
