@@ -562,7 +562,8 @@ pub fn run_args(args: Vec<String>) -> Result<()> {
             match opts.command.get(1).map(String::as_str) {
                 Some("on") => themes::set_animation(true)?,
                 Some("off") => themes::set_animation(false)?,
-                _ => return Err("usage: startup on|off".into()),
+                Some("preview") => tui::play_startup_animation(opts.theme.as_deref(), opts.color)?,
+                _ => return Err("usage: startup on|off|preview".into()),
             }
             outputln!("Startup preference saved.");
             return Ok(());

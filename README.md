@@ -159,7 +159,9 @@ Without a provider KBorg keeps working and shows `-` or `metrics UNAVAILABLE`, n
 
 ![All built-in themes rendered by KBorg](docs/screenshots/themes.png)
 
-Pick one with `:themes` (live preview) or `--theme rose-pine`. Every fixed built-in theme is tested for 4.5:1 contrast on each surface the UI paints, including dashboard cards and selected rows. Create your own with `kborg theme new my-theme --base rose-pine`; see the [theme guide](docs/themes.md). `NO_COLOR` and `--color=never` turn styling off.
+KBorg greets you with a short animated logo that decrypts out of glyph noise, catches a light beam and fades into your workspace. Any key skips it; `kborg startup preview` replays it, and `kborg startup off`, `--no-splash` or `KBORG_NO_SPLASH=1` turn it off.
+
+Pick a theme with `:themes` (live preview) or `--theme rose-pine`. Every fixed built-in theme is tested for 4.5:1 contrast on each surface the UI paints, including dashboard cards and selected rows. Create your own with `kborg theme new my-theme --base rose-pine`; see the [theme guide](docs/themes.md). `NO_COLOR` and `--color=never` turn styling off.
 
 ## Terminals
 
