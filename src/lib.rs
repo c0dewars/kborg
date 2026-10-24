@@ -35,6 +35,7 @@ pub mod advice;
 pub mod aliases;
 pub mod allocations;
 pub mod auth;
+pub mod bench;
 pub mod extensions;
 pub mod file_copy;
 pub mod hotkeys;

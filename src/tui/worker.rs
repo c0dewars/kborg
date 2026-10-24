@@ -17,6 +17,7 @@ pub(super) enum Task {
     YamlExecute(Box<crate::manifest_edit::PreparedYaml>, String),
     ApplyPrepare(std::path::PathBuf, String),
     NodeShellPrepare(String, String, String, u16),
+    Bench(crate::bench::Plan),
     NodeShellStart(Box<crate::node_shell::Prepared>, String),
     ApplyExecute(Box<crate::manifest_apply::PreparedApply>, String),
     NodePrepare(String, Option<String>, crate::node_maintenance::Request),
@@ -413,6 +414,12 @@ impl ForwardSlot {
     pub(super) fn len(&self) -> usize {
         self.state.lock().map(|s| s.entries.len()).unwrap_or(0)
     }
+    /// Loopback port of the selected forward while it is listening.
+    pub(super) fn listening_port(&self, selected: usize) -> Option<u16> {
+        let state = self.state.lock().ok()?;
+        let entry = state.entries.get(selected)?;
+        matches!(entry.phase, ForwardPhase::Listening).then_some(entry.target.local_port)
+    }
     pub(super) fn index(&self, id: u64) -> usize {
         self.state
             .lock()
@@ -433,7 +440,9 @@ impl ForwardSlot {
             .filter(|entry| entry.phase.active())
             .count();
         let mut lines = vec![
-            format!("{count}/{MAX_FORWARDS} active   /   j k select   s stop   F new   Esc close"),
+            format!(
+                "{count}/{MAX_FORWARDS} active   /   j k select   s stop   b bench   F new   Esc close"
+            ),
             String::new(),
         ];
         if state.entries.is_empty() {
@@ -581,6 +590,7 @@ pub(super) fn worker() -> Worker {
                         },
                         None=>Reply::Failure("Not connected; nothing was created.".into()),
                     },
+                    Task::Bench(plan)=>Reply::Detail(crate::bench::run(&plan).await.text(&plan)),
                     Task::ApplyExecute(prepared,typed)=>Reply::WriteOutcome(if let Some(g)=gateway.as_ref(){g.execute_apply(*prepared,&typed).await}else{Err("Not connected; nothing was applied.".into())}),
                     Task::NodeExecute(prepared,typed)=>Reply::WriteOutcome(if let Some(g)=gateway.as_ref(){crate::node_maintenance::execute(g,*prepared,&typed).await.map(|report|report.summary())}else{Err("Not connected; no node operation started.".into())}),
                     Task::RunSession(reviewed, typed) => {
@@ -786,7 +796,7 @@ pub(super) fn worker() -> Worker {
                                         Reply::Prepared(Box::new(prepared))
                                     },
                                     Task::Execute(p,a) => Reply::Notice(g.execute(*p,a).await?),
-                                    Task::YamlPrepare(..) | Task::YamlExecute(..) | Task::ApplyPrepare(..) | Task::ApplyExecute(..) | Task::NodeShellPrepare(..) | Task::NodeShellStart(..) | Task::NodeExecute(..) | Task::DashboardLogs(..) | Task::DashboardWorkloads(..) | Task::DashboardTail(..) | Task::Overview(..) | Task::Connect(_) | Task::Watch(..) | Task::Metrics(..) | Task::RunSession(..) | Task::RunForward(..) | Task::Directory(_) | Task::Manifest(_) | Task::Helm(..) | Task::HelmPrepare(..) | Task::HelmExecute(..) | Task::AdvicePrepare(..) | Task::AdviceExecute(..) => return Err("invalid worker task".into()),
+                                    Task::YamlPrepare(..) | Task::YamlExecute(..) | Task::ApplyPrepare(..) | Task::ApplyExecute(..) | Task::NodeShellPrepare(..) | Task::NodeShellStart(..) | Task::Bench(..) | Task::NodeExecute(..) | Task::DashboardLogs(..) | Task::DashboardWorkloads(..) | Task::DashboardTail(..) | Task::Overview(..) | Task::Connect(_) | Task::Watch(..) | Task::Metrics(..) | Task::RunSession(..) | Task::RunForward(..) | Task::Directory(_) | Task::Manifest(_) | Task::Helm(..) | Task::HelmPrepare(..) | Task::HelmExecute(..) | Task::AdvicePrepare(..) | Task::AdviceExecute(..) => return Err("invalid worker task".into()),
                                 })
                             };
                             match tokio::time::timeout(Duration::from_secs(25), future).await {

@@ -87,6 +87,18 @@ impl App {
                 Err(error) => self.status = error,
             },
             ("ext" | "extension", [name]) => self.run_extension(name),
+            ("bench" | "be" | "benchmark" | "benchmarks", []) => self.bench(200, 5, "/"),
+            ("bench" | "be" | "benchmark" | "benchmarks", [requests, concurrency, rest @ ..]) if rest.len() <= 1 => {
+                match (requests.parse(), concurrency.parse()) {
+                    (Ok(requests), Ok(concurrency)) => self.bench(
+                        requests,
+                        concurrency,
+                        rest.first().map_or("/", String::as_str),
+                    ),
+                    _ => self.status = "Use :bench [REQUESTS CONCURRENCY [PATH]]".into(),
+                }
+            }
+            ("bench" | "be" | "benchmark" | "benchmarks", _) => self.status = "Use :bench [REQUESTS CONCURRENCY [PATH]]".into(),
             ("apply", [path]) => self.apply_manifest(std::path::PathBuf::from(path)),
             ("apply", _) => self.status = "Use :apply FILE.yaml, or a in :dir on a manifest".into(),
             ("cp-from", [remote]) => self.copy_file(true, remote, None),
@@ -144,7 +156,7 @@ impl App {
                 if let Some(release)=selected{self.request_helm(helm_ui::Request::History(release),false);}else{self.status="Use :history RELEASE or select a release in :helm and press Enter.".into();}
             }
             ("helm"|"history",_)=>self.status="Use :helm [NAMESPACE] or :history RELEASE; --allow-helm enables live release storage reads.".into(),
-            ("benchmarks"|"benchmark"|"be"|"scans"|"scan"|"pop"|"popeye",_)=>self.status="This k9s view requires an external scanner/benchmark integration; it is unavailable. No command was executed.".into(),
+            ("scans"|"scan",_)=>self.status="Image vulnerability scanning needs an external scanner; it is unavailable. :lint checks common misconfigurations. No command was executed.".into(),
             ("secrets"|"secret"|"sec",[])=>self.secrets(),
             ("secrets"|"secret"|"sec",_)=>self.status="Use :secrets in the current namespace; values stay hidden until one key is revealed.".into(),
             _ => {
@@ -613,6 +625,20 @@ impl App {
                     view,
                 }));
                 self.status = "Read the whole input, then type RUN TOOL.".into();
+            }
+            Err(error) => self.status = error,
+        }
+    }
+    /// Benchmark the selected listening port-forward over loopback.
+    pub(super) fn bench(&mut self, requests: u32, concurrency: u32, path: &str) {
+        let Some(port) = self.worker.forward.listening_port(self.forward_selected) else {
+            self.status = "Select a LISTENING forward in :pf to benchmark it.".into();
+            return;
+        };
+        match crate::bench::Plan::new(port, requests, concurrency, path) {
+            Ok(plan) => {
+                self.status = format!("Benchmarking 127.0.0.1:{port}{path}…");
+                self.send(Task::Bench(plan));
             }
             Err(error) => self.status = error,
         }

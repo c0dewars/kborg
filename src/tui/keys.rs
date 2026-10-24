@@ -377,6 +377,10 @@ impl App {
                     self.modal = Modal::ForwardView;
                     self.request_forward();
                 }
+                KeyCode::Char('b') => {
+                    self.modal = Modal::ForwardView;
+                    self.bench(200, 5, "/");
+                }
                 _ => self.modal = Modal::ForwardView,
             },
             Modal::ForwardForm(namespace, pod, uid, mut fields, mut index) => match code {
