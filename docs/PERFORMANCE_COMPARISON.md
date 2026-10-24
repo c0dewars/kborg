@@ -38,8 +38,8 @@ KBorg keeps Pod and Event data live through watches and polls Node/workload read
 The first run exposed a scale problem: a namespace with more than 1,000 objects exceeded the live-watch cache and the table went empty ("Access unavailable"). Fixes, all bounded:
 
 - Objects are redacted (`managedFields`, data, annotations…) **before** they are measured, so the cap reflects what is actually held in memory.
-- The live cache now holds up to 5,000 objects / 32 MiB (previously 1,000 / 8 MiB); list pages are 500 objects.
-- Above the cap, the view falls back to a bounded list of the first 5,000 objects, refreshed every 15 s, with a clear banner instead of an empty table.
+- The live cache now holds up to 10,000 objects / 64 MiB (previously 1,000 / 8 MiB); list pages are 500 objects.
+- Above the cap, the view falls back to a bounded list of the first 10,000 objects, refreshed every 30 s, with a clear banner instead of an empty table.
 - The CLI list uses the same bounds with a shorter page pause.
 
 Result for the 1,000-ConfigMap view: switch time 1.32 s → 0.18 s, network 3.8 MB/min → 4.8 KiB/min.

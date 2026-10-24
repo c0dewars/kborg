@@ -20,11 +20,11 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-pub const MAX_OBJECTS: usize = 5000;
-const MAX_BODY: usize = 32 * 1024 * 1024;
+pub const MAX_OBJECTS: usize = 10_000;
+const MAX_BODY: usize = 64 * 1024 * 1024;
 /// Objects per list page; MAX_LIST_PAGES pages cover MAX_OBJECTS.
 const LIST_PAGE: u32 = 500;
-const MAX_LIST_PAGES: usize = 10;
+const MAX_LIST_PAGES: usize = MAX_OBJECTS.div_ceil(LIST_PAGE as usize);
 const OPERATION_BUDGET: Duration = Duration::from_secs(15);
 
 #[derive(Clone, Default)]

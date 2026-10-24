@@ -1009,6 +1009,16 @@ struct ViewState {
     field_selector: String,
     selected_uid: Option<String>,
 }
+/// One precomputed primary sort key per object; every object in a sort
+/// uses the same variant.
+#[derive(PartialEq, Eq, PartialOrd, Ord)]
+enum SortKey {
+    Text(String),
+    Number(i64),
+    Pair((u64, u64)),
+    Descending(std::cmp::Reverse<u64>),
+    Usage(std::cmp::Reverse<Option<u64>>),
+}
 #[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
 enum Sort {
     #[default]
@@ -1097,6 +1107,8 @@ struct App {
     last_metrics: Instant,
     last_table_metrics: Option<Instant>,
     table_metrics: table_metrics::TableMetrics,
+    /// Memoized filter-and-sort order of `items`, keyed by a fingerprint.
+    visible_cache: std::cell::RefCell<Option<(u64, std::rc::Rc<Vec<usize>>)>>,
     metrics_resources: bool,
     overview: Option<crate::overview::OverviewFeed>,
     selection_ui: selections_ui::State,
@@ -1162,51 +1174,75 @@ impl App {
             .unwrap_or_else(|| "pods".into())
     }
     fn visible(&self) -> Vec<&Value> {
-        let filter = nav::Filter::parse(&self.filter);
-        let mut items: Vec<_> = self
-            .items
+        self.visible_order()
             .iter()
-            .filter(|object| {
-                let text = format!("{} {} {}", namespace(object), name(object), summary(object));
-                filter.as_ref().is_ok_and(|filter| filter.matches(&text))
+            .filter_map(|&index| self.items.get(index))
+            .collect()
+    }
+    /// Filtered, sorted indices into `items`. Recomputing compiles the filter
+    /// and builds one sort key per object, so the result is memoized against
+    /// a fingerprint of the filter, sort and every object's identity and
+    /// version; any API change bumps resourceVersion and invalidates it.
+    fn visible_order(&self) -> std::rc::Rc<Vec<usize>> {
+        use std::hash::{Hash, Hasher};
+        let metrics_sort = matches!(self.sort, Sort::Cpu | Sort::Memory);
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        self.filter.hash(&mut hasher);
+        (self.sort as u8).hash(&mut hasher);
+        self.items.len().hash(&mut hasher);
+        for item in &self.items {
+            let metadata = &item["metadata"];
+            for field in ["uid", "resourceVersion", "name", "namespace"] {
+                metadata[field].as_str().hash(&mut hasher);
+            }
+            item["status"]["phase"].as_str().hash(&mut hasher);
+            metadata["deletionTimestamp"].is_string().hash(&mut hasher);
+        }
+        let fingerprint = hasher.finish();
+        if !metrics_sort
+            && let Some((key, order)) = &*self.visible_cache.borrow()
+            && *key == fingerprint
+        {
+            return order.clone();
+        }
+        let filter = nav::Filter::parse(&self.filter);
+        let match_all = self.filter.is_empty() && filter.is_ok();
+        let mut order: Vec<usize> = (0..self.items.len())
+            .filter(|&index| {
+                match_all || {
+                    let object = &self.items[index];
+                    let text =
+                        format!("{} {} {}", namespace(object), name(object), summary(object));
+                    filter.as_ref().is_ok_and(|filter| filter.matches(&text))
+                }
             })
             .collect();
-        items.sort_by(|a, b| {
-            let ordering = match self.sort {
-                Sort::Name => name(a).cmp(name(b)),
-                Sort::Namespace => namespace(a).cmp(namespace(b)),
-                Sort::Status => summary(a).cmp(&summary(b)),
-                Sort::Restarts => restarts(b).cmp(&restarts(a)),
-                Sort::Ready => ready_sort_key(a).cmp(&ready_sort_key(b)),
-                Sort::Cpu => self
-                    .table_metrics
-                    .sort_usage(b)
-                    .map(|usage| usage.cpu_nanocores)
-                    .cmp(
-                        &self
-                            .table_metrics
-                            .sort_usage(a)
-                            .map(|usage| usage.cpu_nanocores),
-                    ),
-                Sort::Memory => self
-                    .table_metrics
-                    .sort_usage(b)
-                    .map(|usage| usage.memory_bytes)
-                    .cmp(
-                        &self
-                            .table_metrics
-                            .sort_usage(a)
-                            .map(|usage| usage.memory_bytes),
-                    ),
-                Sort::Age => timestamp(a)
-                    .unwrap_or(i64::MAX)
-                    .cmp(&timestamp(b).unwrap_or(i64::MAX)),
+        order.sort_by_cached_key(|&index| {
+            let object = &self.items[index];
+            let usage = |pick: fn(&table_metrics::Usage) -> u64| {
+                std::cmp::Reverse(self.table_metrics.sort_usage(object).map(pick))
             };
-            ordering
-                .then_with(|| namespace(a).cmp(namespace(b)))
-                .then_with(|| name(a).cmp(name(b)))
+            let primary = match self.sort {
+                Sort::Name => SortKey::Text(name(object).to_owned()),
+                Sort::Namespace => SortKey::Text(namespace(object).to_owned()),
+                Sort::Status => SortKey::Text(summary(object)),
+                Sort::Restarts => SortKey::Descending(std::cmp::Reverse(restarts(object))),
+                Sort::Ready => SortKey::Pair(ready_sort_key(object)),
+                Sort::Cpu => SortKey::Usage(usage(|usage| usage.cpu_nanocores)),
+                Sort::Memory => SortKey::Usage(usage(|usage| usage.memory_bytes)),
+                Sort::Age => SortKey::Number(timestamp(object).unwrap_or(i64::MAX)),
+            };
+            (
+                primary,
+                namespace(object).to_owned(),
+                name(object).to_owned(),
+            )
         });
-        items
+        let order = std::rc::Rc::new(order);
+        if !metrics_sort {
+            *self.visible_cache.borrow_mut() = Some((fingerprint, order.clone()));
+        }
+        order
     }
     fn set_sort(&mut self, sort: Sort) {
         let uid = self.selected_uid();
@@ -2261,7 +2297,7 @@ impl App {
                     self.stale = false;
                     self.status = if self.bounded_poll {
                         format!(
-                            "Showing the first {} objects: this scope is too large to watch live. Refreshing every 15s; /-l LABELS or :ns narrows it.",
+                            "Showing the first {} objects: this scope is too large to watch live. Refreshing every 30s; /-l LABELS or :ns narrows it.",
                             self.items.len()
                         )
                     } else {
@@ -7466,6 +7502,7 @@ pub fn run(options: Options) -> Result<()> {
         last_metrics: Instant::now(),
         last_table_metrics: None,
         table_metrics: Default::default(),
+        visible_cache: Default::default(),
         metrics_resources: false,
         overview: None,
         selection_ui: Default::default(),
@@ -7589,7 +7626,7 @@ pub fn run(options: Options) -> Result<()> {
                 || (!app.watching
                     && app.last_refresh.elapsed()
                         > Duration::from_secs(if app.bounded_poll {
-                            15
+                            30
                         } else if app.stale {
                             10
                         } else {
@@ -7644,7 +7681,6 @@ pub fn run(options: Options) -> Result<()> {
         if dirty {
             draw(&mut app)?;
             dirty = false;
-            last_activity = Instant::now();
         }
         if event::poll(loop_tick(&app, last_activity)).map_err(|_| "input failed")? {
             last_activity = Instant::now();
@@ -7794,9 +7830,10 @@ fn startup_animation(theme: &Theme, color: bool) -> Result<bool> {
     Ok(true)
 }
 
-/// Event-loop wake interval: 60 fps while work is in flight, data is still
-/// arriving or the user was just active, otherwise a calm 100 ms tick that
-/// keeps idle CPU near zero.
+/// Event-loop wake interval: 60 fps while a request is in flight, the view
+/// is still loading, or the user typed in the last second; otherwise a calm
+/// 100 ms tick. Background data updates alone never raise the rate, so a
+/// busy cluster does not keep the loop spinning.
 fn loop_tick(app: &App, last_activity: Instant) -> Duration {
     let lively =
         app.busy || app.stale || !app.connected || last_activity.elapsed() < Duration::from_secs(1);
@@ -7953,6 +7990,7 @@ mod layout_tests {
                 last_metrics: Instant::now(),
                 last_table_metrics: None,
                 table_metrics: Default::default(),
+                visible_cache: Default::default(),
                 metrics_resources: false,
                 overview: None,
                 selection_ui: Default::default(),
@@ -9963,6 +10001,31 @@ mod layout_tests {
         app.changed();
         assert!(!app.bounded_poll);
         Ok(())
+    }
+    #[test]
+    fn visible_order_is_memoized_and_invalidated_by_filter_sort_and_versions() {
+        let (mut app, _replies, _commands) = harness();
+        let pod = |name: &str, restarts: u64, rv: &str| serde_json::json!({"kind":"Pod","metadata":{"name":name,"namespace":"default","uid":format!("uid-{name}"),"resourceVersion":rv},"status":{"phase":"Running","containerStatuses":[{"restartCount":restarts}]}});
+        app.items = vec![pod("b", 1, "1"), pod("a", 5, "1"), pod("c", 3, "1")];
+        let names = |app: &App| {
+            app.visible()
+                .iter()
+                .map(|o| name(o).to_owned())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(names(&app), ["a", "b", "c"]);
+        assert!(std::rc::Rc::ptr_eq(
+            &app.visible_order(),
+            &app.visible_order()
+        ));
+        app.sort = Sort::Restarts;
+        assert_eq!(names(&app), ["a", "c", "b"]);
+        app.items[2] = pod("c", 9, "2");
+        assert_eq!(names(&app), ["c", "a", "b"]);
+        app.filter = "default [ac] ".into();
+        assert_eq!(names(&app), ["c", "a"]);
+        app.filter = "(".into();
+        assert!(names(&app).is_empty());
     }
     #[test]
     fn table_hints_show_only_actions_that_work_for_this_kind_and_session() -> Result<()> {
