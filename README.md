@@ -13,7 +13,7 @@
     <a href="docs/REMAINING_WORK.md">Feature status</a>
   </p>
   <p>
-    <img alt="Version 0.3.0" src="https://img.shields.io/badge/version-0.3.0-FF7A1A">
+    <img alt="Version 0.4.0" src="https://img.shields.io/badge/version-0.4.0-FF7A1A">
     <img alt="Rust" src="https://img.shields.io/badge/built%20with-Rust-0FA968">
     <img alt="macOS and Linux" src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux-0B1220">
     <img alt="Apache 2.0" src="https://img.shields.io/badge/license-Apache%202.0-3BE08A">
@@ -52,6 +52,14 @@
 
 **Requirements:** macOS or Linux, a kubeconfig, and a terminal with at least 256 colors. Building from source needs Rust (the pinned toolchain installs automatically through `rustup`) and on macOS the command-line developer tools (`xcode-select --install`).
 
+### With Homebrew (macOS and Linux)
+
+```sh
+brew install c0dewars/tap/kborg
+```
+
+The formula builds KBorg from the tagged source with Homebrew's Rust and installs bash, zsh and fish completions. Upgrade with `brew upgrade kborg`.
+
 ### From source
 
 ```sh
@@ -76,11 +84,11 @@ kborg completions zsh > ~/.zfunc/_kborg
 
 ### From a release archive
 
-Download the archive for your OS and CPU (for example `kborg-0.3.0-aarch64-apple-darwin.tar.gz`), get its SHA-256 through a trusted channel, and compare before extracting:
+Download the archive for your OS and CPU (for example `kborg-0.4.0-aarch64-apple-darwin.tar.gz`), get its SHA-256 through a trusted channel, and compare before extracting:
 
 ```sh
-shasum -a 256 kborg-0.3.0-aarch64-apple-darwin.tar.gz
-tar -xzf kborg-0.3.0-aarch64-apple-darwin.tar.gz
+shasum -a 256 kborg-0.4.0-aarch64-apple-darwin.tar.gz
+tar -xzf kborg-0.4.0-aarch64-apple-darwin.tar.gz
 ```
 
 Packages are currently unsigned; see [Operations](docs/OPERATIONS.md) for verification, updates and rollback.
@@ -210,7 +218,7 @@ Details: [SECURITY.md](SECURITY.md) and the [security review](docs/MAC_V1_SECURI
 | [Performance comparison](docs/PERFORMANCE_COMPARISON.md) | Memory, CPU and API traffic vs k9s and k10s |
 | [Remaining work](docs/REMAINING_WORK.md) | What's done, partial and planned |
 
-**Development release 0.3.0**, targeting macOS + Docker Desktop for v1. Packages are unsigned; signing, an external security audit and an organizational pilot are open release gates.
+**Release 0.4.0**, targeting macOS + Docker Desktop for v1. Packages are unsigned; signing, an external security audit and an organizational pilot are open release gates.
 
 ## Credits
 
