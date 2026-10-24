@@ -26,7 +26,6 @@ pub mod logs;
 pub mod manifest_edit;
 pub mod node_maintenance;
 pub mod ops;
-pub mod org_policy;
 pub mod overview;
 pub mod ui_yaml;
 

@@ -191,7 +191,6 @@ Ghostty's shortcuts use Cmd on macOS, so Ctrl-D/K/S/R reach KBorg, and `c` copie
 - Every mutation: server dry run, UID/resourceVersion preconditions, full review that must be displayed, exact typed confirmation, local intent record.
 - Known sensitive fields are masked; Secrets are excluded unless you opt in. No telemetry.
 - Dashboard and log-pane connections strip all write and interactive capabilities.
-- Organizations can install a root-owned policy that denies capabilities and limits which API servers any user can reach; it can't be loosened by flags or config ([Operations](docs/OPERATIONS.md#organization-policy)).
 - Dependencies are checked against RustSec on every release review (currently zero known advisories).
 
 Details: [SECURITY.md](SECURITY.md) and the [security review](docs/MAC_V1_SECURITY_REVIEW.md).

@@ -8,8 +8,6 @@ Before production: independent sensitive-code review, dependency advisories/lice
 
 See docs/REMAINING_WORK.md and the linked current acceptance report for requirements and known limitations. Client safeguards do not constrain a hostile same-user process. The API server and organizational controls are authoritative.
 
-Organizations can enforce a root-owned policy (`/Library/Application Support/KBorg/policy.json` on macOS, `/etc/kborg/policy.json` on Linux) that denies capabilities and restricts which API servers any session may reach; see [Operations](docs/OPERATIONS.md#organization-policy). It fails closed when the file is present but not root-controlled.
-
 Secret inspection is off by default. `--allow-secret-reveal` enables `:secrets`,
 which lists names, types, key names and sizes for one namespace and decodes a
 single key only on an explicit `x`, for 30 seconds; values are never exported,

@@ -377,25 +377,10 @@ pub fn contexts(options: &Connection) -> Result<Vec<String>> {
     if options.demo {
         return Ok(vec!["demo".into()]);
     }
-    let raw = read_config(options)?;
-    Ok(raw
+    Ok(read_config(options)?
         .contexts
-        .iter()
-        .filter(|context| {
-            let server = context
-                .context
-                .as_ref()
-                .and_then(|c| {
-                    raw.clusters
-                        .iter()
-                        .find(|cluster| cluster.name == c.cluster)
-                })
-                .and_then(|cluster| cluster.cluster.as_ref())
-                .and_then(|cluster| cluster.server.as_deref())
-                .unwrap_or("");
-            crate::org_policy::check_server(server).is_ok()
-        })
-        .map(|context| context.name.clone())
+        .into_iter()
+        .map(|c| c.name)
         .take(100)
         .collect())
 }
@@ -564,9 +549,6 @@ impl Gateway {
             .and_then(|c| c.cluster.as_ref())
             .ok_or("cluster not found")?
             .clone();
-        // The organization policy binds to the server actually reached, not
-        // to the user-chosen context name.
-        crate::org_policy::check_server(cluster.server.as_deref().unwrap_or(""))?;
         let user = context
             .user
             .as_ref()
