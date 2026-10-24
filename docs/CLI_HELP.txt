@@ -51,11 +51,11 @@ KBorg 0.3 — Kubernetes operations, under your control
   kborg exec POD CONTAINER -- COMMAND [ARG...]   Reviewed exec; --interactive enables stdin/TTY
   kborg attach POD CONTAINER      Output-only; --interactive enables stdin/TTY
   kborg forward POD LOCAL REMOTE SECONDS   Loopback only, up to 300 seconds
-  kborg cp-from POD CONTAINER /PATH LOCAL   Reviewed copy of one file to a new local file
+  kborg cp-from POD CONTAINER /PATH LOCAL   Reviewed copy of one file (or --recursive directory) to a new local path
   kborg apply FILE.yaml           Reviewed server-side apply (dry run, diff, no force)
   kborg node-shell NODE           Reviewed privileged Pod + nsenter root shell; deleted after
   kborg lint [--json]             Read-only misconfiguration check (k9s popeye-style)
-  kborg cp-to POD CONTAINER LOCAL /PATH     Reviewed copy of one file; never replaces
+  kborg cp-to POD CONTAINER LOCAL /PATH     Reviewed copy of one file (or --recursive directory); never replaces
   kborg audit pending             Uncertain local outcomes; never auto-retries
   kborg config init|validate FILE Strict schema-1 JSON configuration
   kborg completions bash|zsh|fish|powershell   Static completion script

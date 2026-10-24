@@ -101,11 +101,20 @@ impl App {
             ("bench" | "be" | "benchmark" | "benchmarks", _) => self.status = "Use :bench [REQUESTS CONCURRENCY [PATH]]".into(),
             ("apply", [path]) => self.apply_manifest(std::path::PathBuf::from(path)),
             ("apply", _) => self.status = "Use :apply FILE.yaml, or a in :dir on a manifest".into(),
-            ("cp-from", [remote]) => self.copy_file(true, remote, None),
-            ("cp-from", [remote, local]) => self.copy_file(true, remote, Some(local)),
-            ("cp-to", [local, remote]) => self.copy_file(false, local, Some(remote)),
+            ("cp-from", [remote]) => self.copy_file(true, false, remote, None),
+            ("cp-from", [remote, local]) if remote != "-r" => {
+                self.copy_file(true, false, remote, Some(local))
+            }
+            ("cp-from", [flag, remote]) if flag == "-r" => self.copy_file(true, true, remote, None),
+            ("cp-from", [flag, remote, local]) if flag == "-r" => {
+                self.copy_file(true, true, remote, Some(local))
+            }
+            ("cp-to", [local, remote]) => self.copy_file(false, false, local, Some(remote)),
+            ("cp-to", [flag, local, remote]) if flag == "-r" => {
+                self.copy_file(false, true, local, Some(remote))
+            }
             ("cp" | "cp-from" | "cp-to", _) => {
-                self.status = "Use :cp-from /CONTAINER/FILE [LOCAL_FILE_OR_DIR] or :cp-to LOCAL_FILE /CONTAINER/FILE".into()
+                self.status = "Use :cp-from [-r] /CONTAINER/PATH [LOCAL] or :cp-to [-r] LOCAL /CONTAINER/PATH".into()
             }
             ("pulse"|"pulses"|"hz"|"pu",[])=>self.send(Task::Pulses(self.namespace.clone())),
             ("xray"|"xrays"|"xr"|"x",[resource])=>self.send(Task::Xray(resource.clone(),self.namespace.clone())),
@@ -685,7 +694,13 @@ impl App {
         self.send(Task::ApplyPrepare(path, self.namespace.clone()));
     }
     /// Review a single-file copy for the selected Pod's default container.
-    pub(super) fn copy_file(&mut self, download: bool, first: &str, second: Option<&String>) {
+    pub(super) fn copy_file(
+        &mut self,
+        download: bool,
+        recursive: bool,
+        first: &str,
+        second: Option<&String>,
+    ) {
         if self.busy {
             self.status = "Wait for the current request before copying.".into();
             return;
@@ -734,13 +749,20 @@ impl App {
                 container,
                 remote: first.to_owned(),
                 local,
+                recursive,
             }
         } else {
             let Some(remote) = second else {
                 self.status = "Use :cp-to LOCAL_FILE /CONTAINER/FILE".into();
                 return;
             };
-            match crate::file_copy::read_upload(std::path::Path::new(first)) {
+            let local = std::path::Path::new(first);
+            let upload = if recursive {
+                crate::file_copy::read_upload_dir(local)
+            } else {
+                crate::file_copy::read_upload(local)
+            };
+            match upload {
                 Ok(upload) => crate::ops::Request::CopyTo {
                     container,
                     upload,

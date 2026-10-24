@@ -252,6 +252,7 @@ mod tests {
             metrics_resources: false,
             session_seconds: 900,
             node_shell_image: String::new(),
+            recursive: false,
             command: vec![],
         }
     }

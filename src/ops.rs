@@ -46,6 +46,8 @@ pub enum Request {
         container: String,
         remote: String,
         local: PathBuf,
+        /// Copy a directory as a strict tar stream.
+        recursive: bool,
     },
     /// Copy one local file, read at review time, to a new container file.
     CopyTo {
@@ -287,16 +289,24 @@ pub async fn prepare(
             container,
             remote,
             local,
+            recursive,
         } => {
             verify_container(object.spec.as_ref(), container)?;
             let target = crate::file_copy::download_target(remote, local)?;
             let details = format!(
-                "container: {container}\nCopy FROM the container: {remote}\nTo a NEW local file: {}\nRuns {} in the container; at most {} MiB, {} seconds.\nThe file is written only after the whole transfer succeeds, with owner-only permissions; existing files are never replaced.",
+                "container: {container}\nCopy FROM the container: {remote}{}\nTo a NEW local {}: {}\nRuns {} in the container; at most {} MiB, {} seconds.\n{}",
+                if *recursive { " (directory)" } else { "" },
+                if *recursive { "directory" } else { "file" },
                 target.display(),
-                serde_json::to_string(&crate::file_copy::read_argv(remote))
+                serde_json::to_string(&crate::file_copy::read_argv(remote, *recursive))
                     .map_err(|_| "cannot review arguments")?,
                 crate::file_copy::MAX_BYTES >> 20,
-                crate::file_copy::DEADLINE.as_secs()
+                crate::file_copy::DEADLINE.as_secs(),
+                if *recursive {
+                    "Only regular files and directories are extracted, with owner-only permissions; links, devices and paths outside the directory are refused. A failed extraction removes the new directory."
+                } else {
+                    "The file is written only after the whole transfer succeeds, with owner-only permissions; existing files are never replaced."
+                }
             );
             *local = target;
             details
@@ -308,12 +318,33 @@ pub async fn prepare(
         } => {
             verify_container(object.spec.as_ref(), container)?;
             format!(
-                "container: {container}\nCopy TO the container: {remote}\nFrom local file: {} ({} bytes, SHA-256 {})\nRuns {} in the container; set -C refuses to replace an existing file and the written size is checked. The bytes reviewed here are the bytes sent; later local changes are ignored.\nA failed or interrupted copy can leave a partial container file.",
+                "container: {container}\nCopy TO the container: {remote}\nFrom local {}: {} ({} bytes{}, SHA-256 {})\nRuns {} in the container; {} The bytes reviewed here are the bytes sent; later local changes are ignored.\nA failed or interrupted copy can leave a partial container {}.",
+                if upload.files.is_some() {
+                    "directory"
+                } else {
+                    "file"
+                },
                 upload.local.display(),
                 upload.bytes.len(),
+                upload.files.map_or(String::new(), |files| format!(
+                    " as an archive of {files} files"
+                )),
                 upload.sha256,
-                serde_json::to_string(&crate::file_copy::write_argv(remote))
-                    .map_err(|_| "cannot review arguments")?
+                serde_json::to_string(&crate::file_copy::write_argv(
+                    remote,
+                    upload.files.is_some()
+                ))
+                .map_err(|_| "cannot review arguments")?,
+                if upload.files.is_some() {
+                    "mkdir refuses an existing directory and the extracted file count is checked."
+                } else {
+                    "set -C refuses to replace an existing file and the written size is checked."
+                },
+                if upload.files.is_some() {
+                    "directory"
+                } else {
+                    "file"
+                },
             )
         }
     };
@@ -484,6 +515,7 @@ pub async fn run(gateway: &Gateway, reviewed: ReviewedOperation, typed: &str) ->
             container,
             remote,
             local,
+            recursive,
         } => {
             let params = AttachParams {
                 container: Some(container.clone()),
@@ -494,10 +526,33 @@ pub async fn run(gateway: &Gateway, reviewed: ReviewedOperation, typed: &str) ->
                 ..Default::default()
             };
             match api
-                .exec(&reviewed.pod, crate::file_copy::read_argv(remote), &params)
+                .exec(
+                    &reviewed.pod,
+                    crate::file_copy::read_argv(remote, *recursive),
+                    &params,
+                )
                 .await
             {
                 Ok(process) => crate::file_copy::receive(process).await.and_then(|bytes| {
+                    if *recursive {
+                        let done = crate::archive::extract(
+                            &bytes,
+                            crate::file_copy::remote_name(remote),
+                            local,
+                        )?;
+                        return Ok(format!(
+                            "Copied {remote} to {} ({} files, {} directories, {} bytes{})",
+                            local.display(),
+                            done.files,
+                            done.directories,
+                            done.bytes,
+                            if done.skipped > 0 {
+                                format!("; {} links or special files skipped", done.skipped)
+                            } else {
+                                String::new()
+                            }
+                        ));
+                    }
                     crate::file_copy::write_download(local, &bytes)?;
                     Ok(format!(
                         "Copied {remote} to {} ({} bytes, SHA-256 {})",
@@ -524,19 +579,30 @@ pub async fn run(gateway: &Gateway, reviewed: ReviewedOperation, typed: &str) ->
                 ..Default::default()
             };
             match api
-                .exec(&reviewed.pod, crate::file_copy::write_argv(remote), &params)
+                .exec(
+                    &reviewed.pod,
+                    crate::file_copy::write_argv(remote, upload.files.is_some()),
+                    &params,
+                )
                 .await
             {
-                Ok(process) => crate::file_copy::send(process, &upload.bytes)
-                    .await
-                    .map(|()| {
-                        format!(
-                            "Copied {} to {remote} ({} bytes, SHA-256 {})",
-                            upload.local.display(),
-                            upload.bytes.len(),
-                            upload.sha256
-                        )
-                    }),
+                Ok(process) => crate::file_copy::send(
+                    process,
+                    &upload.bytes,
+                    upload.files.unwrap_or(upload.bytes.len()),
+                )
+                .await
+                .map(|()| {
+                    format!(
+                        "Copied {} to {remote} ({}{} bytes, SHA-256 {})",
+                        upload.local.display(),
+                        upload
+                            .files
+                            .map_or(String::new(), |files| format!("{files} files, archive ")),
+                        upload.bytes.len(),
+                        upload.sha256
+                    )
+                }),
                 Err(error) => Err(connection_error(error)),
             }
         }

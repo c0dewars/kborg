@@ -34,6 +34,7 @@ pub mod handoff;
 pub mod advice;
 pub mod aliases;
 pub mod allocations;
+pub mod archive;
 pub mod auth;
 pub mod bench;
 pub mod extensions;

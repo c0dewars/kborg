@@ -45,6 +45,7 @@ fn harness() -> Harness {
                 interactive: false,
                 session_seconds: 900,
                 node_shell_image: String::new(),
+                recursive: false,
                 metrics_resources: false,
                 selector: String::new(),
                 log_read: crate::logs::ReadOptions::default(),
@@ -1834,6 +1835,7 @@ fn file_copy_commands_review_the_selected_pod_default_container() {
                     container,
                     remote,
                     local,
+                    ..
                 },
             ),
         )) => assert_eq!(

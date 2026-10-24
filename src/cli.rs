@@ -68,6 +68,8 @@ pub struct Options {
     pub session_seconds: u16,
     /// Image for node shell Pods (`--node-shell-image`).
     pub node_shell_image: String,
+    /// `cp-from` / `cp-to --recursive`: copy a directory.
+    pub recursive: bool,
     pub command: Vec<String>,
 }
 
@@ -107,6 +109,7 @@ fn parse(args: Vec<String>) -> Result<Options> {
         metrics_resources: false,
         session_seconds: 900,
         node_shell_image: crate::node_shell::DEFAULT_IMAGE.into(),
+        recursive: false,
         command: vec![],
     };
     let mut args = args.into_iter();
@@ -293,6 +296,7 @@ fn parse(args: Vec<String>) -> Result<Options> {
             "--allow-forward" => opts.connection.allow_port_forward = true,
             "--allow-file-copy" => opts.connection.allow_file_copy = true,
             "--allow-apply" => opts.connection.allow_apply = true,
+            "--recursive" => opts.recursive = true,
             "--allow-node-shell" => opts.connection.allow_node_shell = true,
             "--node-shell-image" => {
                 let image = args
@@ -699,9 +703,9 @@ pub fn run_args(args: Vec<String>) -> Result<()> {
                     "exec"=>{if args.len()<3{return Err("usage: exec POD CONTAINER -- COMMAND [ARG...] --write --allow-exec (put flags before --)".into());}
                     if opts.interactive {crate::ops::Request::InteractiveExec{container:args[1].clone(),argv:args[2..].to_vec(),seconds:opts.session_seconds}} else {crate::ops::Request::Exec{container:args[1].clone(),argv:args[2..].to_vec()}}},
                     "cp-from"=>{if args.len()!=4{return Err("usage: cp-from POD CONTAINER /CONTAINER/FILE LOCAL_FILE_OR_DIR --write --allow-file-copy".into());}
-                    crate::ops::Request::CopyFrom{container:args[1].clone(),remote:args[2].clone(),local:std::path::PathBuf::from(&args[3])}},
+                    crate::ops::Request::CopyFrom{container:args[1].clone(),remote:args[2].clone(),local:std::path::PathBuf::from(&args[3]),recursive:opts.recursive}},
                     "cp-to"=>{if args.len()!=4{return Err("usage: cp-to POD CONTAINER LOCAL_FILE /CONTAINER/FILE --write --allow-file-copy".into());}
-                    crate::ops::Request::CopyTo{container:args[1].clone(),upload:crate::file_copy::read_upload(std::path::Path::new(&args[2]))?,remote:args[3].clone()}},
+                    crate::ops::Request::CopyTo{container:args[1].clone(),upload:if opts.recursive {crate::file_copy::read_upload_dir(std::path::Path::new(&args[2]))?} else {crate::file_copy::read_upload(std::path::Path::new(&args[2]))?},remote:args[3].clone()}},
                     "attach"=>{if args.len()!=2{return Err("usage: attach POD CONTAINER --write --allow-attach (bounded output only)".into());}
                     if opts.interactive {crate::ops::Request::InteractiveAttach{container:args[1].clone(),seconds:opts.session_seconds}} else {crate::ops::Request::Attach{container:args[1].clone()}}},
                     _=>{if args.len()!=4{return Err("usage: forward POD LOCAL_PORT REMOTE_PORT SECONDS --write --allow-forward".into());}

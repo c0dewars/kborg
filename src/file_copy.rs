@@ -91,11 +91,14 @@ pub fn download_target(remote: &str, local: &Path) -> Result<PathBuf> {
     Ok(target)
 }
 
-/// A local file read once at review time; the same bytes are uploaded.
+/// A local file (or directory archive) read once at review time; the same
+/// bytes are uploaded.
 pub struct Upload {
     pub local: PathBuf,
     pub bytes: Vec<u8>,
     pub sha256: String,
+    /// Regular-file count when `bytes` is a directory archive.
+    pub files: Option<usize>,
 }
 
 pub fn read_upload(local: &Path) -> Result<Upload> {
@@ -106,10 +109,48 @@ pub fn read_upload(local: &Path) -> Result<Upload> {
         local: resolved,
         sha256: sha256(&bytes),
         bytes,
+        files: None,
     })
 }
 
-pub fn read_argv(remote: &str) -> Vec<String> {
+/// Archive a local directory (regular files and directories only).
+pub fn read_upload_dir(local: &Path) -> Result<Upload> {
+    let fail = |error: String| format!("cannot upload {}: {error}", local.display());
+    let resolved = resolve_parent(local).map_err(fail)?;
+    if !fs::symlink_metadata(&resolved).is_ok_and(|meta| meta.is_dir()) {
+        return Err(fail("not a directory".into()));
+    }
+    let (bytes, files) = crate::archive::create(&resolved, ".", MAX_BYTES).map_err(fail)?;
+    Ok(Upload {
+        local: resolved,
+        sha256: sha256(&bytes),
+        bytes,
+        files: Some(files),
+    })
+}
+
+/// The last path component, the top directory of a directory download.
+pub fn remote_name(remote: &str) -> &str {
+    file_name(remote)
+}
+
+pub fn read_argv(remote: &str, recursive: bool) -> Vec<String> {
+    if recursive {
+        let (parent, name) = remote.rsplit_once('/').unwrap_or(("", remote));
+        // `./NAME` keeps a name starting with '-' from being read as an option.
+        return vec![
+            "tar".into(),
+            "-cf".into(),
+            "-".into(),
+            "-C".into(),
+            if parent.is_empty() {
+                "/".into()
+            } else {
+                parent.into()
+            },
+            format!("./{name}"),
+        ];
+    }
     vec!["cat".into(), "--".into(), remote.into()]
 }
 
@@ -117,11 +158,18 @@ pub fn read_argv(remote: &str) -> Vec<String> {
 /// gives the writer an ordinary pipe: BusyBox `cat > file` reading the
 /// container runtime's stdin directly can stop early. `wc -c` reports the
 /// written size so a short write is never reported as success.
-pub fn write_argv(remote: &str) -> Vec<String> {
+/// A directory upload creates a NEW directory (`mkdir` fails if it exists),
+/// extracts into it and reports the regular-file count for verification.
+pub fn write_argv(remote: &str, directory: bool) -> Vec<String> {
+    let script = if directory {
+        "mkdir \"$1\" && cat | tar -xf - -C \"$1\" && find \"$1\" -type f | wc -l"
+    } else {
+        "set -C && cat | cat > \"$1\" && wc -c < \"$1\""
+    };
     vec![
         "sh".into(),
         "-c".into(),
-        "set -C && cat | cat > \"$1\" && wc -c < \"$1\"".into(),
+        script.into(),
         "kborg-cp".into(),
         remote.into(),
     ]
@@ -203,7 +251,11 @@ pub async fn receive(mut process: kube::api::AttachedProcess) -> Result<Vec<u8>>
 /// Stream `bytes` to a `write_argv` process and wait for its status. A
 /// container-side failure (for example an existing file) is reported from
 /// its own status and stderr rather than as a broken stream.
-pub async fn send(mut process: kube::api::AttachedProcess, bytes: &[u8]) -> Result<()> {
+pub async fn send(
+    mut process: kube::api::AttachedProcess,
+    bytes: &[u8],
+    expected: usize,
+) -> Result<()> {
     let mut stdin = process.stdin().ok_or("stdin stream unavailable")?;
     let stdout = process.stdout().ok_or("stdout stream unavailable")?;
     let stderr = process.stderr().ok_or("stderr stream unavailable")?;
@@ -226,11 +278,11 @@ pub async fn send(mut process: kube::api::AttachedProcess, bytes: &[u8]) -> Resu
                 let size = String::from_utf8_lossy(&out.unwrap_or_default())
                     .trim()
                     .parse::<usize>();
-                if size == Ok(bytes.len()) {
+                if size == Ok(expected) {
                     Ok(())
                 } else {
                     Err(
-                        "the container file size does not match the reviewed bytes; it is partial"
+                        "the container copy does not match the reviewed size or file count; it is partial"
                             .into(),
                     )
                 }
@@ -271,7 +323,7 @@ mod tests {
             assert!(validate_remote(bad).is_err(), "{bad:?}");
         }
         assert_eq!(
-            write_argv("/tmp/it's \"x\"; rm -rf /"),
+            write_argv("/tmp/it's \"x\"; rm -rf /", false),
             vec![
                 "sh",
                 "-c",
