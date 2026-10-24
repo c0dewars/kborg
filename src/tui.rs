@@ -281,6 +281,8 @@ struct App {
     last_metrics: Instant,
     last_table_metrics: Option<Instant>,
     table_metrics: table_metrics::TableMetrics,
+    /// Bumped whenever `items` is replaced or cleared; keys the order cache.
+    items_generation: u64,
     /// Memoized filter-and-sort order of `items`, keyed by a fingerprint.
     visible_cache: std::cell::RefCell<Option<(u64, std::rc::Rc<Vec<usize>>)>>,
     metrics_resources: bool,
@@ -355,23 +357,18 @@ impl App {
     }
     /// Filtered, sorted indices into `items`. Recomputing compiles the filter
     /// and builds one sort key per object, so the result is memoized against
-    /// a fingerprint of the filter, sort and every object's identity and
-    /// version; any API change bumps resourceVersion and invalidates it.
+    /// the filter, sort and the items generation.
     fn visible_order(&self) -> std::rc::Rc<Vec<usize>> {
         use std::hash::{Hash, Hasher};
         let metrics_sort = matches!(self.sort, Sort::Cpu | Sort::Memory);
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         self.filter.hash(&mut hasher);
         (self.sort as u8).hash(&mut hasher);
+        // O(1): every replacement of `items` bumps the generation; the
+        // allocation address and length guard direct reassignment.
+        self.items_generation.hash(&mut hasher);
+        (self.items.as_ptr() as usize).hash(&mut hasher);
         self.items.len().hash(&mut hasher);
-        for item in &self.items {
-            let metadata = &item["metadata"];
-            for field in ["uid", "resourceVersion", "name", "namespace"] {
-                metadata[field].as_str().hash(&mut hasher);
-            }
-            item["status"]["phase"].as_str().hash(&mut hasher);
-            metadata["deletionTimestamp"].is_string().hash(&mut hasher);
-        }
         let fingerprint = hasher.finish();
         if !metrics_sort
             && let Some((key, order)) = &*self.visible_cache.borrow()
@@ -691,6 +688,7 @@ pub fn run(options: Options) -> Result<()> {
         last_metrics: Instant::now(),
         last_table_metrics: None,
         table_metrics: Default::default(),
+        items_generation: 0,
         visible_cache: Default::default(),
         metrics_resources: false,
         overview: None,

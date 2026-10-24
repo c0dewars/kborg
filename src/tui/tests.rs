@@ -105,6 +105,7 @@ fn harness() -> Harness {
             last_metrics: Instant::now(),
             last_table_metrics: None,
             table_metrics: Default::default(),
+            items_generation: 0,
             visible_cache: Default::default(),
             metrics_resources: false,
             overview: None,
@@ -2129,6 +2130,7 @@ fn visible_order_is_memoized_and_invalidated_by_filter_sort_and_versions() {
     app.sort = Sort::Restarts;
     assert_eq!(names(&app), ["a", "c", "b"]);
     app.items[2] = pod("c", 9, "2");
+    app.items_generation += 1;
     assert_eq!(names(&app), ["c", "a", "b"]);
     app.filter = "default [ac] ".into();
     assert_eq!(names(&app), ["c", "a"]);

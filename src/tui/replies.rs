@@ -489,6 +489,7 @@ impl App {
                     self.stale = true;
                     if error.contains("API 401") || error.contains("API 403") {
                         self.items.clear();
+                        self.items_generation += 1;
                         self.modal = Modal::None;
                     }
                     self.status = error;
