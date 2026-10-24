@@ -257,28 +257,58 @@ pub fn kinds() -> Vec<Kind> {
     .collect()
 }
 
-fn config_path(options: &Connection) -> Result<PathBuf> {
+/// Kubeconfig files in kubectl's order: `--kubeconfig`, then each entry of
+/// `$KUBECONFIG`, then `~/.kube/config`.
+fn config_paths(options: &Connection) -> Result<Vec<PathBuf>> {
     if let Some(path) = &options.kubeconfig {
-        return Ok(path.clone());
+        return Ok(vec![path.clone()]);
     }
     if let Some(env) = std::env::var_os("KUBECONFIG") {
-        let paths: Vec<_> = std::env::split_paths(&env).collect();
-        if paths.len() != 1 {
-            return Err("multiple KUBECONFIG files are not supported yet; pass --kubeconfig with one trusted file".into());
+        let paths: Vec<_> = std::env::split_paths(&env)
+            .filter(|path| !path.as_os_str().is_empty())
+            .collect();
+        if paths.len() > MAX_KUBECONFIG_FILES {
+            return Err(format!(
+                "KUBECONFIG lists more than {MAX_KUBECONFIG_FILES} files; pass --kubeconfig with one file"
+            ));
         }
-        return paths
-            .into_iter()
-            .next()
-            .ok_or_else(|| "empty KUBECONFIG".into());
+        if !paths.is_empty() {
+            return Ok(paths);
+        }
     }
     let home = std::env::var_os("USERPROFILE")
         .or_else(|| std::env::var_os("HOME"))
         .ok_or("home directory unavailable")?;
-    Ok(PathBuf::from(home).join(".kube/config"))
+    Ok(vec![PathBuf::from(home).join(".kube/config")])
 }
+const MAX_KUBECONFIG_FILES: usize = 16;
+/// Merges kubeconfig files like kubectl: the first file to define a cluster,
+/// user or context name wins, and the first `current-context` wins. Listed
+/// files that do not exist are skipped, as kubectl does; at least one must.
 fn read_config(options: &Connection) -> Result<Kubeconfig> {
-    let path = config_path(options)?;
-    let bytes = safety::read_small(&path, 1024 * 1024)?;
+    merge_config_files(config_paths(options)?)
+}
+fn merge_config_files(paths: Vec<PathBuf>) -> Result<Kubeconfig> {
+    let single = paths.len() == 1;
+    let mut merged: Option<Kubeconfig> = None;
+    for path in paths {
+        if !single && !path.exists() {
+            continue;
+        }
+        let next = read_config_file(&path)?;
+        merged = Some(match merged {
+            None => next,
+            Some(base) => base
+                .merge(next)
+                .map_err(|_| "kubeconfig files disagree on kind or apiVersion")?,
+        });
+    }
+    merged.ok_or_else(|| "none of the KUBECONFIG files exist".into())
+}
+/// One kubeconfig file, validated on its own; relative file references are
+/// resolved against that file's directory before any merge.
+fn read_config_file(path: &std::path::Path) -> Result<Kubeconfig> {
+    let bytes = safety::read_small(path, 1024 * 1024)?;
     let text = std::str::from_utf8(&bytes).map_err(|_| "kubeconfig must be UTF-8")?;
     let mut raw = Kubeconfig::from_yaml(text)
         .map_err(|_| "invalid kubeconfig YAML (details suppressed to protect credentials)")?;
@@ -3052,6 +3082,44 @@ mod tests {
                     .is_err()
             );
         });
+    }
+    #[test]
+    fn kubeconfig_files_merge_first_wins_and_skip_missing_entries() -> Result<()> {
+        let root = std::env::temp_dir()
+            .canonicalize()
+            .map_err(|_| "temp")?
+            .join(format!("kborg-kubeconfig-merge-{}", std::process::id()));
+        safety::ensure_private_dir(&root)?;
+        let file = |name: &str, current: &str, server: &str, extra: &str| -> Result<PathBuf> {
+            let path = root.join(name);
+            let text = format!(
+                "apiVersion: v1\nkind: Config\ncurrent-context: {current}\nclusters:\n- name: shared\n  cluster:\n    server: {server}\n    certificate-authority: ca.pem\n- name: {extra}\n  cluster:\n    server: https://{extra}.example\ncontexts:\n- name: shared\n  context:\n    cluster: shared\n    user: u\n- name: {extra}\n  context:\n    cluster: {extra}\n    user: u\nusers:\n- name: u\n  user:\n    token: t\n"
+            );
+            let _ = std::fs::remove_file(&path);
+            safety::write_new(&path, text.as_bytes())?;
+            Ok(path)
+        };
+        let first = file("a.yaml", "shared", "https://first.example", "east")?;
+        let second = file("b.yaml", "west", "https://second.example", "west")?;
+        let merged = merge_config_files(vec![first, root.join("missing.yaml"), second])?;
+        assert_eq!(merged.current_context.as_deref(), Some("shared"));
+        let names = merged.contexts.iter().map(|c| c.name.as_str()).collect::<Vec<_>>();
+        assert_eq!(names, ["shared", "east", "west"]);
+        let shared = merged
+            .clusters
+            .iter()
+            .find(|c| c.name == "shared")
+            .and_then(|c| c.cluster.as_ref())
+            .ok_or("shared cluster")?;
+        assert_eq!(shared.server.as_deref(), Some("https://first.example"));
+        assert_eq!(
+            shared.certificate_authority.as_deref(),
+            Some(root.join("ca.pem").to_string_lossy().as_ref())
+        );
+        assert!(merge_config_files(vec![root.join("missing.yaml"), root.join("gone.yaml")]).is_err());
+        assert!(merge_config_files(vec![root.join("only-missing.yaml")]).is_err());
+        let _ = std::fs::remove_dir_all(&root);
+        Ok(())
     }
     #[test]
     fn force_kill_is_pod_only_opt_in_and_uses_zero_grace() {

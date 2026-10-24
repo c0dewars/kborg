@@ -112,7 +112,7 @@ kborg --context docker-desktop --allow-logs \
   --write --allow-yaml-edit --allow-node-maintenance --allow-forward --allow-exec
 ```
 
-KBorg uses your kubeconfig directly. kubectl, Helm, Python and an AI account are not needed for browsing. Server-side RBAC and admission always have the final say.
+KBorg uses your kubeconfig directly: the current context unless you pass `--context`, and every file in `$KUBECONFIG` merged the way kubectl does (first definition wins). kubectl, Helm, Python and an AI account are not needed for browsing. Server-side RBAC and admission always have the final say.
 
 ## Keys for k9s users
 
@@ -129,7 +129,8 @@ KBorg uses your kubeconfig directly. kubectl, Helm, Python and an AI account are
 | Ctrl-D, Ctrl-K | Reviewed delete, reviewed force kill |
 | `c` `u` `r` on Nodes | Cordon, uncordon, drain |
 | `:secrets`, `x` | Secret keys, reveal one value |
-| `:helm`, `:pulses`, `:xray`, `:can` | Releases, health, relationships, RBAC evidence |
+| `:helm`, `:pulses`, `:xray` | Releases, health, relationships |
+| `:subjects` `:users` `:groups`, `:can` | RBAC subjects with their roles; one subject's bindings and rules |
 | `D` / `kborg dashboard` | Dashboard |
 | Dashboard `1`–`9`, `w`, `L`, `t` | Focus (again = full screen), select warning, Pod logs, cross-cluster tail |
 | `?` | The complete keymap |
