@@ -105,13 +105,13 @@ pub async fn workloads(gateway: &Gateway, namespace: &str) -> Result<String> {
     Ok(out)
 }
 
-struct Read {
-    resource: String,
-    items: Vec<Value>,
-    incomplete: bool,
-    error: Option<String>,
+pub(crate) struct Read {
+    pub(crate) resource: String,
+    pub(crate) items: Vec<Value>,
+    pub(crate) incomplete: bool,
+    pub(crate) error: Option<String>,
 }
-async fn collect(gateway: &Gateway, namespace: &str, resources: &[&str]) -> Vec<Read> {
+pub(crate) async fn collect(gateway: &Gateway, namespace: &str, resources: &[&str]) -> Vec<Read> {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
     stream::iter(resources.iter().map(|resource| async move {
         let result = tokio::time::timeout_at(deadline, gateway.list(resource, namespace)).await;

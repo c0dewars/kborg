@@ -6,7 +6,7 @@ Please report vulnerabilities privately through [GitHub private vulnerability re
 
 ## Status
 
-KBorg 0.4 has had internal security reviews but no independent audit; do not describe it as audited.
+KBorg has had internal security reviews but no independent audit; do not describe it as audited. The audit scope and known limitations are in [docs/SECURITY_AUDIT_PACK.md](docs/SECURITY_AUDIT_PACK.md).
 
 Use dedicated least-privilege identities. Never use CI production credentials. Do not assume read-only access protects confidentiality. Never publish `.local/`, kubeconfigs, logs, audit metadata or crash dumps containing private data. TLS verification cannot be disabled through application flags.
 
@@ -20,6 +20,49 @@ single key only on an explicit `x`, for 30 seconds; values are never exported,
 copied or written to disk. The listing still transfers Secret payloads into
 process memory, so grant `list secrets` only where that is acceptable. Ctrl-K
 force kill is separately opt-in with `--write --allow-force-kill`.
+
+Pod file copy is opt-in with `--write --allow-file-copy` (`kborg cp-from`,
+`kborg cp-to`, `:cp-from`, `:cp-to`). Each copy moves one regular file of at
+most 64 MiB after a typed `namespace/pod` approval, with the target UID and
+resourceVersion rechecked and an audit record written. The container runs a
+fixed argv (`cat` to read; a `set -C` shell redirect to write, with the path
+passed as an argument), so existing container files are never replaced and the
+written size is verified. Downloads are held in memory and written only after
+the transfer succeeds, as new owner-only files that never replace or follow a
+local symlink. Downloaded bytes are untrusted container data: KBorg does not
+execute or display them. Directory copies (`-r`) use a strict tar stream: only
+regular files and directories are extracted, into a new owner-only directory
+that is removed on failure; links, devices, absolute paths and `..` are
+refused, and uploads create a new container directory and verify the file
+count.
+
+Server-side apply is opt-in with `--write --allow-apply`. Every object is
+dry-run before review, updates are locked to the reviewed resourceVersion,
+nothing is written if any object changed after review, and field-manager
+conflicts are never forced. Secrets, cluster-scoped kinds, system namespaces
+and GitOps-managed objects are refused. A multi-object apply is not atomic: a
+failure part-way leaves earlier objects applied, and the result says which.
+
+Node shell is opt-in with `--write --allow-node-shell` and is root on the
+Node. The review shows the complete privileged Pod (host PID, network and IPC
+namespaces). The session only targets KBorg's own node-shell Pod on the
+reviewed Node; the Pod is deleted afterwards and has `activeDeadlineSeconds` as
+a backstop. Grant `create pods` in a namespace that permits privileged Pods
+only to people who may administer Nodes.
+
+Ephemeral debug containers are opt-in with `--write --allow-debug`. The
+review shows the exact container after a dry run; it is unprivileged and gets
+no host access, though with a target container it shares that container's
+process namespace. Kubernetes cannot remove ephemeral containers: the
+container exits after its sleep but stays listed in the Pod. CronJob trigger,
+suspend/resume and workload rollback need `--write` and go through the same
+dry run, review, UID/resourceVersion lock and audit as other writes.
+
+Extensions run from the TUI (`:ext`) use the same contract as the CLI: an
+absolute registered executable with literal arguments, a whole-input review
+and `RUN TOOL` approval, 15 seconds and 256 KiB of captured output, run outside
+the TUI screen. They keep your OS user's file and network access; they are
+not sandboxed.
 
 Copilot advice can target GitHub.com, a GHE.com tenant or GitHub Enterprise
 Server. Each deployment has its own exact egress allowlist, and credentials are
