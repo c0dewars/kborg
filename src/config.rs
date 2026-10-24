@@ -64,6 +64,8 @@ pub struct Config {
     pub allow_apply: bool,
     #[serde(default)]
     pub allow_node_shell: bool,
+    #[serde(default)]
+    pub allow_debug: bool,
 }
 impl Default for Config {
     fn default() -> Self {
@@ -94,6 +96,7 @@ impl Default for Config {
             allow_external_editor: false,
             allow_apply: false,
             allow_node_shell: false,
+            allow_debug: false,
         }
     }
 }
@@ -169,6 +172,7 @@ pub fn apply(config: Config, options: &mut Options) -> Result<()> {
         || (options.connection.allow_node_maintenance && !config.allow_node_maintenance)
         || (options.connection.allow_apply && !config.allow_apply)
         || (options.connection.allow_node_shell && !config.allow_node_shell)
+        || (options.connection.allow_debug && !config.allow_debug)
     {
         return Err("configuration forbids the requested write capability".into());
     }
@@ -382,7 +386,7 @@ mod tests {
         let mut writable = options();
         writable.connection.writable = true;
         assert!(apply(Config::default(), &mut writable).is_err());
-        let newer: [fn(&mut Options); 8] = [
+        let newer: [fn(&mut Options); 9] = [
             |o| o.connection.allow_secret_reveal = true,
             |o| o.connection.allow_force_kill = true,
             |o| o.connection.allow_yaml_edit = true,
@@ -390,6 +394,7 @@ mod tests {
             |o| o.connection.allow_file_copy = true,
             |o| o.connection.allow_apply = true,
             |o| o.connection.allow_node_shell = true,
+            |o| o.connection.allow_debug = true,
             |o| o.external_editor = true,
         ];
         for enable in newer {

@@ -14,6 +14,7 @@ use std::{
 use tokio::io::{AsyncRead, AsyncReadExt};
 
 pub const NODE_SHELL_CAPABILITY: usize = 4;
+pub const DEBUG_CAPABILITY: usize = 5;
 pub enum Request {
     Exec {
         container: String,
@@ -41,6 +42,11 @@ pub enum Request {
         node: String,
         seconds: u16,
     },
+    /// Interactive shell in a KBorg ephemeral debug container.
+    Debug {
+        container: String,
+        seconds: u16,
+    },
     /// Copy one container file to a new local file.
     CopyFrom {
         container: String,
@@ -64,6 +70,7 @@ impl Request {
             Self::PortForward { .. } => 2,
             Self::CopyFrom { .. } | Self::CopyTo { .. } => 3,
             Self::NodeShell { .. } => NODE_SHELL_CAPABILITY,
+            Self::Debug { .. } => DEBUG_CAPABILITY,
         }
     }
     fn name(&self) -> &'static str {
@@ -76,6 +83,7 @@ impl Request {
             Self::CopyFrom { .. } => "copy-from-pod",
             Self::CopyTo { .. } => "copy-to-pod",
             Self::NodeShell { .. } => "node-shell",
+            Self::Debug { .. } => "debug-container",
         }
     }
     fn validate(&self) -> Result<()> {
@@ -116,6 +124,11 @@ impl Request {
                     return Err("invalid Node name".into());
                 }
             }
+            Self::Debug { container, .. } => {
+                if !container.starts_with(crate::debug_container::NAME_PREFIX) {
+                    return Err("debug sessions only target KBorg debug containers".into());
+                }
+            }
             Self::CopyFrom {
                 container, remote, ..
             }
@@ -128,7 +141,8 @@ impl Request {
         }
         if let Self::InteractiveExec { seconds, .. }
         | Self::InteractiveAttach { seconds, .. }
-        | Self::NodeShell { seconds, .. } = self
+        | Self::NodeShell { seconds, .. }
+        | Self::Debug { seconds, .. } = self
         {
             crate::session::validate_lifetime(*seconds)?;
         }
@@ -285,6 +299,22 @@ pub async fn prepare(
                 crate::session::review(*seconds)
             )
         }
+        Request::Debug { container, seconds } => {
+            if !object.spec.as_ref().is_some_and(|spec| {
+                spec.ephemeral_containers
+                    .iter()
+                    .flatten()
+                    .any(|c| c.name == *container)
+            }) {
+                return Err("the debug container is not part of this Pod".into());
+            }
+            format!(
+                "debug container: {container}\nDirect argv: {}\n{}",
+                serde_json::to_string(&crate::debug_container::argv())
+                    .map_err(|_| "cannot review arguments")?,
+                crate::session::review(*seconds)
+            )
+        }
         Request::CopyFrom {
             container,
             remote,
@@ -423,6 +453,14 @@ async fn connect_interactive(
                 )
                 .await
             }
+            Request::Debug { container, .. } => {
+                api.exec(
+                    &reviewed.pod,
+                    crate::debug_container::argv(),
+                    &crate::session::parameters(container),
+                )
+                .await
+            }
             _ => return Err("review does not authorize an interactive session".into()),
         }
         .map_err(connection_error)
@@ -444,7 +482,8 @@ pub async fn run_interactive(
     let seconds = match &reviewed.request {
         Request::InteractiveExec { seconds, .. }
         | Request::InteractiveAttach { seconds, .. }
-        | Request::NodeShell { seconds, .. } => *seconds,
+        | Request::NodeShell { seconds, .. }
+        | Request::Debug { seconds, .. } => *seconds,
         _ => return Err("review does not authorize an interactive session".into()),
     };
     let api = verify_review(gateway, &reviewed, typed).await?;
@@ -473,6 +512,7 @@ pub async fn run(gateway: &Gateway, reviewed: ReviewedOperation, typed: &str) ->
         Request::InteractiveExec { .. }
             | Request::InteractiveAttach { .. }
             | Request::NodeShell { .. }
+            | Request::Debug { .. }
     ) {
         crate::session::ensure_terminal()?;
     }
@@ -501,7 +541,8 @@ pub async fn run(gateway: &Gateway, reviewed: ReviewedOperation, typed: &str) ->
         }
         Request::InteractiveExec { seconds, .. }
         | Request::InteractiveAttach { seconds, .. }
-        | Request::NodeShell { seconds, .. } => match connect_interactive(&api, &reviewed).await {
+        | Request::NodeShell { seconds, .. }
+        | Request::Debug { seconds, .. } => match connect_interactive(&api, &reviewed).await {
             Ok(process) => match crate::session::terminal(process, *seconds).await {
                 Ok(outcome) => {
                     session_unknown = outcome.remote_outcome_unknown();

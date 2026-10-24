@@ -37,6 +37,7 @@ pub mod allocations;
 pub mod archive;
 pub mod auth;
 pub mod bench;
+pub mod debug_container;
 pub mod extensions;
 pub mod favorites;
 pub mod file_copy;

@@ -64,6 +64,8 @@ pub struct Connection {
     pub allow_file_copy: bool,
     /// Opt-in: reviewed privileged node shell Pods.
     pub allow_node_shell: bool,
+    /// Opt-in: reviewed ephemeral debug containers.
+    pub allow_debug: bool,
     pub allow_node_maintenance: bool,
     pub allow_yaml_edit: bool,
     /// Opt-in: reviewed server-side apply of local manifest files.
@@ -88,7 +90,7 @@ pub struct Gateway {
     allow_helm_hooks: bool,
     allow_helm_crds: bool,
     lifecycle_connection: Option<crate::helm_lifecycle::StaticConnection>,
-    operation_capabilities: [bool; 5],
+    operation_capabilities: [bool; 6],
     allow_node_maintenance: bool,
     allow_yaml_edit: bool,
     allow_apply: bool,
@@ -147,6 +149,7 @@ impl Gateway {
                     options.allow_port_forward,
                     options.allow_file_copy,
                     options.allow_node_shell,
+                    options.allow_debug,
                 ],
                 demo: demo_objects(),
                 kinds: kinds(),
@@ -316,6 +319,7 @@ impl Gateway {
                 options.allow_port_forward,
                 options.allow_file_copy,
                 options.allow_node_shell,
+                options.allow_debug,
             ],
             demo: vec![],
             kinds: kinds(),
@@ -380,7 +384,7 @@ impl Gateway {
             allow_helm_hooks: false,
             allow_helm_crds: false,
             lifecycle_connection: None,
-            operation_capabilities: [false; 5],
+            operation_capabilities: [false; 6],
             allow_node_maintenance: false,
             allow_yaml_edit: false,
             allow_apply: false,

@@ -298,6 +298,7 @@ fn parse(args: Vec<String>) -> Result<Options> {
             "--allow-apply" => opts.connection.allow_apply = true,
             "--recursive" => opts.recursive = true,
             "--allow-node-shell" => opts.connection.allow_node_shell = true,
+            "--allow-debug" => opts.connection.allow_debug = true,
             "--node-shell-image" => {
                 let image = args
                     .next()
@@ -623,9 +624,9 @@ pub fn run_args(args: Vec<String>) -> Result<()> {
         "helm" | "history" | "list" | "watch" | "metrics" | "get" | "view" | "logs"
         | "resources" | "doctor" | "scale" | "restart" | "delete" | "kill" | "set-image"
         | "trigger" | "suspend" | "resume" | "rollback" | "set-resources" | "exec" | "attach"
-        | "forward" | "cp-from" | "cp-to" | "apply" | "node-shell" | "lint" | "pulses" | "xray"
-        | "workloads" | "can" | "yaml-template" | "yaml-edit" | "cordon" | "uncordon" | "drain" => {
-        }
+        | "forward" | "cp-from" | "cp-to" | "apply" | "node-shell" | "debug" | "lint"
+        | "pulses" | "xray" | "workloads" | "can" | "yaml-template" | "yaml-edit" | "cordon"
+        | "uncordon" | "drain" => {}
         _ => return Err("unknown command; see --help".into()),
     }
     if cmd == "view"
@@ -677,6 +678,17 @@ pub fn run_args(args: Vec<String>) -> Result<()> {
                 let (found,notes)=tokio::time::timeout(Duration::from_secs(30),crate::lint::collect(&gateway,&ns)).await.map_err(|_|"lint timed out")??;
                 if opts.json {print_json(&serde_json::json!({"findings":found,"notes":notes}))?;}
                 else {output!("{}",crate::lint::report(&gateway.context,&ns,&found,&notes));}
+            },
+            "debug" => {
+                if args.is_empty() || args.len()>2 {return Err("usage: debug POD [TARGET_CONTAINER] --write --allow-debug [--node-shell-image IMAGE]".into());}
+                if !io::stdin().is_terminal() || !io::stdout().is_terminal() {return Err("debug requires interactive terminal approval".into());}
+                let prepared=crate::debug_container::prepare(&gateway,&ns,&args[0],args.get(1).map(String::as_str),&opts.node_shell_image,opts.session_seconds).await?;
+                outputln!("{}",safety::review_display(prepared.summary())?); output!("> ");io::stdout().flush().map_err(|_|"output failed")?;
+                let mut input=String::new();use std::io::BufRead;io::stdin().lock().take(320).read_line(&mut input).map_err(|_|"input failed")?;
+                outputln!("Adding the debug container and waiting for it to start…");
+                let reviewed=crate::debug_container::start(&gateway,prepared,input.trim_end()).await?;
+                let typed=reviewed.confirmation();
+                outputln!("{}",crate::ops::run(&gateway,reviewed,&typed).await?);
             },
             "node-shell" => {
                 if args.len()!=1 {return Err("usage: node-shell NODE --write --allow-node-shell [-n NAMESPACE] [--node-shell-image IMAGE]".into());}

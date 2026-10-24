@@ -1841,6 +1841,27 @@ fn views_yaml_columns_custom_paths_and_sort_by_any_column() {
     );
 }
 #[test]
+fn debug_needs_its_capability_and_reviews_the_selected_pod() {
+    let (mut app, _replies, mut commands) = harness();
+    app.items = vec![object("api")];
+    assert!(app.command("debug").is_ok());
+    assert!(app.status.contains("--allow-debug"));
+    app.options.connection.writable = true;
+    app.options.connection.allow_debug = true;
+    while commands.try_recv().is_ok() {}
+    app.busy = false;
+    assert!(app.command("debug app").is_ok());
+    match commands.try_recv() {
+        Ok((_, Task::DebugPrepare(_, pod, target, _, seconds))) => {
+            assert_eq!(
+                (pod.as_str(), target.as_deref(), seconds),
+                ("api", Some("app"), 900)
+            )
+        }
+        _ => panic!(":debug did not request a review"),
+    }
+}
+#[test]
 fn cronjob_keys_and_errors_only_toggle() {
     let (mut app, _replies, mut commands) = harness();
     app.options.connection.writable = true;

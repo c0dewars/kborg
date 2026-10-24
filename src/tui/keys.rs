@@ -94,6 +94,9 @@ impl App {
                             WritePlan::NodeShell(prepared) => {
                                 Task::NodeShellStart(prepared, review.view.typed)
                             }
+                            WritePlan::Debug(prepared) => {
+                                Task::DebugStart(prepared, review.view.typed)
+                            }
                         };
                         self.send(task);
                         if !self.write_inflight {

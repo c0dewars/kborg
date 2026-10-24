@@ -79,6 +79,8 @@ impl App {
             ("restart", []) => self.prepare(Action::Restart),
             ("delete", []) => self.prepare(Action::Delete),
             ("kill", []) => self.kill(),
+            ("debug", []) => self.debug_container(None),
+            ("debug", [target]) => self.debug_container(Some(target.clone())),
             ("trigger", []) => self.prepare(Action::Trigger),
             ("suspend", []) => self.prepare(Action::Suspend(true)),
             ("resume", []) => self.prepare(Action::Suspend(false)),
@@ -435,6 +437,7 @@ impl App {
         connection.allow_file_copy = false;
         connection.allow_apply = false;
         connection.allow_node_shell = false;
+        connection.allow_debug = false;
         connection.allow_node_maintenance = false;
         connection.allow_yaml_edit = false;
         connection.allow_force_kill = false;
@@ -667,6 +670,29 @@ impl App {
             }
             Err(error) => self.status = error,
         }
+    }
+    /// Review an ephemeral debug container for the selected Pod.
+    pub(super) fn debug_container(&mut self, target: Option<String>) {
+        if !self.options.connection.writable || !self.options.connection.allow_debug {
+            self.status = "Debug containers require --write --allow-debug.".into();
+            return;
+        }
+        if self.options.connection.demo || self.kind() != "pods" {
+            self.status = "Select a live Pod in :pods to debug it.".into();
+            return;
+        }
+        let Some((_, namespace, pod)) = self.selected_target() else {
+            self.status = "Select a Pod first.".into();
+            return;
+        };
+        self.status = "Dry-running the debug container…".into();
+        self.send(Task::DebugPrepare(
+            namespace,
+            pod,
+            target,
+            self.options.node_shell_image.clone(),
+            self.options.session_seconds,
+        ));
     }
     /// Review a privileged node shell Pod for the selected Node.
     pub(super) fn node_shell(&mut self) {
@@ -916,6 +942,7 @@ impl App {
                 | Task::YamlExecute(..)
                 | Task::ApplyExecute(..)
                 | Task::NodeShellStart(..)
+                | Task::DebugStart(..)
                 | Task::NodeExecute(..)
                 | Task::RunSession(..)
                 | Task::RunForward(..)

@@ -80,6 +80,18 @@ impl App {
                     self.status =
                         "Read the whole privileged Pod, then type the confirmation.".into();
                 }
+                Reply::DebugPrepared(prepared) => {
+                    let view = review_ui::Review::new(
+                        prepared.summary().into(),
+                        prepared.confirmation(),
+                        self.epoch,
+                    );
+                    self.modal = Modal::WriteReview(Box::new(WriteReview {
+                        plan: WritePlan::Debug(prepared),
+                        view,
+                    }));
+                    self.status = "Read the debug container, then type the confirmation.".into();
+                }
                 Reply::NodeShellReady(reviewed) => {
                     let typed = reviewed.confirmation();
                     self.modal = Modal::None;
