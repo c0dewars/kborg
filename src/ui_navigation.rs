@@ -167,6 +167,8 @@ pub const SPECIAL: &[&str] = &[
     "help",
     "h",
     "?",
+    "keymap",
+    "keys",
     "q",
     "q!",
     "qa",

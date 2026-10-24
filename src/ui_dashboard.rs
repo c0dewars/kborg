@@ -1002,27 +1002,7 @@ pub(super) fn render(
             &app.ui,
         )
         .map_err(|_| "draw failed")?;
-        let help = [
-            "1..9             Focus a card; its number again toggles full screen",
-            "Arrows / Tab     Move between cards",
-            "Enter            Open focused context Pods",
-            "w                Select next recent warning",
-            "Enter on warning Open that Pod's Events (exact UID)",
-            "L on warning     Follow that Pod's logs in a pane (exact UID)",
-            "t                Tail chosen workloads across every card's cluster",
-            "e / W in a pane  Show only error / warning lines",
-            "Esc on warning   Close the log pane, then clear the selection",
-            "c                Choose up to nine context names",
-            "s                Save these contexts and namespace",
-            "B                Open saved selections",
-            "? / Esc          Close this keymap",
-            "",
-            "Pod watches and recent warning Events are independent.",
-            "Unknown, denied, stale and incomplete evidence stays explicit.",
-            "OOM evidence is current or previous container termination.",
-            "Restarts are current container counters, not a rate.",
-            "Dashboard reads never enable write capabilities.",
-        ];
+        let help = super::keyhelp::dashboard_help_lines(app);
         for (index, text) in help
             .iter()
             .take(rect.height.saturating_sub(2) as usize)
@@ -1126,23 +1106,7 @@ pub(super) fn render(
         out,
         height - 1,
         width,
-        if dashboard.help {
-            " ? keymap   Esc back"
-        } else if dashboard.picker.is_some() {
-            " Space select   Enter tail   Esc cancel"
-        } else if dashboard
-            .logs
-            .as_ref()
-            .is_some_and(|pane| pane.uid.is_empty())
-        {
-            " t close tail   e errors   W warnings   Esc close tail"
-        } else if dashboard.logs.is_some() {
-            " L close logs   w next warning   Enter Events   Esc close logs"
-        } else if dashboard.warning.is_some() {
-            " w next warning   Enter Events   L live logs   Esc clear"
-        } else {
-            " 1..9 focus   Enter Pods   w warnings   t tail workloads   ? keymap   Esc back"
-        },
+        &super::keyhelp::dashboard_hint(app, dashboard),
         color("accent"),
         bg,
     )
