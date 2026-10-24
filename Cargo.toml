@@ -22,7 +22,7 @@ tokio = { version = "1", features = ["rt", "time", "net", "sync", "io-util", "si
 http = "1"
 # ExecCredential policy fingerprints and credential encoding (already transitive).
 ring = "0.17"
-base64 = "0.22"
+base64 = "0.23"
 http-body-util = "0.1"
 # Deadline adapter for object bodies; the crate is already transitive.
 http-body = "1"
