@@ -1,0 +1,24 @@
+name: Tester feedback
+description: Impressions, comparisons with k9s/k10s, ideas
+labels: [feedback]
+body:
+  - type: input
+    id: version
+    attributes:
+      label: KBorg version
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options: [Browsing and keys, Dashboard, Logs, Changes and reviews, Customization, Performance, Looks and terminals, Other]
+    validations:
+      required: true
+  - type: textarea
+    id: feedback
+    attributes:
+      label: Feedback
+      description: What worked, what didn't, how it compares with k9s or k10s
+    validations:
+      required: true

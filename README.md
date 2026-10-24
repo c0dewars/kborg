@@ -39,13 +39,13 @@
 | **Browse** | 35 built-in resource types, CRDs via discovery, context/namespace switching, regex/fuzzy/label filters, sorting, redacted describe/YAML/JSON, live watches |
 | **Dashboard** | 1–9 clusters, full-screen focus, Pod health, restart hotspots, OOM evidence, Node readiness + CPU/memory, degraded workloads, Pod and non-Pod warning events, warning → exact Pod Events drilldown |
 | **Logs** | Container, workload and selector logs; merged multi-container streams; live rollout following (`:logs-live`); cross-cluster workload tail; time ranges, search, error/warning filters, export |
-| **Operate** | Scale, restart, delete, force kill, YAML spec editing (in-app or `$EDITOR`), server-side apply of local manifests, image/resource forms, cordon/uncordon/drain, node shell, port forwards, shell/attach, file and directory copy — each behind its own opt-in and review |
-| **Check** | `:lint` misconfiguration report, `:pulses` health, `:xray` relationships, per-Node usage on dashboard cards, port-forward benchmark |
+| **Operate** | Scale, restart, rollback, delete, force kill, CronJob trigger and suspend/resume, YAML spec editing (in-app or `$EDITOR`), server-side apply of local manifests, image/resource forms, cordon/uncordon/drain, node shell, ephemeral debug containers, port forwards, shell/attach, file and directory copy — each behind its own opt-in and review |
+| **Check** | `:lint` misconfiguration report, Ctrl-Z errors-only view, `:pulses` health, `:xray` relationships, per-Node usage and 15-minute trend sparklines on dashboard cards, port-forward benchmark |
 | **Helm** | Release browsing and history; reviewed install, upgrade, rollback, uninstall and tests for packaged and OCI charts with optional OpenPGP/Sigstore verification |
 | **Secrets** | Opt-in key listing; reveal one value for 30 seconds; never exported or copied |
 | **Metrics** | Pod/Node CPU and memory tables, exact values, requests/limits comparisons, bounded history |
 | **Copilot** | Minimized diagnostic preview, exact account approval, contained native runtime (macOS ARM64) |
-| **Workspace** | Saved context groups and scopes, remembered dashboard (`kborg dashboard`), custom aliases and k9s-format hotkeys, reviewed read-only extensions (`:ext`, k9s `plugins.yaml` import), 20 themes plus custom palettes, shell completions |
+| **Workspace** | Saved context groups and scopes, remembered dashboard (`kborg dashboard`), k9s-format `views.yaml` columns, sort by any column, recent namespaces on `1`–`9`, custom aliases and k9s-format hotkeys, reviewed read-only extensions (`:ext`, k9s `plugins.yaml` import), 20 themes plus custom palettes, shell completions |
 
 ![Cross-cluster tail: two clusters' checkout services merged in timestamp order](docs/screenshots/cross-cluster-tail.png)
 
@@ -129,6 +129,7 @@ More opt-ins, each reviewed:
 | `--allow-apply` | `kborg apply FILE` / `:apply FILE`: dry run, field-level diff, server-side apply that never forces ownership |
 | `--allow-file-copy` | `:cp-from` / `:cp-to` (`-r` for directories); neither side ever overwrites |
 | `--allow-node-shell` | `s` on a Node: a reviewed privileged Pod and a root shell, deleted afterwards |
+| `--allow-debug` | `:debug [CONTAINER]`: a reviewed ephemeral debug container and a shell in it |
 | `--allow-extensions --allow-tools` | `:ext NAME`: hand the selected object to a registered read-only tool |
 
 KBorg uses your kubeconfig directly: the current context unless you pass `--context`, and every file in `$KUBECONFIG` merged the way kubectl does (first definition wins). kubectl, Helm, Python and an AI account are not needed for browsing. Server-side RBAC and admission always have the final say.
@@ -153,6 +154,10 @@ KBorg uses your kubeconfig directly: the current context unless you pass `--cont
 | `:cp-from` `:cp-to` (`-r`) | Copy files or directories to and from the selected Pod |
 | `:pf` then `b`, `:bench` | Benchmark a port forward |
 | `:ext NAME`, `hotkeys.yaml` | Run a registered extension; bind keys like k9s |
+| `t` `s` on CronJobs, `:rollback [REV]` | Trigger now, suspend/resume; roll back a workload |
+| `:debug [CONTAINER]` | Ephemeral debug container in the selected Pod |
+| Ctrl-Z, Ctrl-W, `1`–`9` | Errors only, wide columns, recent namespaces |
+| `N` `A` `S` `R` (again to reverse), `:sort COL` | Sort by any column; `views.yaml` sets columns |
 | `:subjects` `:users` `:groups`, `:can` | RBAC subjects with their roles; one subject's bindings and rules |
 | `D` / `kborg dashboard` | Dashboard |
 | Dashboard `1`–`9`, `w`, `L`, `t` | Focus (again = full screen), select warning, Pod logs, cross-cluster tail |
@@ -209,7 +214,7 @@ Ghostty's shortcuts use Cmd on macOS, so Ctrl-D/K/S/R reach KBorg, and `c` copie
 
 ## Security model
 
-- Read-only until you pass `--write`; every risky capability (exec, attach, port forward, file copy, apply, node shell, node maintenance, YAML edit, force kill, Secret reveal, Helm writes, external editor, extensions) has its own opt-in, and a `--config` profile can forbid any of them.
+- Read-only until you pass `--write`; every risky capability (exec, attach, port forward, file copy, apply, node shell, debug containers, node maintenance, YAML edit, force kill, Secret reveal, Helm writes, external editor, extensions) has its own opt-in, and a `--config` profile can forbid any of them.
 - Every mutation: server dry run, UID/resourceVersion preconditions, full review that must be displayed, exact typed confirmation, local intent record.
 - Known sensitive fields are masked; Secrets are excluded unless you opt in. No telemetry.
 - Dashboard and log-pane connections strip all write and interactive capabilities.
@@ -221,6 +226,7 @@ Details: [SECURITY.md](SECURITY.md) and the [security review](docs/MAC_V1_SECURI
 
 | Guide | Contents |
 |---|---|
+| [Testing guide](docs/TESTING.md) | For colleagues trying a release candidate: install, tour, what to report |
 | [Dashboard](docs/DASHBOARD.md) | Health meanings, freshness, cross-cluster tail, card controls |
 | [k9s compatibility](docs/K9S_COMPATIBILITY.md) | Commands, keys and differences |
 | [Operations](docs/OPERATIONS.md) | Configuration, install, update, rollback, recovery |

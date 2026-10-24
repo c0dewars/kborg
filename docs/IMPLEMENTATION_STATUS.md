@@ -8,10 +8,11 @@ Updated 2026-10-24 for 0.5.0 (unreleased; 0.4.0 is the current release). This fi
 - Direct verified Kubernetes TLS client, read-only by default; 35 built-in kinds plus discovered CRDs; context/namespace switching; regex, inverse, fuzzy and label filters; sorting; drilldown; redacted describe, YAML and JSON.
 - Live LIST/WATCH with relist, bounded caches (10,000 objects / 64 MiB), polling fallback and memoized filter/sort for large tables.
 - Multi-file `KUBECONFIG` merged like kubectl; reviewed Unix ExecCredential helpers.
-- `:pulses`, `:xray`, `:workloads`, `:can`, `:subjects` and `:lint` (read-only misconfiguration report).
+- `:pulses`, `:xray`, `:workloads`, `:can`, `:subjects`, `:lint` (read-only misconfiguration report) and Ctrl-Z errors-only view.
+- k9s-format `views.yaml` columns (built-in and `TITLE:.json.path`), sort by any column in either direction, wide mode, recent namespaces on digits and recent contexts.
 
 **Dashboard**
-- 1–9 clusters with independent watches: Pod health, restart hotspots, OOM evidence, warning Events with exact-Pod drilldown, Node readiness and CPU/memory, the busiest or unhealthy Nodes by name, degraded Deployments/StatefulSets.
+- 1–9 clusters with independent watches: Pod health, restart hotspots, OOM evidence, warning Events with exact-Pod drilldown, Node readiness and CPU/memory, the busiest or unhealthy Nodes by name, degraded Deployments/StatefulSets, and 15-minute trend sparklines.
 - Single-Pod log panes and a cross-cluster workload tail; saved context groups; `kborg dashboard` reopens the last one.
 
 **Logs and metrics**
@@ -19,9 +20,9 @@ Updated 2026-10-24 for 0.5.0 (unreleased; 0.4.0 is the current release). This fi
 - Pod/Node metrics with exact quantities, request/limit comparisons and bounded history.
 
 **Operate** (each behind `--write` and its own opt-in, server dry run where the API supports it, full review and typed confirmation, local audit record)
-- Scale, restart, delete, force kill; image/resource forms; YAML spec editing in-app or in `$EDITOR`.
+- Scale, restart, rollback, delete, force kill; CronJob trigger and suspend/resume; image/resource forms; YAML spec editing in-app or in `$EDITOR`.
 - Server-side apply of local manifests (`--allow-apply`), never forcing field ownership.
-- Cordon/uncordon/drain (`--allow-node-maintenance`); node shell through a reviewed, self-expiring privileged Pod (`--allow-node-shell`).
+- Cordon/uncordon/drain (`--allow-node-maintenance`); node shell through a reviewed, self-expiring privileged Pod (`--allow-node-shell`); ephemeral debug containers (`--allow-debug`).
 - Exec/attach with optional TTY, eight loopback port forwards with a bounded benchmark, file and directory copy (`--allow-file-copy`).
 - Helm browsing and a reviewed lifecycle subset with OCI, OpenPGP and Sigstore verification.
 - Opt-in Secret key listing with one-value reveal.

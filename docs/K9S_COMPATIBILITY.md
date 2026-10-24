@@ -80,6 +80,10 @@ Aliases return to the command parser and never execute a shell. Bounds are 64 Ki
 
 k9s relies on `kubectl cp` through plugins. KBorg has a reviewed single-file copy behind `--write --allow-file-copy`: `:cp-from /PATH [LOCAL_FILE_OR_DIR]` and `:cp-to LOCAL_FILE /PATH` act on the selected Pod's default container (its `kubectl.kubernetes.io/default-container` annotation, otherwise the first container); `kborg cp-from POD CONTAINER /PATH LOCAL` and `kborg cp-to POD CONTAINER LOCAL /PATH` choose any container. Downloads default to `~/Downloads`. Neither side ever replaces an existing file, transfers are capped at 64 MiB, and the container needs `cat` and `sh`. `-r` (CLI `--recursive`) copies a directory as a strict tar stream: regular files and directories only; links, devices, absolute paths and `..` are refused; uploads create a new container directory and verify the file count. See [SECURITY.md](../SECURITY.md).
 
+## Debug containers
+
+`:debug [CONTAINER]` on a Pod (or `kborg debug POD [CONTAINER]`) with `--write --allow-debug` adds an ephemeral debug container, KBorg's `kubectl debug -it`. The review shows the container after a server dry run; on approval KBorg adds it, waits until it runs and opens `sh -i`. With a target container it shares that container's process namespace. The image is `--node-shell-image` (pinned busybox by default).
+
 ## Node shell
 
 k9s's node shell creates a privileged Pod on the Node. KBorg does the same behind `--write --allow-node-shell`: `s` on a Node (or `kborg node-shell NODE`) shows the complete Pod (host PID/network/IPC, privileged, pinned busybox, override with `--node-shell-image`) after a server dry run, and on `shell NODE` creates it in the current namespace (or `default`), waits for it and opens `nsenter -t 1 … /bin/sh -i`. The Pod is deleted when the session ends and has `activeDeadlineSeconds`, so it also ends if KBorg is killed. Pod Security admission or RBAC may refuse it; choose a namespace that permits privileged Pods.

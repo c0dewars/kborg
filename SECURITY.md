@@ -44,6 +44,14 @@ reviewed Node; the Pod is deleted afterwards and has `activeDeadlineSeconds` as
 a backstop. Grant `create pods` in a namespace that permits privileged Pods
 only to people who may administer Nodes.
 
+Ephemeral debug containers are opt-in with `--write --allow-debug`. The
+review shows the exact container after a dry run; it is unprivileged and gets
+no host access, though with a target container it shares that container's
+process namespace. Kubernetes cannot remove ephemeral containers: the
+container exits after its sleep but stays listed in the Pod. CronJob trigger,
+suspend/resume and workload rollback need `--write` and go through the same
+dry run, review, UID/resourceVersion lock and audit as other writes.
+
 Extensions run from the TUI (`:ext`) use the same contract as the CLI: an
 absolute registered executable with literal arguments, a whole-input review
 and `RUN TOOL` approval, 15 seconds and 256 KiB of captured output, run outside
