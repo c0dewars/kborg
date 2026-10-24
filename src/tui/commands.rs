@@ -69,6 +69,7 @@ impl App {
                 if let Some(sort) = sort { self.set_sort(sort); } else { self.status = "Sort: name | namespace | status | restarts | age | ready | cpu | memory".into(); }
             }
             ("themes", []) => self.theme_picker()?,
+            ("ui", [action]) if action == "reload" => self.reload_ui()?,
             ("overview", []) => self.modal = Modal::Input(OVERVIEW_CONTEXTS_LABEL, self.context.clone()),
             ("metrics", []) => { self.metrics_resources = false; self.request_metrics(); }
             ("metrics",[mode]) if mode=="resources"=>{self.metrics_resources=true;self.request_metrics();}
