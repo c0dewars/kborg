@@ -1,3 +1,22 @@
+# KBorg 0.4.0 — 2026-10-24
+
+**Every cluster at a glance. Every change reviewed.** Install with `brew install c0dewars/tap/kborg`.
+
+## Highlights
+
+- **Multi-cluster dashboard** for up to nine clusters: Pod health, restart hotspots, OOM evidence, Node readiness with CPU/memory, degraded Deployments/StatefulSets, Pod and non-Pod warning events. Full-screen focus (`1`–`9`), `kborg --contexts a,b`, and `kborg dashboard` to reopen the last one.
+- **Logs**: warning → exact-Pod Events drilldown (`w`, Enter), single-Pod log panes (`L`), a cross-cluster workload tail merged in timestamp order (`t`), and `:logs-live` that follows rollouts.
+- **k9s parity**: `:secrets` with per-key reveal (`--allow-secret-reveal`), reviewed Ctrl-K force kill (`--allow-force-kill`), `:subjects`/`:users`/`:groups`, Ctrl-E `$EDITOR` handoff (`--allow-external-editor`), multi-file `KUBECONFIG` merged like kubectl.
+- **Copilot** advice for GitHub.com, GHE.com tenants and GitHub Enterprise Server 3.22+, each with an exact egress allowlist.
+- **Speed**: first data in 0.06 s; at 5,000 live objects with churn, about 40 % of k9s's memory and CPU. See [performance comparison](PERFORMANCE_COMPARISON.md).
+- **UX**: contextual key hints, WCAG AA contrast on every surface for all fixed themes, Ghostty/kitty/WezTerm truecolor detection, an animated startup splash, and clearer connection errors.
+
+## Upgrade notes
+
+- New opt-in flags: `--allow-secret-reveal`, `--allow-force-kill`, `--allow-external-editor`, `--contexts`, `--dashboard`. Nothing new is enabled by default.
+- Live watches now hold up to 10,000 objects (64 MiB); larger scopes fall back to a bounded 30 s list with a banner.
+- Unsigned builds. Homebrew formula installs are not quarantined by macOS; archive downloads still need the usual checksum verification.
+
 # Helm completion and terminal UI — 2026-10-22
 
 ## Helm completion and terminal refinement (2026-10-22)

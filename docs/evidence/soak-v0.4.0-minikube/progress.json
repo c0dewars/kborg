@@ -1,0 +1,58 @@
+{
+  "state": "passed",
+  "context": "kborg-soak-v1",
+  "namespace": "kborg-soak-68e1c7283792",
+  "binary_sha256": "16f874c337b5df4465a097781de1ce001ef6925bac1b5f2798d9446d9e9f755c",
+  "requested_seconds": 7200,
+  "elapsed_seconds": 7205.648,
+  "updated_utc": "2026-10-24T15:36:09.825830+00:00",
+  "samples": 477,
+  "mutation_count": 117,
+  "fault": {
+    "kind": "pause-owned-minikube-container",
+    "container_id": "1ef7c3f7a1448e46c67d32d2d27362400e9da78c932b03842d50475bbda02239",
+    "start_seconds": 1800.351,
+    "requested_pause_seconds": 45,
+    "recovery_settle_seconds": 20,
+    "resource_stale_before": 0,
+    "dashboard_stale_before": 3,
+    "recovered": true,
+    "resumed_seconds": 1845.72,
+    "actual_pause_seconds": 45.369,
+    "resource_stale_observed": true,
+    "dashboard_stale_observed": true,
+    "recovery_seconds": 20.22
+  },
+  "processes": {
+    "resource": {
+      "pid": 27081,
+      "alive": false,
+      "output_bytes": 8890081,
+      "records": 2240,
+      "observed_counts": [
+        1,
+        2
+      ],
+      "stale_records": 6
+    },
+    "dashboard": {
+      "pid": 27083,
+      "alive": false,
+      "output_bytes": 2643995,
+      "records": 5179,
+      "observed_counts": [
+        1,
+        2
+      ],
+      "stale_records": 27
+    },
+    "tui": {
+      "pid": 27085,
+      "alive": false,
+      "output_bytes": 63625259,
+      "records": 0,
+      "observed_counts": [],
+      "stale_records": 0
+    }
+  }
+}
