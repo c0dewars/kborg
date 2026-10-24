@@ -1,0 +1,38 @@
+name: Bug report
+description: Something in KBorg doesn't work as expected
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Security problems go to private vulnerability reporting, not here. Never paste kubeconfigs, tokens or production object names.
+  - type: input
+    id: version
+    attributes:
+      label: KBorg version
+      description: Output of `kborg --version`
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: OS, terminal and Kubernetes version
+      placeholder: macOS 27, Ghostty 1.3, Kubernetes 1.36 (Docker Desktop)
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: What you did
+      description: Command line and keys pressed
+    validations:
+      required: true
+  - type: textarea
+    id: result
+    attributes:
+      label: What happened and what you expected
+    validations:
+      required: true
+  - type: textarea
+    id: extra
+    attributes:
+      label: Screenshot or output (redacted)

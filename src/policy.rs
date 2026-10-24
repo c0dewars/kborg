@@ -20,6 +20,13 @@ pub enum Action {
     Delete,
     /// Pod-only delete with gracePeriodSeconds=0 (k9s Ctrl-K).
     Kill,
+    /// CronJob: create a Job from its template now (k9s `t`).
+    Trigger,
+    /// CronJob: set `spec.suspend` (true suspends, false resumes).
+    Suspend(bool),
+    /// Deployment/StatefulSet/DaemonSet: restore a revision's Pod template;
+    /// `None` means the previous revision.
+    Rollback(Option<u64>),
 }
 
 impl Action {
@@ -32,6 +39,10 @@ impl Action {
             Self::SetImage { .. } => "set-image",
             Self::SetResources { .. } => "set-resources",
             Self::SetContainer { .. } => "edit-container",
+            Self::Trigger => "trigger",
+            Self::Suspend(true) => "suspend",
+            Self::Suspend(false) => "resume",
+            Self::Rollback(_) => "rollback",
         }
     }
 }
@@ -120,6 +131,14 @@ impl Policy {
                 Ok(())
             }
             Action::Kill if target.resource == "pods" => Ok(()),
+            Action::Trigger | Action::Suspend(_) if target.resource == "cronjobs" => Ok(()),
+            Action::Rollback(revision)
+                if ["deployments", "statefulsets", "daemonsets"]
+                    .contains(&target.resource.as_str())
+                    && revision.is_none_or(|r| r > 0) =>
+            {
+                Ok(())
+            }
             _ => Err("operation family is disabled by policy (scale range: 0..20)".into()),
         }
     }
