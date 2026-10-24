@@ -289,6 +289,7 @@ fn parse(args: Vec<String>) -> Result<Options> {
             "--allow-attach" => opts.connection.allow_attach = true,
             "--allow-forward" => opts.connection.allow_port_forward = true,
             "--allow-file-copy" => opts.connection.allow_file_copy = true,
+            "--allow-apply" => opts.connection.allow_apply = true,
             "--allow-node-maintenance" => opts.connection.allow_node_maintenance = true,
             "--" => {
                 opts.command.extend(args);
@@ -605,9 +606,9 @@ pub fn run_args(args: Vec<String>) -> Result<()> {
         }
         "helm" | "history" | "list" | "watch" | "metrics" | "get" | "view" | "logs"
         | "resources" | "doctor" | "scale" | "restart" | "delete" | "kill" | "set-image"
-        | "set-resources" | "exec" | "attach" | "forward" | "cp-from" | "cp-to" | "pulses"
-        | "xray" | "workloads" | "can" | "yaml-template" | "yaml-edit" | "cordon" | "uncordon"
-        | "drain" => {}
+        | "set-resources" | "exec" | "attach" | "forward" | "cp-from" | "cp-to" | "apply"
+        | "pulses" | "xray" | "workloads" | "can" | "yaml-template" | "yaml-edit" | "cordon"
+        | "uncordon" | "drain" => {}
         _ => return Err("unknown command; see --help".into()),
     }
     if cmd == "view"
@@ -653,6 +654,14 @@ pub fn run_args(args: Vec<String>) -> Result<()> {
                 let report=crate::node_maintenance::execute(&gateway,reviewed,input.trim_end()).await?;
                 outputln!("{}",report.summary());
                 if !report.complete {return Err("node maintenance incomplete; inspect the reported pending targets and scheduling state".into());}
+            },
+            "apply" => {
+                if args.len()!=1 {return Err("usage: apply FILE.yaml --write --allow-apply [-n NAMESPACE]".into());}
+                if !io::stdin().is_terminal() || !io::stdout().is_terminal() {return Err("apply requires interactive terminal approval".into());}
+                let prepared=tokio::time::timeout(Duration::from_secs(120),gateway.prepare_apply(std::path::Path::new(&args[0]),&ns)).await.map_err(|_|"apply review timed out")??;
+                outputln!("{}",safety::review_display(prepared.summary())?); output!("> ");io::stdout().flush().map_err(|_|"output failed")?;
+                let mut input=String::new();use std::io::BufRead;io::stdin().lock().take(256).read_line(&mut input).map_err(|_|"input failed")?;
+                outputln!("{}",gateway.execute_apply(prepared,input.trim_end()).await?);
             },
             "exec"|"attach"|"forward"|"cp-from"|"cp-to" => {
                 if !io::stdin().is_terminal() || !io::stdout().is_terminal() {return Err("subresource operations require interactive terminal approval".into());}

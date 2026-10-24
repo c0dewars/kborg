@@ -15,6 +15,8 @@ pub(super) enum Task {
     YamlDraft(String, String, String, Option<String>),
     YamlPrepare(Box<crate::ui_yaml::Editor>),
     YamlExecute(Box<crate::manifest_edit::PreparedYaml>, String),
+    ApplyPrepare(std::path::PathBuf, String),
+    ApplyExecute(Box<crate::manifest_apply::PreparedApply>, String),
     NodePrepare(String, Option<String>, crate::node_maintenance::Request),
     NodeExecute(Box<crate::node_maintenance::ReviewedNode>, String),
     Overview(Connection, Vec<String>),
@@ -91,6 +93,7 @@ pub(super) enum Reply {
         Result<crate::manifest_edit::PreparedYaml>,
     ),
     NodePrepared(Box<crate::node_maintenance::ReviewedNode>),
+    ApplyPrepared(Box<crate::manifest_apply::PreparedApply>),
     WriteOutcome(Result<String>),
     Drill(Box<Value>),
     Directory(crate::navigation_views::Directory),
@@ -552,6 +555,15 @@ pub(super) fn worker() -> Worker {
                         Reply::YamlPrepared(editor,result)
                     }
                     Task::YamlExecute(prepared,typed)=>Reply::WriteOutcome(if let Some(g)=gateway.as_mut(){g.execute_yaml(*prepared,&typed).await}else{Err("Not connected; no YAML write started.".into())}),
+                    Task::ApplyPrepare(path,namespace)=>match gateway.as_ref() {
+                        Some(g)=>match tokio::time::timeout(Duration::from_secs(120),g.prepare_apply(&path,&namespace)).await {
+                            Ok(Ok(prepared))=>Reply::ApplyPrepared(Box::new(prepared)),
+                            Ok(Err(error))=>Reply::Failure(error),
+                            Err(_)=>Reply::Failure("Apply review timed out; nothing was written.".into()),
+                        },
+                        None=>Reply::Failure("Not connected.".into()),
+                    },
+                    Task::ApplyExecute(prepared,typed)=>Reply::WriteOutcome(if let Some(g)=gateway.as_ref(){g.execute_apply(*prepared,&typed).await}else{Err("Not connected; nothing was applied.".into())}),
                     Task::NodeExecute(prepared,typed)=>Reply::WriteOutcome(if let Some(g)=gateway.as_ref(){crate::node_maintenance::execute(g,*prepared,&typed).await.map(|report|report.summary())}else{Err("Not connected; no node operation started.".into())}),
                     Task::RunSession(reviewed, typed) => {
                         if let Some(g) = gateway.as_ref() {
@@ -756,7 +768,7 @@ pub(super) fn worker() -> Worker {
                                         Reply::Prepared(Box::new(prepared))
                                     },
                                     Task::Execute(p,a) => Reply::Notice(g.execute(*p,a).await?),
-                                    Task::YamlPrepare(..) | Task::YamlExecute(..) | Task::NodeExecute(..) | Task::DashboardLogs(..) | Task::DashboardWorkloads(..) | Task::DashboardTail(..) | Task::Overview(..) | Task::Connect(_) | Task::Watch(..) | Task::Metrics(..) | Task::RunSession(..) | Task::RunForward(..) | Task::Directory(_) | Task::Manifest(_) | Task::Helm(..) | Task::HelmPrepare(..) | Task::HelmExecute(..) | Task::AdvicePrepare(..) | Task::AdviceExecute(..) => return Err("invalid worker task".into()),
+                                    Task::YamlPrepare(..) | Task::YamlExecute(..) | Task::ApplyPrepare(..) | Task::ApplyExecute(..) | Task::NodeExecute(..) | Task::DashboardLogs(..) | Task::DashboardWorkloads(..) | Task::DashboardTail(..) | Task::Overview(..) | Task::Connect(_) | Task::Watch(..) | Task::Metrics(..) | Task::RunSession(..) | Task::RunForward(..) | Task::Directory(_) | Task::Manifest(_) | Task::Helm(..) | Task::HelmPrepare(..) | Task::HelmExecute(..) | Task::AdvicePrepare(..) | Task::AdviceExecute(..) => return Err("invalid worker task".into()),
                                 })
                             };
                             match tokio::time::timeout(Duration::from_secs(25), future).await {

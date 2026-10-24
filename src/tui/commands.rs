@@ -73,6 +73,8 @@ impl App {
             ("restart", []) => self.prepare(Action::Restart),
             ("delete", []) => self.prepare(Action::Delete),
             ("kill", []) => self.kill(),
+            ("apply", [path]) => self.apply_manifest(std::path::PathBuf::from(path)),
+            ("apply", _) => self.status = "Use :apply FILE.yaml, or a in :dir on a manifest".into(),
             ("cp-from", [remote]) => self.copy_file(true, remote, None),
             ("cp-from", [remote, local]) => self.copy_file(true, remote, Some(local)),
             ("cp-to", [local, remote]) => self.copy_file(false, local, Some(remote)),
@@ -380,6 +382,7 @@ impl App {
         connection.allow_attach = false;
         connection.allow_port_forward = false;
         connection.allow_file_copy = false;
+        connection.allow_apply = false;
         connection.allow_node_maintenance = false;
         connection.allow_yaml_edit = false;
         connection.allow_force_kill = false;
@@ -561,6 +564,19 @@ impl App {
             return;
         }
         self.prepare(Action::Kill);
+    }
+    /// Dry-run and review a server-side apply of a local manifest.
+    pub(super) fn apply_manifest(&mut self, path: std::path::PathBuf) {
+        if !self.options.connection.writable || !self.options.connection.allow_apply {
+            self.status = "Apply requires --write --allow-apply.".into();
+            return;
+        }
+        if self.options.connection.demo {
+            self.status = "Apply needs a live cluster; demo mode has no API server.".into();
+            return;
+        }
+        self.status = "Dry-running every object in the manifest…".into();
+        self.send(Task::ApplyPrepare(path, self.namespace.clone()));
     }
     /// Review a single-file copy for the selected Pod's default container.
     pub(super) fn copy_file(&mut self, download: bool, first: &str, second: Option<&String>) {
@@ -755,6 +771,7 @@ impl App {
             &task,
             Task::Execute(..)
                 | Task::YamlExecute(..)
+                | Task::ApplyExecute(..)
                 | Task::NodeExecute(..)
                 | Task::RunSession(..)
                 | Task::RunForward(..)

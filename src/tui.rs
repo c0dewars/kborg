@@ -141,6 +141,7 @@ struct ContainerDraft {
 enum WritePlan {
     Yaml(Box<crate::manifest_edit::PreparedYaml>),
     Node(Box<crate::node_maintenance::ReviewedNode>),
+    Apply(Box<crate::manifest_apply::PreparedApply>),
 }
 struct WriteReview {
     plan: WritePlan,

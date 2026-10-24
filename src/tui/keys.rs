@@ -82,6 +82,9 @@ impl App {
                             WritePlan::Node(prepared) => {
                                 Task::NodeExecute(prepared, review.view.typed)
                             }
+                            WritePlan::Apply(prepared) => {
+                                Task::ApplyExecute(prepared, review.view.typed)
+                            }
                         };
                         self.send(task);
                         if !self.write_inflight {
@@ -453,6 +456,19 @@ impl App {
                         } else {
                             Task::Manifest(path)
                         });
+                    }
+                }
+                KeyCode::Char('a') => {
+                    if let Some(entry) = directory
+                        .entries
+                        .get(index)
+                        .filter(|entry| !entry.directory)
+                    {
+                        let path = entry.path.clone();
+                        self.push_subview(Modal::Directory(directory, index));
+                        self.apply_manifest(path);
+                    } else {
+                        self.modal = Modal::Directory(directory, index);
                     }
                 }
                 _ => self.modal = Modal::Directory(directory, index),

@@ -1,3 +1,4 @@
+mod apply;
 mod catalog;
 mod demo;
 #[path = "discovery.rs"]
@@ -63,6 +64,8 @@ pub struct Connection {
     pub allow_file_copy: bool,
     pub allow_node_maintenance: bool,
     pub allow_yaml_edit: bool,
+    /// Opt-in: reviewed server-side apply of local manifest files.
+    pub allow_apply: bool,
     pub allow_force_kill: bool,
     pub allow_secret_reveal: bool,
     pub allow_auth_helper: bool,
@@ -86,6 +89,7 @@ pub struct Gateway {
     operation_capabilities: [bool; 4],
     allow_node_maintenance: bool,
     allow_yaml_edit: bool,
+    allow_apply: bool,
     allow_force_kill: bool,
     allow_secret_reveal: bool,
     demo: Vec<Value>,
@@ -132,6 +136,7 @@ impl Gateway {
                 lifecycle_connection: None,
                 allow_node_maintenance: options.allow_node_maintenance,
                 allow_yaml_edit: options.allow_yaml_edit,
+                allow_apply: options.allow_apply,
                 allow_force_kill: options.allow_force_kill,
                 allow_secret_reveal: options.allow_secret_reveal,
                 operation_capabilities: [
@@ -299,6 +304,7 @@ impl Gateway {
             lifecycle_connection,
             allow_node_maintenance: options.allow_node_maintenance,
             allow_yaml_edit: options.allow_yaml_edit,
+            allow_apply: options.allow_apply,
             allow_force_kill: options.allow_force_kill,
             allow_secret_reveal: options.allow_secret_reveal,
             operation_capabilities: [
@@ -373,6 +379,7 @@ impl Gateway {
             operation_capabilities: [false; 4],
             allow_node_maintenance: false,
             allow_yaml_edit: false,
+            allow_apply: false,
             allow_force_kill: false,
             allow_secret_reveal: false,
             demo: Vec::new(),

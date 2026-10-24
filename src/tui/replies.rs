@@ -67,6 +67,18 @@ impl App {
                     }));
                     self.status = "Review the node and workload inventory before approval.".into();
                 }
+                Reply::ApplyPrepared(prepared) => {
+                    let view = review_ui::Review::new(
+                        prepared.summary().into(),
+                        prepared.confirmation(),
+                        self.epoch,
+                    );
+                    self.modal = Modal::WriteReview(Box::new(WriteReview {
+                        plan: WritePlan::Apply(prepared),
+                        view,
+                    }));
+                    self.status = "Read every change, then type the confirmation to apply.".into();
+                }
                 Reply::WriteOutcome(result) => {
                     self.subviews.clear();
                     self.stale = true;

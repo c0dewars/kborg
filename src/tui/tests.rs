@@ -1752,6 +1752,26 @@ fn human_overview_uses_redacted_object_fields_and_json_remains_accessible() {
     assert!(matches!(app.modal, Modal::Detail(..)));
 }
 #[test]
+fn apply_requires_its_capability_and_queues_a_dry_run_review() {
+    let (mut app, _replies, mut commands) = harness();
+    assert!(app.command("apply deploy.yaml").is_ok());
+    assert!(app.status.contains("--allow-apply"));
+    assert!(commands.try_recv().is_err());
+    app.options.connection.writable = true;
+    app.options.connection.allow_apply = true;
+    app.namespace = "shop".into();
+    assert!(app.command("apply deploy.yaml").is_ok());
+    match commands.try_recv() {
+        Ok((_, Task::ApplyPrepare(path, namespace))) => {
+            assert_eq!((path, namespace.as_str()), ("deploy.yaml".into(), "shop"))
+        }
+        _ => panic!(":apply did not request a dry-run review"),
+    }
+    app.busy = false;
+    assert!(app.command("apply").is_ok());
+    assert!(app.status.starts_with("Use :apply"));
+}
+#[test]
 fn file_copy_commands_review_the_selected_pod_default_container() {
     let (mut app, _replies, mut commands) = harness();
     app.items = vec![
