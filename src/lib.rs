@@ -56,6 +56,7 @@ pub mod transport;
 pub mod ui_logs;
 pub mod ui_secrets;
 pub mod ui_subjects;
+pub mod workload_actions;
 
 pub mod helm;
 

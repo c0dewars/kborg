@@ -74,6 +74,7 @@ fn harness() -> Harness {
             saved: vec![],
             aliases: Default::default(),
             hotkeys: Default::default(),
+            faults_only: false,
             known_namespaces: vec![],
             restoring_uid: None,
             subviews: vec![],
@@ -1787,6 +1788,48 @@ fn node_shell_needs_its_capability_and_reviews_the_selected_node() {
         }
         _ => panic!("s on a Node did not request a node shell review"),
     }
+}
+#[test]
+fn cronjob_keys_and_errors_only_toggle() {
+    let (mut app, _replies, mut commands) = harness();
+    app.options.connection.writable = true;
+    app.command("cronjobs").unwrap_or(false);
+    app.items = vec![
+        serde_json::json!({"kind":"CronJob","metadata":{"name":"tick","namespace":"ops","uid":"c1"},"spec":{"suspend":true}}),
+    ];
+    while commands.try_recv().is_ok() {}
+    app.busy = false;
+    assert!(app.key(KeyCode::Char('s')).is_ok());
+    assert!(matches!(
+        commands.try_recv(),
+        Ok((_, Task::Prepare(_, _, _, _, Action::Suspend(false))))
+    ));
+    app.busy = false;
+    assert!(app.key(KeyCode::Char('t')).is_ok());
+    assert!(matches!(
+        commands.try_recv(),
+        Ok((_, Task::Prepare(_, _, _, _, Action::Trigger)))
+    ));
+    app.command("pods").unwrap_or(false);
+    app.items = vec![
+        serde_json::json!({"kind":"Pod","metadata":{"name":"ok","namespace":"a","uid":"1"},"status":{"phase":"Running","containerStatuses":[{"ready":true}]}}),
+        serde_json::json!({"kind":"Pod","metadata":{"name":"bad","namespace":"a","uid":"2"},"status":{"phase":"Pending"}}),
+    ];
+    app.items_generation += 1;
+    assert_eq!(app.visible().len(), 2);
+    assert!(
+        app.key_event(KeyCode::Char('z'), KeyModifiers::CONTROL)
+            .is_ok()
+    );
+    assert_eq!(
+        app.visible().iter().map(|o| name(o)).collect::<Vec<_>>(),
+        vec!["bad"]
+    );
+    assert!(
+        app.key_event(KeyCode::Char('z'), KeyModifiers::CONTROL)
+            .is_ok()
+    );
+    assert_eq!(app.visible().len(), 2);
 }
 #[test]
 fn apply_requires_its_capability_and_queues_a_dry_run_review() {

@@ -248,6 +248,8 @@ struct App {
     saved: Vec<crate::screendump::Record>,
     aliases: crate::aliases::Aliases,
     hotkeys: crate::hotkeys::Hotkeys,
+    /// Ctrl-Z: show only objects that need attention (k9s faults view).
+    faults_only: bool,
     known_namespaces: Vec<String>,
     restoring_uid: Option<String>,
     subviews: Vec<Modal>,
@@ -369,6 +371,7 @@ impl App {
         let metrics_sort = matches!(self.sort, Sort::Cpu | Sort::Memory);
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         self.filter.hash(&mut hasher);
+        self.faults_only.hash(&mut hasher);
         (self.sort as u8).hash(&mut hasher);
         // O(1): every replacement of `items` bumps the generation; the
         // allocation address and length guard direct reassignment.
@@ -385,6 +388,9 @@ impl App {
         let filter = nav::Filter::parse(&self.filter);
         let match_all = self.filter.is_empty() && filter.is_ok();
         let mut order: Vec<usize> = (0..self.items.len())
+            .filter(|&index| {
+                !self.faults_only || crate::workload_actions::faulty(&self.items[index])
+            })
             .filter(|&index| {
                 match_all || {
                     let object = &self.items[index];
@@ -673,6 +679,7 @@ pub fn run(options: Options) -> Result<()> {
         saved: vec![],
         aliases,
         hotkeys,
+        faults_only: false,
         known_namespaces: vec![],
         restoring_uid: None,
         subviews: vec![],

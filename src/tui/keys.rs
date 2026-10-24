@@ -1597,7 +1597,11 @@ impl App {
                     }
                 }
                 KeyCode::Char('t') => {
-                    self.status = "File transfer is unavailable. Use :themes for appearance.".into()
+                    if self.kind() == "cronjobs.batch" {
+                        self.prepare(Action::Trigger);
+                    } else {
+                        self.status = "Copy files with :cp-from / :cp-to (--allow-file-copy). t triggers a selected CronJob.".into()
+                    }
                 }
                 KeyCode::Char('b') => self.save_resource_selection()?,
                 KeyCode::Char('B') => self.open_saved_selections()?,
@@ -1715,6 +1719,12 @@ impl App {
                         self.request_shell();
                     } else if self.kind() == "nodes" {
                         self.node_shell();
+                    } else if self.kind() == "cronjobs.batch" {
+                        let suspended = self
+                            .visible()
+                            .get(self.selected)
+                            .is_some_and(|cron| cron["spec"]["suspend"] == true);
+                        self.prepare(Action::Suspend(!suspended));
                     } else {
                         return self.scale();
                     }
@@ -1877,6 +1887,16 @@ impl App {
             if matches!(self.modal, Modal::None) {
                 match code {
                     KeyCode::Char('a') => self.aliases(),
+                    KeyCode::Char('z') => {
+                        self.faults_only = !self.faults_only;
+                        self.selected = 0;
+                        self.status = if self.faults_only {
+                            "Errors only: unhealthy Pods, degraded workloads, NotReady Nodes, warnings. Ctrl-Z shows all."
+                        } else {
+                            "Showing all objects."
+                        }
+                        .into();
+                    }
                     KeyCode::Char('d') => self.prepare(Action::Delete),
                     KeyCode::Char('k') => self.kill(),
                     KeyCode::Char('r') => {

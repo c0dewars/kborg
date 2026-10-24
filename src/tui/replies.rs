@@ -1282,6 +1282,9 @@ impl App {
                     | "cronjobs.batch"
             ),
             Action::Kill => self.kind() == "pods",
+            Action::Trigger | Action::Suspend(_) => self.kind() == "cronjobs.batch",
+            Action::Rollback(_) => ["deployments.apps", "statefulsets.apps", "daemonsets.apps"]
+                .contains(&self.kind().as_str()),
         };
         if !allowed {
             self.status = "This operation is disabled for the selected resource.".into();

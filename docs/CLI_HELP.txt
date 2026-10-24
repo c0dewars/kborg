@@ -45,6 +45,8 @@ KBorg 0.3 — Kubernetes operations, under your control
   kborg set-resources [RESOURCE] NAME CONTAINER CPU_REQ MEM_REQ CPU_LIMIT MEM_LIMIT
   kborg delete RESOURCE NAME      Guarded deletion; no force
   kborg kill POD                  Reviewed zero-grace Pod kill (--write --allow-force-kill)
+  kborg trigger|suspend|resume CRONJOB   Run a CronJob now, or pause/resume its schedule
+  kborg rollback [RESOURCE] NAME [REV]   Reviewed rollback to a previous revision
   kborg cordon NODE               Review and disable node scheduling
   kborg uncordon NODE             Review and enable node scheduling
   kborg drain NODE [SECONDS]      Reviewed eviction; default 120s, maximum 300s

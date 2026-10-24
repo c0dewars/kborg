@@ -622,9 +622,10 @@ pub fn run_args(args: Vec<String>) -> Result<()> {
         }
         "helm" | "history" | "list" | "watch" | "metrics" | "get" | "view" | "logs"
         | "resources" | "doctor" | "scale" | "restart" | "delete" | "kill" | "set-image"
-        | "set-resources" | "exec" | "attach" | "forward" | "cp-from" | "cp-to" | "apply"
-        | "node-shell" | "lint" | "pulses" | "xray" | "workloads" | "can" | "yaml-template"
-        | "yaml-edit" | "cordon" | "uncordon" | "drain" => {}
+        | "trigger" | "suspend" | "resume" | "rollback" | "set-resources" | "exec" | "attach"
+        | "forward" | "cp-from" | "cp-to" | "apply" | "node-shell" | "lint" | "pulses" | "xray"
+        | "workloads" | "can" | "yaml-template" | "yaml-edit" | "cordon" | "uncordon" | "drain" => {
+        }
         _ => return Err("unknown command; see --help".into()),
     }
     if cmd == "view"
@@ -794,13 +795,19 @@ if value["truncated"]==true {eprintln!("TRUNCATED: limit reached; narrow namespa
                 }
             },
             "logs"=>logs_command(&gateway,args,&opts).await?,
-            "scale"|"restart"|"delete"|"kill"|"set-image"|"set-resources"=>{
+            "scale"|"restart"|"delete"|"kill"|"set-image"|"set-resources"|"trigger"|"suspend"|"resume"|"rollback"=>{
                 if !io::stdin().is_terminal() || !io::stdout().is_terminal(){return Err("noninteractive writes are disabled; use the interactive TUI or terminal confirmation".into());}
                 let (resource,name,action)=match cmd {
                     "set-image"=>{let (resource,args)=write_args(args,3,"set-image [RESOURCE] NAME CONTAINER IMAGE --write")?;(resource,args[0].as_str(),Action::SetImage{container:args[1].clone(),image:args[2].clone()})},
                     "set-resources"=>{let (resource,args)=write_args(args,6,"set-resources [RESOURCE] NAME CONTAINER CPU_REQUEST MEMORY_REQUEST CPU_LIMIT MEMORY_LIMIT --write")?;(resource,args[0].as_str(),Action::SetResources{container:args[1].clone(),resources:crate::edit::ResourceEdit{cpu_request:args[2].clone(),memory_request:args[3].clone(),cpu_limit:args[4].clone(),memory_limit:args[5].clone()}})},
                     "scale"=>{let (resource,args)=write_args(args,2,"scale [RESOURCE] NAME REPLICAS --write")?;(resource,args[0].as_str(),Action::Scale(args[1].parse().map_err(|_|"invalid replicas")?))},
                     "restart"=>{let (resource,args)=write_args(args,1,"restart [RESOURCE] NAME --write")?;(resource,args[0].as_str(),Action::Restart)},
+                    "trigger"|"suspend"|"resume"=>{if args.len()!=1{return Err(format!("usage: {cmd} CRONJOB --write"));}("cronjobs",args[0].as_str(),match cmd {"trigger"=>Action::Trigger,"suspend"=>Action::Suspend(true),_=>Action::Suspend(false)})},
+                    "rollback"=>{
+                        let (resource,rest)=match args.len() {1|2 if args[0].parse::<u64>().is_err() && !["deployments","statefulsets","daemonsets","deploy","sts","ds"].contains(&args[0].as_str()) => ("deployments",args), 2|3 => (args[0].as_str(),&args[1..]), _ => return Err("usage: rollback [RESOURCE] NAME [REVISION] --write".into())};
+                        let revision=rest.get(1).map(|r|r.parse::<u64>().map_err(|_|"invalid revision")).transpose()?;
+                        (resource,rest[0].as_str(),Action::Rollback(revision))
+                    },
                     "kill"=>{if args.len()!=1{return Err("usage: kill POD --write --allow-force-kill".into());}("pods",args[0].as_str(),Action::Kill)},
                     _=>{if args.len()!=2{return Err("usage: delete <resource> <name> --write".into());}(args[0].as_str(),args[1].as_str(),Action::Delete)},
                 };

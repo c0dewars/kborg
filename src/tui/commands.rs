@@ -73,6 +73,15 @@ impl App {
             ("restart", []) => self.prepare(Action::Restart),
             ("delete", []) => self.prepare(Action::Delete),
             ("kill", []) => self.kill(),
+            ("trigger", []) => self.prepare(Action::Trigger),
+            ("suspend", []) => self.prepare(Action::Suspend(true)),
+            ("resume", []) => self.prepare(Action::Suspend(false)),
+            ("rollback" | "undo", []) => self.prepare(Action::Rollback(None)),
+            ("rollback" | "undo", [revision]) => match revision.parse::<u64>() {
+                Ok(revision) if revision > 0 => self.prepare(Action::Rollback(Some(revision))),
+                _ => self.status = "Use :rollback [REVISION]".into(),
+            },
+            ("faults" | "errors", []) => return self.key_event(KeyCode::Char('z'), crossterm::event::KeyModifiers::CONTROL),
             ("ext" | "extension" | "extensions", []) => match crate::extensions::list() {
                 Ok(entries) if entries.is_empty() => {
                     self.status = "No extensions registered; see kborg extensions register.".into()
