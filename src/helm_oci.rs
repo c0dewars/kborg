@@ -634,30 +634,54 @@ fn private_host(uri: &Uri) -> bool {
     {
         return true;
     }
-    match host.parse::<IpAddr>() {
-        Ok(IpAddr::V4(ip)) => {
+    host.parse::<IpAddr>().is_ok_and(private_ip)
+}
+fn private_ip(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(ip) => {
             ip.is_private()
                 || ip.is_loopback()
                 || ip.is_link_local()
                 || ip.is_unspecified()
                 || ip.is_multicast()
                 || ip.is_broadcast()
+                // CGNAT 100.64.0.0/10
+                || (ip.octets()[0] == 100 && ip.octets()[1] & 0xc0 == 64)
         }
-        Ok(IpAddr::V6(ip)) => {
+        IpAddr::V6(ip) => {
             ip.is_loopback()
                 || ip.is_unspecified()
                 || ip.is_unique_local()
                 || ip.is_unicast_link_local()
                 || ip.is_multicast()
-                || ip.to_ipv4_mapped().is_some_and(|v4| {
-                    v4.is_private() || v4.is_loopback() || v4.is_link_local() || v4.is_unspecified()
-                })
+                || ip
+                    .to_ipv4_mapped()
+                    .is_some_and(|v4| private_ip(IpAddr::V4(v4)))
         }
-        Err(_) => false,
     }
 }
+/// A public hostname can still resolve to a private address. Resolve it once
+/// here; connection-time DNS can differ (rebinding), which content digests
+/// still bound.
+fn resolves_private(uri: &Uri) -> bool {
+    use std::net::ToSocketAddrs;
+    let Some(host) = uri.host() else {
+        return false;
+    };
+    let host = host.trim_start_matches('[').trim_end_matches(']');
+    if host.parse::<IpAddr>().is_ok() {
+        return false;
+    }
+    let port = uri.port_u16().unwrap_or(443);
+    (host, port)
+        .to_socket_addrs()
+        .is_ok_and(|mut addrs| addrs.any(|addr| private_ip(addr.ip())))
+}
 fn safe_destination(source: &Uri, target: &Uri) -> Result<()> {
-    if source.authority() != target.authority() && !private_host(source) && private_host(target) {
+    if source.authority() != target.authority()
+        && !private_host(source)
+        && (private_host(target) || resolves_private(target))
+    {
         return Err(
             "public registry redirect/token realm may not target a private or loopback address"
                 .into(),
@@ -1295,6 +1319,20 @@ mod tests {
             assert!(!error.contains("PRIVATE_REMOTE_CANARY"));
             Ok(())
         })
+    }
+    #[test]
+    fn public_registries_cannot_redirect_to_private_or_cgnat_addresses() -> Result<()> {
+        let public: Uri = "https://registry.example".parse().map_err(|_| "uri")?;
+        for target in [
+            "https://100.64.0.9/x",
+            "https://[::ffff:10.0.0.1]/x",
+            "https://127.0.0.1/x",
+        ] {
+            let target: Uri = target.parse().map_err(|_| "uri")?;
+            assert!(safe_destination(&public, &target).is_err(), "{target}");
+        }
+        assert!(!private_ip("100.128.0.1".parse().map_err(|_| "ip")?));
+        Ok(())
     }
     #[test]
     fn redirect_policy_strips_cross_origin_credentials_and_rejects_unsafe_routes() -> Result<()> {

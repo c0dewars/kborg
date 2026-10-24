@@ -1,31 +1,46 @@
 # KBorg current implementation status
 
-Updated 2026-10-10 for 0.3.0. This file and REMAINING_WORK.md supersede older progress notes. Historical release reports retain their original source/artifact claims.
+Updated 2026-10-24 for 0.5.0 (unreleased; 0.4.0 is the current release). This file and [REMAINING_WORK.md](REMAINING_WORK.md) supersede older progress notes. Historical acceptance reports keep their original scope and evidence.
 
 ## Implemented
 
-- KBorg product name, `kborg` executable/crate, updated logo and private `c0dewars/kborg` repository. Legacy settings/env/theme IDs remain compatible.
-- Direct verified Kubernetes TLS client; read-only default; bounded lists, live watches, discovery and redacted JSON/YAML inspection; context/namespace/resource browsing and cache search.
-- Container chooser, bounded snapshots/previous logs and up to24-hour rate-limited follow with rolling256KiB/2000-line display and cancellation; demo covers17 resource kinds.
-- Optional pod/node metrics, bounded history and explicit request/limit/allocatable/capacity comparisons with exact quantities and unavailable/forbidden states. Independent snapshots for1..100 contexts and continuous pod watches for up to4 explicit contexts.
-- Scale/restart/delete, deployment container-image and four-field CPU/memory request/limit edits; target-bound approval, UID/resourceVersion, dry-run/admission review, GitOps refusal for detected managed workloads, durable audit intent and pending-outcome reporting.
-- Native explicitly gated bounded exec/output attach and optional stdin/TTY with resize/cancel/terminal restoration, plus finite loopback forwarding. Read-only mode rejects all three; separate capability flags and typed target approval are mandatory.
-- Strict schema1 capability-constraining profiles; reviewed Unix ExecCredential helpers; static completions; visible actions; polished health/navigation/selection panels, centered forms, readable object overview, native pager, keyboard-only `--no-mouse` and16/256/truecolor/monochrome.
-- 18 built-in themes, default Catppuccin Mocha, first-use picker, 2-second skippable startup, custom theme workflows including current-color cloning and backup-preserving replacement; atomic appearance replacement.
-- Explicit local read-only extension registry with immutable native executable SHA/argv and fresh transfer review; no in-process plugins.
-- Local minimized Copilot context and official CLI login handoff for github.com / Enterprise Cloud *.ghe.com. Preflight/minimized preview supplied; no automated model requests.
-- Native six-platform packaging workflow, checksums, CycloneDX SBOM and unsigned source/build records; dependency notice coverage reported by packaging.
+**Browse and inspect**
+- Direct verified Kubernetes TLS client, read-only by default; 35 built-in kinds plus discovered CRDs; context/namespace switching; regex, inverse, fuzzy and label filters; sorting; drilldown; redacted describe, YAML and JSON.
+- Live LIST/WATCH with relist, bounded caches (10,000 objects / 64 MiB), polling fallback and memoized filter/sort for large tables.
+- Multi-file `KUBECONFIG` merged like kubectl; reviewed Unix ExecCredential helpers.
+- `:pulses`, `:xray`, `:workloads`, `:can`, `:subjects`, `:lint` (read-only misconfiguration report) and Ctrl-Z errors-only view.
+- k9s-format `views.yaml` columns (built-in and `TITLE:.json.path`), sort by any column in either direction, wide mode, recent namespaces on digits and recent contexts.
 
-## Evidence and limits
+**Dashboard**
+- 1–9 clusters with independent watches: Pod health, restart hotspots, OOM evidence, warning Events with exact-Pod drilldown, Node readiness and CPU/memory, the busiest or unhealthy Nodes by name, degraded Deployments/StatefulSets, and 15-minute trend sparklines.
+- Single-Pod log panes and a cross-cluster workload tail; saved context groups; `kborg dashboard` reopens the last one.
 
-Windows unit/contract tests, independent security/PTY review, owned Docker Desktop image/log/YAML acceptance, and native exec/forward acceptance have been exercised. Reports are in SECURITY_REVIEW_0.3.md, READ_WORKFLOWS.md, NATIVE_OPERATIONS.md and docs/evidence. WSL/performance and renamed platform artifacts must be read from their final reports rather than inferred from prior 0.2 builds.
+**Logs and metrics**
+- Container, workload and selector logs with fixed or live (`:logs-live`) membership, ranges, search, error/warning filters and export.
+- Pod/Node metrics with exact quantities, request/limit comparisons and bounded history.
 
-This is a testing prerelease, not a completed production certification. See REMAINING_WORK.md for unfinished features and external gates. Privileged external-tool containment, cloud-provider identity/chained-helper acceptance, automated Copilot, remote full-screen programs, interactive external editors/pagers, Unicode/accessibility and the full production acceptance program remain incomplete. Local audit files and client policy do not replace server-side RBAC/admission or protected organizational auditing.
+**Operate** (each behind `--write` and its own opt-in, server dry run where the API supports it, full review and typed confirmation, local audit record)
+- Scale, restart, rollback, delete, force kill; CronJob trigger and suspend/resume; image/resource forms; YAML spec editing in-app or in `$EDITOR`.
+- Server-side apply of local manifests (`--allow-apply`), never forcing field ownership.
+- Cordon/uncordon/drain (`--allow-node-maintenance`); node shell through a reviewed, self-expiring privileged Pod (`--allow-node-shell`); ephemeral debug containers (`--allow-debug`).
+- Exec/attach with optional TTY, eight loopback port forwards with a bounded benchmark, file and directory copy (`--allow-file-copy`).
+- Helm browsing and a reviewed lifecycle subset with OCI, OpenPGP and Sigstore verification.
+- Opt-in Secret key listing with one-value reveal.
 
-Distribution update: the final six-platform rerun was blocked before jobs by GitHub account billing/spending limits. Four Linux/macOS packages from the preceding runtime-identical commit passed; Windows packaging required a license-byte preservation fix. Exact verified artifacts, source revisions and local Windows evidence are recorded in PLATFORM_BUILDS_0.3.md. A successful final six-platform run is not claimed.
+**Workspace and integrations**
+- k9s-format aliases and `hotkeys.yaml`; registered read-only extensions runnable from the CLI and the TUI (`:ext`), with a k9s `plugins.yaml` importer.
+- Strict schema-1 configuration profiles that can forbid every capability flag.
+- GitHub Copilot advice for GitHub.com, GHE.com and GHES 3.22+ through a contained native runtime (macOS ARM64), with a minimized, reviewed payload.
+- 20 themes plus custom palettes with WCAG AA contrast checks, animated startup, truecolor/256/16/monochrome output, contextual key hints, shell completions.
+- Homebrew formula, release archives with checksums, CycloneDX SBOM.
 
-Current macOS priority iteration evidence: [PRIORITIES_ACCEPTANCE.md](PRIORITIES_ACCEPTANCE.md)
-and the exact source hashes in docs/evidence/priorities-local-macos.json. Historical
-Windows/Linux/platform reports do not certify this new source. Optional Copilot
-preflight makes no model/login request or real-token read, and diagnosis remains
-unconditionally disabled while egress/credential/publisher gates are open.
+## Evidence
+
+- 470+ unit tests plus integration suites; clippy with `-D warnings`; lints deny `unwrap`, `expect` and `unsafe`.
+- Live checks on Docker Desktop 1.36.1 and minikube 1.35.9, including 2-hour soaks ([MAC_V1_SOAK.md](MAC_V1_SOAK.md)).
+- Side-by-side performance against k9s and k10s ([PERFORMANCE_COMPARISON.md](PERFORMANCE_COMPARISON.md)) and a CI regression gate.
+- Internal security reviews and an [external audit pack](SECURITY_AUDIT_PACK.md).
+
+## Not done
+
+Independent security audit, code signing and notarization, live GHE.com/GHES Copilot verification, native screenshots in Ghostty/iTerm2/Terminal.app, screen readers and Windows. See [REMAINING_WORK.md](REMAINING_WORK.md).

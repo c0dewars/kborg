@@ -242,7 +242,7 @@ pub(crate) fn expected_spec(
     selected["image"] = json!(image);
     Ok((spec, diff))
 }
-fn check_gitops(object: &Value) -> Result<()> {
+pub(crate) fn check_gitops(object: &Value) -> Result<()> {
     for field in ["labels", "annotations"] {
         if let Some(values) = object["metadata"][field].as_object()
             && (values.keys().any(|key| {
