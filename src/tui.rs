@@ -878,8 +878,8 @@ fn worker() -> Worker {
     }
 }
 
-const OVERVIEW_CONTEXTS_LABEL: &str = "Overview contexts (comma separated, max 4)";
-const OVERVIEW_INPUT_BYTES: usize = 4 * 253 + 3;
+const OVERVIEW_CONTEXTS_LABEL: &str = "Overview contexts (comma separated, max 9)";
+const OVERVIEW_INPUT_BYTES: usize = crate::overview::MAX_LIVE_CONTEXTS * 254 - 1;
 fn input_limit(label: &str) -> usize {
     if label == OVERVIEW_CONTEXTS_LABEL {
         OVERVIEW_INPUT_BYTES
@@ -1088,6 +1088,8 @@ struct App {
     overview: Option<crate::overview::OverviewFeed>,
     selection_ui: selections_ui::State,
     pending_session: Option<(Box<crate::ops::ReviewedOperation>, String)>,
+    /// Ctrl-E in the YAML editor: hand the draft to $EDITOR on the next loop.
+    pending_editor: bool,
     worker: Worker,
 }
 impl App {
@@ -1813,6 +1815,7 @@ impl App {
             );
             return;
         }
+        let _ = crate::dashboard_memory::remember_tail(&chosen);
         let sources = chosen
             .iter()
             .map(|workload| crate::workload_tail::TailSource {
@@ -2379,6 +2382,17 @@ impl App {
                                 Err(error) => picker.errors.push(format!("{context}: {error}")),
                             }
                         }
+                        // Pre-select the last tail's workloads by name; the
+                        // fresh listing supplies their current UIDs.
+                        if let Ok(Some(last)) = crate::dashboard_memory::load() {
+                            for (index, entry) in picker.entries.iter().enumerate() {
+                                if last.picks(entry)
+                                    && picker.checked.len() < crate::workload_tail::MAX_SOURCES
+                                {
+                                    picker.checked.insert(index);
+                                }
+                            }
+                        }
                     }
                 }
                 Reply::SecretValue(uid, key, value) => {
@@ -2665,8 +2679,8 @@ impl App {
     }
     fn open_dashboard(&mut self, names: Vec<String>) -> Result<()> {
         crate::overview::validate(&names)?;
-        if names.len() > 4 {
-            return Err("The dashboard supports up to 4 explicit contexts.".into());
+        if names.len() > crate::overview::MAX_LIVE_CONTEXTS {
+            return Err("The dashboard supports up to 9 explicit contexts.".into());
         }
         if self.busy {
             self.status = "Wait for the current request before opening the dashboard.".into();
@@ -2679,6 +2693,9 @@ impl App {
             &names,
             self.options.connection.demo,
         ));
+        if let Err(error) = crate::dashboard_memory::remember_scope(&names, &self.namespace) {
+            self.status = format!("Dashboard opened; it could not be remembered: {error}");
+        }
         self.send(Task::Overview(connection, names));
         Ok(())
     }
@@ -3378,7 +3395,9 @@ impl App {
                 match editor.key(crossterm::event::KeyEvent::new(code, KeyModifiers::NONE)) {
                     Ok(crate::ui_yaml::Event::Cancel) => self.close_subview(),
                     Ok(crate::ui_yaml::Event::Review) => self.send(Task::YamlPrepare(editor)),
-                    Ok(crate::ui_yaml::Event::Continue) => self.modal = Modal::YamlEditor(editor),
+                    Ok(crate::ui_yaml::Event::Continue | crate::ui_yaml::Event::External) => {
+                        self.modal = Modal::YamlEditor(editor)
+                    }
                     Err(error) => {
                         self.status = error;
                         self.modal = Modal::YamlEditor(editor);
@@ -4312,8 +4331,8 @@ impl App {
                     } else if label == OVERVIEW_CONTEXTS_LABEL {
                         let names: Vec<String> =
                             text.split(',').map(|name| name.trim().to_owned()).collect();
-                        if names.len() > 4 {
-                            self.status="TUI overview allows up to 4 explicit contexts; CLI supports up to 100.".into();
+                        if names.len() > crate::overview::MAX_LIVE_CONTEXTS {
+                            self.status="The dashboard allows up to 9 explicit contexts; CLI snapshots support up to 100.".into();
                         } else if let Err(error) = crate::overview::validate(&names) {
                             self.status = error;
                         } else {
@@ -5032,6 +5051,14 @@ impl App {
                         } else {
                             self.send(Task::YamlPrepare(editor));
                         }
+                    }
+                    Ok(crate::ui_yaml::Event::External) => {
+                        if self.options.external_editor {
+                            self.pending_editor = true;
+                        } else {
+                            self.status = "Start KBorg with --allow-external-editor to edit drafts in $EDITOR.".into();
+                        }
+                        self.modal = Modal::YamlEditor(editor);
                     }
                     Ok(crate::ui_yaml::Event::Continue) => self.modal = Modal::YamlEditor(editor),
                     Err(error) => {
@@ -7106,7 +7133,7 @@ fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
                     "Esc cancel | Enlarge terminal to review complete session."
                 }
             } else if matches!(modal, Modal::YamlEditor(_)) {
-                "Arrows move  Tab indent  Ctrl-S review  Esc cancel"
+                "Arrows move  Tab indent  Ctrl-S review  Ctrl-E $EDITOR  Esc cancel"
             } else if matches!(modal, Modal::WriteReview(_)) {
                 "PgUp/PgDown read all changes  Type target  Enter apply  Esc back"
             } else if matches!(modal, Modal::WriteRunning) {
@@ -7114,7 +7141,7 @@ fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
             } else if matches!(modal, Modal::Input("Command", _)) {
                 "Esc cancel | Enter run | :pods :deploy :svc :nodes | :ns NAME | :sort FIELD"
             } else if matches!(modal, Modal::LiveOverview(..)) {
-                "1..4 focus | Enter Pods | w warnings | ? keymap | Esc back"
+                "1..9 focus | Enter Pods | w warnings | ? keymap | Esc back"
             } else if matches!(modal, Modal::Overview(..)) {
                 "Esc close | J redacted JSON | y YAML | PgUp/PgDown scroll"
             } else if matches!(modal, Modal::AdviceRunning) {
@@ -7375,6 +7402,7 @@ pub fn run(options: Options) -> Result<()> {
         overview: None,
         selection_ui: Default::default(),
         pending_session: None,
+        pending_editor: false,
         worker,
     };
     if first_run {
@@ -7391,10 +7419,41 @@ pub fn run(options: Options) -> Result<()> {
         );
     }
     app.connect();
+    if app.options.dashboard_last && app.options.dashboard.is_empty() {
+        match crate::dashboard_memory::load() {
+            Ok(Some(last)) => {
+                app.namespace = last.namespace;
+                app.options.dashboard = last.contexts;
+            }
+            Ok(None) => {
+                app.modal = Modal::Input(OVERVIEW_CONTEXTS_LABEL, app.context.clone());
+                app.status = "Choose up to nine contexts for the dashboard; KBorg remembers them for next time.".into();
+            }
+            Err(error) => app.status = format!("Last dashboard unavailable: {error}"),
+        }
+    }
     draw(&mut app)?;
     let mut dirty = false;
     loop {
         if app.receive() {
+            dirty = true;
+        }
+        if std::mem::take(&mut app.pending_editor)
+            && let Modal::YamlEditor(editor) = &mut app.modal
+        {
+            let text = editor.text();
+            drop(terminal_guard.take());
+            let result =
+                crate::external_editor::edit(&text, crate::manifest_edit::MAX_DOCUMENT as u64);
+            terminal_guard = Some(Terminal::enter(app.options.mouse)?);
+            if let Modal::YamlEditor(editor) = &mut app.modal {
+                app.status = match result.and_then(|edited| editor.replace_text(&edited)) {
+                    Ok(()) => {
+                        "Draft updated from $EDITOR. Ctrl-S prepares the reviewed diff.".into()
+                    }
+                    Err(error) => error,
+                };
+            }
             dirty = true;
         }
         if let Some((prepared, typed)) = app.pending_session.take() {
@@ -7692,6 +7751,8 @@ mod layout_tests {
                     all_containers: false,
                     dynamic_membership: false,
                     dashboard: Vec::new(),
+                    dashboard_last: false,
+                    external_editor: false,
                     helm_storage: None,
                     helm_tool: None,
                     helm_values: None,
@@ -7769,6 +7830,7 @@ mod layout_tests {
                 overview: None,
                 selection_ui: Default::default(),
                 pending_session: None,
+                pending_editor: false,
                 worker: Worker {
                     tx,
                     rx,
@@ -9477,7 +9539,7 @@ mod layout_tests {
         }
         app.busy = false;
         app.command_epoch = None;
-        let names: Vec<_> = ['a', 'b', 'c', 'd']
+        let names: Vec<_> = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i']
             .iter()
             .map(|prefix| format!("{prefix}{}", "é".repeat(126)))
             .collect();
@@ -9499,10 +9561,10 @@ mod layout_tests {
             _ => panic!("four maximum-length overview names were not accepted"),
         }
         app.busy = false;
-        app.modal = Modal::Input(OVERVIEW_CONTEXTS_LABEL, "a,b,c,d,e".into());
+        app.modal = Modal::Input(OVERVIEW_CONTEXTS_LABEL, "a,b,c,d,e,f,g,h,i,j".into());
         assert!(app.key(KeyCode::Enter).is_ok());
         assert!(commands.try_recv().is_err());
-        assert!(app.status.contains("up to 4"));
+        assert!(app.status.contains("up to 9"));
     }
     #[test]
     fn dashboard_focus_help_and_drill_preserve_explicit_scope() {
@@ -9566,6 +9628,8 @@ mod layout_tests {
             unknown: 0,
             restarts: 3,
             oom_killed: 0,
+            restart_alerts: Vec::new(),
+            restart_alert_count: 0,
             warnings: crate::dashboard_health::WarningSummary {
                 state: crate::dashboard_health::EvidenceState::Live,
                 count: Some(1),
@@ -9844,6 +9908,8 @@ mod layout_tests {
             unknown: 0,
             restarts: 3,
             oom_killed: 0,
+            restart_alerts: Vec::new(),
+            restart_alert_count: 0,
             warnings: crate::dashboard_health::WarningSummary {
                 state: crate::dashboard_health::EvidenceState::Live,
                 count: Some(1),

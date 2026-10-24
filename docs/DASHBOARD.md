@@ -6,7 +6,7 @@ Press `D` from a resource table to open the current context and namespace. The h
 
 | Key | Action |
 |---|---|
-| `1`..`4`, arrows, Tab | Focus a context card; pressing the focused card's number again toggles full-screen focus |
+| `1`..`9`, arrows, Tab | Focus a context card; pressing the focused card's number again toggles full-screen focus |
 | Enter | Open current Pods in the focused context and displayed namespace |
 | `w` | Select the next recent warning in the focused card; cycling past the last clears it |
 | Enter on a warning | Open Events for that exact Pod name and UID in its namespace |
@@ -14,7 +14,7 @@ Press `D` from a resource table to open the current context and namespace. The h
 | `e` / `W` in a pane | Show only error / warning lines in the open log pane |
 | `L` on a warning | Follow that exact Pod's logs (all ordinary containers) in a pane under the cards; `L` again closes it |
 | Esc on a warning | Close an open log pane first, then clear the warning selection without closing the dashboard |
-| `c` | Choose one to four explicit context names, comma separated; Ctrl-U clears the input |
+| `c` | Choose one to nine explicit context names, comma separated; Ctrl-U clears the input |
 | `s` | Name and save the dashboard's context group and namespace |
 | `B` | Open saved selections |
 | `?` | Show the dashboard keymap and evidence legend; watches keep running |
@@ -24,7 +24,13 @@ The log pane opens its own read-only connection to the focused card's context, s
 
 Expanded cards also show `NODES ready/total` (with cordoned Nodes and cluster CPU/memory as a percentage of summed allocatable when the Metrics API answers) and `APPS` with Deployment/StatefulSet counts and up to four named degraded workloads. A workload is degraded when it wants replicas that are not available or ready, or its rollout reports `ProgressDeadlineExceeded`; scaled-to-zero workloads are not. These come from a separate 15-second read-only poll per card, so a slow or denied read never delays the Pod and Event watches. Nodes are cluster-scoped and often denied to namespace-scoped identities; the card then shows `NODES DENIED` rather than zero.
 
-`kborg --contexts a,b` opens the TUI directly in this dashboard for one to four contexts.
+`kborg --contexts a,b` opens the TUI directly in this dashboard for one to nine contexts. Wide terminals (150+ columns) use three columns once five or more clusters are shown.
+
+Cards also raise two alerts. `RESTARTS` counts Pods whose busiest container has restarted 5 or more times and names the top three. `EVENTS` counts Warning events from the last 15 minutes about objects other than Pods (Nodes, ReplicaSets, Deployments, PersistentVolumeClaims…), read from the dashboard namespace plus `default`, where Node events are recorded; the newest three are named.
+
+### Remembered dashboard
+
+Opening a dashboard records its context names and namespace, and starting a tail records the chosen workload names, in `last-dashboard.json` in the private KBorg configuration directory. Nothing else is stored: no credentials, UIDs or cluster data. A normal launch never reads it. `kborg dashboard` (or `--dashboard`) reopens the last dashboard, or asks for contexts on first use; the tail picker pre-selects the remembered workloads, whose identities come from the fresh listing.
 
 ### Cross-cluster workload tail
 

@@ -77,7 +77,7 @@ The broader release gates, platform coverage and external integrations remain in
 
 ## Mac v1 workflow additions (2026-10-23)
 
-`e` opens the existing-resource YAML spec editor; Ctrl-S prepares the diff and full painted review. `:edit-container` retains the focused image/resource form. Node `c/u/r` reviews cordon/uncordon/drain. `--write` and each separate capability are required. `:export` prepares selected redacted resource YAML; log/Helm Ctrl-S opens a private export preview. Log `e` and `W` toggle word-based error/warning filters; `w` remains wrap. These labels identify text matches, not inferred severity or diagnosis.
+`e` opens the existing-resource YAML spec editor; Ctrl-S prepares the diff and full painted review. With `--allow-external-editor`, Ctrl-E in that editor hands the draft to `$VISUAL`/`$EDITOR` (k9s `e` behavior); the edited text returns to the same validation and review. `:edit-container` retains the focused image/resource form. Node `c/u/r` reviews cordon/uncordon/drain. `--write` and each separate capability are required. `:export` prepares selected redacted resource YAML; log/Helm Ctrl-S opens a private export preview. Log `e` and `W` toggle word-based error/warning filters; `w` remains wrap. These labels identify text matches, not inferred severity or diagnosis.
 
 The compact top menu preserves command names and accepts mouse navigation. Exact supported scopes, bounds, cancellation and remaining gaps are in [Mac v1 operations](MAC_V1_OPERATIONS.md).
 
