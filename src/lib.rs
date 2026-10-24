@@ -8,15 +8,19 @@ pub mod safety;
 pub mod themes;
 pub mod tui;
 pub mod watch;
+pub mod workload_tail;
 
 pub type Result<T> = std::result::Result<T, String>;
 
 pub mod audit;
+pub mod cluster_health;
 pub mod completions;
 pub mod config;
 pub mod dashboard_health;
+pub mod dashboard_memory;
 pub mod edit;
 pub mod exports;
+pub mod external_editor;
 pub mod inspect;
 pub mod logs;
 pub mod manifest_edit;
@@ -36,11 +40,15 @@ pub mod insights;
 pub mod navigation_views;
 pub mod pager;
 pub mod screendump;
+pub mod secrets;
 pub mod selections;
 pub mod selectors;
 pub mod session;
+pub mod splash;
 pub mod transport;
 pub mod ui_logs;
+pub mod ui_secrets;
+pub mod ui_subjects;
 
 pub mod helm;
 

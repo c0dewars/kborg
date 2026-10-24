@@ -24,6 +24,12 @@ fn detected_depth(term: Option<&str>, colorterm: Option<&str>, windows: bool) ->
         || term.ends_with("-direct")
         || term.contains("truecolor")
         || term.contains("24bit")
+        // Terminals that always support 24-bit color; COLORTERM is commonly
+        // dropped over SSH, which would otherwise fall back to 16 colors.
+        || matches!(
+            term.as_str(),
+            "xterm-ghostty" | "xterm-kitty" | "wezterm" | "alacritty" | "foot" | "contour"
+        )
     {
         ColorDepth::TrueColor
     } else if term.contains("256color") {
@@ -302,6 +308,37 @@ fn legible(a: Rgb, b: Rgb) -> Rgb {
     }
 }
 
+fn mix(a: Rgb, b: Rgb, percent: u16) -> Rgb {
+    let channel =
+        |a: u8, b: u8| ((u16::from(a) * (100 - percent) + u16::from(b) * percent) / 100) as u8;
+    Rgb(channel(a.0, b.0), channel(a.1, b.1), channel(a.2, b.2))
+}
+
+/// Strongest surface tint the UI paints (raised rows mix 6% text into the
+/// background); cards, headers and selection sit between it and the background.
+pub const MAX_SURFACE_TINT: u16 = 6;
+
+/// Keeps a palette color's hue while moving it toward white (dark themes) or
+/// black (light themes) just far enough to reach 4.5:1 on every surface from
+/// the plain background to the most tinted one.
+/// `text` is `None` when the color being adjusted is the text color itself,
+/// whose own value defines the tinted surfaces.
+fn legible_on_surfaces(color: Rgb, background: Rgb, text: Option<Rgb>) -> Rgb {
+    let target = if background.luminance() < 0.5 {
+        Rgb(255, 255, 255)
+    } else {
+        Rgb(0, 0, 0)
+    };
+    for step in 0..=100u16 {
+        let candidate = mix(color, target, step);
+        let tinted = mix(background, text.unwrap_or(candidate), MAX_SURFACE_TINT);
+        if contrast(candidate, background) >= 4.5 && contrast(candidate, tinted) >= 4.5 {
+            return candidate;
+        }
+    }
+    legible(color, background)
+}
+
 #[derive(Clone)]
 pub struct Theme {
     pub id: String,
@@ -495,6 +532,15 @@ pub fn builtins() -> Vec<Theme> {
                     role.into(),
                     legible(Rgb::parse(color).unwrap_or(Rgb(255, 255, 255)), bg),
                 );
+            }
+            // Text first: every tinted surface is derived from it.
+            let palette = |role: &str| colors.get(role).copied().unwrap_or(Rgb(255, 255, 255));
+            let text = legible_on_surfaces(palette("text"), bg, None);
+            let adjusted = ["muted", "accent", "success", "warning", "danger"]
+                .map(|role| (role, legible_on_surfaces(palette(role), bg, Some(text))));
+            colors.insert("text".into(), text);
+            for (role, color) in adjusted {
+                colors.insert(role.into(), color);
             }
             let accent = colors.get("accent").copied().unwrap_or(Rgb(255, 255, 255));
             colors.insert("focus".into(), accent);
@@ -825,6 +871,9 @@ mod tests {
         use super::{ColorDepth::*, detected_depth};
         for term in ["linux", "vt100", "xterm", "screen", "dumb"] {
             assert_eq!(detected_depth(Some(term), None, false), Basic16);
+        }
+        for term in ["xterm-ghostty", "xterm-kitty", "wezterm", "alacritty"] {
+            assert_eq!(detected_depth(Some(term), None, false), TrueColor, "{term}");
         }
         for term in ["xterm-256color", "screen-256color", "rxvt-unicode-256color"] {
             assert_eq!(detected_depth(Some(term), None, false), Indexed256);

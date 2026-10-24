@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 1000" role="img" aria-label="KBorg">
+  <defs>
+    <linearGradient id="k" x1="0" y1="0" x2="0" y2="1000" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#FFA41B"/><stop offset="1" stop-color="#FF5A1F"/></linearGradient>
+    <linearGradient id="b" x1="0" y1="0" x2="0" y2="1000" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#3BE08A"/><stop offset="1" stop-color="#0FA968"/></linearGradient>
+    <mask id="holes"><rect width="1000" height="1000" fill="white"/><path d="M732,310 H738 A52,52 0 0 1 790,362 V370 A52,52 0 0 1 738,422 H732 A52,52 0 0 1 680,370 V362 A52,52 0 0 1 732,310 ZM734,578 H776 A54,54 0 0 1 830,632 V636 A54,54 0 0 1 776,690 H734 A54,54 0 0 1 680,636 V632 A54,54 0 0 1 734,578 Z" fill="black"/></mask>
+  </defs>
+  <rect x="90" y="210" width="100" height="580" rx="50" fill="url(#k)"/>
+  <line x1="298" y1="500" x2="480" y2="240" stroke="url(#k)" stroke-width="100" stroke-linecap="round"/><line x1="298" y1="500" x2="480" y2="760" stroke="url(#k)" stroke-width="100" stroke-linecap="round"/>
+  <path d="M736,210 H734 A156,156 0 0 1 890,366 V366 A156,156 0 0 1 734,522 H736 A156,156 0 0 1 580,366 V366 A156,156 0 0 1 736,210 ZM736,478 H774 A156,156 0 0 1 930,634 V634 A156,156 0 0 1 774,790 H736 A156,156 0 0 1 580,634 V634 A156,156 0 0 1 736,478 ZM580,210 H680 V790 H580 Z" fill="url(#b)" mask="url(#holes)"/>
+</svg>

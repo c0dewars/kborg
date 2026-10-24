@@ -599,3 +599,159 @@ mod tests {
         Ok(())
     }
 }
+
+/// One RBAC subject named by RoleBindings/ClusterRoleBindings (k9s `:users`,
+/// `:groups`). Declared bindings only; group membership is never inferred.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SubjectRow {
+    pub kind: String,
+    pub name: String,
+    /// Service account namespace; empty for users and groups.
+    pub namespace: String,
+    pub bindings: usize,
+    /// "ClusterRole/NAME" or "Role/NAME", sorted, at most four.
+    pub roles: Vec<String>,
+    pub role_count: usize,
+}
+impl SubjectRow {
+    /// The `:can` argument for this subject.
+    pub fn can_argument(&self) -> String {
+        match self.kind.as_str() {
+            "User" => format!("u:{}", self.name),
+            "Group" => format!("g:{}", self.name),
+            _ => format!("s:{}:{}", self.namespace, self.name),
+        }
+    }
+}
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SubjectIndex {
+    pub rows: Vec<SubjectRow>,
+    pub incomplete: bool,
+    pub errors: Vec<String>,
+}
+pub const MAX_SUBJECTS: usize = 2000;
+
+/// Aggregates subjects across binding objects; `kind` keeps one subject kind.
+pub fn subject_rows(bindings: &[Value], kind: Option<&str>) -> Vec<SubjectRow> {
+    type Key = (String, String, String);
+    let mut found: std::collections::BTreeMap<Key, (usize, std::collections::BTreeSet<String>)> =
+        Default::default();
+    for binding in bindings {
+        let role = format!(
+            "{}/{}",
+            field(&binding["roleRef"], "kind"),
+            field(&binding["roleRef"], "name")
+        );
+        let binding_namespace = binding["metadata"]["namespace"].as_str().unwrap_or("");
+        for subject in binding["subjects"].as_array().into_iter().flatten() {
+            let subject_kind = subject["kind"].as_str().unwrap_or("");
+            if !matches!(subject_kind, "User" | "Group" | "ServiceAccount")
+                || kind.is_some_and(|kind| kind != subject_kind)
+            {
+                continue;
+            }
+            let name = subject["name"].as_str().unwrap_or("");
+            if name.is_empty() || name.len() > 253 || safety::safe_text(name, 253) != name {
+                continue;
+            }
+            let namespace = if subject_kind == "ServiceAccount" {
+                subject["namespace"].as_str().unwrap_or(binding_namespace)
+            } else {
+                ""
+            };
+            let entry = found
+                .entry((subject_kind.into(), name.into(), namespace.into()))
+                .or_default();
+            entry.0 += 1;
+            entry.1.insert(role.clone());
+        }
+    }
+    found
+        .into_iter()
+        .take(MAX_SUBJECTS)
+        .map(|((kind, name, namespace), (bindings, roles))| SubjectRow {
+            role_count: roles.len(),
+            roles: roles.into_iter().take(4).collect(),
+            kind,
+            name,
+            namespace,
+            bindings,
+        })
+        .collect()
+}
+
+pub async fn subjects(
+    gateway: &Gateway,
+    namespace: &str,
+    kind: Option<&str>,
+) -> Result<SubjectIndex> {
+    if namespace != "*" && !safety::valid_id(namespace) {
+        return Err("invalid RBAC namespace scope".into());
+    }
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    let mut index = SubjectIndex::default();
+    let mut bindings = Vec::new();
+    for (resource, scope) in [
+        ("rolebindings.rbac.authorization.k8s.io", namespace),
+        ("clusterrolebindings.rbac.authorization.k8s.io", "*"),
+    ] {
+        match tokio::time::timeout_at(deadline, gateway.list(resource, scope)).await {
+            Ok(Ok(mut list)) => {
+                index.incomplete |= list["truncated"] == true;
+                bindings.extend(
+                    list["items"]
+                        .as_array_mut()
+                        .map(std::mem::take)
+                        .unwrap_or_default(),
+                );
+            }
+            Ok(Err(error)) => {
+                index.incomplete = true;
+                index
+                    .errors
+                    .push(format!("{resource}: {}", safety::safe_text(&error, 160)));
+            }
+            Err(_) => {
+                index.incomplete = true;
+                index.errors.push(format!("{resource}: deadline exceeded"));
+            }
+        }
+    }
+    index.rows = subject_rows(&bindings, kind);
+    Ok(index)
+}
+
+#[cfg(test)]
+mod subject_tests {
+    use super::*;
+    use serde_json::json;
+    #[test]
+    fn subjects_aggregate_bindings_roles_and_service_account_namespaces() {
+        let bindings = vec![
+            json!({"metadata":{"namespace":"shop"},"roleRef":{"kind":"Role","name":"reader"},"subjects":[{"kind":"User","name":"alice"},{"kind":"ServiceAccount","name":"api"}]}),
+            json!({"metadata":{},"roleRef":{"kind":"ClusterRole","name":"view"},"subjects":[{"kind":"User","name":"alice"},{"kind":"Group","name":"devs"},{"kind":"ServiceAccount","name":"api","namespace":"ops"}]}),
+            json!({"metadata":{},"roleRef":{"kind":"ClusterRole","name":"x"},"subjects":[{"kind":"User","name":"bad\u{1b}[2J"},{"kind":"Other","name":"o"}]}),
+        ];
+        let rows = subject_rows(&bindings, None);
+        let alice = rows.iter().find(|r| r.name == "alice").cloned();
+        assert_eq!(
+            alice.as_ref().map(|r| (r.bindings, r.role_count)),
+            Some((2, 2))
+        );
+        assert_eq!(
+            alice.map(|r| r.roles),
+            Some(vec![
+                "ClusterRole/view".to_owned(),
+                "Role/reader".to_owned()
+            ])
+        );
+        let accounts = rows
+            .iter()
+            .filter(|r| r.kind == "ServiceAccount")
+            .map(|r| r.can_argument())
+            .collect::<Vec<_>>();
+        assert_eq!(accounts, ["s:ops:api", "s:shop:api"]);
+        assert_eq!(rows.len(), 4);
+        assert_eq!(subject_rows(&bindings, Some("Group")).len(), 1);
+    }
+}

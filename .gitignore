@@ -1,9 +1,40 @@
+# Build output and packaged releases
 /target/
-/.local/
-*.tmp
-*.kubeconfig
-test-results/
 /dist/
+*.profraw
+*.profdata
 
+# Repo-local toolchains, clusters, virtualenvs and caches (multi-GB)
+/.local/
+.venv/
+venv/
 __pycache__/
 *.pyc
+
+# Test runs and live-harness scratch output; retained evidence lives in docs/evidence
+test-results/
+*.tmp
+*.log
+
+# Credentials and local environment; never commit cluster or account material
+*.kubeconfig
+kubeconfig*
+.env
+.env.*
+*.pem
+*.key
+
+# Editor and OS noise
+.DS_Store
+._*
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Local agent/assistant settings
+.claude/settings.local.json
+
+# Agent worktrees created by Claude Code
+.claude/worktrees/

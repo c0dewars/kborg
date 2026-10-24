@@ -489,6 +489,15 @@ pub struct Options {
     pub executable: PathBuf,
     pub expected_sha256: String,
     pub host: String,
+    /// "github.com", "ghe.com" or "server"; inferred for the first two.
+    #[serde(default)]
+    pub deployment: Option<String>,
+    /// GitHub Enterprise Server only: permit RFC 1918/CGNAT/ULA destinations.
+    #[serde(default)]
+    pub allow_private_network: bool,
+    /// GitHub Enterprise Server only: absolute PEM bundle for an internal CA.
+    #[serde(default)]
+    pub tls_ca_file: Option<PathBuf>,
     pub credential_file: Option<PathBuf>,
     pub gh_cli: Option<GhCredential>,
     pub model: String,
@@ -518,12 +527,31 @@ fn valid_account(account: &str) -> bool {
         && !account.ends_with('-')
 }
 impl Options {
+    pub fn deployment(&self) -> Result<copilot::Deployment> {
+        copilot::Deployment::parse(&self.host, self.deployment.as_deref())
+    }
     fn validate(&self) -> Result<()> {
         if self.schema_version != 1 {
             return Err("unsupported Copilot policy schema; expected1".into());
         }
-        if self.host != "github.com" {
-            return Err("Contained Copilot inference supports exact github.com only".into());
+        let deployment = self.deployment()?;
+        let server = matches!(deployment, copilot::Deployment::EnterpriseServer(_));
+        if self.allow_private_network && !server {
+            return Err(
+                "allow_private_network applies only to a GitHub Enterprise Server deployment"
+                    .into(),
+            );
+        }
+        match &self.tls_ca_file {
+            Some(_) if !server => {
+                return Err(
+                    "tls_ca_file applies only to a GitHub Enterprise Server deployment".into(),
+                );
+            }
+            Some(path) if !path.is_absolute() => {
+                return Err("tls_ca_file must be an absolute path".into());
+            }
+            _ => {}
         }
         if !valid_pin(&self.expected_sha256) {
             return Err("Copilot policy needs a lowercase64-hex SHA-256 pin obtained independently from a trusted publisher source".into());
@@ -626,16 +654,16 @@ fn valid_token(token: &str, dedicated: bool) -> bool {
             || (!dedicated && (token.starts_with("gho_") || token.starts_with("ghu_"))))
 }
 impl Credential {
-    fn read(path: &Path) -> Result<(Self, String)> {
+    fn read(path: &Path, host: &str) -> Result<(Self, String)> {
         credential_metadata(path)?;
         let bytes = authority_read(path, MAX_TOKEN_FILE)?;
         let credential:Self=serde_json::from_slice(&bytes).map_err(|_|"Dedicated credential must be strict JSON with schema_version, host, account and token; contents suppressed")?;
         if credential.schema_version != 1
-            || credential.host != "github.com"
+            || credential.host != host
             || !valid_account(&credential.account)
             || !valid_token(&credential.token, true)
         {
-            return Err("Dedicated credential requires schema1, exact github.com host, explicit account and a fine-grained PAT; no implicit credential fallback".into());
+            return Err("Dedicated credential requires schema1, the policy's exact host, explicit account and a fine-grained PAT; no implicit credential fallback".into());
         }
         let hash = credential_hash(&credential);
         Ok((credential, hash))
@@ -646,7 +674,7 @@ fn selected_credential(
     stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
 ) -> Result<(Credential, String)> {
     if let Some(path) = &options.credential_file {
-        return Credential::read(path);
+        return Credential::read(path, &options.host);
     }
     let gh = options
         .gh_cli
@@ -781,6 +809,7 @@ pub async fn prepare(object: &Value, options: Options) -> Result<PreparedAdvice>
     if bundle.len() > MAX_PREVIEW {
         return Err("minimized Copilot bundle exceeds64KiB".into());
     }
+    let deployment = options.deployment()?;
     let mut prepared = PreparedAdvice {
         options,
         bundle,
@@ -790,13 +819,33 @@ pub async fn prepare(object: &Value, options: Options) -> Result<PreparedAdvice>
         account: credential.account,
     };
     prepared.summary = format!(
-        "COPILOT DIAGNOSTIC TRANSFER / NOT SENT\nHost: {}\nCredential account label: {} (operator supplied, not an independently verified account identity)\nModel: {} | wall/CPU budget {}s\nNative executable SHA-256: {}\nThe supplied pin must come from an independently trusted publisher source. Matching bytes and native code-sign validation do not establish publisher identity.\n\nOnly the exact minimized status bundle below is authorized. No Kubernetes credentials, resource names, messages, manifests or logs are included. Unknown strings are replaced with Other. Numeric counters can still be confidential.\n\nWhole-process macOS OS policy: empty private HOME, restricted reads, workspace-only writes, no child executables, and no direct networking. Authenticated local broker permits only exact approved TLS CONNECT authorities and matching SNI: {}. These provider services process the diagnostics.\nTool/MCP/instruction/auto-login switches are defense in depth, not a sandbox. The selected credential source is explicit and host/account-bound. A chosen gh account may have authority broader than Copilot; KBorg cannot independently introspect all grants. No ambient environment token or automatic account fallback is used. Only the separate pinned gh credential lookup, when explicitly selected, can access its user HOME/config and keychain. The Copilot child cannot access them.\n\nOutput is untrusted advice. No suggested command is executed or automatically approved. Approval expires after5minutes.\nType exactly: {}",
+        "COPILOT DIAGNOSTIC TRANSFER / NOT SENT\nDeployment: {}\nHost: {}\nCredential account label: {} (operator supplied, not an independently verified account identity)\nModel: {} | wall/CPU budget {}s\nNative executable SHA-256: {}\nThe supplied pin must come from an independently trusted publisher source. Matching bytes and native code-sign validation do not establish publisher identity.\n\nOnly the exact minimized status bundle below is authorized. No Kubernetes credentials, resource names, messages, manifests or logs are included. Unknown strings are replaced with Other. Numeric counters can still be confidential.\n\nWhole-process macOS OS policy: empty private HOME, restricted reads, workspace-only writes, no child executables, and no direct networking. Authenticated local broker permits only exact approved TLS CONNECT authorities and matching SNI: {}. These provider services process the diagnostics.{}\nTool/MCP/instruction/auto-login switches are defense in depth, not a sandbox. The selected credential source is explicit and host/account-bound. A chosen gh account may have authority broader than Copilot; KBorg cannot independently introspect all grants. No ambient environment token or automatic account fallback is used. Only the separate pinned gh credential lookup, when explicitly selected, can access its user HOME/config and keychain. The Copilot child cannot access them.\n\nOutput is untrusted advice. No suggested command is executed or automatically approved. Approval expires after5minutes.\nType exactly: {}",
+        deployment.label(),
         prepared.options.host,
         prepared.account,
         prepared.options.model,
         prepared.options.seconds,
         prepared.options.expected_sha256,
-        proxy::HOSTS.join(", "),
+        deployment.authorities().join(", "),
+        match &deployment {
+            copilot::Deployment::GitHub => String::new(),
+            copilot::Deployment::EnterpriseCloud(_) => {
+                " Requests stay on this tenant's region-specific GHE.com endpoints.".into()
+            }
+            copilot::Deployment::EnterpriseServer(_) => format!(
+                " The GHES instance forwards the bundle to its administrator-configured model provider, which KBorg cannot see or verify.{}{}",
+                if prepared.options.allow_private_network {
+                    " Private enterprise addresses are permitted for this host only; loopback, link-local and metadata addresses stay blocked."
+                } else {
+                    ""
+                },
+                if prepared.options.tls_ca_file.is_some() {
+                    " TLS verification for this host uses the pinned policy CA bundle."
+                } else {
+                    ""
+                }
+            ),
+        },
         prepared.confirmation()
     );
     Ok(prepared)
@@ -885,6 +934,44 @@ mod policy_tests {
         let mut unknown = valid;
         unknown["gh_cli"]["token"] = "ignored_secret".into();
         assert!(serde_json::from_value::<Options>(unknown).is_err());
+        Ok(())
+    }
+    #[test]
+    fn enterprise_deployments_are_explicit_and_server_only_options_stay_scoped() -> Result<()> {
+        let options = |changes: Value| -> Result<Options> {
+            let mut value = policy();
+            for (key, change) in changes.as_object().ok_or("object")? {
+                value[key] = change.clone();
+            }
+            serde_json::from_value(value).map_err(|_| "policy".into())
+        };
+        let cloud = options(json!({"host":"acme.ghe.com"}))?;
+        cloud.validate()?;
+        assert_eq!(
+            cloud.deployment()?,
+            copilot::Deployment::EnterpriseCloud("acme.ghe.com".into())
+        );
+        assert!(
+            options(json!({"host":"git.corp.example"}))?
+                .validate()
+                .is_err()
+        );
+        let server = options(
+            json!({"host":"git.corp.example","deployment":"server","allow_private_network":true,"tls_ca_file":"/etc/kborg/corp-ca.pem"}),
+        )?;
+        server.validate()?;
+        assert_eq!(
+            server.deployment()?.authorities(),
+            vec!["git.corp.example".to_owned()]
+        );
+        for invalid in [
+            json!({"allow_private_network":true}),
+            json!({"host":"acme.ghe.com","allow_private_network":true}),
+            json!({"tls_ca_file":"/etc/kborg/corp-ca.pem"}),
+            json!({"host":"git.corp.example","deployment":"server","tls_ca_file":"relative.pem"}),
+        ] {
+            assert!(options(invalid)?.validate().is_err());
+        }
         Ok(())
     }
     #[test]

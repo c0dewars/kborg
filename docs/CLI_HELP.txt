@@ -2,7 +2,7 @@ KBorg 0.3 — Kubernetes operations, under your control
 
   kborg                          Interactive resource browser (READ ONLY)
   kborg demo                     Offline sample cluster; no credentials
-  kborg startup on|off           Persist startup animation preference
+  kborg startup on|off|preview   Startup animation preference, or play it now
   kborg contexts                 List contexts without connecting
   kborg overview CONTEXT...       Snapshots 1..100; --follow watches up to 4 contexts
   kborg doctor                   Verify selected context and pod access
@@ -24,6 +24,10 @@ KBorg 0.3 — Kubernetes operations, under your control
   kborg logs POD --all-containers Merged ordinary-container logs with source prefixes
   kborg logs deploy/NAME          Fixed workload Pod membership, all ordinary containers
   kborg logs --selector LABELS    Fixed namespace Pod membership, shared log limits
+  kborg dashboard                Reopen the last dashboard (first use: pick clusters)
+  kborg --contexts A,B,...        Open the dashboard for 1..9 contexts (remembered)
+  kborg logs ... --follow --dynamic-membership
+                                  Opt in to announced Pod joins/departures (10s refresh)
   kborg helm [list]               Native Helm releases (--allow-helm)
   kborg helm history RELEASE      Stored revision history; history RELEASE is an alias
   kborg helm detail|resources|values RELEASE REVISION   Explicit selected-revision reads
@@ -40,6 +44,7 @@ KBorg 0.3 — Kubernetes operations, under your control
   kborg set-image [RESOURCE] NAME CONTAINER IMAGE   Reviewed image change
   kborg set-resources [RESOURCE] NAME CONTAINER CPU_REQ MEM_REQ CPU_LIMIT MEM_LIMIT
   kborg delete RESOURCE NAME      Guarded deletion; no force
+  kborg kill POD                  Reviewed zero-grace Pod kill (--write --allow-force-kill)
   kborg cordon NODE               Review and disable node scheduling
   kborg uncordon NODE             Review and enable node scheduling
   kborg drain NODE [SECONDS]      Reviewed eviction; default 120s, maximum 300s
@@ -74,7 +79,10 @@ Options (put KBorg flags before exec's -- separator):
   --helm-sigstore-policy ABS                   Require pinned Cosign chart-blob verification
   --copilot-policy ABS                         Dedicated Copilot advisory configuration
   --allow-yaml-edit                            General reviewed spec edits
+  --allow-external-editor                      Ctrl-E in the YAML editor opens $VISUAL/$EDITOR
   --allow-node-maintenance                     Reviewed cordon/uncordon/drain
+  --allow-force-kill                           Reviewed Pod kill with zero grace period
+  --allow-secret-reveal                        :secrets key list and per-key reveal (TUI)
   --allow-logs       --allow-exec   --allow-attach   --allow-forward
   --poll            --theme ID     --color=never    --json       --yaml
   --no-mouse        --follow          --previous     --no-splash      --demo       --help
@@ -138,6 +146,7 @@ TUI navigation (k9s command grammar; full compatibility register in docs/K9S_COM
   :helm-crds-migrate               Review schema storage switch and instance rewrites
   :copilot                        Preview selected diagnostics; separately approve transfer
   :logs LABELS                   Capture fixed multi-Pod logs in current namespace
+  :logs-live [LABELS]            Follow a workload or selector with announced joins/departures
   :themes :metrics :overview :actions  Additional KBorg views
   D / b / B                    Dashboard / save selection / reopen selections
   Dashboard 1..4 / c / s / ?    Focus / contexts / save / keymap

@@ -1,0 +1,31 @@
+{
+  "scope": "Interrupted before completion; no report.json was written and no soak acceptance is claimed",
+  "binary_sha256": "32a6b514bce9ab3edf247248c91e84abbce363b82980a06a6b440e9450bd4cd5",
+  "reason": "All harness and application processes stopped at about 4145 of 7200 seconds (last progress 2026-10-23T14:05Z); progress.json was left in state 'running'. The repository was afterwards moved from Desktop/HyperMac/repos to Desktop/repos, invalidating the minikube profile's absolute paths.",
+  "runs": [
+    {
+      "context": "docker-desktop",
+      "namespace": "kborg-soak-0f0b21f0af23",
+      "last_progress_utc": "2026-10-23T14:05:04.238805+00:00",
+      "actual_continuous_seconds": 4145.233,
+      "samples": 276,
+      "mutations": 69,
+      "fault_recovered": null,
+      "report": null,
+      "passed": false,
+      "fixture_cleanup": "manual: harness never reached cleanup; namespace deleted by hand on docker-desktop, minikube profile deleted and recreated"
+    },
+    {
+      "context": "kborg-soak-v1",
+      "namespace": "kborg-soak-c68bfeea0391",
+      "last_progress_utc": "2026-10-23T14:05:06.191251+00:00",
+      "actual_continuous_seconds": 4145.269,
+      "samples": 276,
+      "mutations": 67,
+      "fault_recovered": true,
+      "report": null,
+      "passed": false,
+      "fixture_cleanup": "manual: harness never reached cleanup; namespace deleted by hand on docker-desktop, minikube profile deleted and recreated"
+    }
+  ]
+}

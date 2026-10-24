@@ -83,6 +83,53 @@ fn environment(command: &mut Command, state: &Path) {
         .env("DO_NOT_TRACK", "1")
         .current_dir(state);
 }
+/// Host selection and credential delivery per deployment. GHES uses the
+/// documented offline provider mode; its token is only the provider token.
+fn deployment_environment(
+    command: &mut Command,
+    deployment: &crate::copilot::Deployment,
+    token: &str,
+    state: &Path,
+    ca_file: Option<&Path>,
+) -> Result<()> {
+    use crate::copilot::Deployment;
+    match deployment {
+        Deployment::GitHub => {
+            command
+                .env("GH_HOST", "github.com")
+                .env("KBORG_COPILOT_SELECTED_TOKEN", token);
+        }
+        Deployment::EnterpriseCloud(host) => {
+            command
+                .env("GH_HOST", host)
+                .env("COPILOT_GH_HOST", host)
+                .env("KBORG_COPILOT_SELECTED_TOKEN", token);
+        }
+        Deployment::EnterpriseServer(host) => {
+            command
+                .env("GH_HOST", host)
+                .env("COPILOT_OFFLINE", "true")
+                .env("COPILOT_PROVIDER_GHES_HOST", host)
+                .env("COPILOT_PROVIDER_GHES_TOKEN", token)
+                .env("KBORG_COPILOT_SELECTED_TOKEN", token);
+        }
+    }
+    if let Some(ca_file) = ca_file {
+        // Copied into the private state area the sandbox may read; the
+        // policy path itself stays outside the child's view.
+        let bytes = super::authority_read(ca_file, 256 * 1024)?;
+        let text = std::str::from_utf8(&bytes).map_err(|_| "tls_ca_file must be PEM text")?;
+        if !text.contains("-----BEGIN CERTIFICATE-----") || text.contains("PRIVATE KEY") {
+            return Err("tls_ca_file must contain only PEM certificates".into());
+        }
+        let copy = state.join("enterprise-ca.pem");
+        safety::write_new(&copy, &bytes)?;
+        command
+            .env("NODE_EXTRA_CA_CERTS", &copy)
+            .env("SSL_CERT_FILE", &copy);
+    }
+    Ok(())
+}
 fn sandbox(policy: &Path, executable: &Path, args: &[&str], state: &Path) -> Command {
     let mut command = Command::new("/usr/bin/sandbox-exec");
     command.arg("-f").arg(policy).arg(executable).args(args);
@@ -275,7 +322,8 @@ fn version(native: &Path, policy: &Path, state: &Path, stop: Arc<AtomicBool>) ->
 pub(super) fn validate_native(options: &Options) -> Result<()> {
     let workspace = create_workspace()?;
     let (native, state) = snapshot(options, &workspace)?;
-    let broker = proxy::Broker::start(30)?;
+    let deployment = options.deployment()?;
+    let broker = proxy::Broker::start(30, deployment.authorities(), options.allow_private_network)?;
     let stop = Arc::new(AtomicBool::new(false));
     policy_checks(&workspace, &state, broker.port, stop.clone())?;
     let policy = workspace.0.join("native.sb");
@@ -291,7 +339,12 @@ pub(super) fn execute(prepared: PreparedAdvice, stop: Arc<AtomicBool>) -> Result
     }
     let workspace = create_workspace()?;
     let (native, state) = snapshot(&prepared.options, &workspace)?;
-    let broker = proxy::Broker::start(prepared.options.seconds.saturating_add(30))?;
+    let deployment = prepared.options.deployment()?;
+    let broker = proxy::Broker::start(
+        prepared.options.seconds.saturating_add(30),
+        deployment.authorities(),
+        prepared.options.allow_private_network,
+    )?;
     let result = (|| -> Result<AdviceOutput> {
         policy_checks(&workspace, &state, broker.port, stop.clone())?;
         let policy = workspace.0.join("native.sb");
@@ -315,9 +368,14 @@ pub(super) fn execute(prepared: PreparedAdvice, stop: Arc<AtomicBool>) -> Result
         command.args(["-c","ulimit -t \"$1\" || exit 120; ulimit -c 0 || exit 120; ulimit -f 131072 || exit 120; ulimit -n 1024 || exit 120; shift; exec /usr/bin/sandbox-exec \"$@\"","kborg-contained-copilot",&prepared.options.seconds.to_string(),"-f"])
         .arg(&policy).arg(&native).args(["-p","Provide advisory Kubernetes diagnosis using only the minimized status JSON supplied on stdin. No tools or changes are authorized. State likely causes, missing evidence and safe read-only investigation steps; do not invent observations.","--no-auto-login","--auth-token-env","KBORG_COPILOT_SELECTED_TOKEN","--available-tools=","--disable-builtin-mcps","--no-custom-instructions","--no-ask-user","--no-auto-update","--no-remote","--no-remote-export","--no-bash-env","--no-color","--stream","off","--silent","--log-level","none","--model",&prepared.options.model]);
         environment(&mut command, &state);
+        deployment_environment(
+            &mut command,
+            &deployment,
+            &credential.token,
+            &state,
+            prepared.options.tls_ca_file.as_deref(),
+        )?;
         command
-            .env("GH_HOST", "github.com")
-            .env("KBORG_COPILOT_SELECTED_TOKEN", &credential.token)
             .env("HTTPS_PROXY", broker.url())
             .env("HTTP_PROXY", broker.url())
             .env("https_proxy", broker.url())
@@ -452,6 +510,9 @@ mod tests {
             expected_sha256: "87f04922933c139cf4af7cb6a80b96161428618a6275fea4b8dfe7e7a69c9518"
                 .into(),
             host: "github.com".into(),
+            deployment: None,
+            allow_private_network: false,
+            tls_ca_file: None,
             credential_file: Some(PathBuf::from("/not/read/by/this/test")),
             gh_cli: None,
             model: "auto".into(),
@@ -473,6 +534,9 @@ mod tls_tests {
             expected_sha256: "87f04922933c139cf4af7cb6a80b96161428618a6275fea4b8dfe7e7a69c9518"
                 .into(),
             host: "github.com".into(),
+            deployment: None,
+            allow_private_network: false,
+            tls_ca_file: None,
             credential_file: None,
             gh_cli: None,
             model: "auto".into(),
@@ -480,7 +544,7 @@ mod tls_tests {
         };
         let workspace = create_workspace()?;
         let (native, state) = snapshot(&options, &workspace)?;
-        let broker = proxy::Broker::start(20)?;
+        let broker = proxy::Broker::start(20, options.deployment()?.authorities(), false)?;
         let policy = workspace.0.join("tls.sb");
         safety::write_new(
             &policy,

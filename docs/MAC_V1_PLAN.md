@@ -29,10 +29,15 @@ Reference inspected: [mpiorowski/k10s](https://github.com/mpiorowski/k10s/tree/1
 | Stable health/warning sections | Implemented | Independent Pod/Event states and stable sections; live logs remain a separate view |
 | OOM/restart/recent-warning summary | Implemented within documented scope | Current/last container OOM evidence, current restart counters, 15-minute Warning Event records tied to current Pod UIDs; Enter opens the context Pod list |
 | Saved context/workload selections | Implemented | Explicit bounded private preferences; revalidate active kubeconfig, destination resource catalog and workload UID; no stored operation approvals |
-| Unified live workload tail | Later | Explicit dynamic membership opt-in, visible join/leave events, UID replacement protection, concurrency/memory budgets and rollout tests |
+| Unified live workload tail | Implemented (opt-in) | `:logs-live` / `logs --follow --dynamic-membership` recapture membership every 10s with the fixed-capture inventory rules; every join, departure and refused join is announced; replacements are a departure plus a join; joins open all-or-nothing after UID checks; 8 Pods/32 sources and the shared byte/rate budget stay global. Live Docker Desktop scale-up/delete check passed; long rollout soak not yet run |
+| Node and app readiness | Implemented | Cards poll Nodes (Ready/total, cordoned, CPU/memory as a share of allocatable when metrics-server answers) and namespace Deployments/StatefulSets every 15s; degraded workloads are named. Denied or missing sources are labelled, never zero |
+| Cross-cluster workload tail | Implemented | Dashboard `t` picks up to six Deployments/StatefulSets across all card contexts; each follows dynamic membership over a read-only connection; lines merge in timestamp order (1s reorder window), tagged by context, capped at 24 Pods; `e`/`W` filters. Live Docker Desktop + minikube check passed |
+| Up to nine clusters, restart and non-Pod event alerts | Implemented | Keys `1`–`9`, three columns on wide terminals; `RESTARTS` names Pods at ≥5 restarts; `EVENTS` names recent Warning events about Nodes and other non-Pod objects |
+| Remembered dashboard | Implemented (explicit launch) | `kborg dashboard` reopens the last contexts/namespace and pre-selects the last tail; names only, private file, never read on a normal launch |
+| Focus mode and `--contexts` launch | Implemented | Pressing a card's number again shows it full screen; `kborg --contexts a,b` opens directly in the dashboard |
 | In-app dashboard legend | Implemented | `?` explains controls, evidence and freshness without closing independent watches |
 
-Next feature batch: explicitly opted-in dynamic log membership, then direct warning-to-event drilldown and optional dashboard log panes. Release hardening below remains required; dashboard acceptance does not imply full k10s parity.
+Implemented in this batch: opted-in dynamic log membership and direct warning-to-event drilldown (dashboard `w`, then Enter). Implemented next: dashboard log panes (`w`, then `L`), opt-in Secret key listing with per-key reveal (`:secrets`, `--allow-secret-reveal`) and reviewed zero-grace Pod kill (Ctrl-K, `--allow-force-kill`). Release hardening below remains required; dashboard acceptance does not imply full k10s parity.
 
 ## Release gates after workflows
 

@@ -6,6 +6,10 @@ use serde_json::Value;
 use std::collections::BTreeSet;
 
 pub const WARNING_WINDOW_SECONDS: u64 = 15 * 60;
+/// A Pod whose busiest container has restarted this often is called out.
+pub const RESTART_ALERT: u64 = 5;
+/// Restart hotspots named on a card; the count is always complete.
+pub const NAMED_RESTART_ALERTS: usize = 3;
 const MAX_RECENT_WARNINGS: usize = 5;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -45,6 +49,9 @@ impl EvidenceState {
 pub struct WarningEvidence {
     pub namespace: String,
     pub pod: String,
+    /// Exact Pod UID for event drilldown; not part of the CLI projection.
+    #[serde(skip)]
+    pub uid: String,
     pub reason: String,
     pub occurrences: u64,
     pub observed_unix_seconds: u64,
@@ -86,6 +93,12 @@ pub struct HealthSummary {
     /// Pods with OOMKilled in current or last container termination evidence.
     pub oom_killed: usize,
     pub warnings: WarningSummary,
+    /// "namespace/pod" and its busiest container's restart counter, for Pods
+    /// at or above RESTART_ALERT; highest first, at most NAMED_RESTART_ALERTS.
+    #[serde(skip)]
+    pub restart_alerts: Vec<(String, u64)>,
+    #[serde(skip)]
+    pub restart_alert_count: usize,
 }
 
 impl HealthSummary {
@@ -112,6 +125,8 @@ impl PodHealth {
             restarts: 0,
             oom_killed: 0,
             warnings: WarningSummary::connecting(),
+            restart_alerts: Vec::new(),
+            restart_alert_count: 0,
         };
         let mut identities = BTreeSet::new();
         for pod in pods {
@@ -119,20 +134,31 @@ impl PodHealth {
                 identities.insert(identity);
             }
             let mut oom = false;
+            let mut busiest = 0u64;
             for field in [
                 "containerStatuses",
                 "initContainerStatuses",
                 "ephemeralContainerStatuses",
             ] {
                 for status in pod["status"][field].as_array().into_iter().flatten() {
-                    summary.restarts = summary
-                        .restarts
-                        .saturating_add(status["restartCount"].as_u64().unwrap_or(0));
+                    let restarts = status["restartCount"].as_u64().unwrap_or(0);
+                    busiest = busiest.max(restarts);
+                    summary.restarts = summary.restarts.saturating_add(restarts);
                     oom |= status["state"]["terminated"]["reason"] == "OOMKilled"
                         || status["lastState"]["terminated"]["reason"] == "OOMKilled";
                 }
             }
             summary.oom_killed += usize::from(oom);
+            if busiest >= RESTART_ALERT {
+                summary.restart_alerts.push((
+                    format!(
+                        "{}/{}",
+                        safety::safe_text(pod["metadata"]["namespace"].as_str().unwrap_or(""), 63),
+                        safety::safe_text(pod["metadata"]["name"].as_str().unwrap_or(""), 253)
+                    ),
+                    busiest,
+                ));
+            }
             if pod["metadata"]["deletionTimestamp"].is_string() {
                 summary.terminating += 1;
                 continue;
@@ -174,6 +200,11 @@ impl PodHealth {
                 _ => summary.unknown += 1,
             }
         }
+        summary
+            .restart_alerts
+            .sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        summary.restart_alert_count = summary.restart_alerts.len();
+        summary.restart_alerts.truncate(NAMED_RESTART_ALERTS);
         Self {
             summary,
             identities,
@@ -308,6 +339,7 @@ impl EventEvidence {
             recent.push(WarningEvidence {
                 namespace: candidate.identity.0.clone(),
                 pod: candidate.identity.1.clone(),
+                uid: candidate.identity.2.clone(),
                 reason: candidate.reason.clone(),
                 occurrences: candidate.occurrences,
                 observed_unix_seconds: timestamp,
@@ -339,7 +371,7 @@ impl EventEvidence {
     }
 }
 
-fn parse_timestamp(value: &Value) -> Option<u64> {
+pub(crate) fn parse_timestamp(value: &Value) -> Option<u64> {
     let timestamp = value
         .as_str()?
         .parse::<k8s_openapi::jiff::Timestamp>()

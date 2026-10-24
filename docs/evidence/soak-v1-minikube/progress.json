@@ -1,34 +1,34 @@
 {
-  "state": "running",
+  "state": "passed",
   "context": "kborg-soak-v1",
-  "namespace": "kborg-soak-c68bfeea0391",
+  "namespace": "kborg-soak-fb08cd32220b",
   "binary_sha256": "32a6b514bce9ab3edf247248c91e84abbce363b82980a06a6b440e9450bd4cd5",
   "requested_seconds": 7200,
-  "elapsed_seconds": 3994.745,
-  "updated_utc": "2026-10-23T14:02:35.666672+00:00",
-  "samples": 266,
-  "mutation_count": 65,
+  "elapsed_seconds": 7205.537,
+  "updated_utc": "2026-10-23T21:59:33.856487+00:00",
+  "samples": 476,
+  "mutation_count": 118,
   "fault": {
     "kind": "pause-owned-minikube-container",
-    "container_id": "02deab56a20f5a866bb63346b7ec6bc90b2715b9c5ad66e03f4d559c77801eca",
-    "start_seconds": 1800.272,
+    "container_id": "1ef7c3f7a1448e46c67d32d2d27362400e9da78c932b03842d50475bbda02239",
+    "start_seconds": 1800.396,
     "requested_pause_seconds": 45,
     "recovery_settle_seconds": 20,
     "resource_stale_before": 0,
     "dashboard_stale_before": 4,
     "recovered": true,
-    "resumed_seconds": 1845.575,
+    "resumed_seconds": 1845.699,
     "actual_pause_seconds": 45.303,
     "resource_stale_observed": true,
     "dashboard_stale_observed": true,
-    "recovery_seconds": 20.183
+    "recovery_seconds": 20.014
   },
   "processes": {
     "resource": {
-      "pid": 50035,
-      "alive": true,
-      "output_bytes": 5056279,
-      "records": 1278,
+      "pid": 19823,
+      "alive": false,
+      "output_bytes": 9108036,
+      "records": 2281,
       "observed_counts": [
         1,
         2
@@ -36,10 +36,10 @@
       "stale_records": 5
     },
     "dashboard": {
-      "pid": 50036,
-      "alive": true,
-      "output_bytes": 1347161,
-      "records": 2645,
+      "pid": 19824,
+      "alive": false,
+      "output_bytes": 2421457,
+      "records": 4742,
       "observed_counts": [
         1,
         2
@@ -47,9 +47,9 @@
       "stale_records": 22
     },
     "tui": {
-      "pid": 50038,
-      "alive": true,
-      "output_bytes": 30512444,
+      "pid": 19825,
+      "alive": false,
+      "output_bytes": 54780078,
       "records": 0,
       "observed_counts": [],
       "stale_records": 0

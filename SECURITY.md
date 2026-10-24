@@ -8,8 +8,25 @@ Before production: independent sensitive-code review, dependency advisories/lice
 
 See docs/REMAINING_WORK.md and the linked current acceptance report for requirements and known limitations. Client safeguards do not constrain a hostile same-user process. The API server and organizational controls are authoritative.
 
-Helm storage access is separately opt-in with `--allow-helm`. General Secret
-browsing remains unavailable, but Helm metadata/history and selected values are
+Secret inspection is off by default. `--allow-secret-reveal` enables `:secrets`,
+which lists names, types, key names and sizes for one namespace and decodes a
+single key only on an explicit `x`, for 30 seconds; values are never exported,
+copied or written to disk. The listing still transfers Secret payloads into
+process memory, so grant `list secrets` only where that is acceptable. Ctrl-K
+force kill is separately opt-in with `--write --allow-force-kill`.
+
+Copilot advice can target GitHub.com, a GHE.com tenant or GitHub Enterprise
+Server. Each deployment has its own exact egress allowlist, and credentials are
+bound to the policy host. Two GHES-only policy options widen trust and should be
+set deliberately: `allow_private_network` lets the egress broker reach RFC 1918,
+CGNAT and IPv6 ULA addresses for that one host (loopback, link-local and
+metadata addresses stay blocked), and `tls_ca_file` makes TLS for that host
+trust the supplied internal CA. In GHES offline mode the instance forwards the
+reviewed bundle to its administrator-configured model provider, which KBorg
+cannot see or verify.
+
+Helm storage access is separately opt-in with `--allow-helm`. Generic Secret
+YAML/describe views remain unavailable, but Helm metadata/history and selected values are
 read from Kubernetes Secret or ConfigMap storage. Kubernetes RBAC cannot restrict
 Secret list permission by label selector; the API identity must be scoped
 accordingly. Browsing never exports raw release payloads, notes, chart files or
