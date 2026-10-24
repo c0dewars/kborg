@@ -1,7 +1,9 @@
 # KBorg external security audit pack
 
 Prepared 2026-10-24 for an independent security assessment of **KBorg 0.4.0**
-(branch `release/0.4.0`, head `0a11c8f` at the time of writing). This pack is a scoping
+(branch `release/0.4.0`, head `0a11c8f` at the time of writing), updated the same day for
+the **0.5.0** additions on `feature/0.5.0` (apply, node shell, file/directory copy, TUI
+extensions, lint, benchmark, hotkeys; see section 7a). This pack is a scoping
 aid. It is not a security claim or a certification. Every statement below is meant to be
 checkable against the source; file paths are relative to the repository root. Where a
 control is missing or only partial, this pack says so.
@@ -88,6 +90,11 @@ Flags are parsed in `src/cli.rs::parse`. An optional `--config FILE` profile
 | Node cordon/uncordon/drain | `--write --allow-node-maintenance` | `operations.rs::node_maintenance_access`, `src/node_maintenance.rs` |
 | Logs (snapshot, follow, merged, workload, dynamic) | `--allow-logs` (`--dynamic-membership` for live membership) | `src/gateway/log_streams.rs` (`if !self.logs`) |
 | Exec / attach / port-forward | `--write` + `--allow-exec` / `--allow-attach` / `--allow-forward`; `--interactive` for stdin/TTY | `operations.rs::operation_api`, `src/ops.rs::prepare`/`verify_review`, `src/session.rs` |
+| Pod file / directory copy (0.5.0) | `--write --allow-file-copy` (`--recursive` / `-r`) | `ops.rs` (`Request::CopyFrom`/`CopyTo`, capability 3), `src/file_copy.rs`, `src/archive.rs` |
+| Node shell (0.5.0) | `--write --allow-node-shell`, `--node-shell-image` | `src/node_shell.rs::prepare`/`start`, `ops.rs` (`Request::NodeShell`, capability 4; Pod deleted in `run`) |
+| Server-side apply (0.5.0) | `--write --allow-apply` | `src/gateway/apply.rs::prepare_apply`/`execute_apply`, `src/manifest_apply.rs` |
+| Port-forward benchmark (0.5.0) | an active reviewed forward | `src/bench.rs` (127.0.0.1 only; 2000 requests, 20 connections, 60 s) |
+| Hotkeys (0.5.0) | `hotkeys.yaml` in the config directory | `src/hotkeys.rs` (types a command into the normal parser; never a shell) |
 | Secret listing + per-key reveal (TUI) | `--allow-secret-reveal` (does **not** require `--write`) | `src/gateway/reads.rs::secret_api`, `secret_value`; `src/secrets.rs`; `src/ui_secrets.rs` (30 s) |
 | Helm release storage reads (reads Secrets) | `--allow-helm` | `src/gateway.rs::helm_reader`, `src/helm.rs` |
 | Helm lifecycle | `--write --allow-helm --allow-helm-write`, `--helm-tool ABS` (Helm 4.3.1, Unix) | `gateway.rs::helm_lifecycle_access`, `src/helm_lifecycle.rs` |
@@ -95,7 +102,7 @@ Flags are parsed in `src/cli.rs::parse`. An optional `--config FILE` profile
 | Chart provenance | `--helm-keyring ABS` (OpenPGP), `--helm-sigstore-policy ABS` (Cosign) | `src/helm_provenance.rs`, `src/helm_sigstore.rs` |
 | OCI registry | `--helm-registry-ca ABS`, `--helm-registry-auth ABS` | `src/helm_oci.rs` |
 | Reviewed external tool views | `--allow-tools --tool ABS [--tool-arg]` | `src/handoff.rs` |
-| Registered extensions | `--allow-extensions --allow-tools` | `src/extensions.rs`, `cli.rs::extensions_command` |
+| Registered extensions | `--allow-extensions --allow-tools` | `src/extensions.rs`, `cli.rs::extensions_command`; TUI `:ext` in `src/tui/commands.rs::run_extension` (runs outside the TUI screen); `extensions::import_k9s` only reports |
 | ExecCredential helper | `--allow-auth-helper --auth-helper-policy FILE` (reviewed via `auth-helper review`) | `gateway.rs::connect`, `src/auth.rs::prepare`/`acquire` |
 | Copilot advice | `--copilot-policy ABS` + per-transfer typed approval | `src/advice.rs`, `src/copilot*.rs` |
 | Multi-context dashboard | `--contexts A,B` (1..9), `dashboard` | `src/overview.rs::read_only`, `src/tui/commands.rs::pane_connection` (removes write, exec, YAML, node, kill, secret-reveal and Helm-write flags; keeps `--allow-logs`/`--allow-helm`) |
@@ -250,6 +257,28 @@ All prior reviews were internal or agent-performed. **None is an external assess
 
 **Not covered by any prior review:** the 0.4.0 features `--allow-secret-reveal`, `--allow-force-kill`, `--allow-external-editor`, multi-file `KUBECONFIG` merge, GHE.com/GHES Copilot deployments (`dd8806e`), dashboard log panes and cross-cluster tail (`401ce72`, `920cfa1`), RBAC subject views, and the module splits of gateway, logs and tui (`879ea0a`, `b728bc0`, `e332f51`).
 
+## 7a. Changes after this pack was written (0.5.0)
+
+Findings from section "Concerns" in the first draft that are now fixed on `feature/0.5.0`:
+
+| Concern | Fix |
+|---|---|
+| `--config` did not constrain the newer capabilities; a read-only profile could not block Secret reveal | `src/config.rs::apply` now gates Secret reveal, force kill, YAML edit, node maintenance, external editor, file copy, apply and node shell (`0ff346f`) |
+| `safe_text` missed soft hyphen, U+2028/2029, tag characters and U+FFF9–FFFB | added to the filter (`1bffaaf`) |
+| JSON/YAML object keys were not sanitized | `safety::redact` rewrites unsafe keys (`1bffaaf`) |
+| OCI private-host check saw only literal hosts | cross-origin redirect and token-realm hosts reached from a public registry are resolved and refused if any answer is private, loopback or CGNAT; DNS rebinding between check and connect remains (`1bffaaf`) |
+| A crash could leave the Helm temp credential kubeconfig | stale `kborg-helm-*` workspaces owned by the user and older than two hours are removed before a new one is created (`1bffaaf`) |
+| `SECURITY.md` described a 0.3 build; help text said four dashboard contexts | corrected |
+
+Still open from that list: the Copilot broker inspects only the first ClientHello (the TCP destination stays the approved host's own addresses), cross-file kubeconfig shadowing, the external editor's full environment, multi-line paste into interactive sessions, the small system-namespace denylist, and dashboard panes keeping `--allow-logs`/`--allow-helm` across contexts.
+
+New surface to include in the audit:
+
+- **Apply**: manifest parsing (`navigation_views::manifest_documents`), kind lookup by exact apiVersion/kind, the review diff (`manifest_apply::diff`, which hides data/env/credential-like values), the recheck-before-write and resourceVersion lock, conflict handling (409 never forced) and partial failure across objects.
+- **Node shell**: the privileged Pod spec, the guard that sessions only target KBorg node-shell Pods on the reviewed Node, deletion after the session, `activeDeadlineSeconds`, and Pod Security interaction.
+- **File/directory copy**: the fixed container argv (path passed as `$1`), upload verification (`wc -c` / file count), local no-overwrite and symlink refusal, and `archive::extract` against hostile tar streams (path traversal, links, PAX/GNU long names, sizes).
+- **Benchmark**: confirm it can only reach 127.0.0.1 ports of the session's own listening forwards.
+
 ## 8. Suggested audit scope and priorities
 
 Ranked by estimated risk × exposure:
@@ -263,6 +292,7 @@ Ranked by estimated risk × exposure:
 | 5 | Kubeconfig / exec helper / TLS | Credential theft or MITM | Fuzz kubeconfig YAML and merge. Look for paths that bypass `connect` refusals (TLS server name, CA data versus file). Check env-proxy influence on `kube`/hyper. Swap the helper hash or argv between review and use (TOCTOU) |
 | 6 | Helm chart, OCI and provenance parsing | Untrusted archives and registries | Fuzz `helm_lifecycle::inspect_chart` (tar headers, sizes, PAX/long names, gzip bombs, `MultiGzDecoder`), Helm release decoding (`src/helm.rs`) and OCI manifests. Test redirects and token realms to hostnames resolving to private IPs (`helm_oci::private_host` checks literals and suffixes only). Check keyring/Sigstore downgrade |
 | 7 | Exec/attach/session stream handling | Remote container output and pasted input reach the user's TTY | Fuzz `session::OutputFilter` (split sequences, 8-bit C1, long OSC). Run a paste-injection corpus. Exercise resize and Ctrl-] restoration under floods |
+| 7b | File copy, apply and node shell (0.5.0) | New write paths, one of them root on a Node | Hostile tar corpus against `archive::extract`; container paths with quotes, newlines and leading dashes; replace the target Pod or object between review and execute; webhook that changes apply results between dry run and write; confirm the node-shell session cannot target a non-KBorg Pod |
 | 8 | Local file handling | Other-local-user and permission issues | Shared `/tmp` on Linux, pre-created directories and permissive umask. Symlink races on `config_dir`, `atomic_write` and `$TMPDIR/kborg-helm-*`. Check the temp credential kubeconfig left behind after SIGKILL |
 | 9 | Resource exhaustion | Hostile server or noisy cluster | Slow-loris bodies, huge watch events, many-group discovery, log floods, 9-context dashboards. Check the resident-memory peak against the documented caps |
 | 10 | RBAC/admission assumptions and capability gating | Documented reliance on server controls | Confirm each flag in section 4.1 gates every code path (CLI and TUI, including dashboard pane connections). Confirm `--config` profiles constrain all capabilities. Test with least-privilege roles |

@@ -24,8 +24,31 @@ passed as an argument), so existing container files are never replaced and the
 written size is verified. Downloads are held in memory and written only after
 the transfer succeeds, as new owner-only files that never replace or follow a
 local symlink. Downloaded bytes are untrusted container data: KBorg does not
-execute or display them. Directories, archives and permission bits are not
-copied.
+execute or display them. Directory copies (`-r`) use a strict tar stream: only
+regular files and directories are extracted, into a new owner-only directory
+that is removed on failure; links, devices, absolute paths and `..` are
+refused, and uploads create a new container directory and verify the file
+count.
+
+Server-side apply is opt-in with `--write --allow-apply`. Every object is
+dry-run before review, updates are locked to the reviewed resourceVersion,
+nothing is written if any object changed after review, and field-manager
+conflicts are never forced. Secrets, cluster-scoped kinds, system namespaces
+and GitOps-managed objects are refused. A multi-object apply is not atomic: a
+failure part-way leaves earlier objects applied, and the result says which.
+
+Node shell is opt-in with `--write --allow-node-shell` and is root on the
+Node. The review shows the complete privileged Pod (host PID, network and IPC
+namespaces). The session only targets KBorg's own node-shell Pod on the
+reviewed Node; the Pod is deleted afterwards and has `activeDeadlineSeconds` as
+a backstop. Grant `create pods` in a namespace that permits privileged Pods
+only to people who may administer Nodes.
+
+Extensions run from the TUI (`:ext`) use the same contract as the CLI: an
+absolute registered executable with literal arguments, a whole-input review
+and `RUN TOOL` approval, 15 seconds and 256 KiB of captured output, run outside
+the TUI screen. They keep your OS user's file and network access; they are
+not sandboxed.
 
 Copilot advice can target GitHub.com, a GHE.com tenant or GitHub Enterprise
 Server. Each deployment has its own exact egress allowlist, and credentials are

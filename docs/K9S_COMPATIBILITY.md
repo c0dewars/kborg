@@ -27,18 +27,21 @@ References: [command guide](https://k9scli.io/topics/commands/), [command interp
 | `:screendump`, `:screendumps`, `:sd`; Ctrl-S | Explicitly save/browse historical redacted resources. Private JSON storage and YAML preview; not k9s CSV files. Maximum 50 files, 256 KiB each; no automatic deletion. |
 | `:can u:NAME`, `:can g:NAME`, `:can s:NAME` | Read-only declared Role/Binding evidence. No impersonation, external group inference or effective-authorization guarantee. `s:NAMESPACE:NAME` explicitly selects an SA namespace. |
 | `:subjects`, `:users`, `:groups`, `:rbacs`, `:policies` | Read-only list of subjects named by RoleBindings (current namespace) and ClusterRoleBindings, with binding counts and roles; `/` filters, Enter opens that subject's `:can` evidence. Declared bindings only; group membership is not inferred. |
-| `:dir`, `:dirs`, `:d`, `:ls [PATH]` | Bounded local manifest browser and redacted YAML/JSON preview. No arbitrary manifest apply/delete or external editor. `e` edits an existing selected resource spec in the built-in editor, with separate capability and review. |
-| `:pf`, `:portforward`, `:portforwards` | View/cancel this session's reviewed loopback forwards. Up to eight independent TUI forwards; four simultaneous clients each; 1..300s per session. `j/k` select, `s` stops selected, `F` reviews another. Scope changes/exit cancel all. |
+| `:dir`, `:dirs`, `:d`, `:ls [PATH]` | Bounded local manifest browser and redacted YAML/JSON preview. `a` on a manifest (or `:apply FILE`) reviews a server-side apply with `--write --allow-apply`; no manifest delete. `e` edits an existing selected resource spec in the built-in editor, with separate capability and review. |
+| `:pf`, `:portforward`, `:portforwards` | View/cancel this session's reviewed loopback forwards. Up to eight independent TUI forwards; four simultaneous clients each; 1..300s per session. `j/k` select, `s` stops selected, `b` benchmarks it, `F` reviews another. Scope changes/exit cancel all. |
+| `:be`, `:bench`, `:benchmark [REQUESTS CONCURRENCY [PATH]]` | Native HTTP GET benchmark of the selected listening forward (k9s uses `hey`): 127.0.0.1 only, up to 2000 requests, 20 connections and 60 s; reports throughput, status counts and p50/p90/p99 latency. |
+| `:lint`, `:popeye`, `:pop` | Read-only misconfiguration report for the namespace (k9s popeye's role): requests/limits/probes, unpinned images, privileged or host-namespace Pods, single-replica or degraded Deployments, crash/pull loops, restarts, bare Pods, Services without Pods. `kborg lint --json` for scripts. |
+| `:ext [NAME]` | Run a registered read-only extension on the selection (KBorg's plugin model; see below). |
 | `:container`, `:containers` | Container drilldown for a selected Pod. |
 | `:helm`; `:history`; `:helm-install`; `:helm-test`; `:helm-crds`; `:helm-crds-upgrade`; `:helm-crds-delete`; `:helm-crds-migrate` | Native Helm v3/v4 Secret/ConfigMap browsing with `--allow-helm`. List Enter/r → history; revision Enter → redacted stored overrides; d metadata, m resource identities, y safe YAML. Reviewed list i/u/Ctrl-D install/upgrade/uninstall and history r rollback require all three write/Helm flags and trusted Unix Helm 4.3.1. Deterministic local/OCI charts, opt-in reviewed hooks, t/release tests, c/CRD bootstrap and explicit schema update/delete/storage migration; no SQL storage. |
 | `:logs LABELS`; workload/Service `l`/`p` | Fixed membership of up to eight Pods/32 ordinary-container streams in one namespace, using actual selectors and CronJob→Job controller UIDs. Range/reconnect retains captured identities; reopen to include new rollout Pods. `:logs-live [LABELS]` instead recaptures membership every 10s and announces joins, departures and waiting joins. |
 | `:cow` | Local novelty view; never a process invocation. |
 
 Helm lifecycle supports an explicitly reviewed subset, not arbitrary chart or
-storage parity: exact Helm 4.3.1 on Unix, deterministic local/OCI packaged charts, separately reviewed hooks/tests and namespaced-schema CRD operations. Other cluster/system targets and ordinary cross-namespace release resources, recognized GitOps resources and foreign adoption remain unsupported. Benchmarks (`:be`) and scans/Popeye do not have native equivalents. Ordinary
+storage parity: exact Helm 4.3.1 on Unix, deterministic local/OCI packaged charts, separately reviewed hooks/tests and namespaced-schema CRD operations. Other cluster/system targets and ordinary cross-namespace release resources, recognized GitOps resources and foreign adoption remain unsupported. Image vulnerability scans have no native equivalent. Ordinary
 Kubernetes Roles/Bindings are browsable, and `:can` supplies explicit-subject
-evidence. Generic Secret YAML/describe views, node shell, directory/archive Pod file transfer, arbitrary manifest creation/apply, k9s plugins and benchmark execution remain unsupported. Existing-resource namespaced YAML spec editing and reviewed node cordon/uncordon/drain are implemented in the [Mac v1 workflow batch](MAC_V1_OPERATIONS.md). These are material parity gaps, not alternate
-meanings for the same commands.
+evidence. Generic Secret YAML/describe views remain unsupported by design (`:secrets` lists keys and reveals one value at a time). Node shell, file and directory copy, server-side apply, benchmarks and plugins have reviewed KBorg equivalents described below. Existing-resource namespaced YAML spec editing and reviewed node cordon/uncordon/drain are implemented in the [Mac v1 workflow batch](MAC_V1_OPERATIONS.md). Where KBorg's behavior differs, it is stricter, never an alternate
+meaning for the same command.
 
 Copilot is a KBorg-specific extension: `:copilot` previews selected minimized status and, with an explicit macOS ARM64 policy, requests read-only advice after full account-bound review. It does not redefine k9s resource commands.
 
@@ -75,7 +78,19 @@ Aliases return to the command parser and never execute a shell. Bounds are 64 Ki
 
 ## Pod file copy
 
-k9s relies on `kubectl cp` through plugins. KBorg has a reviewed single-file copy behind `--write --allow-file-copy`: `:cp-from /PATH [LOCAL_FILE_OR_DIR]` and `:cp-to LOCAL_FILE /PATH` act on the selected Pod's default container (its `kubectl.kubernetes.io/default-container` annotation, otherwise the first container); `kborg cp-from POD CONTAINER /PATH LOCAL` and `kborg cp-to POD CONTAINER LOCAL /PATH` choose any container. Downloads default to `~/Downloads`. Neither side ever replaces an existing file, transfers are capped at 64 MiB, and the container needs `cat` and `sh`. Directories and archives are not supported. See [SECURITY.md](../SECURITY.md).
+k9s relies on `kubectl cp` through plugins. KBorg has a reviewed single-file copy behind `--write --allow-file-copy`: `:cp-from /PATH [LOCAL_FILE_OR_DIR]` and `:cp-to LOCAL_FILE /PATH` act on the selected Pod's default container (its `kubectl.kubernetes.io/default-container` annotation, otherwise the first container); `kborg cp-from POD CONTAINER /PATH LOCAL` and `kborg cp-to POD CONTAINER LOCAL /PATH` choose any container. Downloads default to `~/Downloads`. Neither side ever replaces an existing file, transfers are capped at 64 MiB, and the container needs `cat` and `sh`. `-r` (CLI `--recursive`) copies a directory as a strict tar stream: regular files and directories only; links, devices, absolute paths and `..` are refused; uploads create a new container directory and verify the file count. See [SECURITY.md](../SECURITY.md).
+
+## Node shell
+
+k9s's node shell creates a privileged Pod on the Node. KBorg does the same behind `--write --allow-node-shell`: `s` on a Node (or `kborg node-shell NODE`) shows the complete Pod (host PID/network/IPC, privileged, pinned busybox, override with `--node-shell-image`) after a server dry run, and on `shell NODE` creates it in the current namespace (or `default`), waits for it and opens `nsenter -t 1 … /bin/sh -i`. The Pod is deleted when the session ends and has `activeDeadlineSeconds`, so it also ends if KBorg is killed. Pod Security admission or RBAC may refuse it; choose a namespace that permits privileged Pods.
+
+## Apply
+
+`:apply FILE`, `a` on a manifest in `:dir`, or `kborg apply FILE` (`--write --allow-apply`) server-side-applies up to 16 namespaced objects with field manager `kborg`. Every object is dry-run first; the review lists the fields a create sets and every changed path of an update (values under data, env and credential-like keys are hidden). Execution rechecks each object and writes nothing if one changed; updates are locked to the reviewed resourceVersion; field-manager conflicts are reported and never forced. Secrets, cluster-scoped kinds, `kube-system`/`kube-public`/`kube-node-lease` and GitOps-managed objects are refused.
+
+## Plugins and extensions
+
+k9s plugins run shell commands with `$NAME`-style substitution. KBorg's equivalent is a registered read-only extension: an absolute executable with literal arguments that receives the selected object as redacted JSON on stdin after a whole-input review (`RUN TOOL`), with a 15-second limit and captured output that is never applied. Register with `kborg extensions register`, run with `:ext NAME` (`--allow-extensions --allow-tools`), and bind a key in `hotkeys.yaml` (`command: ext NAME`). `kborg extensions import-k9s ~/.config/k9s/plugins.yaml` reports which k9s plugins fit this model, prints their register commands and a hotkeys snippet, and explains the rest.
 
 ## Custom hotkeys
 

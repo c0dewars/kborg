@@ -1,15 +1,22 @@
 # KBorg 0.5.0 — unreleased
 
+**Every k9s workflow, reviewed.** This release closes the remaining k9s gaps, each behind its own opt-in and review.
+
 ## Highlights
 
-- **Busiest Nodes on dashboard cards**: up to three Nodes per cluster, NotReady and cordoned first, then the highest CPU or memory share of each Node's own allocatable.
+- **Server-side apply** (`--write --allow-apply`): `kborg apply FILE`, `:apply FILE` or `a` in `:dir`. Up to 16 namespaced objects, every one dry-run first; the review shows the fields a create sets and every changed path of an update. Updates are locked to the reviewed resourceVersion, nothing is written if any object changed since review, and field-manager conflicts are never forced.
+- **Node shell** (`--write --allow-node-shell`): `s` on a Node or `kborg node-shell NODE`. Review the complete privileged Pod, get an `nsenter` root shell, and the Pod is deleted afterwards (and self-expires if KBorg is killed).
+- **Pod file and directory copy** (`--write --allow-file-copy`): `:cp-from`, `:cp-to`, `-r` for directories. Never overwrites on either side; sizes and file counts verified; directory archives extracted strictly.
+- **`:lint`** (also `:popeye`, `kborg lint --json`): read-only misconfiguration report — requests/limits/probes, unpinned images, privileged Pods, degraded or single-replica Deployments, crash loops, Services without Pods.
+- **Extensions in the TUI**: `:ext NAME` hands the selected object to a registered read-only tool after the whole-input review. `kborg extensions import-k9s plugins.yaml` shows which k9s plugins fit and prints the commands.
 - **k9s-format `hotkeys.yaml`**: `Shift-0`…`9`, `Alt-<key>`, `F1`…`F12` and free `Ctrl-<letter>` run KBorg commands through the same parser and review gates.
-- **Reviewed Pod file copy** (`--write --allow-file-copy`): `:cp-from`, `:cp-to`, `kborg cp-from`, `kborg cp-to`. One file up to 64 MiB, never overwrites on either side, size-verified, audited.
-- **External security audit pack**: [docs/SECURITY_AUDIT_PACK.md](SECURITY_AUDIT_PACK.md).
+- **Port-forward benchmark**: `b` in `:pf` or `:bench` — bounded HTTP GETs over the loopback forward with p50/p90/p99 latency.
+- **Busiest Nodes on dashboard cards**: up to three Nodes per cluster, NotReady and cordoned first, then the highest CPU or memory share of each Node's own allocatable.
+- **Security**: external [audit pack](SECURITY_AUDIT_PACK.md); configuration profiles now gate every capability; stricter sanitizing of invisible Unicode and object keys; OCI redirects and token realms that resolve to private addresses are refused; stale Helm credential workspaces are swept after a crash.
 
 ## Upgrade notes
 
-- A `--config` file now also constrains `--allow-secret-reveal`, `--allow-force-kill`, `--allow-yaml-edit`, `--allow-node-maintenance`, `--allow-external-editor` and `--allow-file-copy`. If you use those flags with a configuration file, add the matching `allow_*` field set to `true`. Without a configuration file nothing changes.
+- A `--config` file now also constrains `--allow-secret-reveal`, `--allow-force-kill`, `--allow-yaml-edit`, `--allow-node-maintenance`, `--allow-external-editor`, `--allow-file-copy`, `--allow-apply` and `--allow-node-shell`. If you use those flags with a configuration file, add the matching `allow_*` field set to `true`. Without a configuration file nothing changes.
 
 # KBorg 0.4.0 — 2026-10-24
 
