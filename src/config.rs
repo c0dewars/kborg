@@ -50,6 +50,16 @@ pub struct Config {
     pub allow_extensions: bool,
     #[serde(default)]
     pub allow_auth_helper: bool,
+    #[serde(default)]
+    pub allow_secret_reveal: bool,
+    #[serde(default)]
+    pub allow_force_kill: bool,
+    #[serde(default)]
+    pub allow_yaml_edit: bool,
+    #[serde(default)]
+    pub allow_node_maintenance: bool,
+    #[serde(default)]
+    pub allow_external_editor: bool,
 }
 impl Default for Config {
     fn default() -> Self {
@@ -73,6 +83,11 @@ impl Default for Config {
             allow_tools: false,
             allow_extensions: false,
             allow_auth_helper: false,
+            allow_secret_reveal: false,
+            allow_force_kill: false,
+            allow_yaml_edit: false,
+            allow_node_maintenance: false,
+            allow_external_editor: false,
         }
     }
 }
@@ -138,6 +153,19 @@ pub fn apply(config: Config, options: &mut Options) -> Result<()> {
     }
     if options.allow_extensions && !config.allow_extensions {
         return Err("configuration forbids registered extensions".into());
+    }
+    // Secret reveal needs no --write, so a read-only profile must name it too.
+    if options.connection.allow_secret_reveal && !config.allow_secret_reveal {
+        return Err("configuration forbids Secret reveal".into());
+    }
+    if (options.connection.allow_force_kill && !config.allow_force_kill)
+        || (options.connection.allow_yaml_edit && !config.allow_yaml_edit)
+        || (options.connection.allow_node_maintenance && !config.allow_node_maintenance)
+    {
+        return Err("configuration forbids the requested write capability".into());
+    }
+    if options.external_editor && !config.allow_external_editor {
+        return Err("configuration forbids the external editor".into());
     }
     if options.connection.context.is_none() {
         options.connection.context = config.context;
@@ -344,6 +372,29 @@ mod tests {
         let mut writable = options();
         writable.connection.writable = true;
         assert!(apply(Config::default(), &mut writable).is_err());
+        let newer: [fn(&mut Options); 6] = [
+            |o| o.connection.allow_secret_reveal = true,
+            |o| o.connection.allow_force_kill = true,
+            |o| o.connection.allow_yaml_edit = true,
+            |o| o.connection.allow_node_maintenance = true,
+            |o| o.connection.allow_file_copy = true,
+            |o| o.external_editor = true,
+        ];
+        for enable in newer {
+            let mut opts = options();
+            enable(&mut opts);
+            assert!(apply(Config::default(), &mut opts).is_err());
+        }
+        let mut reveal = options();
+        reveal.connection.allow_secret_reveal = true;
+        apply(
+            Config {
+                allow_secret_reveal: true,
+                ..Config::default()
+            },
+            &mut reveal,
+        )?;
+        assert!(reveal.connection.allow_secret_reveal);
         Ok(())
     }
 }

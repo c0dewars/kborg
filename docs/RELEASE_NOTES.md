@@ -1,3 +1,16 @@
+# KBorg 0.5.0 — unreleased
+
+## Highlights
+
+- **Busiest Nodes on dashboard cards**: up to three Nodes per cluster, NotReady and cordoned first, then the highest CPU or memory share of each Node's own allocatable.
+- **k9s-format `hotkeys.yaml`**: `Shift-0`…`9`, `Alt-<key>`, `F1`…`F12` and free `Ctrl-<letter>` run KBorg commands through the same parser and review gates.
+- **Reviewed Pod file copy** (`--write --allow-file-copy`): `:cp-from`, `:cp-to`, `kborg cp-from`, `kborg cp-to`. One file up to 64 MiB, never overwrites on either side, size-verified, audited.
+- **External security audit pack**: [docs/SECURITY_AUDIT_PACK.md](SECURITY_AUDIT_PACK.md).
+
+## Upgrade notes
+
+- A `--config` file now also constrains `--allow-secret-reveal`, `--allow-force-kill`, `--allow-yaml-edit`, `--allow-node-maintenance`, `--allow-external-editor` and `--allow-file-copy`. If you use those flags with a configuration file, add the matching `allow_*` field set to `true`. Without a configuration file nothing changes.
+
 # KBorg 0.4.0 — 2026-10-24
 
 **Every cluster at a glance. Every change reviewed.** Install with `brew install c0dewars/tap/kborg`.
