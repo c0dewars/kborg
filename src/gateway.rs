@@ -2538,7 +2538,28 @@ fn demo_objects() -> Vec<Value> {
             object["data"] = json!({"endpoint":"synthetic-example"});
         }
     }
+    objects.extend(demo_scale_pods(&object));
     objects
+}
+
+/// `KBORG_DEMO_SCALE=N` adds N synthetic Running Pods (at most 20,000) to demo
+/// data, so scale and performance checks run without a cluster.
+fn demo_scale_pods(object: &dyn Fn(&str, &str, Value, Value) -> Value) -> Vec<Value> {
+    let count = std::env::var("KBORG_DEMO_SCALE")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(0)
+        .min(20_000);
+    (0..count)
+        .map(|index| {
+            object(
+                "Pod",
+                &format!("scale-{index:05}"),
+                json!({"phase":"Running","conditions":[{"type":"Ready","status":"True"}],"containerStatuses":[{"name":"app","ready":true,"restartCount":index % 4,"state":{"running":{}}}]}),
+                json!({"nodeName":"demo-node","containers":[{"name":"app","image":"example/demo:v1"}]}),
+            )
+        })
+        .collect()
 }
 
 pub fn summary(object: &Value) -> String {
