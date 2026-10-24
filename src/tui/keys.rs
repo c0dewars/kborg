@@ -91,6 +91,9 @@ impl App {
                             WritePlan::Apply(prepared) => {
                                 Task::ApplyExecute(prepared, review.view.typed)
                             }
+                            WritePlan::NodeShell(prepared) => {
+                                Task::NodeShellStart(prepared, review.view.typed)
+                            }
                         };
                         self.send(task);
                         if !self.write_inflight {
@@ -1707,8 +1710,7 @@ impl App {
                     if self.kind() == "pods" {
                         self.request_shell();
                     } else if self.kind() == "nodes" {
-                        self.status =
-                            "Node shell is unavailable; select a Pod for a reviewed shell.".into();
+                        self.node_shell();
                     } else {
                         return self.scale();
                     }

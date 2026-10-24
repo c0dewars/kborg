@@ -41,6 +41,7 @@ pub mod hotkeys;
 pub mod insights;
 pub mod manifest_apply;
 pub mod navigation_views;
+pub mod node_shell;
 pub mod pager;
 pub mod screendump;
 pub mod secrets;

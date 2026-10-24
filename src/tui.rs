@@ -144,6 +144,7 @@ enum WritePlan {
     Apply(Box<crate::manifest_apply::PreparedApply>),
     /// A registered read-only extension; it runs outside the TUI screen.
     Tool(Box<crate::handoff::Prepared>),
+    NodeShell(Box<crate::node_shell::Prepared>),
 }
 struct WriteReview {
     plan: WritePlan,

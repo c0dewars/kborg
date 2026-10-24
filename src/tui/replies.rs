@@ -67,6 +67,24 @@ impl App {
                     }));
                     self.status = "Review the node and workload inventory before approval.".into();
                 }
+                Reply::NodeShellPrepared(prepared) => {
+                    let view = review_ui::Review::new(
+                        prepared.summary().into(),
+                        prepared.confirmation(),
+                        self.epoch,
+                    );
+                    self.modal = Modal::WriteReview(Box::new(WriteReview {
+                        plan: WritePlan::NodeShell(prepared),
+                        view,
+                    }));
+                    self.status =
+                        "Read the whole privileged Pod, then type the confirmation.".into();
+                }
+                Reply::NodeShellReady(reviewed) => {
+                    let typed = reviewed.confirmation();
+                    self.modal = Modal::None;
+                    self.pending_session = Some((reviewed, typed));
+                }
                 Reply::ApplyPrepared(prepared) => {
                     let view = review_ui::Review::new(
                         prepared.summary().into(),

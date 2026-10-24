@@ -66,6 +66,8 @@ pub struct Options {
     pub interactive: bool,
     pub metrics_resources: bool,
     pub session_seconds: u16,
+    /// Image for node shell Pods (`--node-shell-image`).
+    pub node_shell_image: String,
     pub command: Vec<String>,
 }
 
@@ -104,6 +106,7 @@ fn parse(args: Vec<String>) -> Result<Options> {
         interactive: false,
         metrics_resources: false,
         session_seconds: 900,
+        node_shell_image: crate::node_shell::DEFAULT_IMAGE.into(),
         command: vec![],
     };
     let mut args = args.into_iter();
@@ -290,6 +293,14 @@ fn parse(args: Vec<String>) -> Result<Options> {
             "--allow-forward" => opts.connection.allow_port_forward = true,
             "--allow-file-copy" => opts.connection.allow_file_copy = true,
             "--allow-apply" => opts.connection.allow_apply = true,
+            "--allow-node-shell" => opts.connection.allow_node_shell = true,
+            "--node-shell-image" => {
+                let image = args
+                    .next()
+                    .ok_or("--node-shell-image needs an image reference")?;
+                crate::node_shell::validate_image(&image)?;
+                opts.node_shell_image = image;
+            }
             "--allow-node-maintenance" => opts.connection.allow_node_maintenance = true,
             "--" => {
                 opts.command.extend(args);
@@ -607,8 +618,8 @@ pub fn run_args(args: Vec<String>) -> Result<()> {
         "helm" | "history" | "list" | "watch" | "metrics" | "get" | "view" | "logs"
         | "resources" | "doctor" | "scale" | "restart" | "delete" | "kill" | "set-image"
         | "set-resources" | "exec" | "attach" | "forward" | "cp-from" | "cp-to" | "apply"
-        | "pulses" | "xray" | "workloads" | "can" | "yaml-template" | "yaml-edit" | "cordon"
-        | "uncordon" | "drain" => {}
+        | "node-shell" | "pulses" | "xray" | "workloads" | "can" | "yaml-template"
+        | "yaml-edit" | "cordon" | "uncordon" | "drain" => {}
         _ => return Err("unknown command; see --help".into()),
     }
     if cmd == "view"
@@ -654,6 +665,18 @@ pub fn run_args(args: Vec<String>) -> Result<()> {
                 let report=crate::node_maintenance::execute(&gateway,reviewed,input.trim_end()).await?;
                 outputln!("{}",report.summary());
                 if !report.complete {return Err("node maintenance incomplete; inspect the reported pending targets and scheduling state".into());}
+            },
+            "node-shell" => {
+                if args.len()!=1 {return Err("usage: node-shell NODE --write --allow-node-shell [-n NAMESPACE] [--node-shell-image IMAGE]".into());}
+                if !io::stdin().is_terminal() || !io::stdout().is_terminal() {return Err("node shell requires interactive terminal approval".into());}
+                let namespace=if ns=="*"||ns.is_empty(){"default".to_owned()}else{ns.clone()};
+                let prepared=crate::node_shell::prepare(&gateway,&args[0],&namespace,&opts.node_shell_image,opts.session_seconds).await?;
+                outputln!("{}",safety::review_display(prepared.summary())?); output!("> ");io::stdout().flush().map_err(|_|"output failed")?;
+                let mut input=String::new();use std::io::BufRead;io::stdin().lock().take(320).read_line(&mut input).map_err(|_|"input failed")?;
+                outputln!("Creating the node shell Pod and waiting for it to start…");
+                let reviewed=crate::node_shell::start(&gateway,prepared,input.trim_end()).await?;
+                let typed=reviewed.confirmation();
+                outputln!("{}",crate::ops::run(&gateway,reviewed,&typed).await?);
             },
             "apply" => {
                 if args.len()!=1 {return Err("usage: apply FILE.yaml --write --allow-apply [-n NAMESPACE]".into());}

@@ -13,6 +13,7 @@ use std::{
 };
 use tokio::io::{AsyncRead, AsyncReadExt};
 
+pub const NODE_SHELL_CAPABILITY: usize = 4;
 pub enum Request {
     Exec {
         container: String,
@@ -35,6 +36,11 @@ pub enum Request {
         remote_port: u16,
         seconds: u16,
     },
+    /// Interactive root shell in a KBorg node-shell Pod; the Pod is deleted after.
+    NodeShell {
+        node: String,
+        seconds: u16,
+    },
     /// Copy one container file to a new local file.
     CopyFrom {
         container: String,
@@ -55,6 +61,7 @@ impl Request {
             Self::Attach { .. } | Self::InteractiveAttach { .. } => 1,
             Self::PortForward { .. } => 2,
             Self::CopyFrom { .. } | Self::CopyTo { .. } => 3,
+            Self::NodeShell { .. } => NODE_SHELL_CAPABILITY,
         }
     }
     fn name(&self) -> &'static str {
@@ -66,6 +73,7 @@ impl Request {
             Self::PortForward { .. } => "port-forward",
             Self::CopyFrom { .. } => "copy-from-pod",
             Self::CopyTo { .. } => "copy-to-pod",
+            Self::NodeShell { .. } => "node-shell",
         }
     }
     fn validate(&self) -> Result<()> {
@@ -101,6 +109,11 @@ impl Request {
                     return Err("forwarding requires local port 1024..65535, remote port 1..65535 and duration 1..300 seconds".into());
                 }
             }
+            Self::NodeShell { node, .. } => {
+                if node.is_empty() || node.len() > 253 {
+                    return Err("invalid Node name".into());
+                }
+            }
             Self::CopyFrom {
                 container, remote, ..
             }
@@ -111,8 +124,9 @@ impl Request {
                 crate::file_copy::validate_remote(remote)?;
             }
         }
-        if let Self::InteractiveExec { seconds, .. } | Self::InteractiveAttach { seconds, .. } =
-            self
+        if let Self::InteractiveExec { seconds, .. }
+        | Self::InteractiveAttach { seconds, .. }
+        | Self::NodeShell { seconds, .. } = self
         {
             crate::session::validate_lifetime(*seconds)?;
         }
@@ -244,6 +258,31 @@ pub async fn prepare(
         } => format!(
             "127.0.0.1:{local_port} -> pod:{remote_port}; {seconds} seconds; at most 4 simultaneous clients. Other local users can access the listener."
         ),
+        Request::NodeShell { node, seconds } => {
+            verify_container(object.spec.as_ref(), crate::node_shell::CONTAINER)?;
+            let labels = object.metadata.labels.clone().unwrap_or_default();
+            if labels
+                .get("app.kubernetes.io/component")
+                .map(String::as_str)
+                != Some(crate::node_shell::COMPONENT_LABEL)
+                || object
+                    .spec
+                    .as_ref()
+                    .and_then(|spec| spec.node_name.as_deref())
+                    != Some(node.as_str())
+            {
+                return Err(
+                    "node shell sessions only target KBorg node-shell Pods on the reviewed Node"
+                        .into(),
+                );
+            }
+            format!(
+                "node: {node}\nDirect argv: {}\n{}\nThe Pod is deleted when the session ends.",
+                serde_json::to_string(&crate::node_shell::argv())
+                    .map_err(|_| "cannot review arguments")?,
+                crate::session::review(*seconds)
+            )
+        }
         Request::CopyFrom {
             container,
             remote,
@@ -345,6 +384,14 @@ async fn connect_interactive(
                 api.attach(&reviewed.pod, &crate::session::parameters(container))
                     .await
             }
+            Request::NodeShell { .. } => {
+                api.exec(
+                    &reviewed.pod,
+                    crate::node_shell::argv(),
+                    &crate::session::parameters(crate::node_shell::CONTAINER),
+                )
+                .await
+            }
             _ => return Err("review does not authorize an interactive session".into()),
         }
         .map_err(connection_error)
@@ -364,9 +411,9 @@ pub async fn run_interactive(
     emit: impl FnMut(&str) -> Result<()>,
 ) -> Result<crate::session::Outcome> {
     let seconds = match &reviewed.request {
-        Request::InteractiveExec { seconds, .. } | Request::InteractiveAttach { seconds, .. } => {
-            *seconds
-        }
+        Request::InteractiveExec { seconds, .. }
+        | Request::InteractiveAttach { seconds, .. }
+        | Request::NodeShell { seconds, .. } => *seconds,
         _ => return Err("review does not authorize an interactive session".into()),
     };
     let api = verify_review(gateway, &reviewed, typed).await?;
@@ -392,7 +439,9 @@ pub async fn run(gateway: &Gateway, reviewed: ReviewedOperation, typed: &str) ->
     let api = verify_review(gateway, &reviewed, typed).await?;
     if matches!(
         &reviewed.request,
-        Request::InteractiveExec { .. } | Request::InteractiveAttach { .. }
+        Request::InteractiveExec { .. }
+            | Request::InteractiveAttach { .. }
+            | Request::NodeShell { .. }
     ) {
         crate::session::ensure_terminal()?;
     }
@@ -419,18 +468,18 @@ pub async fn run(gateway: &Gateway, reviewed: ReviewedOperation, typed: &str) ->
                 Err(error) => Err(connection_error(error)),
             }
         }
-        Request::InteractiveExec { seconds, .. } | Request::InteractiveAttach { seconds, .. } => {
-            match connect_interactive(&api, &reviewed).await {
-                Ok(process) => match crate::session::terminal(process, *seconds).await {
-                    Ok(outcome) => {
-                        session_unknown = outcome.remote_outcome_unknown();
-                        Ok(outcome.summary())
-                    }
-                    Err(error) => Err(error),
-                },
+        Request::InteractiveExec { seconds, .. }
+        | Request::InteractiveAttach { seconds, .. }
+        | Request::NodeShell { seconds, .. } => match connect_interactive(&api, &reviewed).await {
+            Ok(process) => match crate::session::terminal(process, *seconds).await {
+                Ok(outcome) => {
+                    session_unknown = outcome.remote_outcome_unknown();
+                    Ok(outcome.summary())
+                }
                 Err(error) => Err(error),
-            }
-        }
+            },
+            Err(error) => Err(error),
+        },
         Request::CopyFrom {
             container,
             remote,
@@ -497,7 +546,7 @@ pub async fn run(gateway: &Gateway, reviewed: ReviewedOperation, typed: &str) ->
             seconds,
         } => {
             forward(
-                api,
+                api.clone(),
                 &reviewed.pod,
                 *local_port,
                 *remote_port,
@@ -510,6 +559,25 @@ pub async fn run(gateway: &Gateway, reviewed: ReviewedOperation, typed: &str) ->
             )
             .await
         }
+    };
+    let result = if matches!(reviewed.request, Request::NodeShell { .. }) {
+        let deleted = tokio::time::timeout(
+            Duration::from_secs(15),
+            api.delete(
+                &reviewed.pod,
+                &kube::api::DeleteParams::default().grace_period(0),
+            ),
+        )
+        .await
+        .is_ok_and(|outcome| outcome.is_ok());
+        let note = if deleted {
+            "Node shell Pod deleted."
+        } else {
+            "Node shell Pod deletion failed; it ends at its activeDeadlineSeconds. Check for kborg-shell Pods."
+        };
+        result.map(|summary| format!("{summary}\n{note}"))
+    } else {
+        result
     };
     finish_audit(
         &audit,

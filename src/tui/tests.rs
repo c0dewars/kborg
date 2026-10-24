@@ -44,6 +44,7 @@ fn harness() -> Harness {
                 log_seconds: 3600,
                 interactive: false,
                 session_seconds: 900,
+                node_shell_image: String::new(),
                 metrics_resources: false,
                 selector: String::new(),
                 log_read: crate::logs::ReadOptions::default(),
@@ -1762,6 +1763,29 @@ fn extensions_need_both_flags_and_unknown_names_do_not_open_a_review() {
     app.options.allow_tools = true;
     assert!(app.command("ext Not_Valid").is_ok());
     assert!(!matches!(app.modal, Modal::WriteReview(_)));
+}
+#[test]
+fn node_shell_needs_its_capability_and_reviews_the_selected_node() {
+    let (mut app, _replies, mut commands) = harness();
+    app.command("nodes").unwrap_or(false);
+    app.items = vec![serde_json::json!({"kind":"Node","metadata":{"name":"worker-1","uid":"n1"}})];
+    assert!(app.key(KeyCode::Char('s')).is_ok());
+    assert!(app.status.contains("--allow-node-shell"));
+    while commands.try_recv().is_ok() {}
+    app.busy = false;
+    app.options.connection.writable = true;
+    app.options.connection.allow_node_shell = true;
+    app.namespace = "*".into();
+    assert!(app.key(KeyCode::Char('s')).is_ok());
+    match commands.try_recv() {
+        Ok((_, Task::NodeShellPrepare(node, namespace, _, seconds))) => {
+            assert_eq!(
+                (node.as_str(), namespace.as_str(), seconds),
+                ("worker-1", "default", 900)
+            )
+        }
+        _ => panic!("s on a Node did not request a node shell review"),
+    }
 }
 #[test]
 fn apply_requires_its_capability_and_queues_a_dry_run_review() {

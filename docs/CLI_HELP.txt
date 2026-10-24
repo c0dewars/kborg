@@ -53,6 +53,7 @@ KBorg 0.3 — Kubernetes operations, under your control
   kborg forward POD LOCAL REMOTE SECONDS   Loopback only, up to 300 seconds
   kborg cp-from POD CONTAINER /PATH LOCAL   Reviewed copy of one file to a new local file
   kborg apply FILE.yaml           Reviewed server-side apply (dry run, diff, no force)
+  kborg node-shell NODE           Reviewed privileged Pod + nsenter root shell; deleted after
   kborg cp-to POD CONTAINER LOCAL /PATH     Reviewed copy of one file; never replaces
   kborg audit pending             Uncertain local outcomes; never auto-retries
   kborg config init|validate FILE Strict schema-1 JSON configuration
@@ -89,6 +90,7 @@ Options (put KBorg flags before exec's -- separator):
   --allow-secret-reveal                        :secrets key list and per-key reveal (TUI)
   --allow-file-copy                            Reviewed single-file copy to/from Pods (cp-from, cp-to, :cp)
   --allow-apply                                Reviewed server-side apply of local manifests (apply, :apply)
+  --allow-node-shell [--node-shell-image IMG] Reviewed root shell on a Node (node-shell, s in :nodes)
   --allow-logs       --allow-exec   --allow-attach   --allow-forward
   --poll            --theme ID     --color=never    --json       --yaml
   --no-mouse        --follow          --previous     --no-splash      --demo       --help

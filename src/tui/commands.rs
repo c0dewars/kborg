@@ -397,6 +397,7 @@ impl App {
         connection.allow_port_forward = false;
         connection.allow_file_copy = false;
         connection.allow_apply = false;
+        connection.allow_node_shell = false;
         connection.allow_node_maintenance = false;
         connection.allow_yaml_edit = false;
         connection.allow_force_kill = false;
@@ -616,6 +617,33 @@ impl App {
             Err(error) => self.status = error,
         }
     }
+    /// Review a privileged node shell Pod for the selected Node.
+    pub(super) fn node_shell(&mut self) {
+        if !self.options.connection.writable || !self.options.connection.allow_node_shell {
+            self.status = "Node shell requires --write --allow-node-shell.".into();
+            return;
+        }
+        if self.options.connection.demo {
+            self.status = "Node shell needs a live cluster.".into();
+            return;
+        }
+        let Some((_, _, node)) = self.selected_target() else {
+            self.status = "Select a Node first.".into();
+            return;
+        };
+        let namespace = if self.namespace == "*" || self.namespace.is_empty() {
+            "default".to_owned()
+        } else {
+            self.namespace.clone()
+        };
+        self.status = "Dry-running the node shell Pod…".into();
+        self.send(Task::NodeShellPrepare(
+            node,
+            namespace,
+            self.options.node_shell_image.clone(),
+            self.options.session_seconds,
+        ));
+    }
     /// Dry-run and review a server-side apply of a local manifest.
     pub(super) fn apply_manifest(&mut self, path: std::path::PathBuf) {
         if !self.options.connection.writable || !self.options.connection.allow_apply {
@@ -823,6 +851,7 @@ impl App {
             Task::Execute(..)
                 | Task::YamlExecute(..)
                 | Task::ApplyExecute(..)
+                | Task::NodeShellStart(..)
                 | Task::NodeExecute(..)
                 | Task::RunSession(..)
                 | Task::RunForward(..)
