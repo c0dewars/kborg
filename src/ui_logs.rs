@@ -122,6 +122,9 @@ pub struct LogView {
     // Only viewport geometry is cached during immutable rendering, to make a
     // later PageUp/PageDown correspond to the viewport actually shown.
     viewport: Cell<(usize, usize)>,
+    /// ui.yaml `timestamps: local`: shown timestamps use the local zone.
+    /// Exports keep the API's original UTC text.
+    local_time: Cell<bool>,
 }
 impl LogView {
     pub fn new(text: String, range: ReadOptions) -> Self {
@@ -148,6 +151,7 @@ impl LogView {
             errors_only: false,
             warnings_only: false,
             viewport: Cell::new((80, 20)),
+            local_time: Cell::new(false),
         }
     }
     pub fn update(&mut self, text: String) {
@@ -260,7 +264,8 @@ impl LogView {
         }
         text
     }
-    fn selected_lines(&self) -> Vec<&str> {
+    fn selected_lines(&self) -> Vec<std::borrow::Cow<'_, str>> {
+        let local = self.show_timestamps && self.local_time.get();
         self.source()
             .lines()
             .filter_map(|line| {
@@ -273,7 +278,17 @@ impl LogView {
                 // a filter would hide them. Ordinary application records are matched.
                 (control_line(line)
                     || (self.compiled.matches(shown) && self.severity_matches(shown)))
-                .then_some(shown)
+                .then(|| {
+                    local
+                        .then(|| {
+                            crate::ui_config::localize_timestamp(
+                                shown,
+                                crate::ui_config::local_zone(),
+                            )
+                        })
+                        .flatten()
+                        .map_or(std::borrow::Cow::Borrowed(shown), std::borrow::Cow::Owned)
+                })
             })
             .collect()
     }
@@ -437,6 +452,12 @@ impl LogView {
         }
         LogAction::None
     }
+    /// `render` with ui.yaml's timestamp zone; it also sets the zone used for
+    /// paging until the next frame.
+    pub fn render_with(&self, width: usize, height: usize, local_time: bool) -> Vec<String> {
+        self.local_time.set(local_time);
+        self.render(width, height)
+    }
     pub fn render(&self, width: usize, height: usize) -> Vec<String> {
         let width = width.min(2048);
         let height = height.min(200);
@@ -495,7 +516,7 @@ impl LogView {
         }
         let mut index = 0usize;
         for line in self.selected_lines() {
-            let line = ascii(line);
+            let line = ascii(&line);
             if self.wrap {
                 if line.is_empty() {
                     if index >= start {
@@ -664,6 +685,22 @@ mod tests {
         assert_eq!(view.key(KeyCode::Char('a')), LogAction::None);
         view.enable_all_containers(true);
         assert_eq!(view.key(KeyCode::Char('a')), LogAction::AllContainers);
+    }
+    #[test]
+    fn local_timestamps_rewrite_only_the_shown_prefix() {
+        let mut view = LogView::new(
+            "2026-10-22T12:00:00Z INFO ok\n".into(),
+            ReadOptions::default(),
+        );
+        view.key(KeyCode::Char('t'));
+        assert_eq!(
+            view.render_with(60, 4, false),
+            ["2026-10-22T12:00:00Z INFO ok"]
+        );
+        let local = view.render_with(60, 4, true);
+        assert!(local[0].starts_with("2026-10-2") && local[0].ends_with(" INFO ok"));
+        assert!(!local[0].contains("Z INFO"), "{local:?}");
+        assert!(view.export_text().contains("2026-10-22T12:00:00Z INFO ok"));
     }
     #[test]
     fn source_toggle_clears_paused_old_data_and_preserves_view_preferences() {

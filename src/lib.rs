@@ -55,6 +55,7 @@ pub mod selectors;
 pub mod session;
 pub mod splash;
 pub mod transport;
+pub mod ui_config;
 pub mod ui_logs;
 pub mod ui_secrets;
 pub mod ui_subjects;

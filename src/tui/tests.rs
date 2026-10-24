@@ -76,6 +76,7 @@ fn harness() -> Harness {
             hotkeys: Default::default(),
             faults_only: false,
             views: Default::default(),
+            ui: Default::default(),
             wide: false,
             sort_desc: false,
             sort_column: None,
@@ -832,7 +833,10 @@ fn screen(app: &App, width: u16, height: u16) -> Vec<String> {
             assert!(
                 character.is_ascii_graphic()
                     || character == ' '
-                    || matches!(character, '╭' | '╮' | '╰' | '╯' | '─' | '│')
+                    || matches!(
+                        character,
+                        '╭' | '╮' | '╰' | '╯' | '┌' | '┐' | '└' | '┘' | '─' | '│'
+                    )
             );
             assert!(
                 x < usize::from(width) && y < usize::from(height),
@@ -3115,4 +3119,104 @@ fn saved_picker_keeps_its_actions_when_watch_status_changes() {
         assert!(frame.contains("Enter open | d remove | Esc back"));
         assert!(frame.contains("Watch updated"));
     }
+}
+fn ui_pods() -> Vec<Value> {
+    ["api", "web"]
+        .iter()
+        .map(|name| serde_json::json!({"kind":"Pod","metadata":{"name":name,"namespace":"test","uid":format!("uid-{name}"),"creationTimestamp":"2026-10-10T07:00:00Z"},"spec":{"containers":[{"name":"app"}]},"status":{"phase":"Running","containerStatuses":[{"ready":true,"restartCount":0}]}}))
+        .collect()
+}
+#[test]
+fn ui_yaml_ascii_borders_and_hidden_hints_row_give_the_table_more_room() -> Result<()> {
+    let (mut app, _replies, _commands) = harness();
+    app.items = ui_pods();
+    let default = screen(&app, 80, 24);
+    assert!(default[23].contains("all keys"));
+    assert!(default[21].contains("waiting"));
+    assert!(default[20].starts_with(['+', '╰']));
+    app.ui = crate::ui_config::parse("borders: ascii\nhints:\n  show: false\n")?;
+    let frame = screen(&app, 80, 24);
+    assert!(frame[3].starts_with('+') && frame[3].ends_with('+'));
+    assert!(frame.iter().all(|line| !line.contains(['╭', '│', '─'])));
+    assert!(!frame.join("\n").contains("all keys"));
+    assert!(frame[23].trim().is_empty());
+    assert!(frame[21].starts_with('+'), "table grows into the hint row");
+    assert!(frame[22].contains("waiting"));
+    assert_eq!(&frame[..3], &default[..3], "identity and summary unchanged");
+    app.ui = crate::ui_config::parse("borders: square\npanel_title: bracketed\n")?;
+    let frame = screen(&app, 80, 24);
+    assert!(frame[3].starts_with("┌[ ") && frame[3].ends_with('┐'));
+    app.ui = crate::ui_config::parse("borders: none\n")?;
+    let frame = screen(&app, 80, 24);
+    assert!(frame[4].starts_with(' ') && frame.iter().all(|line| !line.contains('+')));
+    Ok(())
+}
+#[test]
+fn ui_yaml_color_override_reaches_the_rendered_frame() -> Result<()> {
+    use crossterm::Command;
+    let (mut app, _replies, _commands) = harness();
+    app.items = ui_pods();
+    app.options.color = true;
+    let mut before = Vec::new();
+    render(&app, 80, 24, &mut before)?;
+    app.ui = crate::ui_config::parse("colors:\n  accent: \"#FFD700\"\n")?;
+    app.theme = app.ui.apply(&app.theme)?;
+    assert_eq!(app.theme.get("accent"), themes::Rgb(0xFF, 0xD7, 0x00));
+    let mut after = Vec::new();
+    render(&app, 80, 24, &mut after)?;
+    let mut accent = String::new();
+    themes::ForegroundColor(themes::Rgb(0xFF, 0xD7, 0x00).color())
+        .write_ansi(&mut accent)
+        .map_err(|_| "ansi")?;
+    let contains = |frame: &[u8], needle: &[u8]| frame.windows(needle.len()).any(|w| w == needle);
+    assert!(contains(&after, accent.as_bytes()));
+    assert_ne!(before, after);
+    Ok(())
+}
+#[test]
+fn ui_yaml_compact_chrome_and_table_style() -> Result<()> {
+    let (mut app, _replies, _commands) = harness();
+    app.items = ui_pods();
+    app.ui = crate::ui_config::parse(
+        "header:\n  compact: true\ntable:\n  density: relaxed\n  zebra: true\n  column_separator: \"|\"\n  selection_marker: \"@\"\n  mark_marker: \"+\"\n  age: long\n  sort_ascending: \"<\"\n",
+    )?;
+    app.marks.insert("uid-web".into());
+    let frame = screen(&app, 120, 24);
+    assert!(frame[0].contains("KBORG") && frame[0].contains("CTX test | NS test"));
+    assert!(frame[0].contains("PRODUCTION READ ONLY"));
+    assert!(frame[1].contains("healthy"));
+    assert!(frame[2].starts_with(['+', '╭']));
+    assert!(frame[3].contains("NAME<") && frame[3].contains('|'));
+    assert_eq!(frame[4].chars().nth(1), Some('@'));
+    assert!(frame[4].contains("api"));
+    assert!(
+        !frame[5].contains("web"),
+        "relaxed density leaves a blank line"
+    );
+    assert!(frame[6].contains("web"));
+    assert_eq!(frame[6].chars().nth(2), Some('+'));
+    assert!(frame[22].contains("waiting") && frame[23].contains("all keys"));
+    let now = k8s_openapi::jiff::Timestamp::now().as_second();
+    let age = age_styled(&app.items[0], now, true);
+    assert!(age.contains('d') && age.ends_with('h') && frame[4].contains(&age));
+    let day = serde_json::json!({"metadata":{"creationTimestamp":"1970-01-01T00:00:00Z"}});
+    assert_eq!(age_styled(&day, 14 * 86_400 + 3 * 3600 + 59, true), "14d3h");
+    assert_eq!(age_styled(&day, 14 * 86_400 + 3 * 3600 + 59, false), "14d");
+    assert_eq!(age_styled(&day, 3725, true), "1h2m");
+    app.ui = crate::ui_config::parse("header:\n  show: false\n  summary: false\n")?;
+    let frame = screen(&app, 80, 24);
+    assert!(frame[0].contains("CTX test | NS test") && frame[0].contains("PRODUCTION READ ONLY"));
+    assert!(frame[1].starts_with(['+', '╭']));
+    assert!(!frame.join("\n").contains("KBORG"));
+    Ok(())
+}
+#[test]
+fn ui_reload_command_is_recognised() {
+    let (mut app, _replies, _commands) = harness();
+    assert!(app.command("ui reload").is_ok());
+    assert!(
+        app.status == "ui.yaml reloaded." || matches!(app.modal, Modal::Detail(..)),
+        "{}",
+        app.status
+    );
 }
