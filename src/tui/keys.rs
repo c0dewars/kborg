@@ -1186,6 +1186,8 @@ impl App {
                         if prepared.is_port_forward() {
                             let generation = self.worker.forward.generation();
                             self.send(Task::RunForward(prepared, text, generation));
+                        } else if prepared.is_file_copy() {
+                            self.send(Task::RunSession(prepared, text));
                         } else {
                             self.pending_session = Some((prepared, text));
                         }

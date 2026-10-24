@@ -37,7 +37,7 @@ References: [command guide](https://k9scli.io/topics/commands/), [command interp
 Helm lifecycle supports an explicitly reviewed subset, not arbitrary chart or
 storage parity: exact Helm 4.3.1 on Unix, deterministic local/OCI packaged charts, separately reviewed hooks/tests and namespaced-schema CRD operations. Other cluster/system targets and ordinary cross-namespace release resources, recognized GitOps resources and foreign adoption remain unsupported. Benchmarks (`:be`) and scans/Popeye do not have native equivalents. Ordinary
 Kubernetes Roles/Bindings are browsable, and `:can` supplies explicit-subject
-evidence. Generic Secret YAML/describe views, node shell, Pod file transfer/sanitization, arbitrary manifest creation/apply, k9s plugins and benchmark execution remain unsupported. Existing-resource namespaced YAML spec editing and reviewed node cordon/uncordon/drain are implemented in the [Mac v1 workflow batch](MAC_V1_OPERATIONS.md). These are material parity gaps, not alternate
+evidence. Generic Secret YAML/describe views, node shell, directory/archive Pod file transfer, arbitrary manifest creation/apply, k9s plugins and benchmark execution remain unsupported. Existing-resource namespaced YAML spec editing and reviewed node cordon/uncordon/drain are implemented in the [Mac v1 workflow batch](MAC_V1_OPERATIONS.md). These are material parity gaps, not alternate
 meanings for the same commands.
 
 Copilot is a KBorg-specific extension: `:copilot` previews selected minimized status and, with an explicit macOS ARM64 policy, requests read-only advice after full account-bound review. It does not redefine k9s resource commands.
@@ -72,6 +72,10 @@ aliases:
 ```
 
 Aliases return to the command parser and never execute a shell. Bounds are 64 KiB, 256 aliases, 2,048 expanded command bytes and 16 expansion steps. Cycles, duplicate keys, YAML anchors and replacement of identity/exit commands are rejected. Context-specific k9s alias files and plugin files are not imported automatically.
+
+## Pod file copy
+
+k9s relies on `kubectl cp` through plugins. KBorg has a reviewed single-file copy behind `--write --allow-file-copy`: `:cp-from /PATH [LOCAL_FILE_OR_DIR]` and `:cp-to LOCAL_FILE /PATH` act on the selected Pod's default container (its `kubectl.kubernetes.io/default-container` annotation, otherwise the first container); `kborg cp-from POD CONTAINER /PATH LOCAL` and `kborg cp-to POD CONTAINER LOCAL /PATH` choose any container. Downloads default to `~/Downloads`. Neither side ever replaces an existing file, transfers are capped at 64 MiB, and the container needs `cat` and `sh`. Directories and archives are not supported. See [SECURITY.md](../SECURITY.md).
 
 ## Custom hotkeys
 

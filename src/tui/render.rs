@@ -1041,6 +1041,9 @@ pub(super) fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<
                 Modal::SessionConfirm(prepared, _) if prepared.is_port_forward() => {
                     "REVIEW PORT FORWARD / loopback listener"
                 }
+                Modal::SessionConfirm(prepared, _) if prepared.is_file_copy() => {
+                    "REVIEW FILE COPY / one file, never replaces"
+                }
                 Modal::SessionConfirm(..) => "REVIEW POD SHELL / privileged interactive session",
                 Modal::Metrics(..) if app.metrics_resources => {
                     "METRICS + RESOURCE COMPARISONS / extra reads enabled"

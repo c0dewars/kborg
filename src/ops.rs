@@ -35,6 +35,18 @@ pub enum Request {
         remote_port: u16,
         seconds: u16,
     },
+    /// Copy one container file to a new local file.
+    CopyFrom {
+        container: String,
+        remote: String,
+        local: PathBuf,
+    },
+    /// Copy one local file, read at review time, to a new container file.
+    CopyTo {
+        container: String,
+        upload: crate::file_copy::Upload,
+        remote: String,
+    },
 }
 impl Request {
     fn capability(&self) -> usize {
@@ -42,6 +54,7 @@ impl Request {
             Self::Exec { .. } | Self::InteractiveExec { .. } => 0,
             Self::Attach { .. } | Self::InteractiveAttach { .. } => 1,
             Self::PortForward { .. } => 2,
+            Self::CopyFrom { .. } | Self::CopyTo { .. } => 3,
         }
     }
     fn name(&self) -> &'static str {
@@ -51,6 +64,8 @@ impl Request {
             Self::InteractiveExec { .. } => "interactive-exec",
             Self::InteractiveAttach { .. } => "interactive-attach",
             Self::PortForward { .. } => "port-forward",
+            Self::CopyFrom { .. } => "copy-from-pod",
+            Self::CopyTo { .. } => "copy-to-pod",
         }
     }
     fn validate(&self) -> Result<()> {
@@ -85,6 +100,15 @@ impl Request {
                 if *local_port < 1024 || *remote_port == 0 || !(1..=300).contains(seconds) {
                     return Err("forwarding requires local port 1024..65535, remote port 1..65535 and duration 1..300 seconds".into());
                 }
+            }
+            Self::CopyFrom {
+                container, remote, ..
+            }
+            | Self::CopyTo {
+                container, remote, ..
+            } => {
+                crate::edit::validate(container, "placeholder:1")?;
+                crate::file_copy::validate_remote(remote)?;
             }
         }
         if let Self::InteractiveExec { seconds, .. } | Self::InteractiveAttach { seconds, .. } =
@@ -123,6 +147,12 @@ impl ReviewedOperation {
     }
     pub fn confirmation(&self) -> String {
         format!("{}/{}", self.namespace, self.pod)
+    }
+    pub fn is_file_copy(&self) -> bool {
+        matches!(
+            self.request,
+            Request::CopyFrom { .. } | Request::CopyTo { .. }
+        )
     }
     pub fn is_port_forward(&self) -> bool {
         matches!(self.request, Request::PortForward { .. })
@@ -166,7 +196,8 @@ pub async fn prepare(
         .metadata
         .resource_version
         .ok_or("target has no resourceVersion")?;
-    let details = match &request {
+    let mut request = request;
+    let details = match &mut request {
         Request::Exec { container, argv } => {
             verify_container(object.spec.as_ref(), container)?;
             format!(
@@ -213,6 +244,39 @@ pub async fn prepare(
         } => format!(
             "127.0.0.1:{local_port} -> pod:{remote_port}; {seconds} seconds; at most 4 simultaneous clients. Other local users can access the listener."
         ),
+        Request::CopyFrom {
+            container,
+            remote,
+            local,
+        } => {
+            verify_container(object.spec.as_ref(), container)?;
+            let target = crate::file_copy::download_target(remote, local)?;
+            let details = format!(
+                "container: {container}\nCopy FROM the container: {remote}\nTo a NEW local file: {}\nRuns {} in the container; at most {} MiB, {} seconds.\nThe file is written only after the whole transfer succeeds, with owner-only permissions; existing files are never replaced.",
+                target.display(),
+                serde_json::to_string(&crate::file_copy::read_argv(remote))
+                    .map_err(|_| "cannot review arguments")?,
+                crate::file_copy::MAX_BYTES >> 20,
+                crate::file_copy::DEADLINE.as_secs()
+            );
+            *local = target;
+            details
+        }
+        Request::CopyTo {
+            container,
+            upload,
+            remote,
+        } => {
+            verify_container(object.spec.as_ref(), container)?;
+            format!(
+                "container: {container}\nCopy TO the container: {remote}\nFrom local file: {} ({} bytes, SHA-256 {})\nRuns {} in the container; set -C refuses to replace an existing file and the written size is checked. The bytes reviewed here are the bytes sent; later local changes are ignored.\nA failed or interrupted copy can leave a partial container file.",
+                upload.local.display(),
+                upload.bytes.len(),
+                upload.sha256,
+                serde_json::to_string(&crate::file_copy::write_argv(remote))
+                    .map_err(|_| "cannot review arguments")?
+            )
+        }
     };
     let summary = safety::review_text(
         &format!(
@@ -365,6 +429,66 @@ pub async fn run(gateway: &Gateway, reviewed: ReviewedOperation, typed: &str) ->
                     Err(error) => Err(error),
                 },
                 Err(error) => Err(error),
+            }
+        }
+        Request::CopyFrom {
+            container,
+            remote,
+            local,
+        } => {
+            let params = AttachParams {
+                container: Some(container.clone()),
+                stdin: false,
+                stdout: true,
+                stderr: true,
+                tty: false,
+                ..Default::default()
+            };
+            match api
+                .exec(&reviewed.pod, crate::file_copy::read_argv(remote), &params)
+                .await
+            {
+                Ok(process) => crate::file_copy::receive(process).await.and_then(|bytes| {
+                    crate::file_copy::write_download(local, &bytes)?;
+                    Ok(format!(
+                        "Copied {remote} to {} ({} bytes, SHA-256 {})",
+                        local.display(),
+                        bytes.len(),
+                        crate::file_copy::sha256(&bytes)
+                    ))
+                }),
+                Err(error) => Err(connection_error(error)),
+            }
+        }
+        Request::CopyTo {
+            container,
+            upload,
+            remote,
+        } => {
+            let params = AttachParams {
+                container: Some(container.clone()),
+                stdin: true,
+                stdout: true,
+                stderr: true,
+                tty: false,
+                max_stdin_buf_size: Some(crate::file_copy::STDIN_CHUNK),
+                ..Default::default()
+            };
+            match api
+                .exec(&reviewed.pod, crate::file_copy::write_argv(remote), &params)
+                .await
+            {
+                Ok(process) => crate::file_copy::send(process, &upload.bytes)
+                    .await
+                    .map(|()| {
+                        format!(
+                            "Copied {} to {remote} ({} bytes, SHA-256 {})",
+                            upload.local.display(),
+                            upload.bytes.len(),
+                            upload.sha256
+                        )
+                    }),
+                Err(error) => Err(connection_error(error)),
             }
         }
         Request::PortForward {

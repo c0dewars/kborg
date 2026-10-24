@@ -288,6 +288,7 @@ fn parse(args: Vec<String>) -> Result<Options> {
             "--allow-exec" => opts.connection.allow_exec = true,
             "--allow-attach" => opts.connection.allow_attach = true,
             "--allow-forward" => opts.connection.allow_port_forward = true,
+            "--allow-file-copy" => opts.connection.allow_file_copy = true,
             "--allow-node-maintenance" => opts.connection.allow_node_maintenance = true,
             "--" => {
                 opts.command.extend(args);
@@ -604,8 +605,9 @@ pub fn run_args(args: Vec<String>) -> Result<()> {
         }
         "helm" | "history" | "list" | "watch" | "metrics" | "get" | "view" | "logs"
         | "resources" | "doctor" | "scale" | "restart" | "delete" | "kill" | "set-image"
-        | "set-resources" | "exec" | "attach" | "forward" | "pulses" | "xray" | "workloads"
-        | "can" | "yaml-template" | "yaml-edit" | "cordon" | "uncordon" | "drain" => {}
+        | "set-resources" | "exec" | "attach" | "forward" | "cp-from" | "cp-to" | "pulses"
+        | "xray" | "workloads" | "can" | "yaml-template" | "yaml-edit" | "cordon" | "uncordon"
+        | "drain" => {}
         _ => return Err("unknown command; see --help".into()),
     }
     if cmd == "view"
@@ -652,11 +654,15 @@ pub fn run_args(args: Vec<String>) -> Result<()> {
                 outputln!("{}",report.summary());
                 if !report.complete {return Err("node maintenance incomplete; inspect the reported pending targets and scheduling state".into());}
             },
-            "exec"|"attach"|"forward" => {
+            "exec"|"attach"|"forward"|"cp-from"|"cp-to" => {
                 if !io::stdin().is_terminal() || !io::stdout().is_terminal() {return Err("subresource operations require interactive terminal approval".into());}
                 let request=match cmd {
                     "exec"=>{if args.len()<3{return Err("usage: exec POD CONTAINER -- COMMAND [ARG...] --write --allow-exec (put flags before --)".into());}
                     if opts.interactive {crate::ops::Request::InteractiveExec{container:args[1].clone(),argv:args[2..].to_vec(),seconds:opts.session_seconds}} else {crate::ops::Request::Exec{container:args[1].clone(),argv:args[2..].to_vec()}}},
+                    "cp-from"=>{if args.len()!=4{return Err("usage: cp-from POD CONTAINER /CONTAINER/FILE LOCAL_FILE_OR_DIR --write --allow-file-copy".into());}
+                    crate::ops::Request::CopyFrom{container:args[1].clone(),remote:args[2].clone(),local:std::path::PathBuf::from(&args[3])}},
+                    "cp-to"=>{if args.len()!=4{return Err("usage: cp-to POD CONTAINER LOCAL_FILE /CONTAINER/FILE --write --allow-file-copy".into());}
+                    crate::ops::Request::CopyTo{container:args[1].clone(),upload:crate::file_copy::read_upload(std::path::Path::new(&args[2]))?,remote:args[3].clone()}},
                     "attach"=>{if args.len()!=2{return Err("usage: attach POD CONTAINER --write --allow-attach (bounded output only)".into());}
                     if opts.interactive {crate::ops::Request::InteractiveAttach{container:args[1].clone(),seconds:opts.session_seconds}} else {crate::ops::Request::Attach{container:args[1].clone()}}},
                     _=>{if args.len()!=4{return Err("usage: forward POD LOCAL_PORT REMOTE_PORT SECONDS --write --allow-forward".into());}

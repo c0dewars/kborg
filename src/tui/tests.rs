@@ -1752,6 +1752,62 @@ fn human_overview_uses_redacted_object_fields_and_json_remains_accessible() {
     assert!(matches!(app.modal, Modal::Detail(..)));
 }
 #[test]
+fn file_copy_commands_review_the_selected_pod_default_container() {
+    let (mut app, _replies, mut commands) = harness();
+    app.items = vec![
+        serde_json::json!({"kind":"Pod","metadata":{"name":"api","namespace":"shop","uid":"api-uid","annotations":{"kubectl.kubernetes.io/default-container":"app"}},"spec":{"containers":[{"name":"sidecar"},{"name":"app"}]}}),
+    ];
+    assert!(app.command("cp-from /etc/hosts").is_ok());
+    assert!(app.status.contains("--allow-file-copy"));
+    assert!(commands.try_recv().is_err());
+    app.options.connection.writable = true;
+    app.options.connection.allow_file_copy = true;
+    let dir = std::env::temp_dir();
+    assert!(
+        app.command(&format!("cp-from /etc/hosts {}", dir.display()))
+            .is_ok()
+    );
+    match commands.try_recv() {
+        Ok((
+            _,
+            Task::PrepareSession(
+                namespace,
+                pod,
+                uid,
+                crate::ops::Request::CopyFrom {
+                    container,
+                    remote,
+                    local,
+                },
+            ),
+        )) => assert_eq!(
+            (
+                namespace.as_str(),
+                pod.as_str(),
+                uid.as_deref(),
+                container.as_str(),
+                remote.as_str(),
+                local
+            ),
+            (
+                "shop",
+                "api",
+                Some("api-uid"),
+                "app",
+                "/etc/hosts",
+                dir.clone()
+            )
+        ),
+        _ => panic!("cp-from did not request a review"),
+    }
+    app.busy = false;
+    assert!(app.command("cp-to /definitely/missing/file /tmp/x").is_ok());
+    assert!(app.status.contains("cannot upload"));
+    assert!(commands.try_recv().is_err());
+    assert!(app.command("cp-to onlyone").is_ok());
+    assert!(app.status.starts_with("Use :cp-from"));
+}
+#[test]
 fn pod_shell_picker_preserves_captured_identity_and_capabilities() {
     let (mut app, _replies, mut commands) = harness();
     app.items = vec![

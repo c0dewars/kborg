@@ -121,6 +121,8 @@ kborg --context docker-desktop --allow-logs \
   --write --allow-yaml-edit --allow-node-maintenance --allow-forward --allow-exec
 ```
 
+`--allow-file-copy` adds reviewed single-file copy to and from Pods (`:cp-from`, `:cp-to`); neither side ever overwrites a file.
+
 KBorg uses your kubeconfig directly: the current context unless you pass `--context`, and every file in `$KUBECONFIG` merged the way kubectl does (first definition wins). kubectl, Helm, Python and an AI account are not needed for browsing. Server-side RBAC and admission always have the final say.
 
 ## Keys for k9s users

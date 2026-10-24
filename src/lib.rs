@@ -36,6 +36,7 @@ pub mod aliases;
 pub mod allocations;
 pub mod auth;
 pub mod extensions;
+pub mod file_copy;
 pub mod hotkeys;
 pub mod insights;
 pub mod navigation_views;

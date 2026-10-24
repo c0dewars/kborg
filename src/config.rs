@@ -43,6 +43,8 @@ pub struct Config {
     #[serde(default)]
     pub allow_forward: bool,
     #[serde(default)]
+    pub allow_file_copy: bool,
+    #[serde(default)]
     pub allow_tools: bool,
     #[serde(default)]
     pub allow_extensions: bool,
@@ -67,6 +69,7 @@ impl Default for Config {
             allow_exec: false,
             allow_attach: false,
             allow_forward: false,
+            allow_file_copy: false,
             allow_tools: false,
             allow_extensions: false,
             allow_auth_helper: false,
@@ -123,6 +126,7 @@ pub fn apply(config: Config, options: &mut Options) -> Result<()> {
     if (options.connection.allow_exec && !config.allow_exec)
         || (options.connection.allow_attach && !config.allow_attach)
         || (options.connection.allow_port_forward && !config.allow_forward)
+        || (options.connection.allow_file_copy && !config.allow_file_copy)
     {
         return Err("configuration forbids requested subresource capability".into());
     }

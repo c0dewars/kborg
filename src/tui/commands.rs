@@ -73,6 +73,12 @@ impl App {
             ("restart", []) => self.prepare(Action::Restart),
             ("delete", []) => self.prepare(Action::Delete),
             ("kill", []) => self.kill(),
+            ("cp-from", [remote]) => self.copy_file(true, remote, None),
+            ("cp-from", [remote, local]) => self.copy_file(true, remote, Some(local)),
+            ("cp-to", [local, remote]) => self.copy_file(false, local, Some(remote)),
+            ("cp" | "cp-from" | "cp-to", _) => {
+                self.status = "Use :cp-from /CONTAINER/FILE [LOCAL_FILE_OR_DIR] or :cp-to LOCAL_FILE /CONTAINER/FILE".into()
+            }
             ("pulse"|"pulses"|"hz"|"pu",[])=>self.send(Task::Pulses(self.namespace.clone())),
             ("xray"|"xrays"|"xr"|"x",[resource])=>self.send(Task::Xray(resource.clone(),self.namespace.clone())),
             ("xray"|"xrays"|"xr"|"x",[resource,ns]) if ns=="all" || ns=="*" || safety::valid_id(ns)=>self.send(Task::Xray(resource.clone(),if ns=="all"{"*".into()}else{ns.clone()})),
@@ -373,6 +379,7 @@ impl App {
         connection.allow_exec = false;
         connection.allow_attach = false;
         connection.allow_port_forward = false;
+        connection.allow_file_copy = false;
         connection.allow_node_maintenance = false;
         connection.allow_yaml_edit = false;
         connection.allow_force_kill = false;
@@ -554,6 +561,82 @@ impl App {
             return;
         }
         self.prepare(Action::Kill);
+    }
+    /// Review a single-file copy for the selected Pod's default container.
+    pub(super) fn copy_file(&mut self, download: bool, first: &str, second: Option<&String>) {
+        if self.busy {
+            self.status = "Wait for the current request before copying.".into();
+            return;
+        }
+        if !self.options.connection.writable
+            || !self.options.connection.allow_file_copy
+            || self.options.connection.demo
+        {
+            self.status = "File copy requires a live Pod, --write and --allow-file-copy.".into();
+            return;
+        }
+        if self.kind() != "pods" {
+            self.status = "Select a Pod in :pods first.".into();
+            return;
+        }
+        let Some(object) = self
+            .visible()
+            .get(self.selected)
+            .map(|object| (*object).clone())
+        else {
+            self.status = "Select a Pod first.".into();
+            return;
+        };
+        let containers = object["spec"]["containers"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|container| container["name"].as_str())
+            .collect::<Vec<_>>();
+        let annotated =
+            object["metadata"]["annotations"]["kubectl.kubernetes.io/default-container"]
+                .as_str()
+                .filter(|name| containers.contains(name));
+        let Some(container) = annotated.or(containers.first().copied()).map(str::to_owned) else {
+            self.status = "This Pod has no ordinary container.".into();
+            return;
+        };
+        let request = if download {
+            let local = second.map(std::path::PathBuf::from).unwrap_or_else(|| {
+                std::env::var_os("HOME")
+                    .map(|home| std::path::PathBuf::from(home).join("Downloads"))
+                    .filter(|dir| dir.is_dir())
+                    .unwrap_or_else(|| ".".into())
+            });
+            crate::ops::Request::CopyFrom {
+                container,
+                remote: first.to_owned(),
+                local,
+            }
+        } else {
+            let Some(remote) = second else {
+                self.status = "Use :cp-to LOCAL_FILE /CONTAINER/FILE".into();
+                return;
+            };
+            match crate::file_copy::read_upload(std::path::Path::new(first)) {
+                Ok(upload) => crate::ops::Request::CopyTo {
+                    container,
+                    upload,
+                    remote: remote.clone(),
+                },
+                Err(error) => {
+                    self.status = error;
+                    return;
+                }
+            }
+        };
+        let namespace = object["metadata"]["namespace"]
+            .as_str()
+            .unwrap_or(&self.namespace)
+            .to_owned();
+        let pod = object["metadata"]["name"].as_str().unwrap_or("").to_owned();
+        let uid = object["metadata"]["uid"].as_str().map(str::to_owned);
+        self.send(Task::PrepareSession(namespace, pod, uid, request));
     }
     pub(super) fn yaml_editor(&mut self) {
         if self.busy {
