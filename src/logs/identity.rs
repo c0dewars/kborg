@@ -78,15 +78,16 @@ pub(super) fn reopen_failure(error: kube::Error) -> ReopenFailure {
         kube::Error::Api(response) if matches!(response.code, 408 | 429 | 500..=599) => {
             ReopenFailure::Retry
         }
-        kube::Error::Api(response) => ReopenFailure::Stop(format!(
-            "log reconnect stopped (Kubernetes API {}); reopen after checking target and permissions",
-            response.code
+        error @ kube::Error::Api(_) => ReopenFailure::Stop(crate::errors::explain(
+            "Log reconnect (stopped)",
+            &error,
+            &crate::errors::Scope::default(),
         )),
         kube::Error::HyperError(_) | kube::Error::Service(_) | kube::Error::ReadEvents(_) => {
             ReopenFailure::Retry
         }
         _ => ReopenFailure::Stop(
-            "log reconnect received an invalid response; stopped without displaying server details"
+            "log reconnect received an invalid response; stopped without displaying server details. Next: reopen the log view"
                 .into(),
         ),
     }

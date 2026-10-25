@@ -560,12 +560,11 @@ fn storage_key(name: &str, revision: u32) -> String {
     format!("sh.helm.release.v1.{name}.v{revision}")
 }
 fn storage_error(error: kube::Error) -> String {
-    match error {
-        kube::Error::Api(status) => {
-            format!("Kubernetes API HTTP {}; server body withheld", status.code)
-        }
-        _ => "Kubernetes Helm storage transport/response failure".into(),
-    }
+    crate::errors::explain(
+        "Helm release storage read",
+        &error,
+        &crate::errors::Scope::default(),
+    )
 }
 
 pub async fn list(gateway: &Gateway, namespace: &str) -> Result<Snapshot> {

@@ -139,7 +139,7 @@ impl Gateway {
             .ok_or("offline backend")?
             .request::<Value>(request)
             .await
-            .map_err(api_error)
+            .map_err(|e| self.api_error(e))
     }
     pub async fn execute_yaml(
         &mut self,
@@ -447,7 +447,7 @@ impl Gateway {
             let items = tokio::time::timeout(OPERATION_BUDGET, api.list(&params))
                 .await
                 .map_err(|_| "reading revision history timed out")?
-                .map_err(api_error)?
+                .map_err(|e| self.api_error(e))?
                 .items
                 .into_iter()
                 .filter_map(|item| serde_json::to_value(item).ok())
@@ -459,7 +459,7 @@ impl Gateway {
             let items = tokio::time::timeout(OPERATION_BUDGET, api.list(&params))
                 .await
                 .map_err(|_| "reading revision history timed out")?
-                .map_err(api_error)?
+                .map_err(|e| self.api_error(e))?
                 .items
                 .into_iter()
                 .filter_map(|item| serde_json::to_value(item).ok())
@@ -490,7 +490,7 @@ impl Gateway {
                     &Self::delete_params(prepared, dry_run),
                 )
                 .await
-                .map_err(api_error)?;
+                .map_err(|e| self.api_error(e))?;
                 Ok(Value::Null)
             }
             Action::Scale(_) => {
@@ -504,7 +504,7 @@ impl Gateway {
                         &Patch::Merge(&prepared.patch),
                     )
                     .await
-                    .map_err(api_error)?;
+                    .map_err(|e| self.api_error(e))?;
                 serde_json::to_value(response).map_err(|_| "cannot decode scale response".into())
             }
             Action::SetImage { .. } | Action::SetResources { .. } | Action::SetContainer { .. } => {
@@ -518,7 +518,7 @@ impl Gateway {
                         &Patch::Strategic(&prepared.patch),
                     )
                     .await
-                    .map_err(api_error)?;
+                    .map_err(|e| self.api_error(e))?;
                 serde_json::to_value(response).map_err(|_| "cannot decode workload response".into())
             }
             Action::Restart | Action::Suspend(_) => {
@@ -532,7 +532,7 @@ impl Gateway {
                         &Patch::Merge(&prepared.patch),
                     )
                     .await
-                    .map_err(api_error)?;
+                    .map_err(|e| self.api_error(e))?;
                 serde_json::to_value(response).map_err(|_| "cannot decode workload response".into())
             }
             Action::Rollback(_) => {
@@ -552,7 +552,7 @@ impl Gateway {
                         &Patch::Strategic(&body),
                     )
                     .await
-                    .map_err(api_error)?;
+                    .map_err(|e| self.api_error(e))?;
                 serde_json::to_value(response).map_err(|_| "cannot decode workload response".into())
             }
             Action::Trigger => {
@@ -571,7 +571,7 @@ impl Gateway {
                         &job,
                     )
                     .await
-                    .map_err(api_error)?;
+                    .map_err(|e| self.api_error(e))?;
                 serde_json::to_value(created).map_err(|_| "cannot decode Job response".into())
             }
         }

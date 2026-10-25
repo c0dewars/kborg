@@ -102,12 +102,12 @@ pub async fn prepare(
     )
     .await
     .map_err(|_| "debug container dry run timed out")?
-    .map_err(|error| match error {
-        kube::Error::Api(status) => format!(
-            "the API server refused the debug container (HTTP {}): RBAC needs patch on pods/ephemeralcontainers, or a policy forbids it",
-            status.code
-        ),
-        _ => "debug container dry run failed; nothing was changed".into(),
+    .map_err(|error| {
+        crate::errors::explain(
+            "Debug container dry run (nothing was changed; needs patch on pods/ephemeralcontainers)",
+            &error,
+            &gateway.scope(),
+        )
     })?;
     let summary = format!(
         "REVIEW DEBUG CONTAINER\nContext: {}\nServer: {}\nPod: {namespace}/{pod}\nUID: {uid}\n{}Image: {image}\nSession: up to {seconds} seconds\n\nAdds this ephemeral container (dry run passed) and opens `sh -i` in it:\n{}\nIt is not privileged and gets no host access. With a target container it shares that container's process namespace when the runtime supports it.\nKubernetes cannot remove ephemeral containers: it exits after its sleep but stays listed in the Pod until the Pod is replaced.\nType debug {namespace}/{pod} to add it and connect. Review expires after 60 seconds.",

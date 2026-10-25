@@ -196,19 +196,17 @@ fn value(object: DynamicObject) -> Result<Value> {
     serde_json::to_value(object).map_err(|_| "cannot decode node operation target".into())
 }
 fn api_failure(error: kube::Error) -> String {
-    match error {
-        kube::Error::Api(status) => match status.code {
-            401 | 403 => "authorization denied".into(),
-            404 => "target or API disappeared".into(),
-            409 => "UID/resourceVersion conflict; review again".into(),
-            429 => "eviction blocked by PodDisruptionBudget or API throttling; no forced deletion"
-                .into(),
-            _ => format!(
-                "Kubernetes rejected request (HTTP {}); server details suppressed",
-                status.code
-            ),
-        },
-        _ => "transport or response failed; write outcome may be unknown".into(),
+    match &error {
+        kube::Error::Api(status) if status.code == 429 => crate::errors::local(
+            "Eviction blocked",
+            "a PodDisruptionBudget or API throttling refused it; no forced deletion",
+            "wait for replacement Pods to become ready, or review the PodDisruptionBudget, then prepare the drain again",
+        ),
+        _ => crate::errors::explain(
+            "Node maintenance request",
+            &error,
+            &crate::errors::Scope::default(),
+        ),
     }
 }
 async fn bounded<T>(

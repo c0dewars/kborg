@@ -500,15 +500,14 @@ fn transport_failures_name_a_cause_without_echoing_raw_text() {
         std::io::ErrorKind::ConnectionRefused,
         "tcp connect error: Connection refused (os error 61) to https://10.0.0.1:6443?token=abc",
     );
-    let hint = transport_hint(&refused);
+    use crate::errors::{Cause, Scope, render, transport};
+    assert_eq!(transport(&refused), Cause::Refused);
+    let hint = render("Connect", &transport(&refused), &Scope::default());
     assert!(hint.contains("connection refused") && !hint.contains("token"));
     let timeout = std::io::Error::new(std::io::ErrorKind::TimedOut, "operation timed out");
-    assert!(transport_hint(&timeout).contains("did not answer in time"));
+    assert_eq!(transport(&timeout), Cause::Timeout);
     let other = std::io::Error::other("weird");
-    assert_eq!(
-        transport_hint(&other),
-        "Kubernetes transport or response failure"
-    );
+    assert_eq!(transport(&other), Cause::Network);
 }
 #[test]
 fn force_kill_is_pod_only_opt_in_and_uses_zero_grace() {

@@ -146,18 +146,11 @@ fn schema_api() -> ApiResource {
     }
 }
 fn failure(error: kube::Error, stage: &str) -> String {
-    let category = match error {
-        kube::Error::Api(status) => match status.code {
-            401 | 403 => "authorization denied",
-            404 => "identity/API disappeared",
-            409 => "UID/resourceVersion conflict",
-            422 => "admission refused",
-            429 => "API throttled",
-            _ => "API rejected request",
-        },
-        _ => "transport/response failed",
-    };
-    format!("{stage}: {category}; server details suppressed")
+    crate::errors::explain(
+        &format!("CRD migration {stage}"),
+        &error,
+        &crate::errors::Scope::default(),
+    )
 }
 fn dynamic(value: Value) -> Result<DynamicObject> {
     serde_json::from_value(value).map_err(|_| "invalid reviewed migration object".into())
@@ -660,14 +653,15 @@ async fn discovery_document(client: &Client, path: &str) -> Result<Option<Value>
         let response = client
             .send(request)
             .await
-            .map_err(|_| "migration discovery transport failed; details suppressed")?;
+            .map_err(|_| "CRD migration discovery transport failed; details suppressed. Next: check VPN/proxy and network access to the API server, then prepare the migration again")?;
         if response.status() == http::StatusCode::NOT_FOUND {
             return Ok(None);
         }
         if response.status() != http::StatusCode::OK {
-            return Err(format!(
-                "migration discovery HTTP {}; cannot safely choose controller mode",
-                response.status().as_u16()
+            return Err(crate::errors::http_status(
+                "CRD migration discovery (cannot safely choose controller mode)",
+                response.status().as_u16(),
+                &crate::errors::Scope::default(),
             ));
         }
         let bytes = http_body_util::Limited::new(response.into_body(), 1024 * 1024)

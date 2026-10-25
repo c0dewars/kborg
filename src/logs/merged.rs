@@ -52,15 +52,12 @@ fn source_line(identity: &str, line: &str, control: bool) -> String {
     bounded_line(&format!("[{identity}] {line}"))
 }
 pub(super) fn open_failure(error: kube::Error, previous: bool) -> String {
-    match error {
-        kube::Error::Api(response) => format!(
-            "{} unavailable (Kubernetes API {}); other container streams continue",
-            if previous { "previous logs" } else { "logs" },
-            response.code
-        ),
-        _ => "log connection failed; other container streams continue (server details suppressed)"
-            .into(),
-    }
+    let what = if previous {
+        "Previous logs (other container streams continue)"
+    } else {
+        "Logs (other container streams continue)"
+    };
+    crate::errors::explain(what, &error, &crate::errors::Scope::default())
 }
 
 /// One bounded read future per source; no spawned tasks, queues or detached work.
@@ -331,9 +328,12 @@ impl MergedLogFeed {
         let pod = tokio::time::timeout_at(connect_deadline, api.get(name))
             .await
             .map_err(|_| "merged log pod lookup timed out")?
-            .map_err(|error| match error {
-                kube::Error::Api(response) => format!("cannot read merged-log Pod specification (Kubernetes API {}); all-container logs require pod get permission", response.code),
-                _ => "merged-log Pod lookup failed; check connectivity and pod get permission (server details suppressed)".into(),
+            .map_err(|error| {
+                crate::errors::explain(
+                    "Reading the merged-log Pod specification (all-container logs need pod get permission)",
+                    &error,
+                    &crate::errors::Scope::default(),
+                )
             })?;
         let names = ordinary_container_names(&pod, &ns, name, uid)?;
         let mut opened =

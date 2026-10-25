@@ -1035,7 +1035,7 @@ async fn resource_seals(
         )
         .await
         .map_err(|_| "resource preflight timed out")?
-        .map_err(|_| "resource preflight denied or failed; server details suppressed")?;
+        .map_err(|error| api_failure(error, "resource preflight"))?;
         if let Some(object) = object {
             let value =
                 serde_json::to_value(&object).map_err(|_| "cannot inspect current resource")?;
@@ -1429,19 +1429,11 @@ fn classify_helm_failure(bytes: &[u8]) -> &'static str {
     }
 }
 fn api_failure(error: kube::Error, stage: &str) -> String {
-    let detail = match error {
-        kube::Error::Api(status) => match status.code {
-            401 | 403 => "authorization denied; check RBAC",
-            404 => "resource disappeared",
-            409 => "ownership/resourceVersion/apply conflict",
-            422 => "admission/schema validation refused",
-            429 => "API throttled the request",
-            500..=599 => "API server unavailable",
-            _ => "API rejected the request",
-        },
-        _ => "transport/response failed",
-    };
-    format!("{stage}: {detail}; server details suppressed")
+    crate::errors::explain(
+        &format!("Helm {stage}"),
+        &error,
+        &crate::errors::Scope::default(),
+    )
 }
 fn common(options: &Options, root: &Path) -> Vec<String> {
     vec![
