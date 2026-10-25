@@ -147,6 +147,7 @@ KBorg uses your kubeconfig directly: the current context unless you pass `--cont
 | `s` `r` on workloads | Scale, restart |
 | `e` | Edit YAML spec (Ctrl-E opens `$EDITOR` with `--allow-external-editor`) |
 | Ctrl-D, Ctrl-K | Reviewed delete, reviewed force kill |
+| `Space` then Ctrl-D / `r` / `s` | Mark rows, then one reviewed batch delete, restart or CronJob suspend/resume (max 50; type e.g. `delete 7 objects`) |
 | `c` `u` `r` on Nodes | Cordon, uncordon, drain |
 | `:secrets`, `x` | Secret keys, reveal one value |
 | `:helm`, `:pulses`, `:xray`, `:lint` | Releases, health, relationships, misconfigurations |

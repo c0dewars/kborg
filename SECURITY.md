@@ -21,6 +21,18 @@ copied or written to disk. The listing still transfers Secret payloads into
 process memory, so grant `list secrets` only where that is acceptable. Ctrl-K
 force kill is separately opt-in with `--write --allow-force-kill`.
 
+Marked rows never widen an approval on their own. With marks, delete,
+workload restart and CronJob suspend/resume prepare one batch of at most 50
+objects of the current resource kind in the current context; every target goes
+through the same policy checks (system namespaces refused) and server dry run
+as a single-object operation, and any refusal refuses the whole batch before a
+review is shown. The combined review lists each target's kind, namespace/name,
+UID and resourceVersion and requires typing the verb and exact count (for
+example `delete 7 objects`) within 60 seconds. Execution is sequential: each
+target's UID and resourceVersion are rechecked before its write, the batch
+stops at the first failure without rolling back earlier writes, and one audit
+record is written per object.
+
 Pod file copy is opt-in with `--write --allow-file-copy` (`kborg cp-from`,
 `kborg cp-to`, `:cp-from`, `:cp-to`). Each copy moves one regular file of at
 most 64 MiB after a typed `namespace/pod` approval, with the target UID and
