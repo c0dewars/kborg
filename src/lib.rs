@@ -6,6 +6,7 @@ pub mod gateway;
 pub mod metrics;
 pub mod policy;
 pub mod safety;
+pub mod text;
 pub mod themes;
 pub mod tui;
 pub mod watch;
