@@ -335,9 +335,9 @@ pub(super) fn overview_text(object: &Value, context: &str) -> String {
         lines.extend([String::new(), "CONDITIONS".into()]);
         lines.extend(conditions.iter().take(32).map(|condition| {
             format!(
-                "{:<22} {:<8} {}",
-                clean_value(&condition["type"]),
-                clean_value(&condition["status"]),
+                "{} {} {}",
+                padded(&clean_value(&condition["type"]), 22),
+                padded(&clean_value(&condition["status"]), 8),
                 clean_value(&condition["reason"])
             )
         }));
@@ -696,7 +696,7 @@ pub(super) fn header_line(
                 }
                 _ => title.to_owned(),
             };
-            format!("{:<width$}", display(&text, *width), width = *width)
+            padded(&text, *width)
         })
         .collect::<Vec<_>>()
         .join(&style.column_separator)
@@ -729,7 +729,7 @@ pub(super) fn table_line_custom(
                     return table_line_with_metrics(&[(*column, *width)], Some(object), now, usage);
                 }
             };
-            format!("{:<width$}", display(&text, *width), width = *width)
+            padded(&text, *width)
         })
         .collect::<Vec<_>>()
         .join(&style.column_separator)
@@ -758,25 +758,24 @@ pub(super) fn table_line_with_metrics(
                     _ => column.value(object, now),
                 })
                 .unwrap_or_else(|| column.title().into());
-            format!("{:<width$}", display(&text, *width), width = *width)
+            padded(&text, *width)
         })
         .collect::<Vec<_>>()
         .join(" ")
 }
 
+/// Untrusted text fitted to `width` terminal cells: sanitized, then real
+/// glyphs (Unicode mode) or `?` per non-ASCII character (ASCII mode).
 pub(super) fn display(text: &str, width: usize) -> String {
-    let mut text: String = safety::safe_text(text, width.saturating_add(1))
-        .chars()
-        .map(|c| if c.is_ascii() { c } else { '?' })
-        .collect();
-    if text.len() > width {
-        text.truncate(width);
-        if width > 0 {
-            text.pop();
-            text.push('~');
-        }
-    }
-    text
+    crate::text::shown(text, width)
+}
+/// Cells `display` paints for `text` at unlimited width, for sizing a cell.
+pub(super) fn text_cells(text: &str) -> u16 {
+    u16::try_from(crate::text::width(&safety::safe_text(text, 4096))).unwrap_or(u16::MAX)
+}
+/// `display` padded with spaces to exactly `width` cells.
+pub(super) fn padded(text: &str, width: usize) -> String {
+    crate::text::column(text, width)
 }
 pub(super) fn identity_line(context: &str, namespace: &str, server: &str, width: usize) -> String {
     let server_width = if width >= 110 { 32 } else { 0 };

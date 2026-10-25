@@ -802,11 +802,15 @@ fn pod_log_defaults_and_source_toggle_preserve_captured_identity() -> Result<()>
 fn object(name: &str) -> Value {
     serde_json::json!({"kind":"Deployment","metadata":{"name":name,"namespace":"test","uid":format!("uid-{name}")}})
 }
+/// Replays a rendered frame into a cell grid. Wide clusters take two cells
+/// (the second holds ""), so the display width of a row prefix is its column.
 fn screen(app: &App, width: u16, height: u16) -> Vec<String> {
     let mut output = Vec::new();
     assert!(render(app, width, height, &mut output).is_ok());
-    let mut cells = vec![vec![' '; usize::from(width)]; usize::from(height)];
-    let mut painted = vec![vec![false; usize::from(width)]; usize::from(height)];
+    let unicode = crate::text::unicode();
+    let (w, h) = (usize::from(width), usize::from(height));
+    let mut cells = vec![vec![String::from(" "); w]; h];
+    let mut painted = vec![vec![false; w]; h];
     let (mut x, mut y, mut index) = (0usize, 0usize, 0usize);
     while index < output.len() {
         if output[index] == 27 {
@@ -825,46 +829,68 @@ fn screen(app: &App, width: u16, height: u16) -> Vec<String> {
                     y = parameters.next().unwrap_or(1).saturating_sub(1);
                     x = parameters.next().unwrap_or(1).saturating_sub(1);
                 }
-                b'J' => cells.iter_mut().for_each(|row| row.fill(' ')),
+                b'J' => cells.iter_mut().for_each(|row| row.fill(" ".into())),
                 b'm' => {}
                 b'h' | b'l' if parameters == "?25" => {}
                 other => panic!("unexpected terminal command: {other}"),
             }
-        } else {
-            let Some(character) = std::str::from_utf8(&output[index..])
-                .ok()
-                .and_then(|text| text.chars().next())
-            else {
-                panic!("expected a valid terminal UTF-8 character");
-            };
-            assert!(
-                character.is_ascii_graphic()
-                    || character == ' '
-                    || matches!(
-                        character,
-                        '╭' | '╮' | '╰' | '╯' | '┌' | '┐' | '└' | '┘' | '─' | '│'
-                    )
-                    || crate::chart::trusted_glyph(character)
-            );
-            assert!(
-                x < usize::from(width) && y < usize::from(height),
-                "paint outside {width}x{height}: {x},{y}"
-            );
-            cells[y][x] = character;
-            painted[y][x] = true;
-            x += 1;
-            index += character.len_utf8() - 1;
+            index += 1;
+            continue;
         }
-        index += 1;
+        let end = output[index..]
+            .iter()
+            .position(|byte| *byte == 27)
+            .map_or(output.len(), |offset| index + offset);
+        let Ok(text) = std::str::from_utf8(&output[index..end]) else {
+            panic!("expected valid terminal UTF-8 text");
+        };
+        index = end;
+        for cluster in crate::text::graphemes(text) {
+            let cells_wide = if unicode {
+                assert_eq!(
+                    safety::safe_text(cluster, usize::MAX),
+                    cluster,
+                    "control, bidi or format character painted: {cluster:?}"
+                );
+                crate::text::cluster_width(cluster)
+            } else {
+                assert!(cluster.chars().all(|character| {
+                    character.is_ascii_graphic()
+                        || character == ' '
+                        || matches!(
+                            character,
+                            '╭' | '╮' | '╰' | '╯' | '┌' | '┐' | '└' | '┘' | '─' | '│'
+                        )
+                        || crate::chart::trusted_glyph(character)
+                }));
+                cluster.chars().count()
+            };
+            assert!(cells_wide > 0, "zero-width cluster painted: {cluster:?}");
+            assert!(
+                x + cells_wide <= w && y < h,
+                "paint outside {width}x{height}: {x},{y} {cluster:?}"
+            );
+            // A write over half of a wide glyph blanks its other half.
+            if cells[y][x].is_empty() && x > 0 {
+                cells[y][x - 1] = " ".into();
+            }
+            if x + cells_wide < w && cells[y][x + cells_wide].is_empty() {
+                cells[y][x + cells_wide] = " ".into();
+            }
+            cells[y][x] = cluster.into();
+            painted[y][x] = true;
+            for cell in 1..cells_wide {
+                cells[y][x + cell] = String::new();
+                painted[y][x + cell] = true;
+            }
+            x += cells_wide;
+        }
     }
     assert!(
         painted.iter().flatten().all(|painted| *painted),
         "frame left stale cells behind"
     );
-    cells
-        .into_iter()
-        .map(|row| row.into_iter().collect())
-        .collect()
+    cells.into_iter().map(|row| row.concat()).collect()
 }
 #[test]
 fn destination_only_resource_command_waits_for_destination_discovery() {
@@ -4238,4 +4264,138 @@ fn long_actionable_status_keeps_its_next_step_visible() {
             .unwrap_or_else(|| panic!("status row missing at {width}"));
         assert!(status.contains("Next: check VPN/proxy"), "{status}");
     }
+}
+
+/// Pod names covering wide CJK, emoji, a ZWJ family, flags, combining
+/// accents and right-to-left scripts.
+const UNICODE_PODS: [&str; 8] = [
+    "ascii-pod",
+    "日本語のポッド",
+    "rocket-\u{1f680}-pod",
+    "family-\u{1f468}\u{200d}\u{1f469}\u{200d}\u{1f467}\u{200d}\u{1f466}",
+    "flags-\u{1f1ef}\u{1f1f5}\u{1f1fa}\u{1f1f8}",
+    "cafe\u{301}-cre\u{300}me",
+    "שלום-rtl",
+    "مرحبا-rtl",
+];
+const FAMILY: &str = "\u{1f468}\u{200d}\u{1f469}\u{200d}\u{1f467}\u{200d}\u{1f466}";
+fn unicode_pods(suffix: &str) -> Vec<Value> {
+    UNICODE_PODS
+        .iter()
+        .enumerate()
+        .map(|(index, name)| {
+            serde_json::json!({"kind":"Pod","metadata":{"name":format!("{name}{suffix}"),"namespace":"test","uid":format!("u{index}"),"creationTimestamp":"2026-10-10T07:00:00Z"},"spec":{"containers":[{"name":"app"}]},"status":{"phase":"Running","containerStatuses":[{"ready":true,"restartCount":0}]}})
+        })
+        .collect()
+}
+/// Terminal column where `needle` starts in a `screen` row.
+fn column_of(row: &str, needle: &str) -> Option<usize> {
+    row.find(needle).map(|at| crate::text::width(&row[..at]))
+}
+fn pod_rows(frame: &[String]) -> Vec<String> {
+    frame
+        .iter()
+        .filter(|row| row.contains("Running"))
+        .cloned()
+        .collect()
+}
+
+#[test]
+fn unicode_pod_names_render_real_glyphs_in_aligned_columns() {
+    let (mut app, _replies, _commands) = harness();
+    app.items = unicode_pods("");
+    crate::text::with_mode(true, || {
+        for width in [100u16, 120, 160] {
+            let frame = screen(&app, width, 24);
+            for row in &frame {
+                assert_eq!(crate::text::width(row), usize::from(width), "{row}");
+            }
+            let rows = pod_rows(&frame);
+            assert_eq!(rows.len(), UNICODE_PODS.len());
+            for name in UNICODE_PODS {
+                assert!(
+                    rows.iter().any(|row| row.contains(name)),
+                    "{width}: {name} not drawn intact"
+                );
+            }
+            let columns: Vec<_> = rows
+                .iter()
+                .map(|row| (column_of(row, "1/1"), column_of(row, "Running")))
+                .collect();
+            assert!(columns[0].0.is_some() && columns[0].1.is_some());
+            assert!(
+                columns.iter().all(|column| *column == columns[0]),
+                "{width}: misaligned columns {columns:?}\n{}",
+                rows.join("\n")
+            );
+            assert!(!rows.concat().contains('?'));
+        }
+    });
+}
+
+#[test]
+fn unicode_truncation_keeps_clusters_whole_and_columns_aligned() {
+    let (mut app, _replies, _commands) = harness();
+    app.items = unicode_pods("-日本語日本語日本語日本語日本語日本語日本語日本語");
+    crate::text::with_mode(true, || {
+        for width in [61u16, 70, 80, 81, 100] {
+            let frame = screen(&app, width, 24);
+            let rows = pod_rows(&frame);
+            assert_eq!(rows.len(), UNICODE_PODS.len(), "{width}");
+            let running: Vec<_> = rows.iter().map(|row| column_of(row, "Running")).collect();
+            assert!(running[0].is_some());
+            assert!(
+                running.iter().all(|column| *column == running[0]),
+                "{width}: {running:?}\n{}",
+                rows.join("\n")
+            );
+            for row in &rows {
+                assert!(row.contains('~'), "{width}: long name not marked: {row}");
+                assert_eq!(crate::text::width(row), usize::from(width));
+            }
+            // The ZWJ family is drawn whole or not at all, never a lone member.
+            let family = rows.iter().find(|row| row.contains("family-"));
+            assert!(family.is_some_and(|row| row.contains(FAMILY) || !row.contains('\u{1f468}')));
+        }
+    });
+}
+
+#[test]
+fn ascii_text_mode_keeps_question_marks_for_non_ascii_names() {
+    let (mut app, _replies, _commands) = harness();
+    app.items = unicode_pods("");
+    let frame = crate::text::with_mode(false, || screen(&app, 120, 24));
+    let rows = pod_rows(&frame);
+    assert!(rows.iter().all(|row| row.is_ascii() && row.len() == 120));
+    let painted = rows.join("\n");
+    assert!(painted.contains("???????"), "{painted}");
+    assert!(painted.contains("rocket-?-pod"));
+    assert!(painted.contains("cafe?-cre?me"));
+    let running: Vec<_> = rows.iter().map(|row| row.find("Running")).collect();
+    assert!(running.iter().all(|column| *column == running[0]));
+}
+
+#[test]
+fn unicode_detail_wraps_by_cells_and_review_screens_still_escape() {
+    let (mut app, _replies, _commands) = harness();
+    app.modal = Modal::Detail(
+        format!("name: {}\nnote: cafe\u{301}\u{202e}", "日本語".repeat(10)),
+        0,
+    );
+    crate::text::with_mode(true, || {
+        let frame = screen(&app, 30, 14);
+        let painted = frame.concat();
+        assert!(painted.contains("日本語"));
+        assert!(painted.contains("cafe\u{301}"));
+        assert!(!painted.contains('\u{202e}'));
+        for row in &frame {
+            assert_eq!(crate::text::width(row), 30, "{row}");
+        }
+        // Approval content stays reversible ASCII even in Unicode mode, so
+        // look-alike characters (Latin a, Cyrillic a) stay distinct.
+        let lines = confirmation_lines("target: pröd/\u{430}pi 東京", "", 60);
+        assert!(lines.iter().all(|line| line.is_ascii()));
+        let joined = lines.concat();
+        assert!(joined.contains("pr\\u{f6}d/\\u{430}pi \\u{6771}\\u{4eac}"));
+    });
 }

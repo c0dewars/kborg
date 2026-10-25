@@ -838,6 +838,7 @@ impl App {
             }
         };
         let (theme, error) = super::ui_theme(&ui, self.options.theme.as_deref())?;
+        crate::text::set_unicode(ui.text.unicode());
         self.ui = ui;
         self.theme = theme;
         match error {

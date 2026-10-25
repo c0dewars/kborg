@@ -355,10 +355,10 @@ impl View {
                         .skip(self.selected.saturating_sub(height.saturating_sub(4)))
                     {
                         lines.push(clip(&format!(
-                            "{} {:<34} {:<28} {}",
+                            "{} {} {} {}",
                             if i == self.selected { ">" } else { " " },
-                            entry.name,
-                            entry.secret_type,
+                            crate::text::column(&entry.name, 34),
+                            crate::text::column(&entry.secret_type, 28),
                             entry.keys.len()
                         )));
                     }

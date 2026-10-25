@@ -7,7 +7,9 @@ use super::*;
 /// per row, with trailing spaces and the bottom key-hint row removed.
 pub(super) fn screen_text(app: &App, width: u16, height: u16) -> Result<String> {
     let mut output = Vec::new();
-    render(app, width, height, &mut output)?;
+    // Captured in ASCII text mode, as before Unicode display: one character
+    // per cell, so the grid replay below stays exact.
+    crate::text::with_mode(false, || render(app, width, height, &mut output))?;
     let output = String::from_utf8_lossy(&output);
     let (w, h) = (usize::from(width), usize::from(height));
     let mut cells = vec![vec![' '; w]; h];

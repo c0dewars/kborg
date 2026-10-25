@@ -138,15 +138,18 @@ impl View {
         for (index, row) in rows.iter().enumerate().skip(start).take(room) {
             let more = row.role_count.saturating_sub(row.roles.len());
             lines.push(clip(format!(
-                "{} {:<15} {:<34} {:<18} {:>8}  {}{}",
+                "{} {} {} {} {:>8}  {}{}",
                 if index == self.selected { ">" } else { " " },
-                row.kind,
-                row.name.chars().take(34).collect::<String>(),
-                if row.namespace.is_empty() {
-                    "-"
-                } else {
-                    row.namespace.as_str()
-                },
+                crate::text::column(&row.kind, 15),
+                crate::text::column(&row.name, 34),
+                crate::text::column(
+                    if row.namespace.is_empty() {
+                        "-"
+                    } else {
+                        row.namespace.as_str()
+                    },
+                    18
+                ),
                 row.bindings,
                 row.roles.join(", "),
                 if more > 0 {

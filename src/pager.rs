@@ -176,8 +176,11 @@ impl Page {
     }
 }
 
+/// Cells `horizontal..horizontal+width` of already-sanitized text. The pager
+/// has always drawn real glyphs; widths are grapheme-aware so wide and
+/// combining characters neither overflow the line nor split.
 fn clipped(text: &str, width: usize, horizontal: usize) -> String {
-    text.chars().skip(horizontal).take(width).collect()
+    crate::text::with_mode(true, || crate::text::window(text, horizontal, width))
 }
 fn colors(
     out: &mut impl Write,
