@@ -21,29 +21,56 @@ pub enum Scope {
     Log,
     Dashboard,
     Forward,
+    /// The new port-forward form (typed fields).
+    ForwardForm,
     Containers,
     Detail,
     Overview,
     Metrics,
     Editor,
     Help,
+    /// Helm release list (`:helm`).
+    Helm,
+    /// Helm revision history of one release.
+    HelmHistory,
+    /// Helm install/upgrade/test forms (typed fields).
+    HelmForm,
+    /// RBAC subjects (`:can` without a subject).
+    Subjects,
+    /// Generic pickers: aliases, actions, contexts, namespaces, snapshots...
+    Picker,
+    /// The saved-selections picker (`B`), on top of the picker keys.
+    Selections,
+    /// The theme picker (`:themes`).
+    Themes,
+    /// The dashboard's cross-cluster workload tail picker.
+    Tail,
     Review,
     Prompt,
     Filter,
 }
 
 impl Scope {
-    pub const ALL: [Scope; 14] = [
+    pub const ALL: [Scope; 23] = [
         Scope::Global,
         Scope::Table,
         Scope::Log,
         Scope::Dashboard,
+        Scope::Tail,
         Scope::Forward,
+        Scope::ForwardForm,
         Scope::Containers,
         Scope::Detail,
         Scope::Overview,
         Scope::Metrics,
         Scope::Editor,
+        Scope::Helm,
+        Scope::HelmHistory,
+        Scope::HelmForm,
+        Scope::Subjects,
+        Scope::Picker,
+        Scope::Selections,
+        Scope::Themes,
         Scope::Help,
         Scope::Review,
         Scope::Prompt,
@@ -62,6 +89,15 @@ impl Scope {
             Scope::Metrics => "metrics",
             Scope::Editor => "editor",
             Scope::Help => "help",
+            Scope::ForwardForm => "forward.form",
+            Scope::Helm => "helm",
+            Scope::HelmHistory => "helm.history",
+            Scope::HelmForm => "helm.form",
+            Scope::Subjects => "subjects",
+            Scope::Picker => "picker",
+            Scope::Selections => "selections",
+            Scope::Themes => "themes",
+            Scope::Tail => "tail",
             Scope::Review => "review",
             Scope::Prompt => "prompt",
             Scope::Filter => "filter",
@@ -80,6 +116,15 @@ impl Scope {
             Scope::Metrics => "METRICS (:metrics)",
             Scope::Editor => "YAML EDITOR (e)",
             Scope::Help => "HELP",
+            Scope::ForwardForm => "NEW PORT-FORWARD FORM (F)",
+            Scope::Helm => "HELM RELEASES (:helm)",
+            Scope::HelmHistory => "HELM REVISION HISTORY (Enter on a release)",
+            Scope::HelmForm => "HELM INSTALL / UPGRADE / TEST FORMS",
+            Scope::Subjects => "RBAC SUBJECTS (:can)",
+            Scope::Picker => "PICKERS (contexts, namespaces, aliases, actions...)",
+            Scope::Selections => "SAVED SELECTIONS (B)",
+            Scope::Themes => "THEME PICKER (:themes)",
+            Scope::Tail => "DASHBOARD TAIL PICKER (t)",
             Scope::Review => "REVIEWS AND APPROVALS (fixed)",
             Scope::Prompt => "COMMAND PROMPT (fixed)",
             Scope::Filter => "FILTER PROMPT (fixed)",
@@ -101,6 +146,15 @@ impl Scope {
             Scope::Metrics => "metrics.",
             Scope::Editor => "editor.",
             Scope::Help => "help.",
+            Scope::ForwardForm => "forward.form.",
+            Scope::Helm => "helm.",
+            Scope::HelmHistory => "helm.history.",
+            Scope::HelmForm => "helm.form.",
+            Scope::Subjects => "subjects.",
+            Scope::Picker => "picker.",
+            Scope::Selections => "selections.",
+            Scope::Themes => "themes.",
+            Scope::Tail => "tail.",
             Scope::Review => "review.",
             Scope::Prompt => "prompt.",
             Scope::Filter => "filter.",
@@ -121,6 +175,15 @@ impl Scope {
             Scope::Metrics => &[Scope::Global, Scope::Detail, Scope::Metrics],
             Scope::Help => &[Scope::Global, Scope::Detail, Scope::Help],
             Scope::Editor => &[Scope::Editor],
+            Scope::ForwardForm => &[Scope::ForwardForm],
+            Scope::Helm => &[Scope::Global, Scope::Helm],
+            Scope::HelmHistory => &[Scope::Global, Scope::HelmHistory],
+            Scope::HelmForm => &[Scope::HelmForm],
+            Scope::Subjects => &[Scope::Global, Scope::Subjects],
+            Scope::Picker => &[Scope::Global, Scope::Picker],
+            Scope::Selections => &[Scope::Global, Scope::Picker, Scope::Selections],
+            Scope::Themes => &[Scope::Global, Scope::Themes],
+            Scope::Tail => &[Scope::Global, Scope::Tail],
             Scope::Review => &[Scope::Review],
             Scope::Prompt => &[Scope::Prompt],
             Scope::Filter => &[Scope::Filter],
@@ -129,7 +192,11 @@ impl Scope {
     /// Views where plain characters are typed text; only modified keys can be
     /// bound there.
     fn typed(self) -> bool {
-        matches!(self, Scope::Editor)
+        matches!(self, Scope::Editor | Scope::HelmForm | Scope::ForwardForm)
+    }
+    /// Whether a `scopes:` section named after `self` may set `action`.
+    fn owns(self, action: Scope) -> bool {
+        action == self || (self == Scope::Table && action == Scope::Global)
     }
 }
 
@@ -223,8 +290,9 @@ const fn fixed(
 
 const DIGITS: &[&str] = &["1", "2", "3", "4", "5", "6", "7", "8", "9"];
 use Scope::{
-    Containers, Dashboard, Detail, Editor, Filter, Forward, Global, Help, Log, Metrics, Overview,
-    Prompt, Review, Table,
+    Containers, Dashboard, Detail, Editor, Filter, Forward, ForwardForm, Global, Helm, HelmForm,
+    HelmHistory, Help, Log, Metrics, Overview, Picker, Prompt, Review, Selections, Subjects, Table,
+    Tail, Themes,
 };
 
 /// The single source of truth for KBorg's keyboard.
@@ -744,6 +812,361 @@ pub const ACTIONS: &[Action] = &[
         "Switch between this view's keys and every key",
     ),
     act("help.filter", Help, &["/"], "Filter help lines"),
+    // Dashboard tail picker (t on the dashboard).
+    act(
+        "tail.select",
+        Tail,
+        &["Space"],
+        "Select or unselect the workload under the cursor",
+    ),
+    act("tail.down", Tail, &["j", "Down"], "Move down"),
+    act("tail.up", Tail, &["k", "Up"], "Move up"),
+    act(
+        "tail.close",
+        Tail,
+        &["q", "t"],
+        "Cancel the picker (Esc also works)",
+    ),
+    fixed(
+        "tail.start",
+        Tail,
+        &["Enter"],
+        "Tail the selected workloads, or the one under the cursor",
+    ),
+    // New port-forward form: digits are typed, so only modified keys bind.
+    act(
+        "forward.form.next",
+        ForwardForm,
+        &["Tab", "Down"],
+        "Next field",
+    ),
+    act(
+        "forward.form.prev",
+        ForwardForm,
+        &["Shift-Tab", "Up"],
+        "Previous field",
+    ),
+    act(
+        "forward.form.clear",
+        ForwardForm,
+        &["Ctrl-U", "Ctrl-W"],
+        "Clear the active field",
+    ),
+    fixed(
+        "forward.form.review",
+        ForwardForm,
+        &["Enter"],
+        "Prepare the reviewed loopback port-forward",
+    ),
+    fixed("forward.form.cancel", ForwardForm, &["Esc"], "Cancel"),
+    // Helm release list.
+    act(
+        "helm.close",
+        Helm,
+        &["q"],
+        "Close (Esc also works; both clear a filter first)",
+    ),
+    act(
+        "helm.filter",
+        Helm,
+        &["/"],
+        "Filter releases: regex, !inverse, -f fuzzy",
+    ),
+    act("helm.down", Helm, &["j", "Down"], "Move down"),
+    act("helm.up", Helm, &["k", "Up"], "Move up"),
+    act("helm.page-down", Helm, &["PgDown"], "Page down"),
+    act("helm.page-up", Helm, &["PgUp"], "Page up"),
+    act("helm.top", Helm, &["g", "Home"], "First release"),
+    act("helm.bottom", Helm, &["G", "End"], "Last release"),
+    fixed(
+        "helm.open",
+        Helm,
+        &["Enter"],
+        "Revision history of the selected release",
+    ),
+    act(
+        "helm.revisions",
+        Helm,
+        &["r"],
+        "Revision history (same as Enter)",
+    ),
+    act(
+        "helm.values",
+        Helm,
+        &["v"],
+        "Stored values of the selected release (redacted)",
+    ),
+    act("helm.detail", Helm, &["d"], "Safe release metadata"),
+    act(
+        "helm.resources",
+        Helm,
+        &["m"],
+        "Resource identities from the release manifest",
+    ),
+    act(
+        "helm.metadata",
+        Helm,
+        &["y"],
+        "Safe revision metadata as YAML",
+    ),
+    act(
+        "helm.install",
+        Helm,
+        &["i"],
+        "Install a chart (reviewed; --allow-helm-write)",
+    ),
+    act(
+        "helm.crds",
+        Helm,
+        &["c"],
+        "Install chart CRDs separately (--allow-helm-crds)",
+    ),
+    act(
+        "helm.upgrade",
+        Helm,
+        &["u"],
+        "Upgrade the selected release (reviewed)",
+    ),
+    act(
+        "helm.test",
+        Helm,
+        &["t"],
+        "Run the release's stored tests (--allow-helm-hooks)",
+    ),
+    act(
+        "helm.uninstall",
+        Helm,
+        &["Ctrl-D", "Delete"],
+        "Reviewed uninstall of the selected release",
+    ),
+    act(
+        "helm.refresh",
+        Helm,
+        &["Ctrl-R"],
+        "Refresh release metadata",
+    ),
+    act(
+        "helm.export",
+        Helm,
+        &["Ctrl-S"],
+        "Export the view to a reviewed local file",
+    ),
+    // Helm revision history of one release.
+    act(
+        "helm.history.close",
+        HelmHistory,
+        &["q"],
+        "Back (Esc also works; both clear a filter first)",
+    ),
+    act(
+        "helm.history.filter",
+        HelmHistory,
+        &["/"],
+        "Filter revisions: regex, !inverse, -f fuzzy",
+    ),
+    act(
+        "helm.history.down",
+        HelmHistory,
+        &["j", "Down"],
+        "Move down",
+    ),
+    act("helm.history.up", HelmHistory, &["k", "Up"], "Move up"),
+    act(
+        "helm.history.page-down",
+        HelmHistory,
+        &["PgDown"],
+        "Page down",
+    ),
+    act("helm.history.page-up", HelmHistory, &["PgUp"], "Page up"),
+    act(
+        "helm.history.top",
+        HelmHistory,
+        &["g", "Home"],
+        "First revision",
+    ),
+    act(
+        "helm.history.bottom",
+        HelmHistory,
+        &["G", "End"],
+        "Last revision",
+    ),
+    act(
+        "helm.history.sort",
+        HelmHistory,
+        &["N"],
+        "Toggle newest-first and name order",
+    ),
+    fixed(
+        "helm.history.open",
+        HelmHistory,
+        &["Enter"],
+        "Stored values of the selected revision",
+    ),
+    act(
+        "helm.history.values",
+        HelmHistory,
+        &["v"],
+        "Stored values of the selected revision (same as Enter)",
+    ),
+    act(
+        "helm.history.rollback",
+        HelmHistory,
+        &["r"],
+        "Reviewed rollback to the selected revision",
+    ),
+    act(
+        "helm.history.detail",
+        HelmHistory,
+        &["d"],
+        "Safe revision metadata",
+    ),
+    act(
+        "helm.history.resources",
+        HelmHistory,
+        &["m"],
+        "Resource identities from the revision manifest",
+    ),
+    act(
+        "helm.history.metadata",
+        HelmHistory,
+        &["y"],
+        "Safe revision metadata as YAML",
+    ),
+    act(
+        "helm.history.install",
+        HelmHistory,
+        &["i"],
+        "Install a chart (reviewed; --allow-helm-write)",
+    ),
+    act(
+        "helm.history.crds",
+        HelmHistory,
+        &["c"],
+        "Install chart CRDs separately (--allow-helm-crds)",
+    ),
+    act(
+        "helm.history.upgrade",
+        HelmHistory,
+        &["u"],
+        "Upgrade the release (reviewed)",
+    ),
+    act(
+        "helm.history.test",
+        HelmHistory,
+        &["t"],
+        "Run the release's stored tests (--allow-helm-hooks)",
+    ),
+    act(
+        "helm.history.uninstall",
+        HelmHistory,
+        &["Ctrl-D", "Delete"],
+        "Reviewed uninstall of the release",
+    ),
+    act(
+        "helm.history.refresh",
+        HelmHistory,
+        &["Ctrl-R"],
+        "Refresh the revision history",
+    ),
+    act(
+        "helm.history.export",
+        HelmHistory,
+        &["Ctrl-S"],
+        "Export the view to a reviewed local file",
+    ),
+    // Helm lifecycle forms: plain keys are typed, so only modified keys bind.
+    act("helm.form.next", HelmForm, &["Tab", "Down"], "Next field"),
+    act(
+        "helm.form.prev",
+        HelmForm,
+        &["Shift-Tab", "Up"],
+        "Previous field",
+    ),
+    act(
+        "helm.form.clear",
+        HelmForm,
+        &["Ctrl-U", "Ctrl-W"],
+        "Clear the active field",
+    ),
+    fixed(
+        "helm.form.prepare",
+        HelmForm,
+        &["Enter"],
+        "Validate local files and open the sealed review",
+    ),
+    fixed(
+        "helm.form.cancel",
+        HelmForm,
+        &["Esc"],
+        "Back without running anything",
+    ),
+    // RBAC subjects.
+    act(
+        "subjects.close",
+        Subjects,
+        &["q"],
+        "Back (Esc also works; Esc clears a filter first)",
+    ),
+    act("subjects.filter", Subjects, &["/"], "Filter subjects"),
+    act("subjects.down", Subjects, &["j", "Down"], "Move down"),
+    act("subjects.up", Subjects, &["k", "Up"], "Move up"),
+    act("subjects.page-down", Subjects, &["PgDown"], "Page down"),
+    act("subjects.page-up", Subjects, &["PgUp"], "Page up"),
+    act("subjects.top", Subjects, &["g", "Home"], "First subject"),
+    act("subjects.bottom", Subjects, &["G", "End"], "Last subject"),
+    fixed(
+        "subjects.open",
+        Subjects,
+        &["Enter"],
+        "Show the subject's bindings and rules (:can)",
+    ),
+    // Generic pickers, shared by the saved-selections picker.
+    act("picker.down", Picker, &["j", "Down"], "Move down"),
+    act("picker.up", Picker, &["k", "Up"], "Move up"),
+    fixed(
+        "picker.choose",
+        Picker,
+        &["Enter"],
+        "Choose the selected entry",
+    ),
+    fixed("picker.cancel", Picker, &["Esc"], "Close without choosing"),
+    act(
+        "selections.delete",
+        Selections,
+        &["d", "Delete"],
+        "Remove the selected saved selection (typed confirmation)",
+    ),
+    // Theme picker.
+    act(
+        "themes.down",
+        Themes,
+        &["j", "Down"],
+        "Preview the next theme",
+    ),
+    act(
+        "themes.up",
+        Themes,
+        &["k", "Up"],
+        "Preview the previous theme",
+    ),
+    act(
+        "themes.new",
+        Themes,
+        &["N"],
+        "Create a custom theme from the previewed colors",
+    ),
+    fixed(
+        "themes.save",
+        Themes,
+        &["Enter"],
+        "Save the previewed theme",
+    ),
+    fixed(
+        "themes.cancel",
+        Themes,
+        &["Esc"],
+        "Restore the previous theme",
+    ),
     // Reviews: typed confirmation input and approval keys never move.
     fixed(
         "review.read",
@@ -1085,8 +1508,9 @@ impl Keymap {
                 }
                 if self.custom[index] && action.scope.typed() && !key.modified() {
                     return Err(format!(
-                        "{}: the YAML editor types plain keys; use Ctrl-, Alt- or F keys",
-                        action.name
+                        "{}: plain keys are typed text in the {} view; use Ctrl-, Alt- or F keys",
+                        action.name,
+                        action.scope.name()
                     ));
                 }
             }
@@ -1182,6 +1606,8 @@ pub fn parse(text: &str) -> Result<Keymap> {
         },
         duplicate_keys: serde_saphyr::DuplicateKeyPolicy::Error,
         merge_keys: serde_saphyr::MergeKeyPolicy::Error,
+        // Keys like n, N, y and Y are letters, not YAML 1.1 booleans.
+        strict_booleans: true,
         with_snippet: false,
     };
     let file: File = serde_saphyr::from_str_with_options(text, options).map_err(|_| {
@@ -1189,7 +1615,7 @@ pub fn parse(text: &str) -> Result<Keymap> {
     })?;
     let mut entries = Vec::new();
     for (name, binding) in file.keys {
-        entries.push((name, binding));
+        entries.push((name, binding, None));
     }
     for (scope_name, bindings) in file.scopes {
         let scope = Scope::from_name(&scope_name).ok_or_else(|| {
@@ -1199,18 +1625,27 @@ pub fn parse(text: &str) -> Result<Keymap> {
             )
         })?;
         for (name, binding) in bindings {
-            entries.push((format!("{}{name}", scope.prefix()), binding));
+            entries.push((format!("{}{name}", scope.prefix()), binding, Some(scope)));
         }
     }
     if entries.len() > MAX_BINDINGS {
         return Err("keymap.yaml exceeds 256 bindings".into());
     }
     let mut keymap = Keymap::default();
-    for (name, binding) in entries {
+    for (name, binding, section) in entries {
         let shown = safety::safe_text(&name, 63);
         let index = find(&name).ok_or_else(|| {
             format!("keymap.yaml: unknown action {shown}; :keymap lists every action")
         })?;
+        if let Some(section) = section
+            && !section.owns(ACTIONS[index].scope)
+        {
+            return Err(format!(
+                "keymap.yaml: {shown} belongs to the {} scope, not {}",
+                ACTIONS[index].scope.name(),
+                section.name()
+            ));
+        }
         if ACTIONS[index].fixed {
             return Err(format!(
                 "keymap.yaml: {shown} is fixed so remapping cannot weaken reviews or approvals"
@@ -1411,6 +1846,100 @@ mod tests {
             assert!(parse(yaml).is_err(), "{yaml}");
         }
         assert!(parse(&format!("keys:\n  logs: L\n# {}\n", "x".repeat(MAX_BYTES))).is_err());
+    }
+
+    const NEW_SCOPES: [Scope; 9] = [
+        Scope::Helm,
+        Scope::HelmHistory,
+        Scope::HelmForm,
+        Scope::Subjects,
+        Scope::Picker,
+        Scope::Selections,
+        Scope::Themes,
+        Scope::Tail,
+        Scope::ForwardForm,
+    ];
+
+    #[test]
+    fn every_remappable_key_in_the_newer_views_moves_and_the_default_stops() -> Result<()> {
+        for scope in NEW_SCOPES {
+            let actions: Vec<&Action> = ACTIONS.iter().filter(|a| a.scope == scope).collect();
+            assert!(actions.iter().any(|a| !a.fixed), "{}", scope.name());
+            for action in actions {
+                let short = &action.name[scope.prefix().len()..];
+                let yaml = format!("scopes:\n  {}:\n    {short}: F12\n", scope.name());
+                if action.fixed {
+                    assert!(parse(&yaml).is_err(), "{} is fixed", action.name);
+                    continue;
+                }
+                let keymap = parse(&yaml)?;
+                assert_eq!(keymap.keys(action.name), [Key::F(12)]);
+                let defaults = defaults(find(action.name).ok_or("missing")?);
+                let first = defaults.first().ok_or("no default")?;
+                assert_eq!(
+                    keymap.translate(scope, Key::F(12)),
+                    Translation::To(*first),
+                    "{}",
+                    action.name
+                );
+                for key in &defaults {
+                    assert_eq!(
+                        keymap.translate(scope, *key),
+                        Translation::Swallow,
+                        "{} {key}",
+                        action.name
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn newer_scopes_reject_unknown_misplaced_fixed_and_typed_keys() {
+        for scope in NEW_SCOPES {
+            let yaml = format!("scopes:\n  {}:\n    launch-missiles: x\n", scope.name());
+            assert!(parse(&yaml).is_err(), "{yaml}");
+            let flat = format!("keys:\n  {}launch-missiles: x\n", scope.prefix());
+            assert!(parse(&flat).is_err(), "{flat}");
+        }
+        for yaml in [
+            // A section only sets its own scope's actions.
+            "scopes:\n  helm:\n    history.close: x\n",
+            "scopes:\n  forward:\n    form.next: F3\n",
+            "scopes:\n  picker:\n    log.wrap: Alt-w\n",
+            // Forms type plain keys; Enter, Esc and confirmations stay fixed.
+            "scopes:\n  helm.form:\n    next: n\n",
+            "scopes:\n  forward.form:\n    clear: x\n",
+            "scopes:\n  helm.form:\n    prepare: Ctrl-P\n",
+            "scopes:\n  tail:\n    start: s\n",
+            "scopes:\n  themes:\n    save: S\n",
+            "scopes:\n  picker:\n    choose: o\n",
+            "scopes:\n  helm:\n    open: o\n",
+            "scopes:\n  subjects:\n    open: o\n",
+            // Duplicates inside a view, including inherited picker keys.
+            "scopes:\n  helm:\n    install: u\n",
+            "scopes:\n  selections:\n    delete: j\n",
+            "scopes:\n  tail:\n    select: \"?\"\n",
+            "scopes:\n  helm.history:\n    rollback: Esc\n",
+        ] {
+            assert!(parse(yaml).is_err(), "{yaml}");
+        }
+        // Flat names, and the same key in separate views, are fine.
+        assert!(parse("keys:\n  helm.history.rollback: R\n  helm.revisions: R\n").is_ok());
+        assert!(parse("scopes:\n  helm.form:\n    next: Ctrl-N\n").is_ok());
+    }
+
+    #[test]
+    fn single_letters_that_yaml_once_read_as_booleans_are_keys() -> Result<()> {
+        let keymap = parse("keys:\n  quit: n\n  copy.namespace: N\n  sort.name: Y\n  yaml: y\n")?;
+        assert_eq!(keymap.keys("quit"), [Key::Char('n')]);
+        assert_eq!(keymap.keys("copy.namespace"), [Key::Char('N')]);
+        assert_eq!(keymap.keys("sort.name"), [Key::Char('Y')]);
+        assert_eq!(keymap.keys("yaml"), [Key::Char('y')]);
+        let keymap = parse("scopes:\n  helm:\n    metadata: Y\n")?;
+        assert_eq!(keymap.keys("helm.metadata"), [Key::Char('Y')]);
+        Ok(())
     }
 
     #[test]

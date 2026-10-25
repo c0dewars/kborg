@@ -3381,7 +3381,15 @@ fn keymap_command_lists_every_action_and_filters() -> Result<()> {
     };
     let filtered = keyhelp::help_body(&app, view);
     assert!(filtered.contains("Ctrl-X") && filtered.contains("all marked *"));
-    assert!(!filtered.contains("sort.name") && !filtered.contains("Ctrl-D"));
+    assert!(!filtered.contains("sort.name"));
+    // The table delete action moved to Ctrl-X; Helm uninstall keeps Ctrl-D.
+    assert!(
+        filtered
+            .lines()
+            .filter(|line| line.starts_with("delete "))
+            .all(|line| line.contains("Ctrl-X") && !line.contains("Ctrl-D")),
+        "{filtered}"
+    );
     app.key(KeyCode::Enter)?;
     app.key(KeyCode::Esc)?;
     assert!(matches!(&app.modal, Modal::Help(view) if view.filter.is_empty()));
@@ -3551,5 +3559,356 @@ fn completed_batch_clears_marks_and_stopped_batch_keeps_unfinished_ones() -> Res
         .map_err(|_| "reply")?;
     app.receive();
     assert!(app.marks.is_empty());
+    Ok(())
+}
+
+fn help_scope_of(app: &App) -> Option<crate::keymap::Scope> {
+    match &app.modal {
+        Modal::Help(view) if view.mode == keyhelp::Mode::Context => Some(view.scope),
+        _ => None,
+    }
+}
+
+/// `?` opens that screen's help with its keys; Esc returns to the screen.
+fn assert_context_help(
+    app: &mut App,
+    scope: crate::keymap::Scope,
+    expected: &str,
+    back: impl Fn(&Modal) -> bool,
+) -> Result<()> {
+    app.key_event(KeyCode::Char('?'), KeyModifiers::NONE)?;
+    assert_eq!(help_scope_of(app), Some(scope), "{}", scope.name());
+    let Modal::Help(view) = &app.modal else {
+        return Err("help closed".into());
+    };
+    let body = keyhelp::help_body(app, view);
+    assert!(
+        body.contains(&format!("KEYS FOR {}", scope.title())) && body.contains(expected),
+        "{body}"
+    );
+    app.key_event(KeyCode::Esc, KeyModifiers::NONE)?;
+    assert!(back(&app.modal), "help returns to {}", scope.name());
+    Ok(())
+}
+
+fn helm_release(name: &str, revision: u32) -> crate::helm::Release {
+    crate::helm::Release {
+        namespace: "default".into(),
+        name: name.into(),
+        revision,
+        status: "deployed".into(),
+        chart_name: "web".into(),
+        chart_version: "1.0".into(),
+        app_version: "2".into(),
+        updated: "now".into(),
+        storage: crate::helm::Storage::Secret,
+        uid: format!("uid-{name}-{revision}"),
+        resource_version: "1".into(),
+    }
+}
+
+fn helm_table(parent: Option<crate::helm::Release>) -> Modal {
+    Modal::Helm(Box::new(helm_ui::Table::new(
+        crate::helm::Snapshot {
+            releases: vec![helm_release("web", 2), helm_release("web", 1)],
+            truncated: false,
+            issues: vec![],
+            source: "test".into(),
+        },
+        parent,
+        "default".into(),
+        Some(crate::helm::Storage::Secret),
+    )))
+}
+
+#[test]
+fn remapped_helm_release_and_history_keys_move_and_help_follows() -> Result<()> {
+    let (mut app, _replies, _commands) = harness();
+    app.options.connection.demo = true;
+    app.options.connection.writable = true;
+    app.options.connection.allow_helm = true;
+    app.options.connection.allow_helm_write = true;
+    app.keymap = crate::keymap::parse(
+        "scopes:\n  helm:\n    metadata: Y\n    install: I\n  helm.history:\n    rollback: Alt-r\n",
+    )?;
+    app.modal = helm_table(None);
+    let bottom = screen(&app, 140, 30).join("\n");
+    assert!(
+        bottom.contains("I install") && bottom.contains("? keys"),
+        "{bottom}"
+    );
+    app.key_event(KeyCode::Char('y'), KeyModifiers::NONE)?;
+    assert!(
+        matches!(app.modal, Modal::Helm(..)),
+        "y no longer opens YAML"
+    );
+    app.key_event(KeyCode::Char('Y'), KeyModifiers::NONE)?;
+    assert!(matches!(app.modal, Modal::HelmDocument(..)));
+    app.close_subview();
+    app.key_event(KeyCode::Char('i'), KeyModifiers::NONE)?;
+    assert!(matches!(app.modal, Modal::Helm(..)), "i no longer installs");
+    app.key_event(KeyCode::Char('I'), KeyModifiers::NONE)?;
+    assert!(matches!(app.modal, Modal::HelmForm(..)), "{}", app.status);
+    app.subviews.clear();
+    app.modal = helm_table(None);
+    assert_context_help(
+        &mut app,
+        crate::keymap::Scope::Helm,
+        "Y ",
+        |modal| matches!(modal, Modal::Helm(table) if table.parent.is_none()),
+    )?;
+    // `:` works in Helm and Esc returns to it.
+    app.key_event(KeyCode::Char(':'), KeyModifiers::NONE)?;
+    assert!(matches!(app.modal, Modal::Input("Command", _)));
+    app.key_event(KeyCode::Esc, KeyModifiers::NONE)?;
+    assert!(matches!(app.modal, Modal::Helm(..)));
+
+    // History: its own scope; the release-list remap does not apply there.
+    app.modal = helm_table(Some(helm_release("web", 2)));
+    app.key_event(KeyCode::Char('y'), KeyModifiers::NONE)?;
+    assert!(
+        matches!(app.modal, Modal::HelmDocument(..)),
+        "history y unchanged"
+    );
+    app.close_subview();
+    app.key_event(KeyCode::Char('r'), KeyModifiers::NONE)?;
+    assert!(
+        matches!(app.modal, Modal::Helm(..)),
+        "r no longer rolls back"
+    );
+    app.key_event(KeyCode::Char('r'), KeyModifiers::ALT)?;
+    assert!(
+        matches!(&app.modal, Modal::HelmForm(form) if matches!(form.intent, helm_ui::Intent::Rollback { .. })),
+        "{}",
+        app.status
+    );
+    app.subviews.clear();
+    app.modal = helm_table(Some(helm_release("web", 2)));
+    assert!(screen(&app, 140, 30).join("\n").contains("Alt-r rollback"));
+    assert_context_help(
+        &mut app,
+        crate::keymap::Scope::HelmHistory,
+        "Alt-r",
+        |modal| matches!(modal, Modal::Helm(table) if table.parent.is_some()),
+    )?;
+    // While the filter is typed, keys are text, not actions.
+    app.key_event(KeyCode::Char('/'), KeyModifiers::NONE)?;
+    app.key_event(KeyCode::Char('?'), KeyModifiers::NONE)?;
+    assert!(matches!(app.modal, Modal::Helm(..)));
+    Ok(())
+}
+
+#[test]
+fn remapped_helm_form_keys_take_only_modified_keys_and_keep_typing() -> Result<()> {
+    let (mut app, _replies, _commands) = harness();
+    app.keymap = crate::keymap::parse("scopes:\n  helm.form:\n    next: Ctrl-N\n")?;
+    app.modal = Modal::HelmForm(Box::new(helm_ui::Form::new(
+        helm_ui::Intent::Install,
+        "default".into(),
+        crate::helm::Storage::Secret,
+        None,
+        true,
+    )));
+    app.key_event(KeyCode::Tab, KeyModifiers::NONE)?;
+    assert!(matches!(&app.modal, Modal::HelmForm(form) if form.active == 0));
+    app.key_event(KeyCode::Char('n'), KeyModifiers::CONTROL)?;
+    assert!(matches!(&app.modal, Modal::HelmForm(form) if form.active == 1));
+    // `?` and letters stay typed text in the form.
+    app.key_event(KeyCode::Char('?'), KeyModifiers::NONE)?;
+    assert!(matches!(&app.modal, Modal::HelmForm(form) if form.fields[1].1 == "?"));
+    assert!(
+        screen(&app, 140, 34)
+            .join("\n")
+            .contains("Ctrl-N next field")
+    );
+    app.key_event(KeyCode::Char('u'), KeyModifiers::CONTROL)?;
+    assert!(matches!(&app.modal, Modal::HelmForm(form) if form.fields[1].1.is_empty()));
+    Ok(())
+}
+
+#[test]
+fn remapped_forward_form_keys_move_fields() -> Result<()> {
+    let (mut app, _replies, _commands) = harness();
+    app.keymap = crate::keymap::parse("scopes:\n  forward.form:\n    next: F3\n")?;
+    app.modal = Modal::ForwardForm(
+        "test".into(),
+        "api".into(),
+        Some("uid".into()),
+        ["8080".into(), "80".into(), "300".into()],
+        0,
+    );
+    app.key_event(KeyCode::Tab, KeyModifiers::NONE)?;
+    assert!(matches!(&app.modal, Modal::ForwardForm(.., 0)));
+    app.key_event(KeyCode::F(3), KeyModifiers::NONE)?;
+    assert!(matches!(&app.modal, Modal::ForwardForm(.., 1)));
+    let frame = screen(&app, 120, 30).join("\n");
+    assert!(frame.contains("F3 field | Ctrl-U clear"), "{frame}");
+    Ok(())
+}
+
+#[test]
+fn remapped_subject_keys_move_and_help_opens_for_subjects() -> Result<()> {
+    let (mut app, _replies, _commands) = harness();
+    app.keymap = crate::keymap::parse("scopes:\n  subjects:\n    close: x\n    filter: F\n")?;
+    let bindings = vec![
+        serde_json::json!({"metadata":{"namespace":"shop"},"roleRef":{"kind":"ClusterRole","name":"view"},"subjects":[{"kind":"User","name":"alice"}]}),
+    ];
+    let view = || {
+        Modal::Subjects(Box::new(crate::ui_subjects::View::new(
+            "RBAC SUBJECTS",
+            "shop".into(),
+            crate::navigation_views::SubjectIndex {
+                rows: crate::navigation_views::subject_rows(&bindings, None),
+                incomplete: false,
+                errors: Vec::new(),
+            },
+        )))
+    };
+    app.modal = view();
+    let frame = screen(&app, 120, 30).join("\n");
+    assert!(
+        frame.contains("F filter") && !frame.contains("/ filter"),
+        "{frame}"
+    );
+    app.key_event(KeyCode::Char('q'), KeyModifiers::NONE)?;
+    assert!(
+        matches!(app.modal, Modal::Subjects(..)),
+        "q no longer closes"
+    );
+    assert_context_help(
+        &mut app,
+        crate::keymap::Scope::Subjects,
+        "Back (Esc also works",
+        |modal| matches!(modal, Modal::Subjects(..)),
+    )?;
+    app.key_event(KeyCode::Char('x'), KeyModifiers::NONE)?;
+    assert!(matches!(app.modal, Modal::None));
+    // While typing a filter, `?` and x are text.
+    app.modal = view();
+    app.key_event(KeyCode::Char('F'), KeyModifiers::NONE)?;
+    app.key_event(KeyCode::Char('x'), KeyModifiers::NONE)?;
+    app.key_event(KeyCode::Char('?'), KeyModifiers::NONE)?;
+    assert!(matches!(&app.modal, Modal::Subjects(view) if view.is_typing()));
+    Ok(())
+}
+
+#[test]
+fn remapped_picker_and_saved_selection_keys_move() -> Result<()> {
+    let (mut app, _replies, _commands) = harness();
+    app.keymap =
+        crate::keymap::parse("scopes:\n  picker:\n    down: J\n  selections:\n    delete: X\n")?;
+    app.modal = Modal::Picker("Namespace", vec!["a".into(), "b".into()], 0);
+    app.key_event(KeyCode::Char('j'), KeyModifiers::NONE)?;
+    assert!(matches!(&app.modal, Modal::Picker(_, _, 0)));
+    app.key_event(KeyCode::Char('J'), KeyModifiers::NONE)?;
+    assert!(matches!(&app.modal, Modal::Picker(_, _, 1)));
+    let frame = screen(&app, 120, 30).join("\n");
+    assert!(
+        frame.contains("J k move") && frame.contains("Namespace | J k"),
+        "{frame}"
+    );
+    assert_context_help(
+        &mut app,
+        crate::keymap::Scope::Picker,
+        "J                Move down",
+        |modal| matches!(modal, Modal::Picker(_, _, 1)),
+    )?;
+
+    app.selection_ui.records = vec![crate::selections::Selection {
+        name: "local".into(),
+        demo: true,
+        target: crate::selections::Target::Dashboard {
+            contexts: vec!["local".into()],
+            namespace: "default".into(),
+        },
+    }];
+    app.modal = Modal::Picker(selections_ui::PICKER_LABEL, vec!["local".into()], 0);
+    assert!(
+        screen(&app, 120, 30)
+            .join("\n")
+            .contains("Enter open | X remove | Esc back")
+    );
+    for key in [KeyCode::Char('d'), KeyCode::Delete] {
+        app.key_event(key, KeyModifiers::NONE)?;
+        assert!(matches!(app.modal, Modal::Picker(..)), "{key:?} moved away");
+    }
+    assert_context_help(
+        &mut app,
+        crate::keymap::Scope::Selections,
+        "J                Move down",
+        |modal| matches!(modal, Modal::Picker(..)),
+    )?;
+    app.key_event(KeyCode::Char('X'), KeyModifiers::NONE)?;
+    assert!(matches!(
+        app.modal,
+        Modal::Input(selections_ui::DELETE_LABEL, _)
+    ));
+    Ok(())
+}
+
+#[test]
+fn remapped_theme_keys_move_and_help_opens_for_themes() -> Result<()> {
+    let (mut app, _replies, _commands) = harness();
+    app.keymap = crate::keymap::parse("scopes:\n  themes:\n    new: C\n    down: Alt-j\n")?;
+    let old = app.theme.clone();
+    app.modal = Modal::Themes(themes::builtins(), 0, old);
+    app.key_event(KeyCode::Char('j'), KeyModifiers::NONE)?;
+    assert!(matches!(&app.modal, Modal::Themes(_, 0, _)));
+    app.key_event(KeyCode::Char('j'), KeyModifiers::ALT)?;
+    assert!(matches!(&app.modal, Modal::Themes(_, 1, _)));
+    let frame = screen(&app, 120, 40).join("\n");
+    assert!(
+        frame.contains("C new custom theme") && frame.contains("C create custom"),
+        "{frame}"
+    );
+    assert_context_help(&mut app, crate::keymap::Scope::Themes, "C ", |modal| {
+        matches!(modal, Modal::Themes(..))
+    })?;
+    app.key_event(KeyCode::Char('N'), KeyModifiers::NONE)?;
+    assert!(matches!(app.modal, Modal::Themes(..)));
+    app.key_event(KeyCode::Char('C'), KeyModifiers::NONE)?;
+    assert!(matches!(app.modal, Modal::NewTheme(..)));
+    Ok(())
+}
+
+#[test]
+fn remapped_tail_picker_keys_move_and_its_keymap_overlay_opens() -> Result<()> {
+    let (mut app, _replies, _commands) = harness();
+    app.keymap = crate::keymap::parse("scopes:\n  tail:\n    select: x\n")?;
+    let workload = |name: &str| crate::workload_tail::WorkloadRef {
+        context: "local".into(),
+        resource: "deployments".into(),
+        namespace: "shop".into(),
+        name: name.into(),
+        uid: format!("uid-{name}"),
+    };
+    let mut dashboard = dashboard_ui::Dashboard::new(&["local".into()], false);
+    let mut picker = dashboard_ui::TailPicker::loading();
+    picker.loading = false;
+    picker.entries = vec![workload("api"), workload("web")];
+    dashboard.picker = Some(picker);
+    app.modal = Modal::LiveOverview(dashboard);
+    let checked = |app: &App| match &app.modal {
+        Modal::LiveOverview(dashboard) => dashboard.picker.as_ref().map(|p| p.checked.len()),
+        _ => None,
+    };
+    app.key_event(KeyCode::Char(' '), KeyModifiers::NONE)?;
+    assert_eq!(checked(&app), Some(0), "Space moved away");
+    app.key_event(KeyCode::Char('x'), KeyModifiers::NONE)?;
+    assert_eq!(checked(&app), Some(1));
+    let frame = screen(&app, 120, 40).join("\n");
+    assert!(
+        frame.contains("x select (max") && frame.contains("x select"),
+        "{frame}"
+    );
+    app.key_event(KeyCode::Char('?'), KeyModifiers::NONE)?;
+    let legend = screen(&app, 120, 40).join("\n");
+    assert!(
+        legend.contains("TAIL PICKER KEYS") && legend.contains("x                Select"),
+        "{legend}"
+    );
+    app.key_event(KeyCode::Esc, KeyModifiers::NONE)?;
+    assert!(matches!(&app.modal, Modal::LiveOverview(d) if !d.help && d.picker.is_some()));
+    assert_eq!(checked(&app), Some(1));
     Ok(())
 }

@@ -1312,9 +1312,9 @@ pub(super) fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<
                 }
                 Modal::Directory(directory,index)=>std::iter::once(format!("{}{}",directory.path.display(),if directory.truncated{" [TRUNCATED]"}else{""})).chain(std::iter::once("Read-only; Enter directory or redacted manifest preview".into())).chain(directory.entries.iter().enumerate().skip(index.saturating_sub(height.saturating_sub(3))).map(|(i,entry)|format!("{} {}{}",if i==*index{">"}else{" "},entry.name,if entry.directory{"/"}else{""}))).collect(),
                 Modal::Secrets(view)=>view.lines(usize::from(rect.width.saturating_sub(2)),height),
-                Modal::Subjects(view)=>view.lines(usize::from(rect.width.saturating_sub(2)),height),
+                Modal::Subjects(view)=>view.lines_with(usize::from(rect.width.saturating_sub(2)),height,&keyhelp::subjects_line(app)),
                 Modal::ForwardView=>app.worker.forward.lines(app.forward_selected,usize::from(rect.width.saturating_sub(2)),height),
-                Modal::ForwardForm(namespace,pod,_,fields,index)=>{let mut lines=vec![format!("Pod {namespace}/{pod}"),"Tab field / Ctrl-U clear / Enter review / Esc cancel".into(),String::new()];for(i,label)in["Local port (1024..65535)","Remote port (1..65535)","Duration seconds (1..300)"].iter().enumerate(){lines.push(format!("{} {label}: {}{}",if i==*index{">"}else{" "},fields[i],if i==*index{"_"}else{""}));}lines},
+                Modal::ForwardForm(namespace,pod,_,fields,index)=>{let mut lines=vec![format!("Pod {namespace}/{pod}"),keyhelp::forward_form_hint(app),String::new()];for(i,label)in["Local port (1024..65535)","Remote port (1..65535)","Duration seconds (1..300)"].iter().enumerate(){lines.push(format!("{} {label}: {}{}",if i==*index{">"}else{" "},fields[i],if i==*index{"_"}else{""}));}lines},
                 Modal::LiveOverview(_) => Vec::new(),
                 Modal::Detail(text, offset)
                 | Modal::Metrics(text, offset) => {
@@ -1386,11 +1386,7 @@ pub(super) fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<
                     " Enter continue to server dry-run/review | Esc cancel".into(),
                 ],
                 Modal::Picker(label, list, index) => {
-                    let help = if *label == selections_ui::PICKER_LABEL {
-                        " Enter open | d remove | Esc back".into()
-                    } else {
-                        format!(" {label} | arrows / Enter select / Esc cancel")
-                    };
+                    let help = keyhelp::picker_line(app, label);
                     std::iter::once(help)
                         .chain(
                             list.iter()
@@ -1404,7 +1400,7 @@ pub(super) fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<
                 }
                 Modal::Themes(list, index, _) => {
                     let mut lines = vec![
-                        " THEMES - arrows preview; Enter save; N create custom; Esc restore".into(),
+                        keyhelp::themes_line(app),
                         " PREVIEW: PRODUCTION | READ ONLY | STALE | ERROR | +added -removed".into(),
                     ];
                     lines.extend(
@@ -1534,14 +1530,6 @@ pub(super) fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<
                 "Ctrl-C cancel | waiting for advice | no automatic execution"
             } else if matches!(modal, Modal::AdviceDocument(..) | Modal::AdviceLoading) {
                 "PgUp/PgDown scroll | Esc back"
-            } else if matches!(modal, Modal::HelmForm(..)) {
-                if w < 40 {
-                    "Tab next  Enter review  Esc"
-                } else if w < 80 {
-                    "[Tab] next  [Enter] review  [Esc] back"
-                } else {
-                    " [Tab] next field   [Shift-Tab] previous   [Ctrl-U] clear   [Enter] prepare review   [Esc] back"
-                }
             } else if matches!(modal, Modal::ScanRunning(..)) {
                 "Esc or Ctrl-C cancels the scan"
             } else if matches!(modal, Modal::ScanConfirm(..)) {
@@ -1550,44 +1538,23 @@ pub(super) fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<
                 "Ctrl-C request cancellation | wait for final outcome"
             } else if matches!(modal, Modal::HelmOutcome(..)) {
                 "PgUp/PgDown scroll | Esc refreshes release inventory | never auto-retry UNKNOWN"
-            } else if let Modal::Helm(table) = modal {
-                table.help()
             } else if matches!(modal, Modal::HelmDocument(..)) {
                 "Stored revision read | PgUp/PgDown scroll | Esc back"
-            } else if matches!(modal, Modal::Subjects(..)) {
-                "Enter bindings and rules | / filter | j k PgUp PgDn move | Esc back"
             } else if matches!(modal, Modal::Secrets(..)) {
                 "Enter open keys | x reveal or hide one key (30s) | j k move | Esc back"
             } else if matches!(
                 modal,
-                Modal::Picker(..)
-                    | Modal::Containers(..)
-                    | Modal::SessionContainers(..)
-                    | Modal::EditContainers(..)
+                Modal::Containers(..) | Modal::SessionContainers(..) | Modal::EditContainers(..)
             ) {
                 "Enter choose | j k move | Esc cancel"
             } else if matches!(modal, Modal::Directory(..)) {
                 "Enter open | j k move | Esc back"
-            } else if matches!(modal, Modal::Themes(..)) {
-                "Arrows preview | Enter save | N new custom theme | Esc restore"
             } else {
                 "Esc close | Enter select | arrows / j k | PgUp PgDown scroll"
             };
             if matches!(modal, Modal::HelmForm(..)) {
-                let hints: &[(&str, &str)] = if w < 40 {
-                    &[("Tab", "next"), ("Enter", "review"), ("Esc", "")]
-                } else if w < 60 {
-                    &[("Tab", "next"), ("Enter", "review"), ("Esc", "back")]
-                } else {
-                    &[
-                        ("Tab", "next field"),
-                        ("Shift-Tab", "previous"),
-                        ("Ctrl-U", "clear"),
-                        ("Enter", "review"),
-                        ("Esc", "back"),
-                    ]
-                };
-                key_hints(out, h - 2, w, hints, [color("accent"), color("muted"), bg])
+                let hints = keyhelp::helm_form_hints(app, w);
+                key_hints(out, h - 2, w, &hints, [color("accent"), color("muted"), bg])
                     .map_err(|_| "draw failed")?;
             } else {
                 row(out, h - 2, w, hints, color("muted"), bg).map_err(|_| "draw failed")?;

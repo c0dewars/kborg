@@ -84,10 +84,10 @@ impl TailPicker {
         }
         PickerOutcome::Stay
     }
-    fn lines(&self, height: usize) -> Vec<(String, &'static str)> {
+    fn lines(&self, height: usize, select: &str) -> Vec<(String, &'static str)> {
         let mut lines = vec![(
             format!(
-                "Space select (max {})   Enter tail selected   Esc cancel   {} selected",
+                "{select} select (max {})   Enter tail selected   Esc cancel   {} selected",
                 crate::workload_tail::MAX_SOURCES,
                 self.checked.len()
             ),
@@ -487,7 +487,16 @@ fn picker_pane(app: &App, picker: &TailPicker, rect: Rect, out: &mut impl Write)
     )
     .map_err(|_| "draw failed")?;
     let height = usize::from(rect.height.saturating_sub(2));
-    for (index, (text, role)) in picker.lines(height).iter().take(height).enumerate() {
+    let select = app
+        .keymap
+        .primary("tail.select")
+        .unwrap_or_else(|| "(unbound)".into());
+    for (index, (text, role)) in picker
+        .lines(height, &select)
+        .iter()
+        .take(height)
+        .enumerate()
+    {
         cell(
             out,
             rect.x + 1,
@@ -995,14 +1004,14 @@ pub(super) fn render(
         panel(
             out,
             rect,
-            "DASHBOARD KEYS",
+            super::keyhelp::dashboard_help_title(dashboard),
             true,
             color("accent"),
             bg,
             &app.ui,
         )
         .map_err(|_| "draw failed")?;
-        let help = super::keyhelp::dashboard_help_lines(app);
+        let help = super::keyhelp::dashboard_help_lines(app, dashboard);
         for (index, text) in help
             .iter()
             .take(rect.height.saturating_sub(2) as usize)

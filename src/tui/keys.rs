@@ -41,8 +41,10 @@ impl App {
                 | Modal::Directory(..)
                 | Modal::ForwardView
                 | Modal::HelmDocument(..)
+                | Modal::Picker(..)
                 | Modal::AdviceDocument(..) => true,
                 Modal::Help(view) => !view.typing,
+                Modal::Subjects(view) => !view.is_typing(),
                 Modal::Follow(view) => !view.is_filtering(),
                 Modal::Helm(table) => !table.is_filtering(),
                 _ => false,
@@ -1133,6 +1135,14 @@ impl App {
             },
             Modal::LiveOverview(mut dashboard) => {
                 dashboard.notice = None;
+                if dashboard.picker.is_some() && (dashboard.help || code == KeyCode::Char('?')) {
+                    // The tail picker's keymap overlay: `?` toggles, Esc closes.
+                    if matches!(code, KeyCode::Char('?') | KeyCode::Esc) {
+                        dashboard.help = !dashboard.help;
+                    }
+                    self.modal = Modal::LiveOverview(dashboard);
+                    return Ok(false);
+                }
                 if let Some(picker) = dashboard.picker.as_mut() {
                     match picker.key(code) {
                         dashboard_ui::PickerOutcome::Stay => {}

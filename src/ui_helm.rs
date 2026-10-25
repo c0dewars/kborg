@@ -1030,13 +1030,6 @@ impl Table {
         }
         lines
     }
-    pub fn help(&self) -> &'static str {
-        if self.parent.is_some() {
-            "[Enter/v] values  [r] rollback  [t] test  [u] upgrade  [Ctrl-D] uninstall  [Esc] back"
-        } else {
-            "[Enter] history  [i] install  [u] upgrade  [t] test  [c] CRDs  [Ctrl-D] uninstall  [Esc] back"
-        }
-    }
 }
 fn clip(text: &str, width: usize) -> String {
     safety::safe_text(text, width).chars().take(width).collect()
