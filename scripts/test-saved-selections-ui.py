@@ -267,7 +267,7 @@ def main():
             terminal.keys(b"\x1b")
             checks.append("invalid preferences show an in-app notice, retain file and restore underlying resource/dashboard")
             store.write_bytes(valid_preferences)
-            os.chmod(store, 0o644)
+            os.chmod(store, 0o640)  # group-readable: KBorg must still refuse it
             terminal.keys(b"B", "SAVED SELECTIONS UNAVAILABLE")
             terminal.wait("must be private")
             terminal.keys(b"\x1b", "saved-sample")

@@ -201,7 +201,11 @@ async fn interactive_sessions(
         .await
         .unwrap_or_else(|e| panic!("output bound: {e}"));
     drop(sender);
-    assert_eq!(outcome.end, End::OutputLimit, "{outcome:?}");
+    assert_eq!(
+        outcome.end,
+        End::OutputLimit,
+        "session did not stop at the output bound"
+    );
     assert!(outcome.output_bytes > kborg::session::MAX_OUTPUT);
     assert!(outcome.output_bytes <= kborg::session::MAX_OUTPUT + 8192);
 

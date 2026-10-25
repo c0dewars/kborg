@@ -532,9 +532,15 @@ mod tests {
     use super::*;
     #[test]
     fn authority_requires_child_nonce_exact_public_host_and_tls_port() {
-        let nonce = "nonce";
+        // Generated per run so the test never embeds a fixed credential.
+        let nonce = format!(
+            "test-{}-{:?}",
+            std::process::id(),
+            std::time::Instant::now()
+        );
+        let nonce = nonce.as_str();
         use base64::Engine;
-        let auth = base64::engine::general_purpose::STANDARD.encode("kborg:nonce");
+        let auth = base64::engine::general_purpose::STANDARD.encode(format!("kborg:{nonce}"));
         let good = format!(
             "CONNECT api.github.com:443 HTTP/1.1\r\nHost: api.github.com:443\r\nProxy-Authorization: Basic {auth}\r\n\r\n"
         );
