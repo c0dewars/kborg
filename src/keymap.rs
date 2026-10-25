@@ -1415,7 +1415,8 @@ mod tests {
 
     #[test]
     fn documented_example_is_valid() -> Result<()> {
-        let docs = include_str!("../docs/K9S_COMPATIBILITY.md");
+        // Windows checkouts may convert the docs to CRLF.
+        let docs = include_str!("../docs/K9S_COMPATIBILITY.md").replace("\r\n", "\n");
         let section = docs
             .split("## Custom keymap")
             .nth(1)

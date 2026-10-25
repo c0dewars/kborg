@@ -1803,16 +1803,20 @@ mod tests {
     #[test]
     fn scan_flags_are_explicit_absolute_and_scoped() -> Result<()> {
         let words = |s: &str| parse(s.split_whitespace().map(str::to_owned).collect());
-        let options = words("scan deploy web --scanner /opt/trivy --allow-scan --json")?;
+        let trivy = crate::test_paths::abs("/opt/trivy");
+        let grype = crate::test_paths::abs("/opt/grype");
+        let options = words(&format!(
+            "scan deploy web --scanner {trivy} --allow-scan --json"
+        ))?;
         assert_eq!(
             options.scanner.as_deref(),
-            Some(std::path::Path::new("/opt/trivy"))
+            Some(std::path::Path::new(&trivy))
         );
         assert!(options.allow_scan && options.json);
-        assert!(words("ui --scanner /opt/grype --allow-scan").is_ok());
-        assert!(words("--scanner /opt/grype --allow-scan").is_ok());
+        assert!(words(&format!("ui --scanner {grype} --allow-scan")).is_ok());
+        assert!(words(&format!("--scanner {grype} --allow-scan")).is_ok());
         assert!(words("scan ns --scanner trivy --allow-scan").is_err());
-        assert!(words("list pods --scanner /opt/trivy").is_err());
+        assert!(words(&format!("list pods --scanner {trivy}")).is_err());
         assert!(words("lint --allow-scan").is_err());
         assert!(words("scan ns --scanner").is_err());
         // Without the opt-in nothing connects or runs.
