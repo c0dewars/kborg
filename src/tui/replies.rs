@@ -4,6 +4,11 @@ use super::*;
 impl App {
     pub(super) fn receive(&mut self) -> bool {
         let mut changed = self.expire_table_metrics(Instant::now());
+        if let Modal::Secrets(view) = &mut self.modal
+            && view.tick()
+        {
+            changed = true;
+        }
         let forward = self.worker.forward.text();
         if forward != self.last_forward {
             self.last_forward = forward;
@@ -424,6 +429,11 @@ impl App {
                 Reply::SecretValue(uid, key, value) => {
                     if let Modal::Secrets(view) = &mut self.modal {
                         view.reveal(&uid, &key, value);
+                    }
+                }
+                Reply::SecretYaml(uid, doc) => {
+                    if let Modal::Secrets(view) = &mut self.modal {
+                        view.yaml(&uid, doc);
                     }
                 }
                 Reply::Overview(feed) => {

@@ -22,6 +22,8 @@ use crossterm::{
 use serde_json::Value;
 #[path = "ui_advice.rs"]
 mod advice_ui;
+#[path = "ui_charts.rs"]
+mod charts_ui;
 mod commands;
 #[path = "ui_dashboard.rs"]
 mod dashboard_ui;
@@ -38,6 +40,7 @@ mod replies;
 mod review_ui;
 #[path = "ui_selections.rs"]
 mod selections_ui;
+mod snapshot;
 mod startup;
 mod table_keys;
 #[path = "ui_metrics.rs"]
@@ -61,12 +64,15 @@ use tty::*;
 use worker::*;
 
 const OVERVIEW_CONTEXTS_LABEL: &str = "Overview contexts (comma separated, max 9)";
+const ASK_LABEL: &str = "Ask Copilot about this screen";
 const OVERVIEW_INPUT_BYTES: usize = crate::overview::MAX_LIVE_CONTEXTS * 254 - 1;
 fn input_limit(label: &str) -> usize {
     if label == OVERVIEW_CONTEXTS_LABEL {
         OVERVIEW_INPUT_BYTES
     } else if label == "Command" {
         nav::COMMAND_BYTES
+    } else if label == ASK_LABEL {
+        crate::advice::MAX_QUESTION
     } else {
         100
     }
@@ -261,6 +267,8 @@ struct App {
     keymap: crate::keymap::Keymap,
     /// Ctrl-Z: show only objects that need attention (k9s faults view).
     faults_only: bool,
+    /// The screen as it was when the command prompt opened, for `:ask`.
+    ask_screen: Option<String>,
     /// k9s-format views.yaml: per-resource columns and default sort.
     views: crate::views::Views,
     /// Data-only ui.yaml: borders, chrome rows, table style, color overrides.
@@ -319,6 +327,8 @@ struct App {
     /// Memoized filter-and-sort order of `items`, keyed by a fingerprint.
     visible_cache: std::cell::RefCell<Option<(u64, std::rc::Rc<Vec<usize>>)>>,
     metrics_resources: bool,
+    /// `g` in :metrics: chart the selected Pod or Node instead of the text view.
+    metrics_chart: bool,
     overview: Option<crate::overview::OverviewFeed>,
     selection_ui: selections_ui::State,
     pending_session: Option<(Box<crate::ops::ReviewedOperation>, String)>,
@@ -863,6 +873,7 @@ pub fn run(options: Options) -> Result<()> {
         hotkeys,
         keymap,
         faults_only: false,
+        ask_screen: None,
         views,
         ui,
         wide: false,
@@ -908,6 +919,7 @@ pub fn run(options: Options) -> Result<()> {
         items_generation: 0,
         visible_cache: Default::default(),
         metrics_resources: false,
+        metrics_chart: false,
         overview: None,
         selection_ui: Default::default(),
         pending_session: None,

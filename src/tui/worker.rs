@@ -67,6 +67,8 @@ pub(super) enum Task {
     /// RBAC subject list: namespace scope, subject kind filter, view title.
     Subjects(String, Option<&'static str>, &'static str),
     SecretValue(String, String, String, String),
+    /// Masked YAML of one Secret: namespace, name, uid.
+    SecretYaml(String, String, String),
     Xray(String, String),
     Workloads(String),
     Can(String, String),
@@ -74,6 +76,7 @@ pub(super) enum Task {
     Manifest(std::path::PathBuf),
     Helm(helm_ui::Request, u64),
     HelmPrepare(Box<helm_ui::WriteDraft>, u64),
+    AskPrepare(String, String, Option<std::path::PathBuf>),
     AdvicePrepare(
         String,
         String,
@@ -124,6 +127,7 @@ pub(super) enum Reply {
     Subjects(&'static str, String, crate::navigation_views::SubjectIndex),
     DashboardWorkloads(Vec<(String, Result<Vec<crate::workload_tail::WorkloadRef>>)>),
     SecretValue(String, String, Result<crate::secrets::Revealed>),
+    SecretYaml(String, Result<crate::secrets::MaskedSecret>),
     Helm(u64, Result<helm_ui::Response>),
     HelmPrepared(u64, Result<Box<crate::helm_lifecycle::Prepared>>),
     AdvicePrepared(Result<(Option<crate::advice::PreparedAdvice>, String)>),
@@ -679,6 +683,17 @@ pub(super) fn worker() -> Worker {
                             }
                         }else{Reply::Failure("Not connected; review again after reconnecting.".into())}
                     }
+                    Task::AskPrepare(question,screen,policy)=>{
+                        let result=async {
+                            if epoch!=watch_results.epoch.load(std::sync::atomic::Ordering::SeqCst){return Err("Copilot question canceled: context/scope changed.".into());}
+                            let policy=policy.ok_or("Setup required: --copilot-policy ABS --allow-copilot-screen")?;
+                            let options=crate::advice::load_options(&policy)?;
+                            let prepared=crate::advice::prepare_screen(&question,&screen,options).await?;
+                            let text=format!("01 REVIEW SCREEN TRANSFER    /    02 Ask Copilot    /    03 Read answer\n\n{}\n\nEXACT TEXT SENT\n{}",prepared.summary(),prepared.preview()?);
+                            Ok((Some(prepared),text))
+                        }.await;
+                        Reply::AdvicePrepared(result)
+                    }
                     Task::AdvicePrepare(kind,namespace,name,uid,policy)=>{
                         let result=async {
                             if epoch!=watch_results.epoch.load(std::sync::atomic::Ordering::SeqCst){return Err("Copilot preview canceled: context/scope changed.".into());}
@@ -784,6 +799,7 @@ pub(super) fn worker() -> Worker {
                                     Task::Pulses(n)=>Reply::Detail(crate::insights::pulses(g,&n).await?),
                                     Task::Secrets(n)=>Reply::Secrets(g.secret_index(&n).await?),
                                     Task::SecretValue(n,name,uid,key)=>{let value=g.secret_value(&n,&name,&uid,&key).await;Reply::SecretValue(uid,key,value)},
+                                    Task::SecretYaml(n,name,uid)=>{let doc=g.secret_yaml(&n,&name,&uid).await;Reply::SecretYaml(uid,doc)},
                                     Task::Xray(k,n)=>Reply::Detail(crate::insights::xray(g,&k,&n).await?),
                                     Task::Lint(n)=>{let (found,notes)=crate::lint::collect(g,&n).await?;Reply::Detail(crate::lint::report(&g.context,&n,&found,&notes))},
                                     Task::Workloads(n)=>Reply::Detail(crate::insights::workloads(g,&n).await?),
@@ -859,7 +875,7 @@ pub(super) fn worker() -> Worker {
                                         Reply::Prepared(Box::new(prepared))
                                     },
                                     Task::Execute(p,a) => Reply::Notice(g.execute(*p,a).await?),
-                                    Task::YamlPrepare(..) | Task::YamlExecute(..) | Task::ApplyPrepare(..) | Task::ApplyExecute(..) | Task::NodeShellPrepare(..) | Task::NodeShellStart(..) | Task::DebugPrepare(..) | Task::DebugStart(..) | Task::ScanPrepare(..) | Task::ScanRun(..) | Task::Bench(..) | Task::NodeExecute(..) | Task::DashboardLogs(..) | Task::DashboardWorkloads(..) | Task::DashboardTail(..) | Task::Overview(..) | Task::Connect(_) | Task::Watch(..) | Task::Metrics(..) | Task::RunSession(..) | Task::RunForward(..) | Task::Directory(_) | Task::Manifest(_) | Task::Helm(..) | Task::HelmPrepare(..) | Task::HelmExecute(..) | Task::AdvicePrepare(..) | Task::AdviceExecute(..) | Task::BatchPrepare(..) | Task::BatchExecute(..) => return Err("invalid worker task".into()),
+                                    Task::YamlPrepare(..) | Task::YamlExecute(..) | Task::ApplyPrepare(..) | Task::ApplyExecute(..) | Task::NodeShellPrepare(..) | Task::NodeShellStart(..) | Task::DebugPrepare(..) | Task::DebugStart(..) | Task::ScanPrepare(..) | Task::ScanRun(..) | Task::Bench(..) | Task::NodeExecute(..) | Task::DashboardLogs(..) | Task::DashboardWorkloads(..) | Task::DashboardTail(..) | Task::Overview(..) | Task::Connect(_) | Task::Watch(..) | Task::Metrics(..) | Task::RunSession(..) | Task::RunForward(..) | Task::Directory(_) | Task::Manifest(_) | Task::Helm(..) | Task::HelmPrepare(..) | Task::HelmExecute(..) | Task::AskPrepare(..) | Task::AdvicePrepare(..) | Task::AdviceExecute(..) | Task::BatchPrepare(..) | Task::BatchExecute(..) => return Err("invalid worker task".into()),
                                 })
                             };
                             match tokio::time::timeout(Duration::from_secs(25), future).await {

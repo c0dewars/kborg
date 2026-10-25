@@ -13,7 +13,7 @@ Thanks for testing. This guide gets you running in a few minutes and lists what 
 Release candidate from source (needs Rust; `rustup` installs the pinned toolchain):
 
 ```sh
-cargo install --locked --git https://github.com/c0dewars/kborg --tag v0.5.0-rc.2
+cargo install --locked --git https://github.com/c0dewars/kborg --tag v0.5.0-rc.3
 kborg --version
 ```
 
@@ -40,6 +40,7 @@ No cluster? `kborg demo` opens an offline sample cluster.
 | `--write --allow-node-shell` | `s` on a Node (privileged Pod; only on a cluster you own) |
 | `--write --allow-yaml-edit` | `e` on a Deployment, change replicas or an image, Ctrl-S to review |
 | `--allow-secret-reveal` | `:secrets`, then `x` on one key |
+| `--copilot-policy ABS --allow-copilot-screen` (macOS ARM64) | `:ask why is this failing?` on a table, describe or logs view; read the whole review, type the confirmation |
 
 ## Customize like k9s
 
@@ -49,7 +50,7 @@ Put these in the config directory (macOS: `~/Library/Application Support/KBorg`,
 - `hotkeys.yaml`: keys that run commands ([format](K9S_COMPATIBILITY.md#custom-hotkeys)).
 - `aliases.yaml`: your own command names.
 - `ui.yaml`: borders, header and hint rows, table style, dashboard cards and color overrides (`kborg ui init` writes a commented example; `:ui reload` applies edits; [options](themes.md#uiyaml)).
-- `keymap.yaml`: remap any built-in key; `?` and `:keymap` show your bindings ([format](K9S_COMPATIBILITY.md#custom-keymap)).
+- `keymap.yaml`: remap any built-in key, including Helm releases/history/forms, RBAC subjects, pickers, saved selections, themes, the dashboard tail picker and the port-forward form; `?` in each of those views and `:keymap` show your bindings ([format](K9S_COMPATIBILITY.md#custom-keymap)).
 
 Your existing k9s `views.yaml`, `hotkeys.yaml` and `aliases.yaml` should work as-is. If one doesn't, please report it.
 

@@ -84,10 +84,10 @@ impl TailPicker {
         }
         PickerOutcome::Stay
     }
-    fn lines(&self, height: usize) -> Vec<(String, &'static str)> {
+    fn lines(&self, height: usize, select: &str) -> Vec<(String, &'static str)> {
         let mut lines = vec![(
             format!(
-                "Space select (max {})   Enter tail selected   Esc cancel   {} selected",
+                "{select} select (max {})   Enter tail selected   Esc cancel   {} selected",
                 crate::workload_tail::MAX_SOURCES,
                 self.checked.len()
             ),
@@ -143,9 +143,25 @@ pub(super) struct Trend {
     attention: std::collections::VecDeque<u64>,
     cpu: std::collections::VecDeque<u64>,
     memory: std::collections::VecDeque<u64>,
+    /// Timed samples for the chart panel (`G`), same cap and interval.
+    timed: std::collections::VecDeque<TrendPoint>,
+    restarts: Option<u64>,
+}
+/// One dashboard trend sample; `None` values are unknown, never zero.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct TrendPoint {
+    pub at: std::time::Instant,
+    pub attention: u64,
+    /// Increase of the summed container restart counters since the previous
+    /// sample. Counters reset when Pods are replaced, so a drop counts as 0.
+    pub restarts_delta: Option<u64>,
+    pub cpu: Option<u64>,
+    pub memory: Option<u64>,
 }
 const TREND_SAMPLES: usize = 60;
 const TREND_INTERVAL: std::time::Duration = std::time::Duration::from_secs(15);
+/// The span the trend covers: 60 samples at 15 s.
+pub(super) const TREND_WINDOW: std::time::Duration = std::time::Duration::from_secs(15 * 60);
 fn push(values: &mut std::collections::VecDeque<u64>, value: u64) {
     if values.len() == TREND_SAMPLES {
         values.pop_front();
@@ -165,7 +181,7 @@ pub(super) fn sparkline(values: &std::collections::VecDeque<u64>, max: u64) -> S
         .collect()
 }
 impl Trend {
-    fn sample(&mut self, summary: &ContextSummary, now: std::time::Instant) {
+    pub(super) fn sample(&mut self, summary: &ContextSummary, now: std::time::Instant) {
         if self
             .at
             .is_some_and(|at| now.duration_since(at) < TREND_INTERVAL)
@@ -184,6 +200,28 @@ impl Trend {
         if let Some(memory) = nodes.and_then(|nodes| nodes.memory_percent) {
             push(&mut self.memory, memory);
         }
+        let restarts = summary.health.as_ref().map(|health| health.restarts);
+        if self.timed.len() == TREND_SAMPLES {
+            self.timed.pop_front();
+        }
+        self.timed.push_back(TrendPoint {
+            at: now,
+            attention: attention as u64,
+            restarts_delta: restarts
+                .zip(self.restarts)
+                .map(|(current, previous)| current.saturating_sub(previous)),
+            cpu: nodes.and_then(|nodes| nodes.cpu_percent),
+            memory: nodes.and_then(|nodes| nodes.memory_percent),
+        });
+        self.restarts = restarts;
+    }
+    /// Samples inside the trend window, oldest first.
+    pub fn points(&self, now: std::time::Instant) -> Vec<TrendPoint> {
+        self.timed
+            .iter()
+            .filter(|point| now.saturating_duration_since(point.at) <= TREND_WINDOW)
+            .copied()
+            .collect()
     }
     /// One card line, once there are at least two samples.
     pub fn line(&self, width: usize) -> Option<String> {
@@ -228,6 +266,8 @@ pub(super) struct Dashboard {
     pub picker: Option<TailPicker>,
     /// k10s focus mode: pressing the focused card's number again shows it alone.
     pub focus: bool,
+    /// `G`: the focused card's trend charts replace the card grid.
+    pub chart: bool,
 }
 impl Dashboard {
     pub fn new(names: &[String], demo: bool) -> Self {
@@ -245,6 +285,7 @@ impl Dashboard {
             logs: None,
             picker: None,
             focus: false,
+            chart: false,
         }
     }
     pub fn selected(&self) -> Option<&ContextSummary> {
@@ -290,6 +331,10 @@ impl Dashboard {
     pub fn key(&mut self, key: KeyCode) {
         let count = self.rows.len();
         if count == 0 {
+            return;
+        }
+        if key == KeyCode::Char('G') {
+            self.chart = !self.chart;
             return;
         }
         if key == KeyCode::Char('w') {
@@ -487,7 +532,16 @@ fn picker_pane(app: &App, picker: &TailPicker, rect: Rect, out: &mut impl Write)
     )
     .map_err(|_| "draw failed")?;
     let height = usize::from(rect.height.saturating_sub(2));
-    for (index, (text, role)) in picker.lines(height).iter().take(height).enumerate() {
+    let select = app
+        .keymap
+        .primary("tail.select")
+        .unwrap_or_else(|| "(unbound)".into());
+    for (index, (text, role)) in picker
+        .lines(height, &select)
+        .iter()
+        .take(height)
+        .enumerate()
+    {
         cell(
             out,
             rect.x + 1,
@@ -995,14 +1049,14 @@ pub(super) fn render(
         panel(
             out,
             rect,
-            "DASHBOARD KEYS",
+            super::keyhelp::dashboard_help_title(dashboard),
             true,
             color("accent"),
             bg,
             &app.ui,
         )
         .map_err(|_| "draw failed")?;
-        let help = super::keyhelp::dashboard_help_lines(app);
+        let help = super::keyhelp::dashboard_help_lines(app, dashboard);
         for (index, text) in help
             .iter()
             .take(rect.height.saturating_sub(2) as usize)
@@ -1028,7 +1082,25 @@ pub(super) fn render(
         let card_height = height.saturating_sub(pane.map_or(0, |(_, h)| h + 1));
         let mut cards_bottom = 4;
         if card_height >= 12 || pane.is_none() {
-            let layout = if dashboard.focus {
+            let layout = if dashboard.chart {
+                let rect = Rect {
+                    x: 0,
+                    y: 4,
+                    width,
+                    height: card_height.saturating_sub(7),
+                };
+                cards_bottom = rect.y + rect.height;
+                let context = dashboard.selected().map_or("", |row| row.context.as_str());
+                super::charts_ui::dashboard(
+                    app,
+                    out,
+                    rect,
+                    dashboard.trends.get(context),
+                    context,
+                    bg,
+                )?;
+                Vec::new()
+            } else if dashboard.focus {
                 vec![(
                     dashboard.selected,
                     Rect {
@@ -1136,6 +1208,48 @@ mod tests {
             "{line}"
         );
         assert!(line.is_ascii());
+    }
+    #[test]
+    fn chart_points_keep_time_restart_deltas_and_unknowns() {
+        let mut trend = Trend::default();
+        let mut summary = with_warnings("c", &[]);
+        summary.unhealthy = Some(1);
+        let start = std::time::Instant::now();
+        let restarts = |summary: &mut ContextSummary, value| {
+            if let Some(health) = summary.health.as_mut() {
+                health.restarts = value;
+            }
+        };
+        restarts(&mut summary, 5);
+        trend.sample(&summary, start);
+        restarts(&mut summary, 8);
+        let mut infra = crate::cluster_health::InfraSummary::connecting();
+        infra.nodes.cpu_percent = Some(40);
+        summary.infra = Some(infra);
+        trend.sample(&summary, start + TREND_INTERVAL);
+        restarts(&mut summary, 2);
+        trend.sample(&summary, start + TREND_INTERVAL * 2);
+        let points = trend.points(start + TREND_INTERVAL * 2);
+        assert_eq!(
+            points.iter().map(|p| p.restarts_delta).collect::<Vec<_>>(),
+            vec![None, Some(3), Some(0)]
+        );
+        assert_eq!(points[0].cpu, None, "unknown CPU is a gap, not zero");
+        assert_eq!(points[1].cpu, Some(40));
+        assert!(trend.points(start + TREND_WINDOW * 3).is_empty());
+        for i in 0..100u32 {
+            trend.sample(&summary, start + TREND_INTERVAL * (3 + i));
+        }
+        assert_eq!(
+            trend.timed.len(),
+            TREND_SAMPLES,
+            "chart history stays bounded"
+        );
+        let mut dashboard = Dashboard::new(&["a".into()], true);
+        dashboard.key(KeyCode::Char('G'));
+        assert!(dashboard.chart);
+        dashboard.key(KeyCode::Char('G'));
+        assert!(!dashboard.chart);
     }
     #[test]
     fn number_again_toggles_focus_and_cards_show_node_and_app_readiness() {

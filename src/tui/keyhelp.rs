@@ -25,7 +25,13 @@ pub(super) struct HelpView {
 /// The view whose keys `?` explains when pressed in `modal`.
 pub(super) fn help_scope(modal: &Modal) -> Option<Scope> {
     match modal {
-        Modal::LiveOverview(..) | Modal::YamlEditor(..) | Modal::Help(..) => None,
+        // The dashboard (and its tail picker) toggle their own overlay; in
+        // forms `?` is typed text.
+        Modal::LiveOverview(..)
+        | Modal::YamlEditor(..)
+        | Modal::Help(..)
+        | Modal::HelmForm(..)
+        | Modal::ForwardForm(..) => None,
         modal => translated_scope(modal),
     }
 }
@@ -36,7 +42,21 @@ pub(super) fn translated_scope(modal: &Modal) -> Option<Scope> {
     Some(match modal {
         Modal::Follow(view) if !view.is_filtering() => Scope::Log,
         Modal::LiveOverview(dashboard) if dashboard.picker.is_none() => Scope::Dashboard,
+        Modal::LiveOverview(..) => Scope::Tail,
         Modal::ForwardView => Scope::Forward,
+        Modal::ForwardForm(..) => Scope::ForwardForm,
+        Modal::Helm(table) if !table.is_filtering() => {
+            if table.parent.is_some() {
+                Scope::HelmHistory
+            } else {
+                Scope::Helm
+            }
+        }
+        Modal::HelmForm(..) => Scope::HelmForm,
+        Modal::Subjects(view) if !view.is_typing() => Scope::Subjects,
+        Modal::Picker(label, ..) if *label == selections_ui::PICKER_LABEL => Scope::Selections,
+        Modal::Picker(..) => Scope::Picker,
+        Modal::Themes(..) => Scope::Themes,
         Modal::PodContainers(..) => Scope::Containers,
         Modal::Detail(..)
         | Modal::HelmDocument(..)
@@ -46,6 +66,7 @@ pub(super) fn translated_scope(modal: &Modal) -> Option<Scope> {
         Modal::Metrics(..) => Scope::Metrics,
         Modal::YamlEditor(..) => Scope::Editor,
         Modal::Help(view) if !view.typing => Scope::Help,
+        Modal::Secrets(..) => Scope::Secrets,
         _ => return None,
     })
 }
@@ -381,10 +402,20 @@ pub(super) fn modal_hint(app: &App, modal: &Modal) -> Option<String> {
                 app,
                 &[
                     ("metrics.refresh", "refresh"),
+                    (
+                        "metrics.chart",
+                        if app.metrics_chart {
+                            "text view"
+                        } else {
+                            "chart"
+                        },
+                    ),
                     ("metrics.resources", "requests/limits (extra reads)"),
                 ],
             ));
-            parts.push(scroll);
+            if !app.metrics_chart {
+                parts.push(scroll);
+            }
             parts.join(" | ")
         }
         Modal::ForwardView => {
@@ -424,6 +455,129 @@ pub(super) fn modal_hint(app: &App, modal: &Modal) -> Option<String> {
             parts.push("Esc back".into());
             parts.join(" | ")
         }
+        Modal::Helm(table) if table.is_filtering() => {
+            "Type to filter | Enter keep | Esc cancel".into()
+        }
+        Modal::Helm(table) if table.parent.is_some() => {
+            let mut parts = vec!["Enter values".to_owned()];
+            parts.extend(pairs(
+                app,
+                &[
+                    ("helm.history.rollback", "rollback"),
+                    ("helm.history.test", "test"),
+                    ("helm.history.upgrade", "upgrade"),
+                    ("helm.history.uninstall", "uninstall"),
+                    ("helm.history.filter", "filter"),
+                    ("help", "keys"),
+                ],
+            ));
+            parts.push("Esc back".into());
+            parts.join(" | ")
+        }
+        Modal::Helm(..) => {
+            let mut parts = vec!["Enter history".to_owned()];
+            parts.extend(pairs(
+                app,
+                &[
+                    ("helm.install", "install"),
+                    ("helm.upgrade", "upgrade"),
+                    ("helm.test", "test"),
+                    ("helm.crds", "CRDs"),
+                    ("helm.uninstall", "uninstall"),
+                    ("helm.filter", "filter"),
+                    ("help", "keys"),
+                ],
+            ));
+            parts.push("Esc back".into());
+            parts.join(" | ")
+        }
+        Modal::ForwardForm(..) => forward_form_hint(app),
+        Modal::Subjects(view) if view.is_typing() => {
+            "Type to filter | Enter keep | Esc clear".into()
+        }
+        Modal::Subjects(..) => {
+            let mut parts = vec!["Enter bindings and rules".to_owned()];
+            parts.extend(pairs(app, &[("subjects.filter", "filter")]));
+            parts.push(format!(
+                "{} {} {} {} move",
+                key_of(app, "subjects.down"),
+                key_of(app, "subjects.up"),
+                key_of(app, "subjects.page-up"),
+                key_of(app, "subjects.page-down")
+            ));
+            parts.extend(pairs(app, &[("help", "keys")]));
+            parts.push("Esc back".into());
+            parts.join(" | ")
+        }
+        Modal::Picker(label, ..) => {
+            let selections = *label == selections_ui::PICKER_LABEL;
+            let mut parts = vec![
+                if selections {
+                    "Enter open"
+                } else {
+                    "Enter choose"
+                }
+                .to_owned(),
+            ];
+            if selections {
+                parts.extend(pairs(app, &[("selections.delete", "remove")]));
+            }
+            parts.push(format!(
+                "{} {} move",
+                key_of(app, "picker.down"),
+                key_of(app, "picker.up")
+            ));
+            parts.extend(pairs(app, &[("help", "keys")]));
+            parts.push(if selections { "Esc back" } else { "Esc cancel" }.into());
+            parts.join(" | ")
+        }
+        Modal::Themes(..) => {
+            let mut parts = vec![format!(
+                "{} {} preview",
+                key_of(app, "themes.down"),
+                key_of(app, "themes.up")
+            )];
+            parts.push("Enter save".into());
+            parts.extend(pairs(
+                app,
+                &[("themes.new", "new custom theme"), ("help", "keys")],
+            ));
+            parts.push("Esc restore".into());
+            parts.join(" | ")
+        }
+        Modal::Secrets(view) => {
+            use crate::ui_secrets::Mode as SecretsMode;
+            let mode = view.mode();
+            let mut parts = if mode == SecretsMode::List {
+                vec!["Enter keys".to_owned()]
+            } else {
+                Vec::new()
+            };
+            let reveal = if mode == SecretsMode::List {
+                "keys"
+            } else {
+                "reveal/hide key (30s)"
+            };
+            parts.extend(pairs(app, &[("secrets.reveal", reveal)]));
+            if mode != SecretsMode::Yaml {
+                parts.extend(pairs(app, &[("secrets.yaml", "masked YAML")]));
+            }
+            parts.push(format!(
+                "{} {} move",
+                key_of(app, "secrets.down"),
+                key_of(app, "secrets.up")
+            ));
+            if mode == SecretsMode::Yaml {
+                parts.push(format!(
+                    "{} {} scroll",
+                    key_of(app, "secrets.page-up"),
+                    key_of(app, "secrets.page-down")
+                ));
+            }
+            parts.extend(pairs(app, &[("help", "keys")]));
+            parts.push("Esc back".into());
+            parts.join(" | ")
+        }
         Modal::YamlEditor(..) => {
             let mut parts = vec!["Arrows move".to_owned(), "Tab indent".to_owned()];
             parts.extend(pairs(
@@ -435,6 +589,88 @@ pub(super) fn modal_hint(app: &App, modal: &Modal) -> Option<String> {
         }
         _ => return None,
     })
+}
+
+/// The port-forward form's key line, also shown inside the form.
+pub(super) fn forward_form_hint(app: &App) -> String {
+    let mut parts = pairs(
+        app,
+        &[
+            ("forward.form.next", "field"),
+            ("forward.form.clear", "clear"),
+        ],
+    );
+    parts.extend(["Enter review".into(), "Esc cancel".into()]);
+    parts.join(" | ")
+}
+
+/// Helm form key hints, narrowing with the terminal width.
+pub(super) fn helm_form_hints(app: &App, width: u16) -> Vec<(String, &'static str)> {
+    let mut hints = Vec::new();
+    let mut push = |action: &str, label: &'static str| {
+        if let Some(key) = app.keymap.primary(action) {
+            hints.push((key, label));
+        }
+    };
+    if width < 40 {
+        push("helm.form.next", "next");
+        hints.push(("Enter".into(), "review"));
+        hints.push(("Esc".into(), ""));
+    } else if width < 60 {
+        push("helm.form.next", "next");
+        hints.push(("Enter".into(), "review"));
+        hints.push(("Esc".into(), "back"));
+    } else {
+        push("helm.form.next", "next field");
+        push("helm.form.prev", "previous");
+        push("helm.form.clear", "clear");
+        hints.push(("Enter".into(), "review"));
+        hints.push(("Esc".into(), "back"));
+    }
+    hints
+}
+
+/// The first line of a picker, naming its keys.
+pub(super) fn picker_line(app: &App, label: &str) -> String {
+    if label == selections_ui::PICKER_LABEL {
+        let mut parts = vec!["Enter open".to_owned()];
+        parts.extend(pairs(app, &[("selections.delete", "remove")]));
+        parts.push("Esc back".into());
+        format!(" {}", parts.join(" | "))
+    } else {
+        format!(
+            " {label} | {} {} / Enter select / Esc cancel",
+            key_of(app, "picker.down"),
+            key_of(app, "picker.up")
+        )
+    }
+}
+
+/// The theme picker's first line.
+pub(super) fn themes_line(app: &App) -> String {
+    let new = app
+        .keymap
+        .primary("themes.new")
+        .map(|key| format!(" {key} create custom;"))
+        .unwrap_or_default();
+    format!(
+        " THEMES - {} {} preview; Enter save;{new} Esc restore",
+        key_of(app, "themes.down"),
+        key_of(app, "themes.up")
+    )
+}
+
+/// The subjects view's in-table key line.
+pub(super) fn subjects_line(app: &App) -> String {
+    let mut parts = vec!["Enter show bindings and rules".to_owned()];
+    parts.extend(pairs(app, &[("subjects.filter", "filter")]));
+    parts.push(format!(
+        "{} {} move",
+        key_of(app, "subjects.down"),
+        key_of(app, "subjects.up")
+    ));
+    parts.push("Esc back".into());
+    parts.join(" | ")
 }
 
 /// The two log-view hint rows: actions, then the range keys.
@@ -465,8 +701,34 @@ pub(super) fn log_hints(app: &App) -> (String, String) {
     (parts.join(" | "), ranges.join(" "))
 }
 
+/// Tail picker overlay lines, generated from the registry.
+fn tail_help_lines(app: &App) -> Vec<String> {
+    let mut lines: Vec<String> = app
+        .keymap
+        .entries(Scope::Tail)
+        .map(|(action, keys, custom)| entry(action, keys, custom, false).trim_start().to_owned())
+        .collect();
+    lines.extend([
+        "Esc cancels the picker; nothing is tailed until Enter".to_owned(),
+        format!("{} / Esc closes this keymap", key_of(app, "help")),
+    ]);
+    lines
+}
+
+/// The dashboard overlay title for its current state.
+pub(super) fn dashboard_help_title(dashboard: &dashboard_ui::Dashboard) -> &'static str {
+    if dashboard.picker.is_some() {
+        "TAIL PICKER KEYS"
+    } else {
+        "DASHBOARD KEYS"
+    }
+}
+
 /// Dashboard keymap overlay lines, generated from the registry.
-pub(super) fn dashboard_help_lines(app: &App) -> Vec<String> {
+pub(super) fn dashboard_help_lines(app: &App, dashboard: &dashboard_ui::Dashboard) -> Vec<String> {
+    if dashboard.picker.is_some() {
+        return tail_help_lines(app);
+    }
     let mut lines: Vec<String> = app
         .keymap
         .entries(Scope::Dashboard)
@@ -493,11 +755,11 @@ pub(super) fn dashboard_hint(app: &App, dashboard: &dashboard_ui::Dashboard) -> 
         parts.push("Esc back".into());
         parts
     } else if dashboard.picker.is_some() {
-        vec![
-            "Space select".into(),
-            "Enter tail".into(),
-            "Esc cancel".into(),
-        ]
+        let mut parts = pairs(app, &[("tail.select", "select")]);
+        parts.push("Enter tail".into());
+        parts.extend(pairs(app, &[("help", "keymap")]));
+        parts.push("Esc cancel".into());
+        parts
     } else if dashboard
         .logs
         .as_ref()
@@ -540,6 +802,14 @@ pub(super) fn dashboard_hint(app: &App, dashboard: &dashboard_ui::Dashboard) -> 
             &[
                 ("dashboard.warning", "warnings"),
                 ("dashboard.tail", "tail workloads"),
+                (
+                    "dashboard.chart",
+                    if dashboard.chart {
+                        "close charts"
+                    } else {
+                        "charts"
+                    },
+                ),
                 ("help", "keymap"),
             ],
         ));

@@ -41,13 +41,16 @@ impl App {
                 | Modal::Directory(..)
                 | Modal::ForwardView
                 | Modal::HelmDocument(..)
+                | Modal::Picker(..)
                 | Modal::AdviceDocument(..) => true,
                 Modal::Help(view) => !view.typing,
+                Modal::Subjects(view) => !view.is_typing(),
                 Modal::Follow(view) => !view.is_filtering(),
                 Modal::Helm(table) => !table.is_filtering(),
                 _ => false,
             }
         {
+            self.capture_ask_screen();
             let modal = std::mem::replace(&mut self.modal, Modal::None);
             if !matches!(modal, Modal::None) {
                 self.push_subview(modal);
@@ -490,6 +493,10 @@ impl App {
                 crate::ui_secrets::Outcome::Reveal(namespace, name, uid, key) => {
                     self.modal = Modal::Secrets(view);
                     self.send(Task::SecretValue(namespace, name, uid, key));
+                }
+                crate::ui_secrets::Outcome::Yaml(namespace, name, uid) => {
+                    self.modal = Modal::Secrets(view);
+                    self.send(Task::SecretYaml(namespace, name, uid));
                 }
             },
             Modal::Directory(directory, mut index) => match code {
@@ -1068,6 +1075,8 @@ impl App {
                         self.delete_selection_name(&text);
                     } else if label == "Command" {
                         return self.command(&text);
+                    } else if label == ASK_LABEL {
+                        self.ask(&text);
                     } else if label == "Filter" {
                         self.filter = text;
                         self.selected = 0;
@@ -1133,6 +1142,14 @@ impl App {
             },
             Modal::LiveOverview(mut dashboard) => {
                 dashboard.notice = None;
+                if dashboard.picker.is_some() && (dashboard.help || code == KeyCode::Char('?')) {
+                    // The tail picker's keymap overlay: `?` toggles, Esc closes.
+                    if matches!(code, KeyCode::Char('?') | KeyCode::Esc) {
+                        dashboard.help = !dashboard.help;
+                    }
+                    self.modal = Modal::LiveOverview(dashboard);
+                    return Ok(false);
+                }
                 if let Some(picker) = dashboard.picker.as_mut() {
                     match picker.key(code) {
                         dashboard_ui::PickerOutcome::Stay => {}
@@ -1153,6 +1170,7 @@ impl App {
                 match code {
                     KeyCode::Char('?') => dashboard.help = !dashboard.help,
                     KeyCode::Esc if dashboard.help => dashboard.help = false,
+                    KeyCode::Esc if dashboard.chart => dashboard.chart = false,
                     KeyCode::Esc if dashboard.logs.is_some() => {
                         dashboard.logs = None;
                         self.worker.logs.cancel();
@@ -1284,6 +1302,10 @@ impl App {
                     self.metrics_resources = true;
                     self.modal = Modal::Metrics(text, offset);
                     self.request_metrics();
+                }
+                KeyCode::Char('g') => {
+                    self.metrics_chart = !self.metrics_chart;
+                    self.modal = Modal::Metrics(text, offset);
                 }
                 _ => {
                     offset = scroll_offset(&text, offset, code);

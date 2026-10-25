@@ -91,7 +91,19 @@ impl View {
         }
         Outcome::Stay
     }
+    /// Whether `/` filter text is being typed (keys are text, not actions).
+    pub fn is_typing(&self) -> bool {
+        self.typing
+    }
     pub fn lines(&self, width: usize, height: usize) -> Vec<String> {
+        self.lines_with(
+            width,
+            height,
+            "Enter show bindings and rules | / filter | j k move | Esc back",
+        )
+    }
+    /// Lines with `keys` as the key line, so remapped keys are shown.
+    pub fn lines_with(&self, width: usize, height: usize, keys: &str) -> Vec<String> {
         let clip = |text: String| text.chars().take(width).collect::<String>();
         let rows = self.visible();
         let mut lines = vec![clip(format!(
@@ -110,7 +122,7 @@ impl View {
         lines.push(clip(if self.typing {
             format!("Filter > {}_", self.filter)
         } else if self.filter.is_empty() {
-            "Enter show bindings and rules | / filter | j k move | Esc back".into()
+            keys.to_owned()
         } else {
             format!(
                 "Filter: {} | Esc clears | Enter show bindings and rules",

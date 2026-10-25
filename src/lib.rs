@@ -1,4 +1,5 @@
 #![forbid(unsafe_code)]
+pub mod chart;
 pub mod cli;
 pub mod copilot;
 pub mod gateway;

@@ -17,8 +17,19 @@ See docs/REMAINING_WORK.md and the linked current acceptance report for requirem
 Secret inspection is off by default. `--allow-secret-reveal` enables `:secrets`,
 which lists names, types, key names and sizes for one namespace and decodes a
 single key only on an explicit `x`, for 30 seconds; values are never exported,
-copied or written to disk. The listing still transfers Secret payloads into
-process memory, so grant `list secrets` only where that is acceptable. Ctrl-K
+copied, logged, audited or written to disk. `y`/`d` there show a masked YAML of
+one Secret: metadata (credential-like annotation values redacted, the
+`last-applied-configuration` annotation dropped because it embeds data), type,
+immutable and every key as `<hidden: N bytes>`, plus structure only: TLS
+certificate subject/expiry, docker registry hostnames (no usernames or auth),
+and whether a service-account token exists. `x` in that view reveals one key
+inline over a fresh UID-checked read; nothing reveals the whole object. Generic
+resource views, lists, watches and exports still refuse Secrets and point to
+`:secrets`. The listing and the YAML read still transfer Secret payloads into
+process memory; KBorg overwrites the payload bytes it holds as soon as the
+index or masked view is built and when a revealed value is hidden, but copies
+inside the HTTP client are outside its control, so grant `get`/`list secrets`
+only where that is acceptable. Ctrl-K
 force kill is separately opt-in with `--write --allow-force-kill`.
 
 Marked rows never widen an approval on their own. With marks, delete,
@@ -107,6 +118,15 @@ metadata addresses stay blocked), and `tls_ca_file` makes TLS for that host
 trust the supplied internal CA. In GHES offline mode the instance forwards the
 reviewed bundle to its administrator-configured model provider, which KBorg
 cannot see or verify.
+
+`:ask` (separately opt-in with `--allow-copilot-screen`, and refusable in the
+operator configuration with `allow_copilot_screen: false`) sends the visible
+screen text, which is not minimized: it can include context, namespace and
+object names, statuses, events and log lines. Display redaction (masked
+Secrets, hidden credentials) applies first, and the review shows the exact
+bytes. Screen text is passed to the model as data on stdin under a fixed
+instruction; a hostile log line can still try to steer the answer, which is
+why answers are advice only and never executed.
 
 Helm storage access is separately opt-in with `--allow-helm`. Generic Secret
 YAML/describe views remain unavailable, but Helm metadata/history and selected values are

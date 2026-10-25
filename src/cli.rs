@@ -63,6 +63,8 @@ pub struct Options {
     pub helm_keyring: Option<PathBuf>,
     pub helm_sigstore_policy: Option<PathBuf>,
     pub copilot_policy: Option<PathBuf>,
+    /// Opt-in: `:ask` may send the visible screen text to Copilot (with review).
+    pub allow_copilot_screen: bool,
     pub helm_timeout_seconds: u16,
     pub log_seconds: u32,
     pub log_read: crate::logs::ReadOptions,
@@ -107,6 +109,7 @@ fn parse(args: Vec<String>) -> Result<Options> {
         helm_keyring: None,
         helm_sigstore_policy: None,
         copilot_policy: None,
+        allow_copilot_screen: false,
         helm_timeout_seconds: 300,
         log_seconds: crate::logs::DEFAULT_FOLLOW_SECONDS,
         log_read: crate::logs::ReadOptions::default(),
@@ -311,6 +314,7 @@ fn parse(args: Vec<String>) -> Result<Options> {
             "--allow-apply" => opts.connection.allow_apply = true,
             "--recursive" => opts.recursive = true,
             "--allow-node-shell" => opts.connection.allow_node_shell = true,
+            "--allow-copilot-screen" => opts.allow_copilot_screen = true,
             "--allow-debug" => opts.connection.allow_debug = true,
             "--allow-scan" => opts.allow_scan = true,
             "--scanner" => {
@@ -1586,6 +1590,9 @@ fn copilot_command(opts: &Options) -> Result<()> {
     }
 }
 async fn discover_if_needed(gateway: &mut Gateway, resource: &str) -> Result<()> {
+    if crate::secrets::is_secret_alias(resource) {
+        return Err(crate::secrets::GENERIC_REFUSAL.into());
+    }
     if resource.is_empty()
         || resource.len() > 253
         || !resource.bytes().all(|b| {

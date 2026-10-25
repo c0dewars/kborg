@@ -23,6 +23,12 @@ async fn synthetic_reviewed_copilot_advice() -> kborg::Result<()> {
     let typed = prepared.confirmation();
     let result = kborg::advice::run(prepared, &typed, None).await?;
     assert!(!result.answer.trim().is_empty());
+    // The answer must reflect the payload: an earlier runtime passed -p and
+    // the CLI ignored stdin, so Copilot answered without seeing the bundle.
+    assert!(
+        result.answer.to_ascii_lowercase().contains("crashloop"),
+        "answer does not reflect the reviewed bundle"
+    );
     assert!(result.network.approved_tunnels > 0);
     let sources: [(&str, &[u8]); 12] = [
         ("src/copilot.rs", include_bytes!("../src/copilot.rs")),

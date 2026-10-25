@@ -38,6 +38,7 @@ fn harness() -> Harness {
                 helm_keyring: None,
                 helm_sigstore_policy: None,
                 copilot_policy: None,
+                allow_copilot_screen: false,
                 helm_timeout_seconds: 300,
                 allow_tools: false,
                 allow_extensions: false,
@@ -78,6 +79,7 @@ fn harness() -> Harness {
             hotkeys: Default::default(),
             keymap: Default::default(),
             faults_only: false,
+            ask_screen: None,
             views: Default::default(),
             ui: Default::default(),
             wide: false,
@@ -123,6 +125,7 @@ fn harness() -> Harness {
             items_generation: 0,
             visible_cache: Default::default(),
             metrics_resources: false,
+            metrics_chart: false,
             overview: None,
             selection_ui: Default::default(),
             pending_session: None,
@@ -841,6 +844,7 @@ fn screen(app: &App, width: u16, height: u16) -> Vec<String> {
                         character,
                         '╭' | '╮' | '╰' | '╯' | '┌' | '┐' | '└' | '┘' | '─' | '│'
                     )
+                    || crate::chart::trusted_glyph(character)
             );
             assert!(
                 x < usize::from(width) && y < usize::from(height),
@@ -2548,6 +2552,115 @@ fn secrets_are_opt_in_hidden_by_default_and_reveal_one_key() -> Result<()> {
     Ok(())
 }
 #[test]
+fn secret_masked_yaml_opens_on_remappable_keys_and_reveal_is_dropped_behind_help() -> Result<()> {
+    let (mut app, replies, mut commands) = harness();
+    app.keymap = crate::keymap::parse("scopes:\n  secrets:\n    yaml: Alt-y\n")?;
+    app.namespace = "demo".into();
+    app.options.connection.allow_secret_reveal = true;
+    app.command("secrets")?;
+    let _ = commands.try_recv();
+    let data = crate::secrets::demo_data();
+    replies
+        .send((
+            app.epoch,
+            Reply::Secrets(crate::secrets::SecretIndex {
+                namespace: "demo".into(),
+                items: vec![crate::secrets::entry(
+                    "api-credentials",
+                    "demo-secret-uid",
+                    None,
+                    Some(&data),
+                )],
+                truncated: false,
+            }),
+        ))
+        .map_err(|_| "reply closed")?;
+    app.receive();
+    let bottom = screen(&app, 140, 30).join("\n");
+    assert!(bottom.contains("Alt-y masked YAML"), "{bottom}");
+    // The built-in y moved to Alt-y.
+    app.key_event(KeyCode::Char('y'), KeyModifiers::NONE)?;
+    assert!(commands.try_recv().is_err());
+    app.key_event(KeyCode::Char('y'), KeyModifiers::ALT)?;
+    assert!(matches!(
+        commands.try_recv(),
+        Ok((_, Task::SecretYaml(ns, name, uid)))
+            if (ns.as_str(), name.as_str(), uid.as_str()) == ("demo", "api-credentials", "demo-secret-uid")
+    ));
+    let mut secret = crate::secrets::demo_secret("demo");
+    let doc = crate::secrets::masked(&secret);
+    crate::secrets::wipe_secret(&mut secret);
+    replies
+        .send((
+            app.epoch,
+            Reply::SecretYaml("demo-secret-uid".into(), Ok(doc)),
+        ))
+        .map_err(|_| "reply closed")?;
+    app.receive();
+    let text = screen(&app, 140, 30).join("\n");
+    assert!(
+        text.contains("SECRET YAML") && text.contains("<hidden: 19 bytes>"),
+        "{text}"
+    );
+    assert!(!text.contains("not-a-real-password"));
+    app.key_event(KeyCode::Char('x'), KeyModifiers::NONE)?;
+    assert!(
+        matches!(commands.try_recv(), Ok((_, Task::SecretValue(_, _, _, key))) if key == "blob.bin")
+    );
+    replies
+        .send((
+            app.epoch,
+            Reply::SecretValue(
+                "demo-secret-uid".into(),
+                "blob.bin".into(),
+                Ok(crate::secrets::reveal(&data["blob.bin"])),
+            ),
+        ))
+        .map_err(|_| "reply closed")?;
+    app.receive();
+    assert!(
+        screen(&app, 140, 30)
+            .join("\n")
+            .contains("hex: 00 9f 92 96")
+    );
+    // Help lists the secrets scope and the revealed value is dropped first.
+    app.key_event(KeyCode::Char('?'), KeyModifiers::NONE)?;
+    let Modal::Help(view) = &app.modal else {
+        return Err("help closed".into());
+    };
+    assert_eq!(view.scope, crate::keymap::Scope::Secrets);
+    let help = keyhelp::help_body(&app, view);
+    assert!(
+        help.contains("SECRETS (:secrets") && help.contains("Masked YAML/describe"),
+        "{help}"
+    );
+    app.key_event(KeyCode::Esc, KeyModifiers::NONE)?;
+    let text = screen(&app, 140, 30).join("\n");
+    assert!(
+        text.contains("SECRET YAML") && !text.contains("hex: 00"),
+        "{text}"
+    );
+    Ok(())
+}
+#[test]
+fn generic_secret_reads_refuse_and_point_to_the_masked_view() {
+    for alias in [
+        "secrets",
+        "secret",
+        "sec",
+        "v1/secrets",
+        "Secret",
+        "secrets.",
+    ] {
+        assert!(crate::secrets::is_secret_alias(alias), "{alias}");
+    }
+    for other in ["pods", "secretstores.external-secrets.io", "configmaps"] {
+        assert!(!crate::secrets::is_secret_alias(other), "{other}");
+    }
+    assert!(crate::secrets::GENERIC_REFUSAL.contains(":secrets"));
+    assert!(crate::secrets::GENERIC_REFUSAL.contains("masked YAML"));
+}
+#[test]
 fn dashboard_warning_opens_exact_pod_events_and_esc_clears_selection_first() {
     let (mut app, _replies, mut commands) = harness();
     app.namespace = "*".into();
@@ -3381,7 +3494,15 @@ fn keymap_command_lists_every_action_and_filters() -> Result<()> {
     };
     let filtered = keyhelp::help_body(&app, view);
     assert!(filtered.contains("Ctrl-X") && filtered.contains("all marked *"));
-    assert!(!filtered.contains("sort.name") && !filtered.contains("Ctrl-D"));
+    assert!(!filtered.contains("sort.name"));
+    // The table delete action moved to Ctrl-X; Helm uninstall keeps Ctrl-D.
+    assert!(
+        filtered
+            .lines()
+            .filter(|line| line.starts_with("delete "))
+            .all(|line| line.contains("Ctrl-X") && !line.contains("Ctrl-D")),
+        "{filtered}"
+    );
     app.key(KeyCode::Enter)?;
     app.key(KeyCode::Esc)?;
     assert!(matches!(&app.modal, Modal::Help(view) if view.filter.is_empty()));
@@ -3551,5 +3672,539 @@ fn completed_batch_clears_marks_and_stopped_batch_keeps_unfinished_ones() -> Res
         .map_err(|_| "reply")?;
     app.receive();
     assert!(app.marks.is_empty());
+    Ok(())
+}
+
+fn help_scope_of(app: &App) -> Option<crate::keymap::Scope> {
+    match &app.modal {
+        Modal::Help(view) if view.mode == keyhelp::Mode::Context => Some(view.scope),
+        _ => None,
+    }
+}
+
+/// `?` opens that screen's help with its keys; Esc returns to the screen.
+fn assert_context_help(
+    app: &mut App,
+    scope: crate::keymap::Scope,
+    expected: &str,
+    back: impl Fn(&Modal) -> bool,
+) -> Result<()> {
+    app.key_event(KeyCode::Char('?'), KeyModifiers::NONE)?;
+    assert_eq!(help_scope_of(app), Some(scope), "{}", scope.name());
+    let Modal::Help(view) = &app.modal else {
+        return Err("help closed".into());
+    };
+    let body = keyhelp::help_body(app, view);
+    assert!(
+        body.contains(&format!("KEYS FOR {}", scope.title())) && body.contains(expected),
+        "{body}"
+    );
+    app.key_event(KeyCode::Esc, KeyModifiers::NONE)?;
+    assert!(back(&app.modal), "help returns to {}", scope.name());
+    Ok(())
+}
+
+fn helm_release(name: &str, revision: u32) -> crate::helm::Release {
+    crate::helm::Release {
+        namespace: "default".into(),
+        name: name.into(),
+        revision,
+        status: "deployed".into(),
+        chart_name: "web".into(),
+        chart_version: "1.0".into(),
+        app_version: "2".into(),
+        updated: "now".into(),
+        storage: crate::helm::Storage::Secret,
+        uid: format!("uid-{name}-{revision}"),
+        resource_version: "1".into(),
+    }
+}
+
+fn helm_table(parent: Option<crate::helm::Release>) -> Modal {
+    Modal::Helm(Box::new(helm_ui::Table::new(
+        crate::helm::Snapshot {
+            releases: vec![helm_release("web", 2), helm_release("web", 1)],
+            truncated: false,
+            issues: vec![],
+            source: "test".into(),
+        },
+        parent,
+        "default".into(),
+        Some(crate::helm::Storage::Secret),
+    )))
+}
+
+#[test]
+fn remapped_helm_release_and_history_keys_move_and_help_follows() -> Result<()> {
+    let (mut app, _replies, _commands) = harness();
+    app.options.connection.demo = true;
+    app.options.connection.writable = true;
+    app.options.connection.allow_helm = true;
+    app.options.connection.allow_helm_write = true;
+    app.keymap = crate::keymap::parse(
+        "scopes:\n  helm:\n    metadata: Y\n    install: I\n  helm.history:\n    rollback: Alt-r\n",
+    )?;
+    app.modal = helm_table(None);
+    let bottom = screen(&app, 140, 30).join("\n");
+    assert!(
+        bottom.contains("I install") && bottom.contains("? keys"),
+        "{bottom}"
+    );
+    app.key_event(KeyCode::Char('y'), KeyModifiers::NONE)?;
+    assert!(
+        matches!(app.modal, Modal::Helm(..)),
+        "y no longer opens YAML"
+    );
+    app.key_event(KeyCode::Char('Y'), KeyModifiers::NONE)?;
+    assert!(matches!(app.modal, Modal::HelmDocument(..)));
+    app.close_subview();
+    app.key_event(KeyCode::Char('i'), KeyModifiers::NONE)?;
+    assert!(matches!(app.modal, Modal::Helm(..)), "i no longer installs");
+    app.key_event(KeyCode::Char('I'), KeyModifiers::NONE)?;
+    assert!(matches!(app.modal, Modal::HelmForm(..)), "{}", app.status);
+    app.subviews.clear();
+    app.modal = helm_table(None);
+    assert_context_help(
+        &mut app,
+        crate::keymap::Scope::Helm,
+        "Y ",
+        |modal| matches!(modal, Modal::Helm(table) if table.parent.is_none()),
+    )?;
+    // `:` works in Helm and Esc returns to it.
+    app.key_event(KeyCode::Char(':'), KeyModifiers::NONE)?;
+    assert!(matches!(app.modal, Modal::Input("Command", _)));
+    app.key_event(KeyCode::Esc, KeyModifiers::NONE)?;
+    assert!(matches!(app.modal, Modal::Helm(..)));
+
+    // History: its own scope; the release-list remap does not apply there.
+    app.modal = helm_table(Some(helm_release("web", 2)));
+    app.key_event(KeyCode::Char('y'), KeyModifiers::NONE)?;
+    assert!(
+        matches!(app.modal, Modal::HelmDocument(..)),
+        "history y unchanged"
+    );
+    app.close_subview();
+    app.key_event(KeyCode::Char('r'), KeyModifiers::NONE)?;
+    assert!(
+        matches!(app.modal, Modal::Helm(..)),
+        "r no longer rolls back"
+    );
+    app.key_event(KeyCode::Char('r'), KeyModifiers::ALT)?;
+    assert!(
+        matches!(&app.modal, Modal::HelmForm(form) if matches!(form.intent, helm_ui::Intent::Rollback { .. })),
+        "{}",
+        app.status
+    );
+    app.subviews.clear();
+    app.modal = helm_table(Some(helm_release("web", 2)));
+    assert!(screen(&app, 140, 30).join("\n").contains("Alt-r rollback"));
+    assert_context_help(
+        &mut app,
+        crate::keymap::Scope::HelmHistory,
+        "Alt-r",
+        |modal| matches!(modal, Modal::Helm(table) if table.parent.is_some()),
+    )?;
+    // While the filter is typed, keys are text, not actions.
+    app.key_event(KeyCode::Char('/'), KeyModifiers::NONE)?;
+    app.key_event(KeyCode::Char('?'), KeyModifiers::NONE)?;
+    assert!(matches!(app.modal, Modal::Helm(..)));
+    Ok(())
+}
+
+#[test]
+fn remapped_helm_form_keys_take_only_modified_keys_and_keep_typing() -> Result<()> {
+    let (mut app, _replies, _commands) = harness();
+    app.keymap = crate::keymap::parse("scopes:\n  helm.form:\n    next: Ctrl-N\n")?;
+    app.modal = Modal::HelmForm(Box::new(helm_ui::Form::new(
+        helm_ui::Intent::Install,
+        "default".into(),
+        crate::helm::Storage::Secret,
+        None,
+        true,
+    )));
+    app.key_event(KeyCode::Tab, KeyModifiers::NONE)?;
+    assert!(matches!(&app.modal, Modal::HelmForm(form) if form.active == 0));
+    app.key_event(KeyCode::Char('n'), KeyModifiers::CONTROL)?;
+    assert!(matches!(&app.modal, Modal::HelmForm(form) if form.active == 1));
+    // `?` and letters stay typed text in the form.
+    app.key_event(KeyCode::Char('?'), KeyModifiers::NONE)?;
+    assert!(matches!(&app.modal, Modal::HelmForm(form) if form.fields[1].1 == "?"));
+    assert!(
+        screen(&app, 140, 34)
+            .join("\n")
+            .contains("Ctrl-N next field")
+    );
+    app.key_event(KeyCode::Char('u'), KeyModifiers::CONTROL)?;
+    assert!(matches!(&app.modal, Modal::HelmForm(form) if form.fields[1].1.is_empty()));
+    Ok(())
+}
+
+#[test]
+fn remapped_forward_form_keys_move_fields() -> Result<()> {
+    let (mut app, _replies, _commands) = harness();
+    app.keymap = crate::keymap::parse("scopes:\n  forward.form:\n    next: F3\n")?;
+    app.modal = Modal::ForwardForm(
+        "test".into(),
+        "api".into(),
+        Some("uid".into()),
+        ["8080".into(), "80".into(), "300".into()],
+        0,
+    );
+    app.key_event(KeyCode::Tab, KeyModifiers::NONE)?;
+    assert!(matches!(&app.modal, Modal::ForwardForm(.., 0)));
+    app.key_event(KeyCode::F(3), KeyModifiers::NONE)?;
+    assert!(matches!(&app.modal, Modal::ForwardForm(.., 1)));
+    let frame = screen(&app, 120, 30).join("\n");
+    assert!(frame.contains("F3 field | Ctrl-U clear"), "{frame}");
+    Ok(())
+}
+
+#[test]
+fn remapped_subject_keys_move_and_help_opens_for_subjects() -> Result<()> {
+    let (mut app, _replies, _commands) = harness();
+    app.keymap = crate::keymap::parse("scopes:\n  subjects:\n    close: x\n    filter: F\n")?;
+    let bindings = vec![
+        serde_json::json!({"metadata":{"namespace":"shop"},"roleRef":{"kind":"ClusterRole","name":"view"},"subjects":[{"kind":"User","name":"alice"}]}),
+    ];
+    let view = || {
+        Modal::Subjects(Box::new(crate::ui_subjects::View::new(
+            "RBAC SUBJECTS",
+            "shop".into(),
+            crate::navigation_views::SubjectIndex {
+                rows: crate::navigation_views::subject_rows(&bindings, None),
+                incomplete: false,
+                errors: Vec::new(),
+            },
+        )))
+    };
+    app.modal = view();
+    let frame = screen(&app, 120, 30).join("\n");
+    assert!(
+        frame.contains("F filter") && !frame.contains("/ filter"),
+        "{frame}"
+    );
+    app.key_event(KeyCode::Char('q'), KeyModifiers::NONE)?;
+    assert!(
+        matches!(app.modal, Modal::Subjects(..)),
+        "q no longer closes"
+    );
+    assert_context_help(
+        &mut app,
+        crate::keymap::Scope::Subjects,
+        "Back (Esc also works",
+        |modal| matches!(modal, Modal::Subjects(..)),
+    )?;
+    app.key_event(KeyCode::Char('x'), KeyModifiers::NONE)?;
+    assert!(matches!(app.modal, Modal::None));
+    // While typing a filter, `?` and x are text.
+    app.modal = view();
+    app.key_event(KeyCode::Char('F'), KeyModifiers::NONE)?;
+    app.key_event(KeyCode::Char('x'), KeyModifiers::NONE)?;
+    app.key_event(KeyCode::Char('?'), KeyModifiers::NONE)?;
+    assert!(matches!(&app.modal, Modal::Subjects(view) if view.is_typing()));
+    Ok(())
+}
+
+#[test]
+fn remapped_picker_and_saved_selection_keys_move() -> Result<()> {
+    let (mut app, _replies, _commands) = harness();
+    app.keymap =
+        crate::keymap::parse("scopes:\n  picker:\n    down: J\n  selections:\n    delete: X\n")?;
+    app.modal = Modal::Picker("Namespace", vec!["a".into(), "b".into()], 0);
+    app.key_event(KeyCode::Char('j'), KeyModifiers::NONE)?;
+    assert!(matches!(&app.modal, Modal::Picker(_, _, 0)));
+    app.key_event(KeyCode::Char('J'), KeyModifiers::NONE)?;
+    assert!(matches!(&app.modal, Modal::Picker(_, _, 1)));
+    let frame = screen(&app, 120, 30).join("\n");
+    assert!(
+        frame.contains("J k move") && frame.contains("Namespace | J k"),
+        "{frame}"
+    );
+    assert_context_help(
+        &mut app,
+        crate::keymap::Scope::Picker,
+        "J                Move down",
+        |modal| matches!(modal, Modal::Picker(_, _, 1)),
+    )?;
+
+    app.selection_ui.records = vec![crate::selections::Selection {
+        name: "local".into(),
+        demo: true,
+        target: crate::selections::Target::Dashboard {
+            contexts: vec!["local".into()],
+            namespace: "default".into(),
+        },
+    }];
+    app.modal = Modal::Picker(selections_ui::PICKER_LABEL, vec!["local".into()], 0);
+    assert!(
+        screen(&app, 120, 30)
+            .join("\n")
+            .contains("Enter open | X remove | Esc back")
+    );
+    for key in [KeyCode::Char('d'), KeyCode::Delete] {
+        app.key_event(key, KeyModifiers::NONE)?;
+        assert!(matches!(app.modal, Modal::Picker(..)), "{key:?} moved away");
+    }
+    assert_context_help(
+        &mut app,
+        crate::keymap::Scope::Selections,
+        "J                Move down",
+        |modal| matches!(modal, Modal::Picker(..)),
+    )?;
+    app.key_event(KeyCode::Char('X'), KeyModifiers::NONE)?;
+    assert!(matches!(
+        app.modal,
+        Modal::Input(selections_ui::DELETE_LABEL, _)
+    ));
+    Ok(())
+}
+
+#[test]
+fn remapped_theme_keys_move_and_help_opens_for_themes() -> Result<()> {
+    let (mut app, _replies, _commands) = harness();
+    app.keymap = crate::keymap::parse("scopes:\n  themes:\n    new: C\n    down: Alt-j\n")?;
+    let old = app.theme.clone();
+    app.modal = Modal::Themes(themes::builtins(), 0, old);
+    app.key_event(KeyCode::Char('j'), KeyModifiers::NONE)?;
+    assert!(matches!(&app.modal, Modal::Themes(_, 0, _)));
+    app.key_event(KeyCode::Char('j'), KeyModifiers::ALT)?;
+    assert!(matches!(&app.modal, Modal::Themes(_, 1, _)));
+    let frame = screen(&app, 120, 40).join("\n");
+    assert!(
+        frame.contains("C new custom theme") && frame.contains("C create custom"),
+        "{frame}"
+    );
+    assert_context_help(&mut app, crate::keymap::Scope::Themes, "C ", |modal| {
+        matches!(modal, Modal::Themes(..))
+    })?;
+    app.key_event(KeyCode::Char('N'), KeyModifiers::NONE)?;
+    assert!(matches!(app.modal, Modal::Themes(..)));
+    app.key_event(KeyCode::Char('C'), KeyModifiers::NONE)?;
+    assert!(matches!(app.modal, Modal::NewTheme(..)));
+    Ok(())
+}
+
+#[test]
+fn remapped_tail_picker_keys_move_and_its_keymap_overlay_opens() -> Result<()> {
+    let (mut app, _replies, _commands) = harness();
+    app.keymap = crate::keymap::parse("scopes:\n  tail:\n    select: x\n")?;
+    let workload = |name: &str| crate::workload_tail::WorkloadRef {
+        context: "local".into(),
+        resource: "deployments".into(),
+        namespace: "shop".into(),
+        name: name.into(),
+        uid: format!("uid-{name}"),
+    };
+    let mut dashboard = dashboard_ui::Dashboard::new(&["local".into()], false);
+    let mut picker = dashboard_ui::TailPicker::loading();
+    picker.loading = false;
+    picker.entries = vec![workload("api"), workload("web")];
+    dashboard.picker = Some(picker);
+    app.modal = Modal::LiveOverview(dashboard);
+    let checked = |app: &App| match &app.modal {
+        Modal::LiveOverview(dashboard) => dashboard.picker.as_ref().map(|p| p.checked.len()),
+        _ => None,
+    };
+    app.key_event(KeyCode::Char(' '), KeyModifiers::NONE)?;
+    assert_eq!(checked(&app), Some(0), "Space moved away");
+    app.key_event(KeyCode::Char('x'), KeyModifiers::NONE)?;
+    assert_eq!(checked(&app), Some(1));
+    let frame = screen(&app, 120, 40).join("\n");
+    assert!(
+        frame.contains("x select (max") && frame.contains("x select"),
+        "{frame}"
+    );
+    app.key_event(KeyCode::Char('?'), KeyModifiers::NONE)?;
+    let legend = screen(&app, 120, 40).join("\n");
+    assert!(
+        legend.contains("TAIL PICKER KEYS") && legend.contains("x                Select"),
+        "{legend}"
+    );
+    app.key_event(KeyCode::Esc, KeyModifiers::NONE)?;
+    assert!(matches!(&app.modal, Modal::LiveOverview(d) if !d.help && d.picker.is_some()));
+    assert_eq!(checked(&app), Some(1));
+    Ok(())
+}
+fn chart_app(style: crate::ui_config::ChartStyle) -> Result<App> {
+    let (mut app, _replies, _commands) = harness();
+    app.ui.charts.style = style;
+    app.desired_resource = Some("pods".into());
+    app.items = vec![
+        serde_json::json!({"apiVersion":"v1","kind":"Pod","metadata":{"name":"api-7d4f9","namespace":"demo","uid":"demo-Pod-api-7d4f9"},"spec":{"containers":[{"name":"app","resources":{"requests":{"cpu":"250m","memory":"128Mi"},"limits":{"cpu":"1","memory":"512Mi"}}}]}}),
+    ];
+    app.namespace = "demo".into();
+    let start = Instant::now()
+        .checked_sub(Duration::from_secs(120))
+        .ok_or("clock")?;
+    for step in 0..9u64 {
+        let snapshot = crate::metrics::demo_step(crate::metrics::MetricsScope::Pods, "demo", step)?;
+        app.metrics_history.record(
+            &app.context.clone(),
+            &snapshot,
+            start + Duration::from_secs(step * 15),
+        );
+    }
+    app.modal = Modal::Metrics("METRICS text view".into(), 0);
+    Ok(app)
+}
+#[test]
+fn metrics_chart_mode_renders_axes_units_and_percentages() -> Result<()> {
+    let mut app = chart_app(crate::ui_config::ChartStyle::Ascii)?;
+    let text = screen(&app, 100, 32).join("\n");
+    assert!(
+        text.contains("METRICS text view") && text.contains("g chart"),
+        "{text}"
+    );
+    app.key(KeyCode::Char('g'))?;
+    assert!(app.metrics_chart && matches!(app.modal, Modal::Metrics(..)));
+    let frame = screen(&app, 100, 32);
+    let text = frame.join("\n");
+    assert!(text.contains("METRICS CHART"), "{text}");
+    assert!(
+        text.contains("CHART Pod demo/api-7d4f9 | 9 samples"),
+        "{text}"
+    );
+    // Latest step 8 is 125m x 105% = 131m; request 250m, limit 1 core.
+    assert!(
+        text.contains("CPU latest 131m | 52% of request 250m | 13% of limit 1000m"),
+        "{text}"
+    );
+    assert!(
+        text.contains("MEMORY latest 67Mi | 52% of request 128Mi"),
+        "{text}"
+    );
+    // Value axes carry units; the time axis runs to now.
+    // The request (250m) is a dashed reference line and the axis maximum.
+    assert!(
+        text.contains("250m|- - -") && text.contains("125m|"),
+        "{text}"
+    );
+    assert!(text.contains("   0|") && text.contains("128Mi|"), "{text}");
+    assert!(text.contains("-2m30s") && text.contains("now"), "{text}");
+    assert!(text.contains('#') && text.contains("+-----"), "{text}");
+    assert!(text.contains("g text view"), "{text}");
+    app.key(KeyCode::Char('g'))?;
+    assert!(!app.metrics_chart);
+    assert!(
+        screen(&app, 100, 32)
+            .join("\n")
+            .contains("METRICS text view")
+    );
+    Ok(())
+}
+#[test]
+fn metrics_chart_braille_and_blocks_use_only_trusted_glyphs() -> Result<()> {
+    for (style, range) in [
+        (
+            crate::ui_config::ChartStyle::Braille,
+            '\u{2801}'..='\u{28FF}',
+        ),
+        (
+            crate::ui_config::ChartStyle::Blocks,
+            '\u{2581}'..='\u{2588}',
+        ),
+    ] {
+        let mut app = chart_app(style)?;
+        app.metrics_chart = true;
+        let text = screen(&app, 90, 30).join("\n");
+        assert!(text.chars().any(|c| range.contains(&c)), "{text}");
+        assert!(text.contains('│') && text.contains('└'), "{text}");
+        // Data text keeps the ASCII policy even beside chart glyphs.
+        app.items[0]["metadata"]["name"] = "api-7d4f9\u{2588}".into();
+        let text = screen(&app, 90, 30).join("\n");
+        assert!(text.contains("CHART needs a selected Pod") || !text.contains("api-7d4f9\u{2588}"));
+    }
+    // Hidden axes: no unit labels, only the series.
+    let mut app = chart_app(crate::ui_config::ChartStyle::Ascii)?;
+    app.ui.charts.show_axes = false;
+    app.metrics_chart = true;
+    let text = screen(&app, 90, 30).join("\n");
+    assert!(!text.contains("250m|") && text.contains('#'), "{text}");
+    // A non-Pod/Node view explains what chart mode needs.
+    app.desired_resource = Some("deployments.apps".into());
+    let text = screen(&app, 90, 30).join("\n");
+    assert!(
+        text.contains("CHART needs a selected Pod or Node"),
+        "{text}"
+    );
+    Ok(())
+}
+#[test]
+fn dashboard_chart_panel_renders_trend_axes_for_the_focused_card() -> Result<()> {
+    let (mut app, _replies, _commands) = harness();
+    app.ui.charts.style = crate::ui_config::ChartStyle::Ascii;
+    let mut dashboard = dashboard_ui::Dashboard::new(&["demo".into()], true);
+    let mut row = crate::overview::ContextSummary::connecting("demo".into(), true);
+    row.unhealthy = Some(1);
+    let mut infra = crate::cluster_health::InfraSummary::connecting();
+    infra.nodes.cpu_percent = Some(21);
+    infra.nodes.memory_percent = Some(14);
+    row.infra = Some(infra);
+    let start = Instant::now()
+        .checked_sub(Duration::from_secs(60))
+        .ok_or("clock")?;
+    let trend = dashboard.trends.entry("demo".into()).or_default();
+    for step in 0..5u32 {
+        row.unhealthy = Some(1 + (step as usize % 3));
+        trend.sample(&row, start + Duration::from_secs(15) * step);
+    }
+    dashboard.rows = vec![row];
+    app.modal = Modal::LiveOverview(dashboard);
+    let text = screen(&app, 100, 40).join("\n");
+    assert!(text.contains("G charts"), "{text}");
+    app.key(KeyCode::Char('G'))?;
+    assert!(matches!(&app.modal, Modal::LiveOverview(d) if d.chart));
+    let text = screen(&app, 100, 40).join("\n");
+    assert!(text.contains("CHARTS demo"), "{text}");
+    assert!(text.contains("PODS NEEDING ATTENTION  latest 2"), "{text}");
+    assert!(
+        text.contains("RESTARTS DELTA per sample  latest unknown"),
+        "{text}"
+    );
+    assert!(
+        text.contains("NODE CPU % of allocatable  latest 21%"),
+        "{text}"
+    );
+    assert!(
+        text.contains("NODE MEMORY % of allocatable  latest 14%"),
+        "{text}"
+    );
+    assert!(
+        text.contains("100%|") && text.contains("-90s") && text.contains("now"),
+        "{text}"
+    );
+    assert!(
+        text.contains("  3|")
+            && text.contains("1.5|")
+            // The panel border is ASCII or box-drawing depending on the locale.
+            && (text.contains("\n|2|") || text.contains("\n│2|")),
+        "{text}"
+    );
+    assert!(text.contains("G close charts"), "{text}");
+    app.key(KeyCode::Esc)?;
+    assert!(matches!(&app.modal, Modal::LiveOverview(d) if !d.chart));
+    Ok(())
+}
+#[test]
+fn ask_captures_the_screen_behind_the_prompt_and_previews_locally_without_opt_in() -> Result<()> {
+    let (mut app, _replies, _commands) = harness();
+    app.items = vec![
+        serde_json::json!({"kind":"Pod","metadata":{"name":"api","namespace":"test","uid":"pod1"},"status":{"phase":"Running"}}),
+    ];
+    let text = snapshot::screen_text(&app, 100, 30)?;
+    assert!(text.contains("api") && text.contains("NAMESPACE"), "{text}");
+    assert!(text.is_ascii() && !text.contains('\u{1b}'), "{text}");
+    app.command("ask why")?;
+    assert!(app.status.contains("Nothing captured"));
+    app.key(KeyCode::Char(':'))?;
+    assert!(app.ask_screen.as_deref().is_some_and(|s| s.contains("api")));
+    app.modal = Modal::None;
+    app.command("ask")?;
+    assert!(matches!(app.modal, Modal::Input(ASK_LABEL, _)));
+    app.modal = Modal::None;
+    app.command("ask is api healthy?")?;
+    assert!(!app.busy);
+    assert!(matches!(&app.modal, Modal::AdviceDocument(title, body, _)
+        if title.contains("nothing sent") && body.contains("QUESTION:\nis api healthy?") && body.contains("--allow-copilot-screen")));
     Ok(())
 }

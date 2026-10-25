@@ -79,9 +79,13 @@ impl Gateway {
                 || k.kind.eq_ignore_ascii_case(key)
                 || k.short_names.iter().any(|name| name == key)
         });
-        let first = matches
-            .next()
-            .ok_or("resource kind not available; Secrets are never exposed")?;
+        let first = matches.next().ok_or_else(|| {
+            if crate::secrets::is_secret_alias(key) {
+                crate::secrets::GENERIC_REFUSAL
+            } else {
+                "resource kind not available; Secrets are never exposed"
+            }
+        })?;
         if matches.next().is_some() {
             return Err("resource alias is ambiguous; use resource.group".into());
         }
@@ -93,7 +97,7 @@ impl Gateway {
         }
         let client = self.client.clone().ok_or("offline backend")?;
         if k.plural == "secrets" || k.kind == "Secret" {
-            return Err("Secret access is disabled".into());
+            return Err(crate::secrets::GENERIC_REFUSAL.into());
         }
         Ok(if k.namespaced && ns != "*" {
             Api::namespaced_with(client, ns, &k.ar())
@@ -143,21 +147,23 @@ impl Gateway {
             .continue_
             .as_deref()
             .is_some_and(|c| !c.is_empty());
+        let mut list = list;
         let items = list
             .items
-            .iter()
+            .iter_mut()
             .map(|secret| {
-                let data = secret.data.as_ref().map(|data| {
-                    data.iter()
-                        .map(|(key, value)| (key.clone(), value.0.clone()))
-                        .collect()
-                });
-                crate::secrets::entry(
+                let entry = crate::secrets::entry_sizes(
                     secret.metadata.name.as_deref().unwrap_or(""),
                     secret.metadata.uid.as_deref().unwrap_or(""),
                     secret.type_.as_deref(),
-                    data.as_ref(),
-                )
+                    secret
+                        .data
+                        .iter()
+                        .flatten()
+                        .map(|(key, value)| (key.as_str(), value.0.len())),
+                );
+                crate::secrets::wipe_secret(secret);
+                entry
             })
             .collect();
         Ok(crate::secrets::SecretIndex {
@@ -184,19 +190,56 @@ impl Gateway {
                 .map(|bytes| crate::secrets::reveal(bytes))
                 .ok_or_else(|| "Secret key not found".into());
         };
-        let secret = tokio::time::timeout(OPERATION_BUDGET, api.get(name))
-            .await
-            .map_err(|_| "Secret read timed out")?
-            .map_err(api_error)?;
-        if secret.metadata.uid.as_deref() != Some(uid) {
-            return Err("Secret was replaced; reopen :secrets".into());
-        }
-        secret
+        let mut secret = self.fetch_secret(&api, name, uid).await?;
+        let value = secret
             .data
             .as_ref()
             .and_then(|data| data.get(key))
             .map(|bytes| crate::secrets::reveal(&bytes.0))
-            .ok_or_else(|| "Secret key not found".into())
+            .ok_or_else(|| "Secret key not found".into());
+        crate::secrets::wipe_secret(&mut secret);
+        value
+    }
+    /// Reads one Secret by name, refusing a replacement with another UID; the
+    /// payload is wiped if the UID does not match.
+    async fn fetch_secret(
+        &self,
+        api: &Api<k8s_openapi::api::core::v1::Secret>,
+        name: &str,
+        uid: &str,
+    ) -> Result<k8s_openapi::api::core::v1::Secret> {
+        let mut secret = tokio::time::timeout(OPERATION_BUDGET, api.get(name))
+            .await
+            .map_err(|_| "Secret read timed out")?
+            .map_err(api_error)?;
+        if secret.metadata.uid.as_deref() != Some(uid) {
+            crate::secrets::wipe_secret(&mut secret);
+            return Err("Secret was replaced; reopen :secrets".into());
+        }
+        Ok(secret)
+    }
+    /// The masked YAML of one Secret: every value is replaced by its size and
+    /// the payload is wiped before this returns.
+    pub async fn secret_yaml(
+        &self,
+        ns: &str,
+        name: &str,
+        uid: &str,
+    ) -> Result<crate::secrets::MaskedSecret> {
+        crate::secrets::validate_target(ns, name)?;
+        let Some(api) = self.secret_api(ns)? else {
+            if name != "api-credentials" || uid != "demo-secret-uid" {
+                return Err("Secret not found".into());
+            }
+            let mut secret = crate::secrets::demo_secret(ns);
+            let masked = crate::secrets::masked(&secret);
+            crate::secrets::wipe_secret(&mut secret);
+            return Ok(masked);
+        };
+        let mut secret = self.fetch_secret(&api, name, uid).await?;
+        let masked = crate::secrets::masked(&secret);
+        crate::secrets::wipe_secret(&mut secret);
+        Ok(masked)
     }
     pub async fn discover(&mut self) -> Result<Vec<Kind>> {
         if let Some(client) = &self.client {

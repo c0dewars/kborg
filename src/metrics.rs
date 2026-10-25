@@ -359,7 +359,7 @@ impl MetricsHistory {
 
     pub fn text(&self, now: Instant) -> String {
         let mut output = format!(
-            "\nSESSION HISTORY | last 10 min | at most {HISTORY_MAX_IDENTITIES} identities x {HISTORY_MAX_SAMPLES} slots\nRefresh with m. Graphs run oldest -> newest; '-' = missing/error.\nEach chart scales from 0 to its observed maximum, not a usage percentage.\nRepeated measurement timestamps are not new samples.\n"
+            "\nSESSION HISTORY | last 10 min | at most {HISTORY_MAX_IDENTITIES} identities x {HISTORY_MAX_SAMPLES} slots\nRefresh with m; g charts the selected Pod or Node. Graphs run oldest -> newest; '-' = missing/error.\nEach chart scales from 0 to its observed maximum, not a usage percentage.\nRepeated measurement timestamps are not new samples.\n"
         );
         let mut rendered = 0;
         for (identity, series) in &self.series {
@@ -425,6 +425,65 @@ impl MetricsHistory {
             );
         }
         output
+    }
+}
+
+/// One aggregated observation of an object for chart mode.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ChartSample {
+    /// How long before `now` it was observed.
+    pub age: Duration,
+    /// Summed CPU nanocores and memory bytes, or `None` for a gap (error,
+    /// missing row, or a sample missing some of the object's containers).
+    pub usage: Option<(u64, u64)>,
+}
+
+impl MetricsHistory {
+    /// The bounded history of one Pod (all its containers summed) or Node,
+    /// oldest first. Partial observations are gaps, never partial sums.
+    pub fn object_samples(
+        &self,
+        namespace: Option<&str>,
+        name: &str,
+        now: Instant,
+    ) -> Vec<ChartSample> {
+        let members: Vec<&HistorySeries> = self
+            .series
+            .iter()
+            .filter(|(identity, _)| {
+                identity.name == name && identity.namespace.as_deref() == namespace
+            })
+            .map(|(_, series)| series)
+            .collect();
+        let mut instants: BTreeMap<Instant, (u64, u64, usize, bool)> = BTreeMap::new();
+        for series in &members {
+            for point in &series.points {
+                if now.saturating_duration_since(point.observed_at) > HISTORY_RETENTION
+                    || point.observed_at > now
+                {
+                    continue;
+                }
+                let entry = instants
+                    .entry(point.observed_at)
+                    .or_insert((0, 0, 0, false));
+                match &point.usage {
+                    Some(usage) => {
+                        entry.0 = entry.0.saturating_add(usage.cpu_nanocores);
+                        entry.1 = entry.1.saturating_add(usage.memory_bytes);
+                        entry.2 += 1;
+                    }
+                    None => entry.3 = true,
+                }
+            }
+        }
+        instants
+            .into_iter()
+            .take(HISTORY_MAX_SAMPLES * 2)
+            .map(|(at, (cpu, memory, count, gap))| ChartSample {
+                age: now.saturating_duration_since(at),
+                usage: (!gap && count == members.len()).then_some((cpu, memory)),
+            })
+            .collect()
     }
 }
 
@@ -508,7 +567,11 @@ pub(crate) fn format_memory(bytes: u64) -> String {
 pub async fn collect(gateway: &Gateway, scope: MetricsScope, ns: &str) -> Result<MetricsSnapshot> {
     validate_namespace(ns)?;
     if gateway.is_demo() {
-        return demo(scope, ns);
+        // Each demo refresh is the next step of a fixed sequence, so chart
+        // mode has a live-looking history; the first call equals `demo`.
+        static STEP: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let step = STEP.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        return demo_step(scope, ns, step);
     }
     let api = gateway.metrics_api(scope, ns)?;
     collect_api(api, scope, ns).await
@@ -992,14 +1055,42 @@ fn quantity(raw: &str, base: u128) -> Result<(u64, bool)> {
 }
 
 pub fn demo(scope: MetricsScope, ns: &str) -> Result<MetricsSnapshot> {
+    demo_step(scope, ns, 0)
+}
+
+/// Step `n` of the deterministic demo sequence: a new measurement timestamp
+/// every step and usage following a fixed 16-step wave. Step 0 is `demo`.
+pub fn demo_step(scope: MetricsScope, ns: &str, step: u64) -> Result<MetricsSnapshot> {
     validate_namespace(ns)?;
+    const WAVE: [u64; 16] = [
+        100, 112, 125, 140, 160, 150, 130, 118, 105, 96, 90, 98, 110, 135, 170, 120,
+    ];
+    let phase = WAVE[(step % 16) as usize];
+    let timestamp = k8s_openapi::jiff::Timestamp::from_second(
+        1_791_615_630_i64 + i64::try_from(step % (1 << 32)).unwrap_or(0) * 15,
+    )
+    .map_err(|_| "demo timestamp out of range")?
+    .to_string();
+    let scale = |base: u64| base * phase / 100;
+    let (cpu, memory) = match scope {
+        MetricsScope::Pods => (format!("{}m", scale(125)), format!("{}Mi", scale(64))),
+        MetricsScope::Nodes => (format!("{}m", scale(750)), format!("{}Mi", scale(1024))),
+    };
+    let (cpu, memory) = if step == 0 {
+        match scope {
+            MetricsScope::Pods => ("125m".to_owned(), "64Mi".to_owned()),
+            MetricsScope::Nodes => ("750m".to_owned(), "1Gi".to_owned()),
+        }
+    } else {
+        (cpu, memory)
+    };
     let mut snapshot = empty(scope, ns, "demo (deterministic sample)");
     let value = match scope {
         MetricsScope::Pods => {
-            json!({"metadata":{"name":"api-7d4f9","namespace":"demo","uid":"demo-Pod-api-7d4f9"},"timestamp":"2026-10-10T07:00:30Z","window":"30s","containers":[{"name":"app","usage":{"cpu":"125m","memory":"64Mi"}}]})
+            json!({"metadata":{"name":"api-7d4f9","namespace":"demo","uid":"demo-Pod-api-7d4f9"},"timestamp":timestamp,"window":"30s","containers":[{"name":"app","usage":{"cpu":cpu,"memory":memory}}]})
         }
         MetricsScope::Nodes => {
-            json!({"metadata":{"name":"demo-node","uid":"demo-Node-demo-node"},"timestamp":"2026-10-10T07:00:30Z","window":"30s","usage":{"cpu":"750m","memory":"1Gi"}})
+            json!({"metadata":{"name":"demo-node","uid":"demo-Node-demo-node"},"timestamp":timestamp,"window":"30s","usage":{"cpu":cpu,"memory":memory}})
         }
     };
     if scope == MetricsScope::Nodes || ns == "*" || ns == "demo" {
@@ -1398,6 +1489,53 @@ mod tests {
         }
         assert!(normalize_cpu_quantity("1Mi").is_err());
         assert_eq!(normalize_memory_quantity("1Mi"), Ok((1_048_576, false)));
+    }
+    #[test]
+    fn demo_steps_advance_and_object_samples_sum_containers_with_gaps() -> Result<()> {
+        assert_eq!(
+            serde_json::to_string(&demo_step(MetricsScope::Pods, "demo", 0)?).ok(),
+            serde_json::to_string(&demo(MetricsScope::Pods, "demo")?).ok()
+        );
+        assert_eq!(
+            demo(MetricsScope::Pods, "demo")?.items[0].timestamp,
+            "2026-10-10T07:00:30Z"
+        );
+        let now = Instant::now();
+        let mut history = MetricsHistory::default();
+        for step in 0..4u64 {
+            let mut snapshot = demo_step(MetricsScope::Pods, "demo", step)?;
+            let mut sidecar = demo_step(MetricsScope::Pods, "demo", step)?.items.remove(0);
+            sidecar.container = Some("sidecar".into());
+            sidecar.cpu_nanocores = 1_000_000;
+            if step == 2 {
+                // A sample missing one container is a gap, never a partial sum.
+                snapshot.items[0].timestamp = "2026-10-10T07:00:00Z".into();
+            }
+            snapshot.items.push(sidecar);
+            history.record("ctx", &snapshot, now + Duration::from_secs(step * 5));
+        }
+        history.record_error(
+            "ctx",
+            MetricsScope::Pods,
+            "demo",
+            now + Duration::from_secs(20),
+        );
+        let samples =
+            history.object_samples(Some("demo"), "api-7d4f9", now + Duration::from_secs(20));
+        let cpu: Vec<_> = samples.iter().map(|s| s.usage.map(|u| u.0)).collect();
+        assert_eq!(
+            cpu,
+            vec![
+                Some(126_000_000),
+                Some(141_000_000),
+                None,
+                Some(176_000_000),
+                None
+            ]
+        );
+        assert_eq!(samples[0].age, Duration::from_secs(20));
+        assert!(history.object_samples(None, "api-7d4f9", now).is_empty());
+        Ok(())
     }
     #[test]
     fn demo_is_deterministic_and_scoped() {

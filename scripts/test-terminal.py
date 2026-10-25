@@ -104,6 +104,8 @@ class Screen:
         paths depict the existing terminal cells; they never infer a border
         through spaces, ASCII punctuation, or resource text.
         """
+        if Screen._chart_glyph(draw, char, left, top, width, height, color):
+            return True
         if char not in "─│╭╮╰╯":
             return False
         right, bottom = left + width - 1, top + height - 1
@@ -130,6 +132,38 @@ class Screen:
             draw.line((cx, top, cx, cy - radius), fill=color)
             draw.line((left, cy, cx - radius, cy), fill=color)
         return True
+
+    @staticmethod
+    def _chart_glyph(draw, char, left, top, width, height, color):
+        """Draw KBorg chart glyphs (braille dots, eighth blocks, axis corner
+        and reference dashes) at cell geometry; common fonts lack them."""
+        code = ord(char)
+        right, bottom = left + width - 1, top + height - 1
+        cx, cy = left + width // 2, top + height // 2
+        if 0x2801 <= code <= 0x28FF:
+            bits = code - 0x2800
+            layout = [(0, 0, 0x01), (0, 1, 0x02), (0, 2, 0x04), (1, 0, 0x08),
+                      (1, 1, 0x10), (1, 2, 0x20), (0, 3, 0x40), (1, 3, 0x80)]
+            radius = max(1, min(width // 6, height // 12))
+            for column, row, bit in layout:
+                if bits & bit:
+                    x = left + width * (1 + 2 * column) // 4
+                    y = top + height * (1 + 2 * row) // 8
+                    draw.ellipse((x - radius, y - radius, x + radius, y + radius), fill=color)
+            return True
+        if 0x2581 <= code <= 0x2588:
+            filled = (code - 0x2580) * height // 8
+            draw.rectangle((left, bottom - filled + 1, right, bottom), fill=color)
+            return True
+        if char == "└":
+            draw.line((cx, top, cx, cy), fill=color)
+            draw.line((cx, cy, right, cy), fill=color)
+            return True
+        if char == "┈":
+            for x in range(left, right, 4):
+                draw.line((x, cy, min(x + 1, right), cy), fill=color)
+            return True
+        return False
 
     def png(self, path):
         from PIL import Image, ImageDraw, ImageFont
