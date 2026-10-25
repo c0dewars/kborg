@@ -95,7 +95,7 @@ Flags are parsed in `src/cli.rs::parse`. An optional `--config FILE` profile
 | Server-side apply (0.5.0) | `--write --allow-apply` | `src/gateway/apply.rs::prepare_apply`/`execute_apply`, `src/manifest_apply.rs` |
 | Port-forward benchmark (0.5.0) | an active reviewed forward | `src/bench.rs` (127.0.0.1 only; 2000 requests, 20 connections, 60 s) |
 | Hotkeys (0.5.0) | `hotkeys.yaml` in the config directory | `src/hotkeys.rs` (types a command into the normal parser; never a shell) |
-| Secret listing + per-key reveal (TUI) | `--allow-secret-reveal` (does **not** require `--write`) | `src/gateway/reads.rs::secret_api`, `secret_value`; `src/secrets.rs`; `src/ui_secrets.rs` (30 s) |
+| Secret listing, masked YAML + per-key reveal (TUI) | `--allow-secret-reveal` (does **not** require `--write`) | `src/gateway/reads.rs::secret_api`, `secret_value`, `secret_yaml`; `src/secrets.rs`; `src/ui_secrets.rs` (30 s) |
 | Helm release storage reads (reads Secrets) | `--allow-helm` | `src/gateway.rs::helm_reader`, `src/helm.rs` |
 | Helm lifecycle | `--write --allow-helm --allow-helm-write`, `--helm-tool ABS` (Helm 4.3.1, Unix) | `gateway.rs::helm_lifecycle_access`, `src/helm_lifecycle.rs` |
 | Helm hooks/tests, CRDs | add `--allow-helm-hooks`, `--allow-helm-crds` | `gateway.rs::helm_extension_access`, `src/helm_extensions.rs`, `src/helm_crds.rs`, `src/helm_migration.rs` |

@@ -94,7 +94,7 @@ foreach ($command in @(@('scale','api','2'),@('restart','api'),@('delete','deplo
 }
 Invoke-Case 'noninteractive-copilot-login-refused' @('copilot','login','--cli',$Executable,'--host','github.com') $true 'interactive terminal'
 Invoke-Case 'copilot-untrusted-host-refused' @('copilot','login','--cli',$Executable,'--host','https://github.com@evil.example') $true 'Copilot host must'
-Invoke-Case 'secret-read-disabled' @('--demo','list','secrets') $true 'disabled resource'
+Invoke-Case 'secret-read-disabled' @('--demo','list','secrets') $true 'excluded from generic views'
 Invoke-Case 'object-name-traversal-refused' @('--demo','get','pods','../api') $true 'invalid object name'
 Invoke-Case 'unknown-yes-option-refused' @('--demo','scale','api','2','--yes') $true 'unknown option'
 $bundle = Join-Path $fixtures 'context.json'

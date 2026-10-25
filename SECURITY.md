@@ -17,8 +17,19 @@ See docs/REMAINING_WORK.md and the linked current acceptance report for requirem
 Secret inspection is off by default. `--allow-secret-reveal` enables `:secrets`,
 which lists names, types, key names and sizes for one namespace and decodes a
 single key only on an explicit `x`, for 30 seconds; values are never exported,
-copied or written to disk. The listing still transfers Secret payloads into
-process memory, so grant `list secrets` only where that is acceptable. Ctrl-K
+copied, logged, audited or written to disk. `y`/`d` there show a masked YAML of
+one Secret: metadata (credential-like annotation values redacted, the
+`last-applied-configuration` annotation dropped because it embeds data), type,
+immutable and every key as `<hidden: N bytes>`, plus structure only: TLS
+certificate subject/expiry, docker registry hostnames (no usernames or auth),
+and whether a service-account token exists. `x` in that view reveals one key
+inline over a fresh UID-checked read; nothing reveals the whole object. Generic
+resource views, lists, watches and exports still refuse Secrets and point to
+`:secrets`. The listing and the YAML read still transfer Secret payloads into
+process memory; KBorg overwrites the payload bytes it holds as soon as the
+index or masked view is built and when a revealed value is hidden, but copies
+inside the HTTP client are outside its control, so grant `get`/`list secrets`
+only where that is acceptable. Ctrl-K
 force kill is separately opt-in with `--write --allow-force-kill`.
 
 Marked rows never widen an approval on their own. With marks, delete,

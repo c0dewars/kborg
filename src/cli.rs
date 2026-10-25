@@ -1586,6 +1586,9 @@ fn copilot_command(opts: &Options) -> Result<()> {
     }
 }
 async fn discover_if_needed(gateway: &mut Gateway, resource: &str) -> Result<()> {
+    if crate::secrets::is_secret_alias(resource) {
+        return Err(crate::secrets::GENERIC_REFUSAL.into());
+    }
     if resource.is_empty()
         || resource.len() > 253
         || !resource.bytes().all(|b| {

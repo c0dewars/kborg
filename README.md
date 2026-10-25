@@ -44,7 +44,7 @@
 | **Operate** | Scale, restart, rollback, delete, force kill, CronJob trigger and suspend/resume, YAML spec editing (in-app or `$EDITOR`), server-side apply of local manifests, image/resource forms, cordon/uncordon/drain, node shell, ephemeral debug containers, port forwards, shell/attach, file and directory copy — each behind its own opt-in and review |
 | **Check** | `:lint` misconfiguration report, `:scan` image vulnerability scan through your Trivy or Grype, Ctrl-Z errors-only view, `:pulses` health, `:xray` relationships, per-Node usage and 15-minute trend sparklines on dashboard cards, port-forward benchmark |
 | **Helm** | Release browsing and history; reviewed install, upgrade, rollback, uninstall and tests for packaged and OCI charts with optional OpenPGP/Sigstore verification |
-| **Secrets** | Opt-in key listing; reveal one value for 30 seconds; never exported or copied |
+| **Secrets** | Opt-in key listing and masked YAML/describe (`y`/`d`: values shown as sizes, TLS subject/expiry, registry hostnames); reveal one value for 30 seconds; never exported or copied |
 | **Metrics** | Pod/Node CPU and memory tables, exact values, requests/limits comparisons, bounded history |
 | **Copilot** | Minimized diagnostic preview, exact account approval, contained native runtime (macOS ARM64) |
 | **Workspace** | Saved context groups and scopes, remembered dashboard (`kborg dashboard`), k9s-format `views.yaml` columns, sort by any column, recent namespaces on `1`–`9`, custom aliases and k9s-format hotkeys, fully remappable keys (`keymap.yaml`, `?` help per view, `:keymap`), reviewed read-only extensions (`:ext`, k9s `plugins.yaml` import), 20 themes plus custom palettes, shell completions |
@@ -161,7 +161,7 @@ KBorg uses your kubeconfig directly: the current context unless you pass `--cont
 | Ctrl-D, Ctrl-K | Reviewed delete, reviewed force kill |
 | `Space` then Ctrl-D / `r` / `s` | Mark rows, then one reviewed batch delete, restart or CronJob suspend/resume (max 50; type e.g. `delete 7 objects`) |
 | `c` `u` `r` on Nodes | Cordon, uncordon, drain |
-| `:secrets`, `x` | Secret keys, reveal one value |
+| `:secrets`, `x`, `y` | Secret keys, reveal one value, masked YAML |
 | `:helm`, `:pulses`, `:xray`, `:lint` | Releases, health, relationships, misconfigurations |
 | `s` on Nodes, `:apply FILE`, `:dir` then `a` | Node shell, reviewed apply of a manifest |
 | `:cp-from` `:cp-to` (`-r`) | Copy files or directories to and from the selected Pod |

@@ -45,13 +45,14 @@ pub enum Scope {
     Themes,
     /// The dashboard's cross-cluster workload tail picker.
     Tail,
+    Secrets,
     Review,
     Prompt,
     Filter,
 }
 
 impl Scope {
-    pub const ALL: [Scope; 23] = [
+    pub const ALL: [Scope; 24] = [
         Scope::Global,
         Scope::Table,
         Scope::Log,
@@ -72,6 +73,7 @@ impl Scope {
         Scope::Selections,
         Scope::Themes,
         Scope::Help,
+        Scope::Secrets,
         Scope::Review,
         Scope::Prompt,
         Scope::Filter,
@@ -98,6 +100,7 @@ impl Scope {
             Scope::Selections => "selections",
             Scope::Themes => "themes",
             Scope::Tail => "tail",
+            Scope::Secrets => "secrets",
             Scope::Review => "review",
             Scope::Prompt => "prompt",
             Scope::Filter => "filter",
@@ -125,6 +128,7 @@ impl Scope {
             Scope::Selections => "SAVED SELECTIONS (B)",
             Scope::Themes => "THEME PICKER (:themes)",
             Scope::Tail => "DASHBOARD TAIL PICKER (t)",
+            Scope::Secrets => "SECRETS (:secrets, masked YAML on y/d)",
             Scope::Review => "REVIEWS AND APPROVALS (fixed)",
             Scope::Prompt => "COMMAND PROMPT (fixed)",
             Scope::Filter => "FILTER PROMPT (fixed)",
@@ -155,6 +159,7 @@ impl Scope {
             Scope::Selections => "selections.",
             Scope::Themes => "themes.",
             Scope::Tail => "tail.",
+            Scope::Secrets => "secrets.",
             Scope::Review => "review.",
             Scope::Prompt => "prompt.",
             Scope::Filter => "filter.",
@@ -174,6 +179,7 @@ impl Scope {
             Scope::Overview => &[Scope::Global, Scope::Detail, Scope::Overview],
             Scope::Metrics => &[Scope::Global, Scope::Detail, Scope::Metrics],
             Scope::Help => &[Scope::Global, Scope::Detail, Scope::Help],
+            Scope::Secrets => &[Scope::Global, Scope::Secrets],
             Scope::Editor => &[Scope::Editor],
             Scope::ForwardForm => &[Scope::ForwardForm],
             Scope::Helm => &[Scope::Global, Scope::Helm],
@@ -291,8 +297,8 @@ const fn fixed(
 const DIGITS: &[&str] = &["1", "2", "3", "4", "5", "6", "7", "8", "9"];
 use Scope::{
     Containers, Dashboard, Detail, Editor, Filter, Forward, ForwardForm, Global, Helm, HelmForm,
-    HelmHistory, Help, Log, Metrics, Overview, Picker, Prompt, Review, Selections, Subjects, Table,
-    Tail, Themes,
+    HelmHistory, Help, Log, Metrics, Overview, Picker, Prompt, Review, Secrets, Selections,
+    Subjects, Table, Tail, Themes,
 };
 
 /// The single source of truth for KBorg's keyboard.
@@ -1167,6 +1173,34 @@ pub const ACTIONS: &[Action] = &[
         &["Esc"],
         "Restore the previous theme",
     ),
+    // :secrets list, key list and masked YAML (--allow-secret-reveal).
+    act(
+        "secrets.yaml",
+        Secrets,
+        &["y", "d"],
+        "Masked YAML/describe of the selected Secret",
+    ),
+    act(
+        "secrets.reveal",
+        Secrets,
+        &["x"],
+        "List keys; reveal or hide the selected key for 30s",
+    ),
+    act("secrets.down", Secrets, &["j", "Down"], "Move down"),
+    act("secrets.up", Secrets, &["k", "Up"], "Move up"),
+    act(
+        "secrets.page-down",
+        Secrets,
+        &["PgDown"],
+        "Page down (YAML)",
+    ),
+    act("secrets.page-up", Secrets, &["PgUp"], "Page up (YAML)"),
+    act(
+        "secrets.close",
+        Secrets,
+        &["q"],
+        "Back; values are dropped (Esc also works)",
+    ),
     // Reviews: typed confirmation input and approval keys never move.
     fixed(
         "review.read",
@@ -1959,6 +1993,49 @@ mod tests {
         assert_eq!(keymap.keys("logs"), [Key::Char('L')]);
         assert!(keymap.keys("quit").is_empty());
         assert_eq!(keymap.keys("editor.review"), [Key::Ctrl('r')]);
+        Ok(())
+    }
+
+    #[test]
+    fn secrets_scope_registers_remappable_list_and_yaml_actions() -> Result<()> {
+        let names: Vec<&str> = Keymap::default()
+            .entries(Scope::Secrets)
+            .map(|(action, _, _)| action.name)
+            .collect();
+        for name in [
+            "secrets.yaml",
+            "secrets.reveal",
+            "secrets.down",
+            "secrets.up",
+            "secrets.page-down",
+            "secrets.page-up",
+            "secrets.close",
+        ] {
+            assert!(names.contains(&name), "{name}");
+            let index = find(name).ok_or("missing action")?;
+            assert!(!ACTIONS[index].fixed, "{name}");
+        }
+        assert_eq!(Scope::Secrets.layers(), &[Scope::Global, Scope::Secrets]);
+        let defaults = Keymap::default();
+        assert_eq!(
+            defaults.keys("secrets.yaml"),
+            [Key::Char('y'), Key::Char('d')]
+        );
+        assert_eq!(defaults.keys("secrets.reveal"), [Key::Char('x')]);
+        let keymap = parse("scopes:\n  secrets:\n    reveal: Alt-x\n    yaml: [F4]\n")?;
+        assert_eq!(
+            keymap.translate(Scope::Secrets, Key::Alt('x')),
+            Translation::To(Key::Char('x'))
+        );
+        assert_eq!(
+            keymap.translate(Scope::Secrets, Key::Char('x')),
+            Translation::Swallow
+        );
+        assert_eq!(
+            keymap.translate(Scope::Secrets, Key::F(4)),
+            Translation::To(Key::Char('y'))
+        );
+        assert!(parse("scopes:\n  secrets:\n    reveal: j\n").is_err());
         Ok(())
     }
 
