@@ -28,7 +28,7 @@ This plan follows 0.5.0-rc.3. Each item has a measurable bar ("done when") so we
 
 | # | Change | Done when |
 |---|---|---|
-| S1 | **Signed, attested releases**: macOS notarization, Sigstore/cosign signatures, SLSA build provenance from GitHub Actions, Homebrew formula pinned to the attested artifact | `gh attestation verify` and `cosign verify-blob` pass for every release asset; README shows how to verify |
+| S1 | **Signed, attested releases**: macOS notarization, Sigstore/cosign signatures, SLSA build provenance from GitHub Actions, Homebrew formula pinned to the attested artifact | `gh attestation verify` and `cosign verify-blob` pass for every release asset; README shows how to verify **Done (workflow; first signed run pending)**: manual `.github/workflows/release.yml` builds all six archives plus .deb/.rpm, writes SHA256SUMS, signs every asset with keyless cosign, attests build provenance and creates a draft release; it verifies each bundle itself. macOS codesign + notarization run when the five Apple secrets exist. README and RELEASE_PROCESS.md show how to verify. Homebrew still builds from the source tarball (pinning to attested binaries moves to F7) |
 | S2 | **Fuzzing** with cargo-fuzz for the parsers that see untrusted data: kubeconfig, manifests/YAML, tar extraction, terminal sanitizer, k9s views/hotkeys/plugins, PEM/DER walker, Helm storage decoding | Fuzz targets run nightly (manual dispatch per repo policy) with a corpus; 0 crashes after 1 CPU-hour each |
 | S3 | **Copilot containment on Linux** (Landlock + seccomp + network namespace with the same broker) so the feature works where most operators run | Same canary suite as macOS passes on Linux x86_64/ARM64; live answer through the broker |
 | S4 | **Enterprise Copilot validation**: run the live test against a real GHE.com tenant and a GHES 3.22 instance | Evidence JSON for both, docs no longer say "not demonstrated" |
@@ -36,7 +36,7 @@ This plan follows 0.5.0-rc.3. Each item has a measurable bar ("done when") so we
 | S6 | **Windows file trust**: owner-only ACLs on config, saved selections, audit and exports; handle-based checks against swap races | Windows CI test asserts ACLs; S01 closed in REMAINING_WORK.md |
 | S7 | **Audit sink**: optional JSON-lines audit to syslog/journald or a file with hash chaining, so companies can ship write actions to their SIEM | Every write family emits one record with intent, approval hash and outcome; tamper test detects a removed line |
 | S8 | **Independent review**: commission an external audit of the write path, Copilot containment and terminal sanitizer; publish the report and fixes | Report linked from SECURITY.md |
-| S9 | **Supply chain gates**: `cargo deny` (licenses, advisories, duplicate crates, banned sources) and `cargo vet` in CI; OpenSSF Scorecard | Scorecard ≥ 8; CI fails on a new advisory |
+| S9 | **Supply chain gates**: `cargo deny` (licenses, advisories, duplicate crates, banned sources) and `cargo vet` in CI; OpenSSF Scorecard | Scorecard ≥ 8; CI fails on a new advisory **Partly done**: `deny.toml` (advisories, Apache-2.0-compatible licenses, duplicate crates as warnings, crates.io only) passes locally; `supply-chain` CI job runs pinned cargo-deny 0.20.2; manual OpenSSF Scorecard workflow. Open: a first Scorecard score (needs a public repo and a dispatched run) and `cargo vet` (deferred, see RELEASE_PROCESS.md) |
 
 ## 3. Features
 
