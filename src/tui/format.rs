@@ -416,6 +416,7 @@ pub(super) struct Layout {
     pub(super) step: u16,
 }
 impl Layout {
+    #[cfg(test)]
     pub(super) fn new(width: u16, height: u16) -> Self {
         Self::for_ui(width, height, &crate::ui_config::UiConfig::default())
     }
