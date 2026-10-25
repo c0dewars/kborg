@@ -121,7 +121,7 @@ fn parse(text: &str) -> Result<Hotkeys> {
         budget: serde_saphyr::budget! {
             max_reader_input_bytes: Some(64*1024), max_events: 5000, max_aliases: 0, max_anchors: 0,
             max_depth: 4, max_inclusion_depth: 0, max_documents: 1, max_nodes: 1024,
-            max_total_scalar_bytes: 64*1024, max_total_comment_bytes: 64*1024, max_merge_keys: 0,
+            max_total_scalar_bytes: 64*1024, max_merge_keys: 0,
         },
         duplicate_keys: serde_saphyr::DuplicateKeyPolicy::Error,
         merge_keys: serde_saphyr::MergeKeyPolicy::Error,

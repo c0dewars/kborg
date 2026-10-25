@@ -611,7 +611,7 @@ pub fn documents(manifest: &str, limit: usize) -> Result<Vec<Value>> {
     if manifest.len() > MAX_EXTENSION_BYTES {
         return Err("extension manifests exceed4 MiB".into());
     }
-    let options = serde_saphyr::options! {budget:serde_saphyr::budget!{max_events:200_000,max_aliases:0,max_anchors:0,max_depth:64,max_inclusion_depth:0,max_documents:limit,max_nodes:100_000,max_total_scalar_bytes:MAX_EXTENSION_BYTES,max_total_comment_bytes:1024*1024,max_merge_keys:0},merge_keys:serde_saphyr::MergeKeyPolicy::Error,duplicate_keys:serde_saphyr::DuplicateKeyPolicy::Error,with_snippet:false};
+    let options = serde_saphyr::options! {budget:serde_saphyr::budget!{max_events:200_000,max_aliases:0,max_anchors:0,max_depth:64,max_inclusion_depth:0,max_documents:limit,max_nodes:100_000,max_total_scalar_bytes:MAX_EXTENSION_BYTES,max_merge_keys:0},merge_keys:serde_saphyr::MergeKeyPolicy::Error,duplicate_keys:serde_saphyr::DuplicateKeyPolicy::Error,with_snippet:false};
     let docs: Vec<Value> = serde_saphyr::from_multiple_with_options(manifest, options).map_err(
         |_| "extension manifests are malformed or exceed bounded YAML limits; contents suppressed",
     )?;

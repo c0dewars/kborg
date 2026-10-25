@@ -405,7 +405,7 @@ pub fn manifest_documents(path: &Path) -> Result<(PathBuf, Vec<Value>)> {
             max_reader_input_bytes: Some(MAX_MANIFEST), max_events: 100_000,
             max_aliases: 64, max_anchors: 32, max_depth: 64, max_inclusion_depth: 0,
             max_documents: 32, max_nodes: 30_000, max_total_scalar_bytes: MAX_MANIFEST,
-            max_total_comment_bytes: MAX_MANIFEST, max_merge_keys: 0,
+            max_merge_keys: 0,
         },
         alias_limits: serde_saphyr::alias_limits! { max_replay_stack_depth: 16, max_alias_expansions_per_anchor: 8 },
         duplicate_keys: serde_saphyr::DuplicateKeyPolicy::Error,

@@ -996,7 +996,7 @@ fn resource_references(manifest: &str) -> (Vec<ResourceRef>, bool, Vec<String>) 
     if manifest.is_empty() {
         return (Vec::new(), false, Vec::new());
     }
-    let options = serde_saphyr::options! {budget:serde_saphyr::budget!{max_events:250_000,max_aliases:32,max_anchors:32,max_depth:64,max_inclusion_depth:0,max_documents:MAX_RESOURCES,max_nodes:100_000,max_total_scalar_bytes:MAX_DECODED,max_total_comment_bytes:MAX_DECODED,max_merge_keys:0},alias_limits:serde_saphyr::alias_limits!{max_replay_stack_depth:16,max_alias_expansions_per_anchor:8},merge_keys:serde_saphyr::MergeKeyPolicy::Error,duplicate_keys:serde_saphyr::DuplicateKeyPolicy::Error,with_snippet:false};
+    let options = serde_saphyr::options! {budget:serde_saphyr::budget!{max_events:250_000,max_aliases:32,max_anchors:32,max_depth:64,max_inclusion_depth:0,max_documents:MAX_RESOURCES,max_nodes:100_000,max_total_scalar_bytes:MAX_DECODED,max_merge_keys:0},alias_limits:serde_saphyr::alias_limits!{max_replay_stack_depth:16,max_alias_expansions_per_anchor:8},merge_keys:serde_saphyr::MergeKeyPolicy::Error,duplicate_keys:serde_saphyr::DuplicateKeyPolicy::Error,with_snippet:false};
     let documents:Vec<ManifestObject>=match serde_saphyr::from_multiple_with_options(manifest,options){Ok(documents)=>documents,Err(_)=>return(Vec::new(),true,vec!["Rendered resource references unavailable: malformed or oversized manifest; contents withheld".into()])};
     fn collect(
         object: ManifestObject,
