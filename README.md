@@ -252,6 +252,8 @@ KBorg detects color support from the environment and works without terminfo.
 | macOS Terminal.app, tmux, screen | 256 colors (24-bit when `COLORTERM=truecolor` is passed through) |
 | Linux console, plain `xterm` | 16 colors with ASCII fallback |
 
+**Unicode:** in a UTF-8 locale, object names, logs, YAML and describe text show real glyphs: Japanese and other wide characters and emoji (including ZWJ families and flags) take two cells, combining accents none, and columns stay aligned. Truncation never cuts a character in half. Control, bidi and invisible format characters are still removed. Without a UTF-8 locale, or with `text: ascii` in `ui.yaml`, non-ASCII characters are drawn as `?`. Approval screens always show non-ASCII as `\u{...}` escapes so look-alike characters can be told apart.
+
 **Ghostty:** run `kborg` from any Ghostty window, or open a dedicated one:
 
 ```sh

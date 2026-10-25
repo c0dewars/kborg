@@ -54,7 +54,7 @@ This plan follows 0.5.0-rc.3. Each item has a measurable bar ("done when") so we
 
 | # | Change | Done when |
 |---|---|---|
-| U1 | **Full Unicode**: grapheme-aware width (East Asian wide, emoji, combining marks) in tables, logs and YAML instead of `?`, keeping the sanitizer's control-character rules | Object names in Japanese and emoji render aligned in a PTY test; ASCII fallback still available |
+| U1 | **Done.** **Full Unicode**: grapheme-aware width (East Asian wide, emoji, combining marks) in tables, logs and YAML instead of `?`, keeping the sanitizer's control-character rules | Object names in Japanese and emoji render aligned in a PTY test; ASCII fallback still available. Delivered: `src/text.rs` (grapheme clusters, cell widths, fit/pad/wrap/pan that never split a cluster) used by tables, logs, YAML/describe, the dashboard, help and the pager; `ui.yaml` `text: auto\|unicode\|ascii`; review screens keep `\u{...}` escaping; screen tests with Japanese, emoji, ZWJ family, flags, combining accents and RTL names plus a live Docker Desktop PTY check |
 | U2 | **k9s skin import**: `kborg themes import-k9s skin.yaml` converts colors to a KBorg theme | The 10 most popular k9s skins convert and pass the contrast check |
 | U3 | **Real-terminal screenshot matrix** in CI: Ghostty, kitty, WezTerm, iTerm2, Terminal.app, Alacritty, Windows Terminal, tmux, screen, over SSH | Golden screenshots per terminal; a rendering regression fails CI |
 | U4 | **Layout polish**: breadcrumbs (context › namespace › kind › object), sticky column headers on scroll, column auto-width with ellipsis in the middle for long names | Design review screenshots in docs/screenshots; no truncated identifiers in the default 120×32 view |
