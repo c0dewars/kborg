@@ -20,6 +20,8 @@
   </p>
 </div>
 
+![KBorg demo: browsing Pods, following logs, context help, Deployments and the dashboard, all in demo mode without a cluster](docs/screenshots/demo.gif)
+
 ![KBorg dashboard on a live Docker Desktop cluster: Pod health, Node usage, degraded workloads and restart hotspots](docs/screenshots/dashboard-health.png)
 
 ## Why KBorg
