@@ -75,7 +75,7 @@ impl App {
             "view.last" => self.last_view(),
             "page.down" | "page.up" | "top" | "bottom" => {
                 let page = terminal::size()
-                    .map(|(w, h)| Layout::new(w, h).table_rows())
+                    .map(|(w, h)| Layout::for_ui(w, h, &self.ui).table_rows())
                     .unwrap_or(15)
                     .max(1);
                 let len = self.visible().len();
