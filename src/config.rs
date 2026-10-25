@@ -65,6 +65,8 @@ pub struct Config {
     #[serde(default)]
     pub allow_node_shell: bool,
     #[serde(default)]
+    pub allow_copilot_screen: bool,
+    #[serde(default)]
     pub allow_debug: bool,
     #[serde(default)]
     pub allow_scan: bool,
@@ -98,6 +100,7 @@ impl Default for Config {
             allow_external_editor: false,
             allow_apply: false,
             allow_node_shell: false,
+            allow_copilot_screen: false,
             allow_debug: false,
             allow_scan: false,
         }
@@ -184,6 +187,9 @@ pub fn apply(config: Config, options: &mut Options) -> Result<()> {
     if options.allow_scan && !config.allow_scan {
         return Err("configuration forbids image scanning".into());
     }
+    if options.allow_copilot_screen && !config.allow_copilot_screen {
+        return Err("configuration forbids sending screen text to Copilot".into());
+    }
     if options.external_editor && !config.allow_external_editor {
         return Err("configuration forbids the external editor".into());
     }
@@ -258,6 +264,7 @@ mod tests {
             helm_keyring: None,
             helm_sigstore_policy: None,
             copilot_policy: None,
+            allow_copilot_screen: false,
             helm_timeout_seconds: 300,
             log_seconds: crate::logs::DEFAULT_FOLLOW_SECONDS,
             log_read: crate::logs::ReadOptions::default(),
@@ -396,7 +403,7 @@ mod tests {
         let mut writable = options();
         writable.connection.writable = true;
         assert!(apply(Config::default(), &mut writable).is_err());
-        let newer: [fn(&mut Options); 9] = [
+        let newer: [fn(&mut Options); 10] = [
             |o| o.connection.allow_secret_reveal = true,
             |o| o.connection.allow_force_kill = true,
             |o| o.connection.allow_yaml_edit = true,
@@ -406,6 +413,7 @@ mod tests {
             |o| o.connection.allow_node_shell = true,
             |o| o.connection.allow_debug = true,
             |o| o.external_editor = true,
+            |o| o.allow_copilot_screen = true,
         ];
         for enable in newer {
             let mut opts = options();

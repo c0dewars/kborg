@@ -119,6 +119,15 @@ trust the supplied internal CA. In GHES offline mode the instance forwards the
 reviewed bundle to its administrator-configured model provider, which KBorg
 cannot see or verify.
 
+`:ask` (separately opt-in with `--allow-copilot-screen`, and refusable in the
+operator configuration with `allow_copilot_screen: false`) sends the visible
+screen text, which is not minimized: it can include context, namespace and
+object names, statuses, events and log lines. Display redaction (masked
+Secrets, hidden credentials) applies first, and the review shows the exact
+bytes. Screen text is passed to the model as data on stdin under a fixed
+instruction; a hostile log line can still try to steer the answer, which is
+why answers are advice only and never executed.
+
 Helm storage access is separately opt-in with `--allow-helm`. Generic Secret
 YAML/describe views remain unavailable, but Helm metadata/history and selected values are
 read from Kubernetes Secret or ConfigMap storage. Kubernetes RBAC cannot restrict

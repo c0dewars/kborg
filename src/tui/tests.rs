@@ -38,6 +38,7 @@ fn harness() -> Harness {
                 helm_keyring: None,
                 helm_sigstore_policy: None,
                 copilot_policy: None,
+                allow_copilot_screen: false,
                 helm_timeout_seconds: 300,
                 allow_tools: false,
                 allow_extensions: false,
@@ -78,6 +79,7 @@ fn harness() -> Harness {
             hotkeys: Default::default(),
             keymap: Default::default(),
             faults_only: false,
+            ask_screen: None,
             views: Default::default(),
             ui: Default::default(),
             wide: false,
@@ -4181,5 +4183,28 @@ fn dashboard_chart_panel_renders_trend_axes_for_the_focused_card() -> Result<()>
     assert!(text.contains("G close charts"), "{text}");
     app.key(KeyCode::Esc)?;
     assert!(matches!(&app.modal, Modal::LiveOverview(d) if !d.chart));
+    Ok(())
+}
+#[test]
+fn ask_captures_the_screen_behind_the_prompt_and_previews_locally_without_opt_in() -> Result<()> {
+    let (mut app, _replies, _commands) = harness();
+    app.items = vec![
+        serde_json::json!({"kind":"Pod","metadata":{"name":"api","namespace":"test","uid":"pod1"},"status":{"phase":"Running"}}),
+    ];
+    let text = snapshot::screen_text(&app, 100, 30)?;
+    assert!(text.contains("api") && text.contains("NAMESPACE"), "{text}");
+    assert!(text.is_ascii() && !text.contains('\u{1b}'), "{text}");
+    app.command("ask why")?;
+    assert!(app.status.contains("Nothing captured"));
+    app.key(KeyCode::Char(':'))?;
+    assert!(app.ask_screen.as_deref().is_some_and(|s| s.contains("api")));
+    app.modal = Modal::None;
+    app.command("ask")?;
+    assert!(matches!(app.modal, Modal::Input(ASK_LABEL, _)));
+    app.modal = Modal::None;
+    app.command("ask is api healthy?")?;
+    assert!(!app.busy);
+    assert!(matches!(&app.modal, Modal::AdviceDocument(title, body, _)
+        if title.contains("nothing sent") && body.contains("QUESTION:\nis api healthy?") && body.contains("--allow-copilot-screen")));
     Ok(())
 }

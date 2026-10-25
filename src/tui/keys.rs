@@ -50,6 +50,7 @@ impl App {
                 _ => false,
             }
         {
+            self.capture_ask_screen();
             let modal = std::mem::replace(&mut self.modal, Modal::None);
             if !matches!(modal, Modal::None) {
                 self.push_subview(modal);
@@ -1074,6 +1075,8 @@ impl App {
                         self.delete_selection_name(&text);
                     } else if label == "Command" {
                         return self.command(&text);
+                    } else if label == ASK_LABEL {
+                        self.ask(&text);
                     } else if label == "Filter" {
                         self.filter = text;
                         self.selected = 0;

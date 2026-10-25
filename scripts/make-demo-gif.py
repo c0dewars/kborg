@@ -14,6 +14,7 @@ Standard library plus Pillow. Unix only (macOS, Linux).
 """
 import argparse
 import fcntl
+import json
 import os
 from pathlib import Path
 import pty
@@ -49,8 +50,9 @@ _INCOMPLETE = re.compile(rb"\x1b(?:\][^\x07]*|[P^_].*|\[[0-9;?<>= -/]*|[()])?$",
 
 
 class Session:
-    def __init__(self, binary, frames_dir, extra_args=()):
+    def __init__(self, binary, frames_dir, extra_args=(), copilot_account=None):
         self.frames_dir = frames_dir
+        self.copilot_account = copilot_account
         self.caption = ""
         self.frames = []  # (png path, duration ms)
         self.tmp = tempfile.TemporaryDirectory(prefix="kborg-demo-gif-")
@@ -63,6 +65,10 @@ class Session:
             "XDG_STATE_HOME": str(home / "state"), "XDG_CACHE_HOME": str(home / "cache"),
             "KUBECONFIG": str(home / "no-kubeconfig"),
         }
+        if copilot_account:
+            # The pinned gh lookup reads the selected stored account from the
+            # real HOME; KBorg's own config and state stay in the temp dirs.
+            env["HOME"] = os.environ["HOME"]
         self.master, self.slave = pty.openpty()
         fcntl.ioctl(self.slave, termios.TIOCSWINSZ, struct.pack("HHHH", HEIGHT, WIDTH, 0, 0))
         self.screen = Screen(WIDTH, HEIGHT)
@@ -207,6 +213,29 @@ def record(session):
         raise RuntimeError(f"kborg did not quit cleanly (status {s.proc.returncode})")
 
 
+def ask_copilot(s):
+    """:ask about the Pods screen, through the real contained Copilot runtime."""
+    s.caption = ":ask sends Copilot the screen you see, after you review it"
+    s.keys(b":", 0.3)
+    s.type("ask why is worker crash looping?", 70)
+    s.keys(b"\r", 0.4)
+    s.wait(r"REVIEW SCREEN TRANSFER", 60)
+    s.drain(0.4)
+    s.frame(3200)
+    for _ in range(30):
+        s.keys(b"\x1b[6~", 0.12)
+    s.caption = "Read every line, then type the exact host and account"
+    s.type(f"SEND SCREEN TO github.com AS {s.copilot_account}", 25)
+    s.frame(1400)
+    s.keys(b"\r", 0.6)
+    s.frame(1200)
+    s.wait(r"COPILOT ADVICE|STOPPED|NOT STARTED", 150)
+    s.caption = "Copilot answers from the screen; advice is never executed"
+    s.drain(0.6)
+    s.frame(5200)
+    s.keys(b"\x1b", 0.4)
+
+
 def tour(session):
     """A longer walk through the main features, one caption per feature."""
     s = session
@@ -244,6 +273,8 @@ def tour(session):
     s.keys(b"N", 0.4)
     step("Sort by any column; press again to reverse", 1800)
     s.keys(b"N", 0.3)
+    if s.copilot_account:
+        ask_copilot(s)
     s.keys(b"d", 0.5)
     s.soft_wait(r"OVERVIEW|DESCRIBE|Overview")
     step("d describes, y shows YAML, always redacted", 2200)
@@ -351,6 +382,8 @@ def main():
     parser.add_argument("--out", type=Path, default=REPO / "docs/screenshots/demo.gif")
     parser.add_argument("--frames", type=Path, help="keep the PNG frames in this directory")
     parser.add_argument("--scale", type=float, default=1.0, help="resize frames before encoding")
+    parser.add_argument("--copilot-policy", type=Path,
+                        help="tour only: include a live :ask step with this policy (sends the synthetic demo screen)")
     parser.add_argument("--tour", action="store_true",
                         help="record the full feature tour (with captions) instead of the short demo")
     args = parser.parse_args()
@@ -361,7 +394,12 @@ def main():
         for old in frames_dir.glob("frame-*.png"):
             old.unlink()
         extra = ["--write", "--allow-secret-reveal"] if args.tour else []
-        session = Session(binary, frames_dir, extra)
+        account = None
+        if args.tour and args.copilot_policy:
+            policy = args.copilot_policy.resolve(strict=True)
+            account = json.loads(policy.read_text())["gh_cli"]["account"]
+            extra += ["--copilot-policy", str(policy), "--allow-copilot-screen"]
+        session = Session(binary, frames_dir, extra, account)
         try:
             (tour if args.tour else record)(session)
         finally:

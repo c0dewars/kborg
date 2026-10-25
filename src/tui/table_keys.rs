@@ -46,6 +46,7 @@ impl App {
         match action {
             "help" => self.open_help(Scope::Table, keyhelp::Mode::Context),
             "command" | "prompt" => {
+                self.capture_ask_screen();
                 self.history_index = None;
                 self.completion = None;
                 self.command_cursor = 0;

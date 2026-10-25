@@ -2,7 +2,20 @@
 
 KBorg can send an explicitly reviewed, minimized Kubernetes status bundle to GitHub Copilot. The response is advice: KBorg never executes suggested commands or applies suggested changes. The contained inference path currently supports **macOS ARM64 and the reviewed native Copilot CLI 1.0.91**, against **GitHub.com, GitHub Enterprise Cloud with data residency (`TENANT.ghe.com`) or GitHub Enterprise Server 3.22+ in offline provider mode**. Other platforms and unsupported runtime versions fail closed.
 
-`:copilot` opens a local preview for the selected resource. A configured policy enables a separate transfer review; configuration alone never sends data. Read every preview line and type the exact host/account confirmation. CLI `copilot diagnose RESOURCE NAME --copilot-policy ABS` requires an interactive terminal and the same explicit confirmation. Demo mode remains local preview only. Cancel with Ctrl-C; cancellation cannot retract bytes already received by the provider.
+`:copilot` opens a local preview for the selected resource. A configured policy enables a separate transfer review; configuration alone never sends data. Read every preview line and type the exact host/account confirmation. CLI `copilot diagnose RESOURCE NAME --copilot-policy ABS` requires an interactive terminal and the same explicit confirmation. Demo mode keeps `:copilot` local preview only (see `:ask` below). Cancel with Ctrl-C; cancellation cannot retract bytes already received by the provider.
+
+## Ask about the screen (`:ask`)
+
+`:ask QUESTION` (or `:ask` alone, which prompts for the question) asks Copilot about what you are looking at. When you press `:`, KBorg renders the current view as plain text: the same frame you see, with box drawing turned into ASCII and the key-hint row dropped. That works for tables, describe/YAML, logs, metrics and the dashboard. The question (1–500 characters, one line) and up to 24 KiB of screen text form the payload.
+
+- **Opt-in:** needs `--copilot-policy ABS` and `--allow-copilot-screen`. An operator configuration can refuse the flag with `allow_copilot_screen: false` (the default when a configuration is loaded). Without both flags, `:ask` shows a local preview of exactly what would be sent, and nothing leaves the machine.
+- **Not minimized:** unlike `:copilot`, the screen text can include context, namespace and object names, statuses, events and log lines. Masked Secret values and other display redaction apply first. The review lists the exact bytes, and every line must be painted before approval.
+- **Approval:** type `SEND SCREEN TO HOST AS ACCOUNT`. It expires after five minutes and is bound to the policy, executable and credential identity, like `:copilot`.
+- **Prompt injection:** the fixed instruction tells the model to treat screen text as data. A hostile log line can still try to steer the answer, so answers are advice only and are never executed.
+- **Demo mode:** `kborg demo` screens are synthetic, so `:ask` can send them, which is a safe way to try the feature with your account.
+- **Validation:** tested live on GitHub.com with a `gh_cli` account through the release TUI in demo mode. The answer named the crash-looping Pod from the screen.
+
+The instruction and payload are written together to the CLI's stdin. They are not passed with `-p`, which would put the payload in the process argument list, and the pinned CLI ignores stdin when `-p` is present. The review's exact payload is that stdin text.
 
 ## Explicit policy and account
 

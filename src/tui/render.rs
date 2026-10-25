@@ -1232,7 +1232,7 @@ pub(super) fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<
                 Modal::HelmForm(form) => form.intent.label(),
                 Modal::AdviceReview(review) => {
                     if review.prepared.is_some() {
-                        "COPILOT / review diagnostic transfer"
+                        "COPILOT / review transfer"
                     } else {
                         "COPILOT / local preview only"
                     }

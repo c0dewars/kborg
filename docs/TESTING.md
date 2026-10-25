@@ -40,6 +40,7 @@ No cluster? `kborg demo` opens an offline sample cluster.
 | `--write --allow-node-shell` | `s` on a Node (privileged Pod; only on a cluster you own) |
 | `--write --allow-yaml-edit` | `e` on a Deployment, change replicas or an image, Ctrl-S to review |
 | `--allow-secret-reveal` | `:secrets`, then `x` on one key |
+| `--copilot-policy ABS --allow-copilot-screen` (macOS ARM64) | `:ask why is this failing?` on a table, describe or logs view; read the whole review, type the confirmation |
 
 ## Customize like k9s
 

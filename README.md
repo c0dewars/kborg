@@ -33,7 +33,7 @@
 - **See all your clusters at once.** Up to nine clusters side by side: Pod health, restarts, OOM kills, Node readiness and CPU/memory, degraded Deployments and StatefulSets, and recent warnings, each updating independently.
 - **Follow one workload across every cluster.** Pick Deployments from any cluster and tail them together in one pane, merged in timestamp order and tagged by cluster.
 - **Change things without fear.** Read-only by default. Every change, from a scale to a multi-object `kborg apply`, gets a server dry run, a readable diff, identity checks and typed confirmation. Nothing is applied by surprise.
-- **Ask Copilot, safely.** Optional advice from GitHub Copilot on GitHub.com, GHE.com or GitHub Enterprise Server, with a minimized, reviewed payload and a sandboxed runtime.
+- **Ask Copilot, safely.** Ask GitHub Copilot about the screen you are looking at (`:ask`) or get advice on a resource (`:copilot`), on GitHub.com, GHE.com or GitHub Enterprise Server. You review the exact text first, and it runs in a sandboxed runtime.
 - **Fast, and light on your laptop and your API server.** In side-by-side tests KBorg showed data in 0.06 s (k9s 0.69 s), used about a quarter of k9s's memory and half its CPU at 5,000 live objects, and a fraction of k10s's network traffic ([numbers](docs/PERFORMANCE_COMPARISON.md)).
 - **Looks good in any terminal.** 20 hand-tuned themes that meet WCAG AA contrast everywhere they're drawn (plus your terminal's own palette), 24-bit color with graceful fallback, and a quiet layout with contextual key hints.
 - **Make it yours.** Like an Omarchy desktop, everything is data you control: remap any key (`keymap.yaml`), restyle the UI (`ui.yaml`: borders, header, density, colors, chart style), choose columns per resource (`views.yaml`), add hotkeys and aliases. `?` always shows the keys for the screen you're on, with your bindings.
@@ -51,7 +51,7 @@
 | **Helm** | Release browsing and history; reviewed install, upgrade, rollback, uninstall and tests for packaged and OCI charts with optional OpenPGP/Sigstore verification |
 | **Secrets** | Opt-in key listing and masked YAML/describe (`y`/`d`: values shown as sizes, TLS subject/expiry, registry hostnames); reveal one value for 30 seconds; never exported or copied |
 | **Metrics & charts** | Pod/Node CPU and memory tables with exact values and request/limit comparisons; live charts (`g` in `:metrics`) with units and % of request, limit or allocatable; dashboard trend charts (`G`) and 15-minute sparklines; braille, block or ASCII rendering |
-| **Copilot** | Minimized diagnostic preview, exact account approval, contained native runtime (macOS ARM64) |
+| **Copilot** | Minimized diagnostic preview, `:ask` about the current screen, exact account approval, contained native runtime (macOS ARM64) |
 | **Workspace** | Saved context groups and scopes, remembered dashboard (`kborg dashboard`), k9s-format `views.yaml` columns, sort by any column, recent namespaces on `1`–`9`, custom aliases and k9s-format hotkeys, every key remappable on every screen (`keymap.yaml`, `?` help per screen, `:keymap`), UI styling (`ui.yaml`), reviewed read-only extensions (`:ext`, k9s `plugins.yaml` import), 20 themes plus custom palettes, shell completions |
 
 ![Cross-cluster tail: two clusters' checkout services merged in timestamp order](docs/screenshots/cross-cluster-tail.png)
@@ -252,6 +252,13 @@ Ghostty's shortcuts use Cmd on macOS, so Ctrl-D/K/S/R reach KBorg, and `c` copie
 ## Copilot advice (optional)
 
 `:copilot` previews a minimized status bundle for the selected resource: no names, messages, manifests or logs. With an explicit policy file, KBorg sends that exact bundle to Copilot after you approve the host and account, through a sandboxed native runtime whose network is limited to the deployment's Copilot endpoints. Works with GitHub.com, GHE.com tenants and GitHub Enterprise Server 3.22+ (the enterprise targets follow GitHub's documented endpoints but have not yet been verified against a live tenant). Advice is never executed. See [Copilot](docs/COPILOT_INTEGRATION.md).
+
+`:ask QUESTION` asks Copilot about what you are looking at. KBorg captures the view behind the `:` prompt as plain text (table, describe, logs, dashboard), shows you exactly what will be sent, and sends it only after you type `SEND SCREEN TO HOST AS ACCOUNT`. It needs `--allow-copilot-screen` on top of the policy, because screen text includes names and log lines; without it `:ask` shows a local preview.
+
+```sh
+kborg --copilot-policy "$PWD/copilot-policy.json" --allow-copilot-screen
+# then, on any screen:  :ask why is this pod restarting?
+```
 
 ## Security model
 

@@ -40,6 +40,7 @@ mod replies;
 mod review_ui;
 #[path = "ui_selections.rs"]
 mod selections_ui;
+mod snapshot;
 mod startup;
 mod table_keys;
 #[path = "ui_metrics.rs"]
@@ -63,12 +64,15 @@ use tty::*;
 use worker::*;
 
 const OVERVIEW_CONTEXTS_LABEL: &str = "Overview contexts (comma separated, max 9)";
+const ASK_LABEL: &str = "Ask Copilot about this screen";
 const OVERVIEW_INPUT_BYTES: usize = crate::overview::MAX_LIVE_CONTEXTS * 254 - 1;
 fn input_limit(label: &str) -> usize {
     if label == OVERVIEW_CONTEXTS_LABEL {
         OVERVIEW_INPUT_BYTES
     } else if label == "Command" {
         nav::COMMAND_BYTES
+    } else if label == ASK_LABEL {
+        crate::advice::MAX_QUESTION
     } else {
         100
     }
@@ -263,6 +267,8 @@ struct App {
     keymap: crate::keymap::Keymap,
     /// Ctrl-Z: show only objects that need attention (k9s faults view).
     faults_only: bool,
+    /// The screen as it was when the command prompt opened, for `:ask`.
+    ask_screen: Option<String>,
     /// k9s-format views.yaml: per-resource columns and default sort.
     views: crate::views::Views,
     /// Data-only ui.yaml: borders, chrome rows, table style, color overrides.
@@ -867,6 +873,7 @@ pub fn run(options: Options) -> Result<()> {
         hotkeys,
         keymap,
         faults_only: false,
+        ask_screen: None,
         views,
         ui,
         wide: false,

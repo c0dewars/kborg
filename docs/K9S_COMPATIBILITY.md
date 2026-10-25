@@ -44,7 +44,7 @@ Kubernetes Roles/Bindings are browsable, and `:can` supplies explicit-subject
 evidence. Secret YAML/describe is a masked view inside `:secrets` (values replaced by sizes; one key revealed at a time); generic `y`/`d`, lists, watches and exports of Secrets are still refused and point to `:secrets`. Node shell, file and directory copy, server-side apply, benchmarks and plugins have reviewed KBorg equivalents described below. Existing-resource namespaced YAML spec editing and reviewed node cordon/uncordon/drain are implemented in the [Mac v1 workflow batch](MAC_V1_OPERATIONS.md). Where KBorg's behavior differs, it is stricter, never an alternate
 meaning for the same command.
 
-Copilot is a KBorg-specific extension: `:copilot` previews selected minimized status and, with an explicit macOS ARM64 policy, requests read-only advice after full account-bound review. It does not redefine k9s resource commands.
+Copilot is a KBorg-specific extension: `:copilot` previews selected minimized status and, with an explicit macOS ARM64 policy, requests read-only advice after full account-bound review. `:ask QUESTION` (with `--allow-copilot-screen`) asks about the exact text of the current view after the same review. It does not redefine k9s resource commands.
 
 ## Navigation and contextual keys
 

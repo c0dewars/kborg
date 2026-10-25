@@ -366,7 +366,7 @@ pub(super) fn execute(prepared: PreparedAdvice, stop: Arc<AtomicBool>) -> Result
         // whole-process policy. All dynamic values are positional arguments.
         let mut command = Command::new("/bin/sh");
         command.args(["-c","ulimit -t \"$1\" || exit 120; ulimit -c 0 || exit 120; ulimit -f 131072 || exit 120; ulimit -n 1024 || exit 120; shift; exec /usr/bin/sandbox-exec \"$@\"","kborg-contained-copilot",&prepared.options.seconds.to_string(),"-f"])
-        .arg(&policy).arg(&native).args(["-p","Provide advisory Kubernetes diagnosis using only the minimized status JSON supplied on stdin. No tools or changes are authorized. State likely causes, missing evidence and safe read-only investigation steps; do not invent observations.","--no-auto-login","--auth-token-env","KBORG_COPILOT_SELECTED_TOKEN","--available-tools=","--disable-builtin-mcps","--no-custom-instructions","--no-ask-user","--no-auto-update","--no-remote","--no-remote-export","--no-bash-env","--no-color","--stream","off","--silent","--log-level","none","--model",&prepared.options.model]);
+        .arg(&policy).arg(&native).args(["--no-auto-login","--auth-token-env","KBORG_COPILOT_SELECTED_TOKEN","--available-tools=","--disable-builtin-mcps","--no-custom-instructions","--no-ask-user","--no-auto-update","--no-remote","--no-remote-export","--no-bash-env","--no-color","--stream","off","--silent","--log-level","none","--model",&prepared.options.model]);
         environment(&mut command, &state);
         deployment_environment(
             &mut command,
@@ -385,7 +385,10 @@ pub(super) fn execute(prepared: PreparedAdvice, stop: Arc<AtomicBool>) -> Result
         if stop.load(Ordering::Acquire) {
             return Err("Copilot request canceled before launch".into());
         }
-        let input = format!("{}\n", prepared.bundle).into_bytes();
+        // The CLI takes a piped prompt instead of -p, never both: the fixed
+        // instruction and the reviewed data go on stdin, which also keeps the
+        // data out of the process argument list.
+        let input = format!("{}\n", prepared.preview()?).into_bytes();
         let capture = process::invoke(
             command,
             input,
@@ -483,10 +486,10 @@ pub(super) fn execute(prepared: PreparedAdvice, stop: Arc<AtomicBool>) -> Result
                 "Copilot output contained selected credential material; response suppressed".into(),
             );
         }
-        let answer = safety::safe_lines(
+        let answer = ascii_punctuation(&safety::safe_lines(
             std::str::from_utf8(&capture.stdout).map_err(|_| "Copilot response was not UTF-8")?,
             65536,
-        );
+        ));
         if answer.trim().is_empty() {
             return Err("Copilot returned no advisory answer".into());
         }
@@ -606,5 +609,35 @@ mod tls_tests {
                 || lower.contains("authentication")
         );
         Ok(())
+    }
+}
+
+/// Models use typographic punctuation; the TUI shows non-ASCII as `?`.
+fn ascii_punctuation(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        match c {
+            '\u{2018}' | '\u{2019}' | '\u{2032}' => out.push('\''),
+            '\u{201c}' | '\u{201d}' => out.push('"'),
+            '\u{2010}'..='\u{2015}' | '\u{2212}' => out.push('-'),
+            '\u{2026}' => out.push_str("..."),
+            '\u{2022}' => out.push('*'),
+            '\u{00a0}' => out.push(' '),
+            '\u{2192}' => out.push_str("->"),
+            c => out.push(c),
+        }
+    }
+    out
+}
+#[cfg(test)]
+mod punctuation_tests {
+    #[test]
+    fn answers_use_ascii_punctuation() {
+        assert_eq!(
+            super::ascii_punctuation(
+                "It doesn\u{2019}t \u{201c}crash\u{201d} \u{2014} wait\u{2026}"
+            ),
+            "It doesn't \"crash\" - wait..."
+        );
     }
 }

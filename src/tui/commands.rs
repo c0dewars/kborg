@@ -170,6 +170,17 @@ impl App {
             ("logs",[selector])=>self.request_log_group(self.namespace.clone(),crate::logs::PodLogSelection::Selector(selector.clone()),false,true,false),
             ("logs-live",[selector])=>self.request_log_group(self.namespace.clone(),crate::logs::PodLogSelection::Selector(selector.clone()),false,true,true),
             ("logs-live",[])=>self.request_dynamic_workload_logs(),
+            ("ask", []) => {
+                if self.ask_screen.is_none() {
+                    self.status = "Nothing captured to ask about; press : on the screen you want to ask about.".into();
+                } else {
+                    self.modal = Modal::Input(ASK_LABEL, String::new());
+                }
+            }
+            ("ask", words) => {
+                let question = words.join(" ");
+                self.ask(&question);
+            }
             ("copilot",[])=>{
                 if let Some((kind,namespace,name))=self.selected_target() {
                     if self.busy {self.status="Wait for the current request before preparing Copilot.".into();}
@@ -792,6 +803,52 @@ impl App {
             self.options.node_shell_image.clone(),
             self.options.session_seconds,
         ));
+    }
+    /// Capture what the user is looking at before the command prompt covers it.
+    pub(super) fn capture_ask_screen(&mut self) {
+        let (width, height) = terminal::size().unwrap_or((120, 40));
+        self.ask_screen = snapshot::screen_text(self, width, height).ok();
+    }
+    /// Ask Copilot about the screen captured when the prompt opened. Without
+    /// a policy and --allow-copilot-screen this shows a local preview only.
+    pub(super) fn ask(&mut self, question: &str) {
+        let Some(screen) = self.ask_screen.clone() else {
+            self.status =
+                "Nothing captured to ask about; open :ask from the screen you want to ask about."
+                    .into();
+            return;
+        };
+        let bundle = match crate::advice::screen_bundle(question, &screen) {
+            Ok(bundle) => bundle,
+            Err(error) => {
+                self.status = error;
+                return;
+            }
+        };
+        let policy = self.options.copilot_policy.clone();
+        if policy.is_none() || !self.options.allow_copilot_screen {
+            self.modal = Modal::AdviceDocument(
+                "ASK COPILOT / local preview, nothing sent".into(),
+                format!(
+                    "Setup required to send: start KBorg with --copilot-policy ABS --allow-copilot-screen (see docs/COPILOT_INTEGRATION.md).\nThis is exactly what would be sent, after a review you must confirm:\n\n{bundle}"
+                ),
+                0,
+            );
+            return;
+        }
+        if self.busy {
+            self.status = "Wait for the current request before asking Copilot.".into();
+            return;
+        }
+        self.modal = Modal::AdviceLoading;
+        self.send(Task::AskPrepare(question.to_owned(), screen, policy));
+        if !self.busy {
+            self.modal = Modal::AdviceDocument(
+                "COPILOT NOT STARTED".into(),
+                "Request queue unavailable; ask again when the worker is available.".into(),
+                0,
+            );
+        }
     }
     /// Review a privileged node shell Pod for the selected Node.
     pub(super) fn node_shell(&mut self) {
