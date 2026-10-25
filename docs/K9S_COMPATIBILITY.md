@@ -31,6 +31,7 @@ References: [command guide](https://k9scli.io/topics/commands/), [command interp
 | `:pf`, `:portforward`, `:portforwards` | View/cancel this session's reviewed loopback forwards. Up to eight independent TUI forwards; four simultaneous clients each; 1..300s per session. `j/k` select, `s` stops selected, `b` benchmarks it, `F` reviews another. Scope changes/exit cancel all. |
 | `:be`, `:bench`, `:benchmark [REQUESTS CONCURRENCY [PATH]]` | Native HTTP GET benchmark of the selected listening forward (k9s uses `hey`): 127.0.0.1 only, up to 2000 requests, 20 connections and 60 s; reports throughput, status counts and p50/p90/p99 latency. |
 | `:lint`, `:popeye`, `:pop` | Read-only misconfiguration report for the namespace (k9s popeye's role): requests/limits/probes, unpinned images, privileged or host-namespace Pods, single-replica or degraded Deployments, crash/pull loops, restarts, bare Pods, Services without Pods. `kborg lint --json` for scripts. |
+| `:scan`, `:scan ns` | Image vulnerability scan (k9s vulscan) of the selected Pod/workload or up to 50 namespace images through an explicitly trusted external Trivy or Grype (`--scanner ABS_PATH --allow-scan`); short review, cancelable, read-only for the cluster. `kborg scan ... --json` for scripts. |
 | `:ext [NAME]` | Run a registered read-only extension on the selection (KBorg's plugin model; see below). |
 | `:container`, `:containers` | Container drilldown for a selected Pod. |
 | `:helm`; `:history`; `:helm-install`; `:helm-test`; `:helm-crds`; `:helm-crds-upgrade`; `:helm-crds-delete`; `:helm-crds-migrate` | Native Helm v3/v4 Secret/ConfigMap browsing with `--allow-helm`. List Enter/r → history; revision Enter → redacted stored overrides; d metadata, m resource identities, y safe YAML. Reviewed list i/u/Ctrl-D install/upgrade/uninstall and history r rollback require all three write/Helm flags and trusted Unix Helm 4.3.1. Deterministic local/OCI charts, opt-in reviewed hooks, t/release tests, c/CRD bootstrap and explicit schema update/delete/storage migration; no SQL storage. |
@@ -38,7 +39,7 @@ References: [command guide](https://k9scli.io/topics/commands/), [command interp
 | `:cow` | Local novelty view; never a process invocation. |
 
 Helm lifecycle supports an explicitly reviewed subset, not arbitrary chart or
-storage parity: exact Helm 4.3.1 on Unix, deterministic local/OCI packaged charts, separately reviewed hooks/tests and namespaced-schema CRD operations. Other cluster/system targets and ordinary cross-namespace release resources, recognized GitOps resources and foreign adoption remain unsupported. Image vulnerability scans have no native equivalent. Ordinary
+storage parity: exact Helm 4.3.1 on Unix, deterministic local/OCI packaged charts, separately reviewed hooks/tests and namespaced-schema CRD operations. Other cluster/system targets and ordinary cross-namespace release resources, recognized GitOps resources and foreign adoption remain unsupported. Image vulnerability scans (k9s vulscan) run through an external, explicitly trusted Trivy or Grype (see Image scanning below). Ordinary
 Kubernetes Roles/Bindings are browsable, and `:can` supplies explicit-subject
 evidence. Generic Secret YAML/describe views remain unsupported by design (`:secrets` lists keys and reveals one value at a time). Node shell, file and directory copy, server-side apply, benchmarks and plugins have reviewed KBorg equivalents described below. Existing-resource namespaced YAML spec editing and reviewed node cordon/uncordon/drain are implemented in the [Mac v1 workflow batch](MAC_V1_OPERATIONS.md). Where KBorg's behavior differs, it is stricter, never an alternate
 meaning for the same command.
@@ -83,6 +84,12 @@ k9s relies on `kubectl cp` through plugins. KBorg has a reviewed single-file cop
 ## Debug containers
 
 `:debug [CONTAINER]` on a Pod (or `kborg debug POD [CONTAINER]`) with `--write --allow-debug` adds an ephemeral debug container, KBorg's `kubectl debug -it`. The review shows the container after a server dry run; on approval KBorg adds it, waits until it runs and opens `sh -i`. With a target container it shares that container's process namespace. The image is `--node-shell-image` (pinned busybox by default).
+
+## Image scanning
+
+k9s embeds grype for its vulscan view. KBorg contains no scanner or vulnerability database; it runs a Trivy or Grype you already installed, opted in with `--scanner ABS_PATH --allow-scan` (also `allow_scan` in a `--config` file). `:scan` scans the selected Pod or workload (Deployment, StatefulSet, DaemonSet, ReplicaSet, Job, CronJob); `:scan ns` scans every distinct image in the namespace, up to 50. The `scan` keymap action has no default key; bind one in keymap.yaml. The CLI is `kborg scan pods NAME`, `kborg scan deploy NAME` or `kborg scan ns [-n NAMESPACE]`, with `--json`.
+
+A short review shows the scanner (detected from `--version`), the images and that the scanner may download its database and pull image layers from registries; Enter or `scan` starts it. Results open in a document view: counts by severity per image and the ten most severe findings (ID, package, installed -> fixed version). Esc or Ctrl-C cancels. Trivy runs as `trivy image --quiet --format json --scanners vuln -- IMAGE` and may use a local Docker daemon; Grype runs as `grype -q -o json -- registry:IMAGE`, always pulling from the registry. Images that exist only inside the cluster node, such as kind-loaded images, cannot be scanned by Grype. See [SECURITY.md](../SECURITY.md).
 
 ## Node shell
 
