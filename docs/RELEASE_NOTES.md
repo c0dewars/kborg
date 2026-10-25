@@ -14,6 +14,9 @@
 - **CronJobs and rollbacks**: `t` triggers a CronJob now, `s` suspends or resumes it; `:rollback [REVISION]` restores a Deployment, StatefulSet or DaemonSet revision with the image change in the review.
 - **Ephemeral debug containers** (`--write --allow-debug`): `:debug [CONTAINER]` or `kborg debug POD`, reviewed and sharing the target's process namespace.
 - **Keys and looks you control**: `keymap.yaml` remaps any key (confirmation keys stay fixed), `?` opens help for the current view with your real keys, `:keymap` lists every action; `ui.yaml` sets borders, header and hint rows, table style, color overrides and dashboard layout (`:ui reload`, `kborg ui init`).
+- **Masked Secret YAML** in `:secrets` (`y`/`d`, `--allow-secret-reveal`): the whole Secret with every value hidden, TLS certificate subject and expiry, registry hostnames for pull secrets; `x` reveals one key for 30 s. Generic views still refuse Secrets and point to `:secrets`.
+- **Live charts**: `g` in `:metrics` charts CPU and memory over time for the selected Pod or Node (with % of request, limit or allocatable); `G` on the dashboard shows four trend charts for the focused cluster. Braille, block or ASCII rendering, set with `ui.yaml` `charts:`.
+- **Every screen remappable**: Helm, pickers, themes, saved selections, RBAC subjects, the tail picker, forms and the Secrets view are in the keymap, with their own `?` help.
 - **Bulk actions on marked rows**: Ctrl-D, `r` and CronJob `s` act on every marked object (up to 50) through one combined, dry-run review; type e.g. `delete 7 objects`; stops at the first failure and reports what ran.
 - **Image vulnerability scanning** with your own Trivy or Grype (`--scanner ABS_PATH --allow-scan`): `:scan`, `:scan ns`, `kborg scan … [--json]`; severity counts and top findings per image.
 - **Linux packages** (`.deb`, `.rpm` spec) and a README demo GIF; Homebrew tap live (`brew install c0dewars/tap/kborg`).
