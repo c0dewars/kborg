@@ -1,0 +1,62 @@
+# cargo-deny policy (https://embarkstudios.github.io/cargo-deny/).
+# Run locally:  cargo deny --locked check
+# CI: the `supply-chain` job in .github/workflows/ci.yml.
+
+[graph]
+# Check every platform KBorg ships, not just the host.
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+    "x86_64-apple-darwin",
+    "aarch64-apple-darwin",
+    "x86_64-pc-windows-msvc",
+    "aarch64-pc-windows-msvc",
+]
+all-features = true
+
+[advisories]
+# RustSec advisory database. Vulnerabilities, unsound and yanked crates fail;
+# unmaintained crates fail only when they are direct or transitive deps of
+# the workspace (the default "all" scope). Add an `ignore` entry only with a
+# reason and a link to the review.
+yanked = "deny"
+unmaintained = "workspace"
+unsound = "all"
+ignore = []
+
+[licenses]
+# Licenses compatible with distributing KBorg under Apache-2.0. Copyleft
+# licenses are not listed; an OR expression only needs one allowed option.
+allow = [
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "MIT",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "0BSD",
+    "Zlib",
+    "Unlicense",
+    "Unicode-3.0",
+    "CDLA-Permissive-2.0",
+]
+confidence-threshold = 0.93
+unused-allowed-license = "allow"
+
+[licenses.private]
+ignore = true
+
+[bans]
+# Two versions of one crate are a warning (usually an upstream lag), not a
+# failure. Wildcard version requirements are refused.
+multiple-versions = "warn"
+wildcards = "deny"
+allow-wildcard-paths = true
+highlight = "all"
+
+[sources]
+# Only crates.io. Git and alternative registries fail.
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []
