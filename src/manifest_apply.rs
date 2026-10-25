@@ -163,8 +163,9 @@ pub fn body(
     {
         return Err("metadata.name must be a lowercase DNS name".into());
     }
-    let namespace = match metadata.get("namespace").and_then(Value::as_str) {
-        Some(namespace) => namespace,
+    let namespace = match metadata.get("namespace").filter(|value| !value.is_null()) {
+        Some(Value::String(namespace)) => namespace.as_str(),
+        Some(_) => return Err(format!("{name}: metadata.namespace must be a string")),
         None if default_namespace != "*" && !default_namespace.is_empty() => default_namespace,
         None => {
             return Err(format!(
@@ -347,6 +348,23 @@ mod tests {
             "shop"
         ));
         assert!(kind_for(&kinds, &json!({"apiVersion":"apps/v2","kind":"Deployment"})).is_err());
+        Ok(())
+    }
+    #[test]
+    fn non_string_namespace_is_rejected_not_replaced_by_the_default() -> Result<()> {
+        // `namespace: 2024` in YAML is a number; it must not silently become
+        // the selected namespace.
+        let kinds = kinds();
+        for namespace in [json!(2024), json!(true), json!(["a"]), json!({"a": 1})] {
+            assert!(body_err(
+                &kinds,
+                json!({"apiVersion":"v1","kind":"ConfigMap","metadata":{"name":"x","namespace":namespace}}),
+                "shop"
+            ));
+        }
+        let doc = json!({"apiVersion":"v1","kind":"ConfigMap","metadata":{"name":"x","namespace":null}});
+        let (ns, _, _) = body(&doc, kind_for(&kinds, &doc)?, "shop")?;
+        assert_eq!(ns, "shop");
         Ok(())
     }
     fn body_err(kinds: &[Kind], doc: Value, ns: &str) -> bool {
