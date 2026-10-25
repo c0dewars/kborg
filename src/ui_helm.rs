@@ -991,33 +991,33 @@ impl Table {
             let mark = if index == self.selected { " >" } else { "  " };
             lines.push(if wide {
                 format!(
-                    "{mark} {:<16} {:<name_width$} {:>revision_width$} {:<16} {:<28} {:<9} {}",
-                    clip(&release.namespace, 16),
-                    clip(&release.name, name_width),
+                    "{mark} {} {} {:>revision_width$} {} {} {} {}",
+                    column(&release.namespace, 16),
+                    column(&release.name, name_width),
                     release.revision,
-                    clip(&release.status, 16),
-                    clip(
+                    column(&release.status, 16),
+                    column(
                         &format!("{}-{}", release.chart_name, release.chart_version),
                         28
                     ),
-                    clip(&release.app_version, 9),
+                    column(&release.app_version, 9),
                     release.storage.name()
                 )
             } else if medium {
                 format!(
-                    "{mark} {:<name_width$} {:>revision_width$} {:<10} {}",
-                    clip(
+                    "{mark} {} {:>revision_width$} {} {}",
+                    column(
                         &format!("{}/{}", release.namespace, release.name),
                         name_width
                     ),
                     release.revision,
-                    clip(&release.status, 10),
+                    column(&release.status, 10),
                     release.storage.name()
                 )
             } else {
                 format!(
-                    "{mark} {:<name_width$} {:>revision_width$} {:<2} {}",
-                    clip(&release.name, name_width),
+                    "{mark} {} {:>revision_width$} {:<2} {}",
+                    column(&release.name, name_width),
                     release.revision,
                     if release.storage == Storage::Secret {
                         "S"
@@ -1031,6 +1031,7 @@ impl Table {
         lines
     }
 }
+use crate::text::column;
 fn clip(text: &str, width: usize) -> String {
     safety::safe_text(text, width).chars().take(width).collect()
 }

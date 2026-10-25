@@ -64,6 +64,29 @@ fn utf8_locale() -> bool {
         })
 }
 
+/// How cluster text with non-ASCII characters is drawn.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TextMode {
+    /// Real glyphs in UTF-8 locales, ASCII otherwise (built-in).
+    #[default]
+    Auto,
+    /// Real glyphs with grapheme-aware cell widths.
+    Unicode,
+    /// Every non-ASCII character as `?`.
+    Ascii,
+}
+impl TextMode {
+    /// True when real Unicode glyphs should be drawn.
+    pub fn unicode(self) -> bool {
+        match self {
+            Self::Auto => utf8_locale(),
+            Self::Unicode => true,
+            Self::Ascii => false,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum TitleStyle {
@@ -281,6 +304,7 @@ pub struct UiConfig {
     pub colors: BTreeMap<String, String>,
     pub dashboard: Dashboard,
     pub charts: Charts,
+    pub text: TextMode,
 }
 impl Default for UiConfig {
     fn default() -> Self {
@@ -297,6 +321,7 @@ impl Default for UiConfig {
             colors: BTreeMap::new(),
             dashboard: Dashboard::default(),
             charts: Charts::default(),
+            text: TextMode::Auto,
         }
     }
 }
@@ -626,6 +651,11 @@ charts:
   show_axes: true       # value axis with units and a time axis
   cpu_role: accent      # palette role for CPU lines
   memory_role: success  # palette role for memory lines
+
+# Cluster text (names, logs, YAML): auto (real Unicode glyphs in UTF-8
+# locales, ? for non-ASCII otherwise) | unicode | ascii. Approval screens
+# always escape non-ASCII as \u{...} so look-alike characters stay distinct.
+text: auto
 "##;
 
 #[cfg(test)]
@@ -656,8 +686,12 @@ mod tests {
     #[test]
     fn full_file_parses_every_option() -> Result<()> {
         let config = parse(
-            "version: 1\ntheme: nord\nsplash: false\nborders: ascii\npanel_title: bracketed\nheader:\n  show: true\n  identity: false\n  summary: false\n  compact: true\nhints:\n  show: false\n  key_role: warning\n  text_role: text\ntable:\n  density: relaxed\n  selection_marker: \"\"\n  mark_marker: \"+\"\n  zebra: true\n  column_separator: \"|\"\n  age: long\n  sort_ascending: \"<\"\n  sort_descending: \">\"\ntimestamps: local\ncolors:\n  accent: \"#88C0D0\"\ndashboard:\n  columns: 2\n  min_card_width: 40\n  min_card_height: 12\n  trend: false\n  node_details: false\ncharts:\n  style: blocks\n  show_axes: false\n  cpu_role: warning\n  memory_role: focus\n",
+            "version: 1\ntheme: nord\nsplash: false\nborders: ascii\npanel_title: bracketed\nheader:\n  show: true\n  identity: false\n  summary: false\n  compact: true\nhints:\n  show: false\n  key_role: warning\n  text_role: text\ntable:\n  density: relaxed\n  selection_marker: \"\"\n  mark_marker: \"+\"\n  zebra: true\n  column_separator: \"|\"\n  age: long\n  sort_ascending: \"<\"\n  sort_descending: \">\"\ntimestamps: local\ncolors:\n  accent: \"#88C0D0\"\ndashboard:\n  columns: 2\n  min_card_width: 40\n  min_card_height: 12\n  trend: false\n  node_details: false\ncharts:\n  style: blocks\n  show_axes: false\n  cpu_role: warning\n  memory_role: focus\ntext: ascii\n",
         )?;
+        assert_eq!(config.text, TextMode::Ascii);
+        assert!(!config.text.unicode());
+        assert!(parse("text: unicode\n")?.text.unicode());
+        assert!(parse("text: emoji\n").is_err());
         assert_eq!(config.theme.as_deref(), Some("nord"));
         assert_eq!(config.splash, Some(false));
         assert_eq!(config.borders, Borders::Ascii);

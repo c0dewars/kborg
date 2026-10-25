@@ -297,7 +297,7 @@ impl LogView {
             .iter()
             .map(|line| {
                 if self.wrap {
-                    line.chars().count().max(1).div_ceil(width.max(1))
+                    crate::text::rows(line, width)
                 } else {
                     1
                 }
@@ -482,22 +482,20 @@ impl LogView {
             }
         }
         if let Some(notice) = &self.notice {
-            output.push(ascii(notice).chars().take(width).collect());
+            output.push(crate::text::window(
+                &safety::safe_text(notice, 4096),
+                0,
+                width,
+            ));
             if output.len() == height {
                 return output;
             }
         }
         if let Some(draft) = &self.draft {
-            let draft = ascii(draft);
-            let tail: String = draft
-                .chars()
-                .rev()
-                .take(width.saturating_sub(1))
-                .collect::<Vec<_>>()
-                .into_iter()
-                .rev()
-                .collect();
-            output.push(format!("/{tail}"));
+            let draft = safety::safe_text(draft, 4096);
+            let room = width.saturating_sub(1);
+            let skip = crate::text::width(&draft).saturating_sub(room);
+            output.push(format!("/{}", crate::text::window(&draft, skip, room)));
             if output.len() == height {
                 return output;
             }
@@ -516,7 +514,6 @@ impl LogView {
         }
         let mut index = 0usize;
         for line in self.selected_lines() {
-            let line = ascii(&line);
             if self.wrap {
                 if line.is_empty() {
                     if index >= start {
@@ -524,9 +521,9 @@ impl LogView {
                     }
                     index += 1;
                 } else {
-                    for chunk in line.as_bytes().chunks(width) {
+                    for chunk in crate::text::wrap(&line, width) {
                         if index >= start {
-                            output.push(String::from_utf8_lossy(chunk).into_owned());
+                            output.push(chunk);
                         }
                         index += 1;
                         if output.len() == height {
@@ -536,7 +533,7 @@ impl LogView {
                 }
             } else {
                 if index >= start {
-                    output.push(line.chars().skip(self.horizontal).take(width).collect());
+                    output.push(crate::text::window(&line, self.horizontal, width));
                 }
                 index += 1;
             }
@@ -548,11 +545,6 @@ impl LogView {
     }
 }
 
-fn ascii(text: &str) -> String {
-    text.chars()
-        .map(|ch| if ch.is_ascii() { ch } else { '?' })
-        .collect()
-}
 fn bounded_text(text: &str) -> String {
     let mut start = text.len().saturating_sub(logs::MAX_LOG_BYTES);
     while !text.is_char_boundary(start) {
@@ -723,6 +715,33 @@ mod tests {
         assert_eq!(view.render(80, 20), fresh);
         assert!(fresh.iter().any(|line| line.contains("fresh-data")));
         assert!(view.show_timestamps && view.wrap && !view.autoscroll);
+    }
+    #[test]
+    fn unicode_logs_wrap_and_pan_by_cells_without_splitting_glyphs() {
+        crate::text::with_mode(true, || {
+            let family = "\u{1f468}\u{200d}\u{1f469}\u{200d}\u{1f467}";
+            let mut view = LogView::new(
+                format!("2026-10-22T12:00:00Z 東京a{family}e\u{301}\u{202e}x\n"),
+                ReadOptions::default(),
+            );
+            // 東=2 京=2 a=1 family=2 é=1 x=1 cells; the bidi override is gone.
+            assert_eq!(view.render(20, 4), [format!("東京a{family}e\u{301}x")]);
+            assert_eq!(view.render(3, 4), ["東 "]);
+            view.key(KeyCode::Right);
+            assert_eq!(view.render(4, 4), [format!("a{family}e\u{301}")]);
+            view.key(KeyCode::Char('w'));
+            let rows = view.render(3, 8);
+            let joined = format!("{family}e\u{301}");
+            assert_eq!(rows, ["東", "京a", joined.as_str(), "x"].map(String::from));
+            assert!(rows.iter().all(|row| crate::text::width(row) <= 3));
+        });
+        crate::text::with_mode(false, || {
+            let view = LogView::new(
+                "2026-10-22T12:00:00Z 東京x\n".into(),
+                ReadOptions::default(),
+            );
+            assert_eq!(view.render(20, 4), ["??x"]);
+        });
     }
     #[test]
     fn render_bounds_controls_and_empty_narrow_views() {

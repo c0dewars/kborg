@@ -14,11 +14,7 @@ pub(super) fn row(
         cursor::MoveTo(0, y),
         themes::ForegroundColor(fg),
         themes::BackgroundColor(bg),
-        style::Print(format!(
-            "{:<width$}",
-            display(text, width as usize),
-            width = width as usize
-        ))
+        style::Print(padded(text, usize::from(width)))
     )
 }
 pub(super) fn cell(
@@ -35,11 +31,7 @@ pub(super) fn cell(
         cursor::MoveTo(x, y),
         themes::ForegroundColor(fg),
         themes::BackgroundColor(bg),
-        style::Print(format!(
-            "{:<width$}",
-            display(text, usize::from(width)),
-            width = usize::from(width)
-        ))
+        style::Print(padded(text, usize::from(width)))
     )
 }
 pub(super) fn panel(
@@ -72,7 +64,7 @@ pub(super) fn panel(
         rect.y,
         format!(
             "{tl}{title}{}{tr}",
-            horizontal.repeat(width.saturating_sub(title.len()))
+            horizontal.repeat(width.saturating_sub(crate::text::width(&title)))
         ),
     )?;
     for y in rect.y + 1..rect.y + rect.height - 1 {
@@ -119,7 +111,7 @@ pub(super) fn chart_row(
                 })
                 .collect()
         };
-        left = left.saturating_sub(text.chars().count());
+        left = left.saturating_sub(crate::text::width(&text));
         queue!(
             out,
             themes::ForegroundColor(color(span.kind())),
@@ -898,7 +890,7 @@ pub(super) fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<
         row(out, y, w, "", fg, bg).map_err(|_| "draw failed")?;
         let mut x = 0u16;
         for (text, role) in bands {
-            let width = (text.len() as u16).min(w.saturating_sub(x));
+            let width = text_cells(&text).min(w.saturating_sub(x));
             if width == 0 {
                 break;
             }
@@ -933,7 +925,7 @@ pub(super) fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<
             out,
             rect.x + 1,
             rect.y,
-            (title.len() as u16).min(rect.width - 2),
+            text_cells(&title).min(rect.width - 2),
             &title,
             color("accent"),
             bg,
@@ -1306,7 +1298,7 @@ pub(super) fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<
                 out,
                 rect.x + 1,
                 rect.y,
-                (title.len() as u16).min(rect.width.saturating_sub(2)),
+                text_cells(&title).min(rect.width.saturating_sub(2)),
                 &title,
                 if matches!(modal, Modal::HelmReview(..)) || matches!(modal,Modal::HelmForm(form) if matches!(form.intent,helm_ui::Intent::DeleteCrds | helm_ui::Intent::Uninstall(_))) {
                     color("warning")
@@ -1355,7 +1347,7 @@ pub(super) fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<
                         let restarts=status.and_then(|v|v["restartCount"].as_u64()).unwrap_or(0);
                         let state=status.and_then(|v|v["state"].as_object()).and_then(|state|state.keys().next()).map(String::as_str).unwrap_or("unknown");
                         let image=["containers","initContainers","ephemeralContainers"].iter().flat_map(|field|object["spec"][field].as_array().into_iter().flatten()).find(|container|container["name"].as_str()==Some(name)).map(|container|clean_value(&container["image"])).unwrap_or_default();
-                        lines.push(format!("{} {:<24} {:<6} {:>8}  {state} / {image}",if i==*index{">"}else{" "},display(name,24),if ready{"true"}else{"false"},restarts));
+                        lines.push(format!("{} {} {:<6} {:>8}  {state} / {image}",if i==*index{">"}else{" "},padded(name,24),if ready{"true"}else{"false"},restarts));
                     }
                     lines
                 }
@@ -1717,18 +1709,11 @@ pub(super) fn scroll_offset(text: &str, offset: usize, code: KeyCode) -> usize {
     }
     .min(count.saturating_sub(1))
 }
+/// Wrap to `width` cells. Lines are sanitized first, so wrapping counts the
+/// cells that are painted and never splits a grapheme cluster.
 pub(super) fn wrap_text(text: &str, width: usize) -> String {
     text.lines()
-        .flat_map(|line| {
-            let chars: Vec<char> = line.chars().collect();
-            if chars.is_empty() {
-                return vec![String::new()];
-            }
-            chars
-                .chunks(width.max(1))
-                .map(|chunk| chunk.iter().collect::<String>())
-                .collect()
-        })
+        .flat_map(|line| crate::text::wrap(&safety::safe_text(line, usize::MAX), width))
         .collect::<Vec<_>>()
         .join("\n")
 }

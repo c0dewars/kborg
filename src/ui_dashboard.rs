@@ -604,7 +604,7 @@ fn node_details(nodes: &crate::cluster_health::NodeEvidence) -> Vec<(String, &'s
         .busiest
         .iter()
         .take(NAMED_NODES)
-        .map(|node| node.name.chars().count())
+        .map(|node| crate::text::width(&crate::safety::safe_text(&node.name, 64)))
         .max()
         .unwrap_or(0)
         .min(28);
@@ -613,11 +613,7 @@ fn node_details(nodes: &crate::cluster_health::NodeEvidence) -> Vec<(String, &'s
         .iter()
         .take(NAMED_NODES)
         .map(|node| {
-            let mut name = node.name.chars().take(width).collect::<String>();
-            if node.name.chars().count() > width {
-                name.pop();
-                name.push('…');
-            }
+            let name = crate::text::column(&node.name, width);
             let usage = match (node.cpu_percent, node.memory_percent) {
                 (Some(cpu), Some(memory)) => format!("CPU {cpu:>3}%  MEM {memory:>3}%"),
                 _ => "usage unknown".into(),
@@ -628,7 +624,7 @@ fn node_details(nodes: &crate::cluster_health::NodeEvidence) -> Vec<(String, &'s
                 _ => "",
             };
             (
-                format!("  {name:<width$}  {usage}{flag}"),
+                format!("  {name}  {usage}{flag}"),
                 if attention(node) { "warning" } else { "muted" },
             )
         })
