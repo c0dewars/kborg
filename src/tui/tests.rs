@@ -2546,6 +2546,14 @@ fn secrets_are_opt_in_hidden_by_default_and_reveal_one_key() -> Result<()> {
         .map_err(|_| "reply closed")?;
     app.receive();
     assert!(screen(&app, 120, 30).join("\n").contains("binary, 4 bytes"));
+    // An :ask snapshot never holds a revealed value (guard for any future
+    // path that opens the prompt over :secrets).
+    app.capture_ask_screen();
+    let captured = app.ask_screen.clone().unwrap_or_default();
+    assert!(
+        captured.contains("blob.bin") && !captured.contains("binary, 4 bytes"),
+        "{captured}"
+    );
     app.key(KeyCode::Esc)?;
     app.key(KeyCode::Esc)?;
     assert!(matches!(app.modal, Modal::None));
@@ -4206,5 +4214,7 @@ fn ask_captures_the_screen_behind_the_prompt_and_previews_locally_without_opt_in
     assert!(!app.busy);
     assert!(matches!(&app.modal, Modal::AdviceDocument(title, body, _)
         if title.contains("nothing sent") && body.contains("QUESTION:\nis api healthy?") && body.contains("--allow-copilot-screen")));
+    // The capture is used once; asking again needs a fresh one.
+    assert!(app.ask_screen.is_none());
     Ok(())
 }

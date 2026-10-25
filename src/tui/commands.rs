@@ -806,13 +806,19 @@ impl App {
     }
     /// Capture what the user is looking at before the command prompt covers it.
     pub(super) fn capture_ask_screen(&mut self) {
+        // Opening the prompt hides a revealed Secret value anyway; hide it
+        // first so it can never reach the :ask snapshot.
+        if let Modal::Secrets(view) = &mut self.modal {
+            view.hide();
+        }
         let (width, height) = terminal::size().unwrap_or((120, 40));
         self.ask_screen = snapshot::screen_text(self, width, height).ok();
     }
     /// Ask Copilot about the screen captured when the prompt opened. Without
     /// a policy and --allow-copilot-screen this shows a local preview only.
     pub(super) fn ask(&mut self, question: &str) {
-        let Some(screen) = self.ask_screen.clone() else {
+        // Each capture is used once, so a later :ask never reuses an old screen.
+        let Some(screen) = self.ask_screen.take() else {
             self.status =
                 "Nothing captured to ask about; open :ask from the screen you want to ask about."
                     .into();
