@@ -4172,7 +4172,10 @@ fn dashboard_chart_panel_renders_trend_axes_for_the_focused_card() -> Result<()>
         "{text}"
     );
     assert!(
-        text.contains("  3|") && text.contains("1.5|") && text.contains("\n|2|"),
+        text.contains("  3|")
+            && text.contains("1.5|")
+            // The panel border is ASCII or box-drawing depending on the locale.
+            && (text.contains("\n|2|") || text.contains("\n│2|")),
         "{text}"
     );
     assert!(text.contains("G close charts"), "{text}");
