@@ -13,7 +13,7 @@ Thanks for testing. This guide gets you running in a few minutes and lists what 
 Release candidate from source (needs Rust; `rustup` installs the pinned toolchain):
 
 ```sh
-cargo install --locked --git https://github.com/c0dewars/kborg --tag v0.5.0-rc.1
+cargo install --locked --git https://github.com/c0dewars/kborg --tag v0.5.0-rc.2
 kborg --version
 ```
 
@@ -36,6 +36,7 @@ No cluster? `kborg demo` opens an offline sample cluster.
 | `--write --allow-file-copy` | `:cp-from /etc/hosts`, `:cp-to -r ./dir /tmp/dir` |
 | `--write --allow-exec` / `--allow-forward` | Pod `s` shell, `F` port forward, then `:pf` and `b` to benchmark it |
 | `--write --allow-debug` | `:debug` on a Pod (ephemeral container) |
+| `--scanner ABS_PATH --allow-scan` | `:scan` on a Pod/workload, `:scan ns` (external Trivy or Grype; uses the network) |
 | `--write --allow-node-shell` | `s` on a Node (privileged Pod; only on a cluster you own) |
 | `--write --allow-yaml-edit` | `e` on a Deployment, change replicas or an image, Ctrl-S to review |
 | `--allow-secret-reveal` | `:secrets`, then `x` on one key |

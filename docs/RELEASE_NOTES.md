@@ -13,6 +13,11 @@
 - **Columns and sorting like k9s**: `views.yaml` (k9s format) sets per-resource columns, including custom `TITLE:.json.path` columns; sort by any column with `:sort COLUMN [asc|desc]`, and pressing a sort key again reverses it. Ctrl-W wide columns, `1`–`9` recent namespaces, recent contexts first in `:ctx`.
 - **CronJobs and rollbacks**: `t` triggers a CronJob now, `s` suspends or resumes it; `:rollback [REVISION]` restores a Deployment, StatefulSet or DaemonSet revision with the image change in the review.
 - **Ephemeral debug containers** (`--write --allow-debug`): `:debug [CONTAINER]` or `kborg debug POD`, reviewed and sharing the target's process namespace.
+- **Keys and looks you control**: `keymap.yaml` remaps any key (confirmation keys stay fixed), `?` opens help for the current view with your real keys, `:keymap` lists every action; `ui.yaml` sets borders, header and hint rows, table style, color overrides and dashboard layout (`:ui reload`, `kborg ui init`).
+- **Bulk actions on marked rows**: Ctrl-D, `r` and CronJob `s` act on every marked object (up to 50) through one combined, dry-run review; type e.g. `delete 7 objects`; stops at the first failure and reports what ran.
+- **Image vulnerability scanning** with your own Trivy or Grype (`--scanner ABS_PATH --allow-scan`): `:scan`, `:scan ns`, `kborg scan … [--json]`; severity counts and top findings per image.
+- **Linux packages** (`.deb`, `.rpm` spec) and a README demo GIF; Homebrew tap live (`brew install c0dewars/tap/kborg`).
+- **Fixes**: Windows test suite (and demo Helm forms on Windows), PgUp/PgDown with custom layouts, an intermittent snapshot-lock failure; serde-saphyr 2.0.
 - **Ctrl-Z errors-only view** and **15-minute trend sparklines** on dashboard cards.
 - **Fix**: `-n all` now means every namespace (it was read as a namespace named `all`); `-A`/`--all-namespaces` work too.
 - **Port-forward benchmark**: `b` in `:pf` or `:bench` — bounded HTTP GETs over the loopback forward with p50/p90/p99 latency.
@@ -21,7 +26,7 @@
 
 ## Upgrade notes
 
-- A `--config` file now also constrains `--allow-secret-reveal`, `--allow-force-kill`, `--allow-yaml-edit`, `--allow-node-maintenance`, `--allow-external-editor`, `--allow-file-copy`, `--allow-apply`, `--allow-node-shell` and `--allow-debug`. If you use those flags with a configuration file, add the matching `allow_*` field set to `true`. Without a configuration file nothing changes.
+- A `--config` file now also constrains `--allow-secret-reveal`, `--allow-force-kill`, `--allow-yaml-edit`, `--allow-node-maintenance`, `--allow-external-editor`, `--allow-file-copy`, `--allow-apply`, `--allow-node-shell`, `--allow-debug` and `--allow-scan`. If you use those flags with a configuration file, add the matching `allow_*` field set to `true`. Without a configuration file nothing changes.
 
 # KBorg 0.4.0 — 2026-10-24
 

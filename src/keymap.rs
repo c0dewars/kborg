@@ -340,7 +340,7 @@ pub const ACTIONS: &[Action] = &[
         "restart",
         WORKLOAD,
         &["r"],
-        "Reviewed rollout restart (:rollback for undo)",
+        "Reviewed rollout restart; with marks, all marked (:rollback undoes)",
     ),
     kind(
         "trigger",
@@ -352,7 +352,7 @@ pub const ACTIONS: &[Action] = &[
         "suspend",
         CRONJOB,
         &["s"],
-        "Suspend or resume the CronJob (reviewed)",
+        "Suspend or resume the CronJob, or all marked (reviewed)",
     ),
     kind(
         "refresh.r",
@@ -423,7 +423,7 @@ pub const ACTIONS: &[Action] = &[
         "mark",
         Table,
         &["Space"],
-        "Mark row (visual only; no bulk mutations)",
+        "Mark row; delete/restart/suspend act on all marked (reviewed batch)",
     ),
     act(
         "mark.range",
@@ -463,12 +463,23 @@ pub const ACTIONS: &[Action] = &[
         &["Ctrl-A"],
         "Resource alias and hotkey picker (:aliases)",
     ),
-    act("delete", Table, &["Ctrl-D", "Delete"], "Reviewed deletion"),
+    act(
+        "delete",
+        Table,
+        &["Ctrl-D", "Delete"],
+        "Reviewed deletion; with marks, one batch for all marked",
+    ),
     act(
         "kill",
         Table,
         &["Ctrl-K"],
         "Reviewed zero-grace Pod kill (--allow-force-kill)",
+    ),
+    act(
+        "scan",
+        Table,
+        &[],
+        "Scan selected images with --scanner (:scan; unbound by default)",
     ),
     // Resource table: navigation.
     act("quit", Table, &["q"], "Quit (:q also works)"),
@@ -1404,7 +1415,8 @@ mod tests {
 
     #[test]
     fn documented_example_is_valid() -> Result<()> {
-        let docs = include_str!("../docs/K9S_COMPATIBILITY.md");
+        // Windows checkouts may convert the docs to CRLF.
+        let docs = include_str!("../docs/K9S_COMPATIBILITY.md").replace("\r\n", "\n");
         let section = docs
             .split("## Custom keymap")
             .nth(1)

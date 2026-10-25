@@ -20,6 +20,8 @@
   </p>
 </div>
 
+![KBorg demo: browsing Pods, following logs, context help, Deployments and the dashboard, all in demo mode without a cluster](docs/screenshots/demo.gif)
+
 ![KBorg dashboard on a live Docker Desktop cluster: Pod health, Node usage, degraded workloads and restart hotspots](docs/screenshots/dashboard-health.png)
 
 ## Why KBorg
@@ -40,7 +42,7 @@
 | **Dashboard** | 1–9 clusters, full-screen focus, Pod health, restart hotspots, OOM evidence, Node readiness + CPU/memory, degraded workloads, Pod and non-Pod warning events, warning → exact Pod Events drilldown |
 | **Logs** | Container, workload and selector logs; merged multi-container streams; live rollout following (`:logs-live`); cross-cluster workload tail; time ranges, search, error/warning filters, export |
 | **Operate** | Scale, restart, rollback, delete, force kill, CronJob trigger and suspend/resume, YAML spec editing (in-app or `$EDITOR`), server-side apply of local manifests, image/resource forms, cordon/uncordon/drain, node shell, ephemeral debug containers, port forwards, shell/attach, file and directory copy — each behind its own opt-in and review |
-| **Check** | `:lint` misconfiguration report, Ctrl-Z errors-only view, `:pulses` health, `:xray` relationships, per-Node usage and 15-minute trend sparklines on dashboard cards, port-forward benchmark |
+| **Check** | `:lint` misconfiguration report, `:scan` image vulnerability scan through your Trivy or Grype, Ctrl-Z errors-only view, `:pulses` health, `:xray` relationships, per-Node usage and 15-minute trend sparklines on dashboard cards, port-forward benchmark |
 | **Helm** | Release browsing and history; reviewed install, upgrade, rollback, uninstall and tests for packaged and OCI charts with optional OpenPGP/Sigstore verification |
 | **Secrets** | Opt-in key listing; reveal one value for 30 seconds; never exported or copied |
 | **Metrics** | Pod/Node CPU and memory tables, exact values, requests/limits comparisons, bounded history |
@@ -94,6 +96,15 @@ tar -xzf kborg-0.4.0-aarch64-apple-darwin.tar.gz
 
 Packages are currently unsigned; see [Operations](docs/OPERATIONS.md) for verification, updates and rollback.
 
+### Debian/Ubuntu (.deb) and Fedora/RHEL (.rpm)
+
+```sh
+sudo apt install ./kborg_0.5.0~rc.1_amd64.deb      # Debian / Ubuntu
+sudo dnf install ./kborg-0.5.0~rc.1-1.x86_64.rpm   # Fedora / RHEL-compatible
+```
+
+Both install `/usr/bin/kborg` and bash, zsh and fish completions, and need glibc 2.39 or newer. CI builds the .deb; the .rpm is built from `packaging/rpm/kborg.spec`. See [Operations](docs/OPERATIONS.md#install-from-a-deb-or-rpm).
+
 ## Run
 
 Try it without a cluster:
@@ -130,6 +141,7 @@ More opt-ins, each reviewed:
 | `--allow-file-copy` | `:cp-from` / `:cp-to` (`-r` for directories); neither side ever overwrites |
 | `--allow-node-shell` | `s` on a Node: a reviewed privileged Pod and a root shell, deleted afterwards |
 | `--allow-debug` | `:debug [CONTAINER]`: a reviewed ephemeral debug container and a shell in it |
+| `--scanner ABS_PATH --allow-scan` | `:scan` / `:scan ns` / `kborg scan`: image vulnerability scan with your installed Trivy or Grype (network: database and image pulls) |
 | `--allow-extensions --allow-tools` | `:ext NAME`: hand the selected object to a registered read-only tool |
 
 KBorg uses your kubeconfig directly: the current context unless you pass `--context`, and every file in `$KUBECONFIG` merged the way kubectl does (first definition wins). kubectl, Helm, Python and an AI account are not needed for browsing. Server-side RBAC and admission always have the final say.
@@ -147,6 +159,7 @@ KBorg uses your kubeconfig directly: the current context unless you pass `--cont
 | `s` `r` on workloads | Scale, restart |
 | `e` | Edit YAML spec (Ctrl-E opens `$EDITOR` with `--allow-external-editor`) |
 | Ctrl-D, Ctrl-K | Reviewed delete, reviewed force kill |
+| `Space` then Ctrl-D / `r` / `s` | Mark rows, then one reviewed batch delete, restart or CronJob suspend/resume (max 50; type e.g. `delete 7 objects`) |
 | `c` `u` `r` on Nodes | Cordon, uncordon, drain |
 | `:secrets`, `x` | Secret keys, reveal one value |
 | `:helm`, `:pulses`, `:xray`, `:lint` | Releases, health, relationships, misconfigurations |

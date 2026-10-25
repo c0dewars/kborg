@@ -21,6 +21,18 @@ copied or written to disk. The listing still transfers Secret payloads into
 process memory, so grant `list secrets` only where that is acceptable. Ctrl-K
 force kill is separately opt-in with `--write --allow-force-kill`.
 
+Marked rows never widen an approval on their own. With marks, delete,
+workload restart and CronJob suspend/resume prepare one batch of at most 50
+objects of the current resource kind in the current context; every target goes
+through the same policy checks (system namespaces refused) and server dry run
+as a single-object operation, and any refusal refuses the whole batch before a
+review is shown. The combined review lists each target's kind, namespace/name,
+UID and resourceVersion and requires typing the verb and exact count (for
+example `delete 7 objects`) within 60 seconds. Execution is sequential: each
+target's UID and resourceVersion are rechecked before its write, the batch
+stops at the first failure without rolling back earlier writes, and one audit
+record is written per object.
+
 Pod file copy is opt-in with `--write --allow-file-copy` (`kborg cp-from`,
 `kborg cp-to`, `:cp-from`, `:cp-to`). Each copy moves one regular file of at
 most 64 MiB after a typed `namespace/pod` approval, with the target UID and
@@ -57,6 +69,28 @@ process namespace. Kubernetes cannot remove ephemeral containers: the
 container exits after its sleep but stays listed in the Pod. CronJob trigger,
 suspend/resume and workload rollback need `--write` and go through the same
 dry run, review, UID/resourceVersion lock and audit as other writes.
+
+Image scanning is opt-in with `--scanner ABS_PATH --allow-scan` (and `allow_scan`
+in a `--config` profile). KBorg ships no scanner or vulnerability database: it
+runs the Trivy or Grype executable you name, by absolute path without PATH
+lookup, after checking it is a regular, non-symlinked, non-group/world-writable
+native executable and identifying it from a bounded `--version` run; the file
+identity is rechecked before every process. Image references come from cluster
+objects and are untrusted: only plain registry references are accepted
+(`A-Za-z0-9./:-`, starting with a letter or digit, no scheme forms such as
+`dir:/`), each passed as one argument after `--`; Grype also gets an explicit
+`registry:` source. Each scanner process runs in its own process group with a
+300-second first-image (database download) and 120-second per-image budget, a
+20-minute total, a 32 MiB output cap and cancellation, and the whole group is
+killed and reaped. The environment is cleared except `HOME`, `PATH`, `USER`,
+proxy, TLS-certificate, Docker and scanner-cache variables, so Kubernetes and
+cloud credentials are not passed; the scanner reads and writes its normal cache
+under your HOME and uses your registry credentials (for example
+`~/.docker/config.json`). It may download its vulnerability database and pulls
+image layers from registries; the review says so before anything runs.
+Scanner output is parsed as JSON and every displayed string is sanitized. The
+scanner keeps your OS user's permissions; it is supervised, not sandboxed.
+Nothing is written to the cluster.
 
 Extensions run from the TUI (`:ext`) use the same contract as the CLI: an
 absolute registered executable with literal arguments, a whole-input review

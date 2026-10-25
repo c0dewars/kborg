@@ -200,7 +200,9 @@ impl App {
             }
             ("helm"|"history",_)=>self.status="Use :helm [NAMESPACE] or :history RELEASE; --allow-helm enables live release storage reads.".into(),
             ("lint" | "popeye" | "pop" | "sanitize", []) => self.send(Task::Lint(self.namespace.clone())),
-            ("scans"|"scan",_)=>self.status="Image vulnerability scanning needs an external scanner; it is unavailable. :lint checks common misconfigurations. No command was executed.".into(),
+            ("scans"|"scan",[])=>self.scan(false),
+            ("scans"|"scan",[scope]) if matches!(scope.as_str(),"ns"|"namespace")=>self.scan(true),
+            ("scans"|"scan",_)=>self.status="Use :scan for the selected Pod/workload or :scan ns for the namespace.".into(),
             ("secrets"|"secret"|"sec",[])=>self.secrets(),
             ("secrets"|"secret"|"sec",_)=>self.status="Use :secrets in the current namespace; values stay hidden until one key is revealed.".into(),
             _ => {
@@ -688,6 +690,82 @@ impl App {
             Err(error) => self.status = error,
         }
     }
+    /// `:scan` / `:scan ns`: read image references and detect the trusted
+    /// scanner, then show a short review before anything runs.
+    pub(super) fn scan(&mut self, namespace_scope: bool) {
+        let Some(scanner) = self
+            .options
+            .scanner
+            .clone()
+            .filter(|_| self.options.allow_scan)
+        else {
+            self.status = "Image scanning requires --scanner ABS_PATH (Trivy or Grype) and --allow-scan. :lint checks misconfigurations.".into();
+            return;
+        };
+        if self.options.connection.demo {
+            self.status = "Image scanning is disabled in demo mode.".into();
+            return;
+        }
+        let target = if namespace_scope {
+            crate::scan::Target::Namespace(self.namespace.clone())
+        } else {
+            let kind = self.kind();
+            let runs_containers = kind == "pods"
+                || matches!(
+                    kind.split('.').next(),
+                    Some(
+                        "deployments"
+                            | "statefulsets"
+                            | "daemonsets"
+                            | "replicasets"
+                            | "jobs"
+                            | "cronjobs"
+                    )
+                );
+            if !runs_containers {
+                self.status =
+                    "Select a Pod or workload to scan its images, or use :scan ns.".into();
+                return;
+            }
+            let Some((resource, namespace, name)) = self.selected_target() else {
+                self.status = "Select a Pod or workload first.".into();
+                return;
+            };
+            crate::scan::Target::Object {
+                resource,
+                namespace,
+                name,
+            }
+        };
+        self.status = "Reading image references and checking the scanner…".into();
+        self.send(Task::ScanPrepare(scanner, target));
+    }
+    /// Starts the reviewed scan detached from the worker queue.
+    pub(super) fn start_scan(&mut self, plan: Box<crate::scan::Plan>, typed: String) {
+        if self.busy {
+            self.status = "Busy; wait for the current request, then press Enter again.".into();
+            self.modal = Modal::ScanConfirm(plan, typed);
+            return;
+        }
+        let control = std::sync::Arc::new(crate::scan::Control::default());
+        let total = plan.images().len();
+        self.scan_control = Some(control.clone());
+        self.modal = Modal::ScanRunning(Instant::now(), total);
+        self.send(Task::ScanRun(plan, typed, control));
+        if !self.busy {
+            self.scan_control = None;
+            self.modal = Modal::Detail(
+                "IMAGE SCAN NOT STARTED\n\nRequest queue unavailable; run :scan again.".into(),
+                0,
+            );
+        }
+    }
+    pub(super) fn cancel_scan(&mut self) {
+        if let Some(control) = &self.scan_control {
+            control.cancel();
+        }
+        self.status = "Canceling the scan; stopping the scanner process group…".into();
+    }
     /// Review an ephemeral debug container for the selected Pod.
     pub(super) fn debug_container(&mut self, target: Option<String>) {
         if !self.options.connection.writable || !self.options.connection.allow_debug {
@@ -956,6 +1034,7 @@ impl App {
         let writes = matches!(
             &task,
             Task::Execute(..)
+                | Task::BatchExecute(..)
                 | Task::YamlExecute(..)
                 | Task::ApplyExecute(..)
                 | Task::NodeShellStart(..)

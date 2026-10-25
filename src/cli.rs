@@ -36,6 +36,10 @@ pub struct Options {
     pub json: bool,
     pub allow_tools: bool,
     pub allow_extensions: bool,
+    /// `--allow-scan`: run the trusted `--scanner` on cluster image references.
+    pub allow_scan: bool,
+    /// `--scanner ABS_PATH`: an explicitly trusted Trivy or Grype executable.
+    pub scanner: Option<PathBuf>,
     pub splash: bool,
     pub poll: bool,
     pub yaml: bool,
@@ -82,6 +86,8 @@ fn parse(args: Vec<String>) -> Result<Options> {
         json: false,
         allow_tools: false,
         allow_extensions: false,
+        allow_scan: false,
+        scanner: None,
         splash: std::env::var_os("KBORG_NO_SPLASH").is_none()
             && std::env::var_os("K8BORG_NO_SPLASH").is_none(),
         poll: false,
@@ -306,6 +312,19 @@ fn parse(args: Vec<String>) -> Result<Options> {
             "--recursive" => opts.recursive = true,
             "--allow-node-shell" => opts.connection.allow_node_shell = true,
             "--allow-debug" => opts.connection.allow_debug = true,
+            "--allow-scan" => opts.allow_scan = true,
+            "--scanner" => {
+                let path = PathBuf::from(
+                    args.next()
+                        .ok_or("--scanner needs an absolute Trivy or Grype executable path")?,
+                );
+                if !path.is_absolute() {
+                    return Err(
+                        "--scanner requires an absolute path; PATH lookup is disabled".into(),
+                    );
+                }
+                opts.scanner = Some(path);
+            }
             "--node-shell-image" => {
                 let image = args
                     .next()
@@ -403,6 +422,14 @@ fn parse(args: Vec<String>) -> Result<Options> {
     {
         return Err("Helm lifecycle, registry, hook and CRD options require ui or helm".into());
     }
+    if (opts.scanner.is_some() || opts.allow_scan)
+        && opts
+            .command
+            .first()
+            .is_some_and(|command| !matches!(command.as_str(), "ui" | "scan"))
+    {
+        return Err("--scanner and --allow-scan require ui or scan".into());
+    }
     if opts.copilot_policy.is_some()
         && opts
             .command
@@ -479,6 +506,7 @@ fn parse(args: Vec<String>) -> Result<Options> {
                     | "helm"
                     | "history"
                     | "lint"
+                    | "scan"
             )
         })
     {
@@ -656,7 +684,7 @@ pub fn run_args(args: Vec<String>) -> Result<()> {
         "helm" | "history" | "list" | "watch" | "metrics" | "get" | "view" | "logs"
         | "resources" | "doctor" | "scale" | "restart" | "delete" | "kill" | "set-image"
         | "trigger" | "suspend" | "resume" | "rollback" | "set-resources" | "exec" | "attach"
-        | "forward" | "cp-from" | "cp-to" | "apply" | "node-shell" | "debug" | "lint"
+        | "forward" | "cp-from" | "cp-to" | "apply" | "node-shell" | "debug" | "lint" | "scan"
         | "pulses" | "xray" | "workloads" | "can" | "yaml-template" | "yaml-edit" | "cordon"
         | "uncordon" | "drain" => {}
         _ => return Err("unknown command; see --help".into()),
@@ -710,6 +738,35 @@ pub fn run_args(args: Vec<String>) -> Result<()> {
                 let (found,notes)=tokio::time::timeout(Duration::from_secs(30),crate::lint::collect(&gateway,&ns)).await.map_err(|_|"lint timed out")??;
                 if opts.json {print_json(&serde_json::json!({"findings":found,"notes":notes}))?;}
                 else {output!("{}",crate::lint::report(&gateway.context,&ns,&found,&notes));}
+            },
+            "scan" => {
+                let usage="usage: scan RESOURCE NAME | scan ns [-n NAMESPACE] --scanner ABS_PATH --allow-scan [--json]";
+                let (Some(scanner),true)=(opts.scanner.clone(),opts.allow_scan) else {return Err("image scanning requires --scanner ABS_PATH (Trivy or Grype) and --allow-scan".into());};
+                if gateway.is_demo() {return Err("image scanning is disabled in demo mode".into());}
+                if !io::stdin().is_terminal() {return Err("scan requires interactive confirmation on a terminal".into());}
+                let target=match args {
+                    [scope] if matches!(scope.as_str(),"ns"|"namespace") => crate::scan::Target::Namespace(ns.clone()),
+                    [resource,name] => crate::scan::Target::Object{resource:resource.clone(),namespace:ns.clone(),name:name.clone()},
+                    _ => return Err(usage.into()),
+                };
+                let (scope,images)=tokio::time::timeout(Duration::from_secs(30),crate::scan::gather(&gateway,&target)).await.map_err(|_|"reading image references timed out")??;
+                let plan=tokio::task::spawn_blocking(move||crate::scan::prepare(&scanner,scope,images)).await.map_err(|_|"scanner detection failed")??;
+                // The review goes to stderr so --json output can be redirected.
+                let mut stderr=io::stderr().lock();
+                write_to(&mut stderr,format!("{}\nType scan or press Enter to start; anything else cancels.\n> ",plan.summary()).as_bytes())?;
+                stderr.flush().map_err(|_|"output failed")?;
+                drop(stderr);
+                let mut input=String::new();use std::io::BufRead;io::stdin().lock().take(64).read_line(&mut input).map_err(|_|"input failed")?;
+                let typed=match input.trim() {""=>crate::scan::CONFIRMATION.to_owned(),other=>other.to_owned()};
+                let control=std::sync::Arc::new(crate::scan::Control::default());
+                let worker_control=control.clone();
+                let mut job=tokio::task::spawn_blocking(move||crate::scan::run(plan,&typed,true,&worker_control));
+                let report=tokio::select! {
+                    result=&mut job=>result,
+                    _=tokio::signal::ctrl_c()=>{control.cancel();job.await},
+                }.map_err(|_|"scan worker failed")??;
+                if opts.json {print_json(&serde_json::to_value(&report).map_err(|_|"scan encoding failed")?)?;}
+                else {output!("{}",crate::scan::report_text(&report));}
             },
             "debug" => {
                 if args.is_empty() || args.len()>2 {return Err("usage: debug POD [TARGET_CONTAINER] --write --allow-debug [--node-shell-image IMAGE]".into());}
@@ -1728,6 +1785,7 @@ fn theme_command(opts: &Options) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_paths::abs;
     #[test]
     fn all_namespaces_spellings_select_every_namespace() -> Result<()> {
         for args in [["-n", "all"], ["--namespace", "all"], ["-A", "pods"]] {
@@ -1743,6 +1801,33 @@ mod tests {
         Ok(())
     }
     #[test]
+    fn scan_flags_are_explicit_absolute_and_scoped() -> Result<()> {
+        let words = |s: &str| parse(s.split_whitespace().map(str::to_owned).collect());
+        let trivy = crate::test_paths::abs("/opt/trivy");
+        let grype = crate::test_paths::abs("/opt/grype");
+        let options = words(&format!(
+            "scan deploy web --scanner {trivy} --allow-scan --json"
+        ))?;
+        assert_eq!(
+            options.scanner.as_deref(),
+            Some(std::path::Path::new(&trivy))
+        );
+        assert!(options.allow_scan && options.json);
+        assert!(words(&format!("ui --scanner {grype} --allow-scan")).is_ok());
+        assert!(words(&format!("--scanner {grype} --allow-scan")).is_ok());
+        assert!(words("scan ns --scanner trivy --allow-scan").is_err());
+        assert!(words(&format!("list pods --scanner {trivy}")).is_err());
+        assert!(words("lint --allow-scan").is_err());
+        assert!(words("scan ns --scanner").is_err());
+        // Without the opt-in nothing connects or runs.
+        let error = run_args(vec!["--demo".into(), "scan".into(), "ns".into()])
+            .err()
+            .unwrap_or_default();
+        assert!(error.contains("--allow-scan"), "{error}");
+        Ok(())
+    }
+
+    #[test]
     fn node_commands_route_to_terminal_approval_without_any_live_connection() {
         for command in ["cordon", "uncordon", "drain"] {
             let error = run_args(vec!["--demo".into(), command.into(), "node".into()])
@@ -1756,6 +1841,8 @@ mod tests {
     }
     #[test]
     fn explicit_signature_and_advice_policies_have_strict_scope() -> Result<()> {
+        let policy = abs("/tmp/p.json");
+        let words = |s: String| s.split_whitespace().map(str::to_owned).collect::<Vec<_>>();
         assert!(
             parse(
                 "--helm-sigstore-policy relative.json ui"
@@ -1765,24 +1852,8 @@ mod tests {
             )
             .is_err()
         );
-        assert!(
-            parse(
-                "--helm-sigstore-policy /tmp/p.json list pods"
-                    .split_whitespace()
-                    .map(str::to_owned)
-                    .collect()
-            )
-            .is_err()
-        );
-        assert!(
-            parse(
-                "--copilot-policy /tmp/p.json list pods"
-                    .split_whitespace()
-                    .map(str::to_owned)
-                    .collect()
-            )
-            .is_err()
-        );
+        assert!(parse(words(format!("--helm-sigstore-policy {policy} list pods"))).is_err());
+        assert!(parse(words(format!("--copilot-policy {policy} list pods"))).is_err());
         assert!(
             parse(
                 "--json helm crds-migrate web /tmp/chart.tgz"
@@ -1792,25 +1863,22 @@ mod tests {
             )
             .is_err()
         );
-        let options = parse(
-            "--copilot-policy /tmp/p.json copilot diagnose pods web"
-                .split_whitespace()
-                .map(str::to_owned)
-                .collect(),
-        )?;
-        assert_eq!(options.copilot_policy, Some("/tmp/p.json".into()));
-        let options = parse(
-            "--helm-sigstore-policy /tmp/p.json helm crds-migrate web /tmp/chart.tgz"
-                .split_whitespace()
-                .map(str::to_owned)
-                .collect(),
-        )?;
-        assert_eq!(options.helm_sigstore_policy, Some("/tmp/p.json".into()));
+        let options = parse(words(format!(
+            "--copilot-policy {policy} copilot diagnose pods web"
+        )))?;
+        assert_eq!(options.copilot_policy, Some(policy.clone().into()));
+        let options = parse(words(format!(
+            "--helm-sigstore-policy {policy} helm crds-migrate web /tmp/chart.tgz"
+        )))?;
+        assert_eq!(options.helm_sigstore_policy, Some(policy.into()));
         assert!(HelmCommand::parse("helm", &options.command[1..])?.is_mutation());
         Ok(())
     }
     #[test]
     fn oci_and_helm_extension_flags_validate_before_connecting() -> Result<()> {
+        let ca = abs("/tmp/registry-ca.pem");
+        let auth = abs("/tmp/registry-auth.json");
+        let keyring = abs("/tmp/public.gpg");
         let pinned = format!(
             "oci://registry.example:5443/team/chart@sha256:{}",
             "a".repeat(64)
@@ -1827,9 +1895,9 @@ mod tests {
                 "--allow-helm-hooks".into(),
                 "--allow-helm-crds".into(),
                 "--helm-registry-ca".into(),
-                "/tmp/registry-ca.pem".into(),
+                ca.clone(),
                 "--helm-registry-auth".into(),
-                "/tmp/registry-auth.json".into(),
+                auth.clone(),
                 "helm".into(),
                 mode.into(),
                 "my.api".into(),
@@ -1837,14 +1905,8 @@ mod tests {
             ])?;
             assert!(options.connection.allow_helm_hooks);
             assert!(options.connection.allow_helm_crds);
-            assert_eq!(
-                options.helm_registry_ca,
-                Some("/tmp/registry-ca.pem".into())
-            );
-            assert_eq!(
-                options.helm_registry_auth,
-                Some("/tmp/registry-auth.json".into())
-            );
+            assert_eq!(options.helm_registry_ca, Some(ca.clone().into()));
+            assert_eq!(options.helm_registry_auth, Some(auth.clone().into()));
             let command = HelmCommand::parse("helm", &options.command[1..])?;
             assert!(command.is_mutation());
             match command {
@@ -1861,26 +1923,33 @@ mod tests {
             }
         }
         for command in [
-            "helm install web oci://registry.example/team/chart",
-            "--allow-helm-hooks list pods",
-            "--allow-helm-crds history web",
-            "--helm-registry-ca relative.pem helm list",
-            "--helm-registry-auth relative.json helm list",
-            "--helm-keyring relative.gpg helm list",
-            "--helm-keyring /tmp/public.gpg list pods",
-            "--json helm test web",
-            "--json helm crds-delete web /tmp/chart.tgz",
-            "--helm-values /tmp/values.yaml helm crds-upgrade web /tmp/chart.tgz",
-            "--helm-values /tmp/values.yaml helm crds web /tmp/chart.tgz",
-            "--json helm crds web /tmp/chart.tgz",
+            "helm install web oci://registry.example/team/chart".to_owned(),
+            "--allow-helm-hooks list pods".to_owned(),
+            "--allow-helm-crds history web".to_owned(),
+            "--helm-registry-ca relative.pem helm list".to_owned(),
+            "--helm-registry-auth relative.json helm list".to_owned(),
+            "--helm-keyring relative.gpg helm list".to_owned(),
+            format!("--helm-keyring {keyring} list pods"),
+            "--json helm test web".to_owned(),
+            "--json helm crds-delete web /tmp/chart.tgz".to_owned(),
+            "--helm-values /tmp/values.yaml helm crds-upgrade web /tmp/chart.tgz".to_owned(),
+            "--helm-values /tmp/values.yaml helm crds web /tmp/chart.tgz".to_owned(),
+            "--json helm crds web /tmp/chart.tgz".to_owned(),
         ] {
             assert!(
                 parse(command.split_whitespace().map(str::to_owned).collect()).is_err(),
                 "{command}"
             );
         }
-        let tagged = parse("--helm-keyring /tmp/public.gpg helm install web oci://registry.example/team/chart:1.2.3".split_whitespace().map(str::to_owned).collect())?;
-        assert_eq!(tagged.helm_keyring, Some("/tmp/public.gpg".into()));
+        let tagged = parse(
+            format!(
+                "--helm-keyring {keyring} helm install web oci://registry.example/team/chart:1.2.3"
+            )
+            .split_whitespace()
+            .map(str::to_owned)
+            .collect(),
+        )?;
+        assert_eq!(tagged.helm_keyring, Some(keyring.into()));
         assert_eq!(
             HelmCommand::parse("helm", &["test".into(), "web".into()])?,
             HelmCommand::Test("web".into())
@@ -1893,9 +1962,10 @@ mod tests {
     #[test]
     fn lifecycle_and_workload_scopes_validate_before_connecting() -> Result<()> {
         let words = |s: &str| parse(s.split_whitespace().map(str::to_owned).collect());
-        let options = words(
-            "--write --allow-helm --allow-helm-write --helm-tool /tmp/helm --helm-values /tmp/values.yaml helm install web ./web.tgz",
-        )?;
+        let tool = abs("/tmp/helm");
+        let options = words(&format!(
+            "--write --allow-helm --allow-helm-write --helm-tool {tool} --helm-values /tmp/values.yaml helm install web ./web.tgz",
+        ))?;
         assert!(options.connection.allow_helm_write);
         assert_eq!(options.helm_timeout_seconds, 300);
         assert_eq!(options.helm_values, Some(PathBuf::from("/tmp/values.yaml")));
@@ -1923,7 +1993,6 @@ mod tests {
             "--helm-timeout 0 helm list",
             "--helm-timeout 901 helm list",
             "--helm-values values.yaml helm rollback web 1",
-            "--helm-tool /tmp/helm list pods",
             "logs deploy/web app",
             "logs web --selector app=web",
             "logs nodes/node",
@@ -1932,6 +2001,7 @@ mod tests {
         ] {
             assert!(words(command).is_err(), "{command}");
         }
+        assert!(words(&format!("--helm-tool {tool} list pods")).is_err());
         assert!(words("logs --selector app=web --all-containers --follow").is_ok());
         assert!(!words("helm list")?.connection.allow_helm_write);
         assert!(words("logs pod/api.worker --all-containers").is_ok());
