@@ -45,7 +45,7 @@
 | **Secrets** | Opt-in key listing; reveal one value for 30 seconds; never exported or copied |
 | **Metrics** | Pod/Node CPU and memory tables, exact values, requests/limits comparisons, bounded history |
 | **Copilot** | Minimized diagnostic preview, exact account approval, contained native runtime (macOS ARM64) |
-| **Workspace** | Saved context groups and scopes, remembered dashboard (`kborg dashboard`), k9s-format `views.yaml` columns, sort by any column, recent namespaces on `1`–`9`, custom aliases and k9s-format hotkeys, reviewed read-only extensions (`:ext`, k9s `plugins.yaml` import), 20 themes plus custom palettes, shell completions |
+| **Workspace** | Saved context groups and scopes, remembered dashboard (`kborg dashboard`), k9s-format `views.yaml` columns, sort by any column, recent namespaces on `1`–`9`, custom aliases and k9s-format hotkeys, fully remappable keys (`keymap.yaml`, `?` help per view, `:keymap`), reviewed read-only extensions (`:ext`, k9s `plugins.yaml` import), 20 themes plus custom palettes, shell completions |
 
 ![Cross-cluster tail: two clusters' checkout services merged in timestamp order](docs/screenshots/cross-cluster-tail.png)
 
@@ -189,6 +189,8 @@ Without a provider KBorg keeps working and shows `-` or `metrics UNAVAILABLE`, n
 KBorg greets you with a short animated logo that decrypts out of glyph noise, catches a light beam and fades into your workspace. Any key skips it; `kborg startup preview` replays it, and `kborg startup off`, `--no-splash` or `KBORG_NO_SPLASH=1` turn it off.
 
 Pick a theme with `:themes` (live preview) or `--theme rose-pine`. Every fixed built-in theme is tested for 4.5:1 contrast on each surface the UI paints, including dashboard cards and selected rows. Create your own with `kborg theme new my-theme --base rose-pine`; see the [theme guide](docs/themes.md). `NO_COLOR` and `--color=never` turn styling off.
+
+To style and lay out the UI to your taste, run `kborg ui init` and edit the generated `ui.yaml`: borders (rounded, square, ASCII or none), a compact header, hidden key hints, zebra rows, column separators, long ages, local log timestamps, dashboard card columns and per-role color overrides on top of any theme. It is data only and validated; `:ui reload` applies changes live. Every option is listed in the [ui.yaml reference](docs/themes.md#uiyaml).
 
 ## Terminals
 

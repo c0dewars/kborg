@@ -396,7 +396,18 @@ fn observation(summary: &ContextSummary, now: u64) -> String {
 
 /// Two columns only when every card fits. Small terminals retain a complete
 /// focused card; numeric focus remains stable as the terminal is resized.
+#[cfg(test)]
 fn cards(width: u16, height: u16, count: usize, selected: usize) -> Vec<(usize, Rect)> {
+    cards_styled(width, height, count, selected, &Default::default())
+}
+/// `cards` with ui.yaml `dashboard` columns and minimum card sizes.
+fn cards_styled(
+    width: u16,
+    height: u16,
+    count: usize,
+    selected: usize,
+    style: &crate::ui_config::Dashboard,
+) -> Vec<(usize, Rect)> {
     let mut area = Rect {
         x: 0,
         y: 4,
@@ -411,15 +422,21 @@ fn cards(width: u16, height: u16, count: usize, selected: usize) -> Vec<(usize, 
         area.height = area.height.min(18);
     }
     // Three columns once five or more clusters share a wide terminal.
-    let columns = if width >= 150 && count >= 5 {
+    let columns = if style.columns > 0 {
+        usize::from(style.columns)
+    } else if style.min_card_width > 0 {
+        usize::from((width + 1) / (style.min_card_width + 1)).clamp(1, 3)
+    } else if width >= 150 && count >= 5 {
         3
     } else if width >= 76 && count > 1 {
         2
     } else {
         1
-    };
+    }
+    .min(count)
+    .max(1);
     let rows = count.div_ceil(columns);
-    if (usize::from(area.height) + 1) / rows < 9 {
+    if (usize::from(area.height) + 1) / rows < usize::from(style.min_card_height) {
         return vec![(selected.min(count - 1), area)];
     }
     let card_width = width.saturating_add(1) / columns as u16 - 1;
@@ -466,6 +483,7 @@ fn picker_pane(app: &App, picker: &TailPicker, rect: Rect, out: &mut impl Write)
         true,
         color("accent"),
         bg,
+        &app.ui,
     )
     .map_err(|_| "draw failed")?;
     let height = usize::from(rect.height.saturating_sub(2));
@@ -487,11 +505,13 @@ fn picker_pane(app: &App, picker: &TailPicker, rect: Rect, out: &mut impl Write)
 fn log_pane(app: &App, pane: &LogPane, rect: Rect, out: &mut impl Write) -> Result<()> {
     let color = |role| ui_color(app, role);
     let bg = color("background");
-    panel(out, rect, &pane.title, true, color("accent"), bg).map_err(|_| "draw failed")?;
+    panel(out, rect, &pane.title, true, color("accent"), bg, &app.ui).map_err(|_| "draw failed")?;
     let inner = usize::from(rect.width.saturating_sub(2));
-    let lines = pane
-        .view
-        .render(inner, usize::from(rect.height.saturating_sub(2)));
+    let lines = pane.view.render_with(
+        inner,
+        usize::from(rect.height.saturating_sub(2)),
+        app.ui.local_time(),
+    );
     for (index, text) in lines
         .iter()
         .take(usize::from(rect.height.saturating_sub(2)))
@@ -711,6 +731,7 @@ fn card(
         selected,
         border,
         bg,
+        &app.ui,
     )
     .map_err(|_| "draw failed")?;
     if rect.height < 4 || rect.width < 4 {
@@ -762,10 +783,16 @@ fn card(
         4
     };
     if let Some(infra) = infra {
+        let style = &app.ui.dashboard;
         let mut rows = infra_lines(infra, summary.health.as_ref(), summary.demo);
+        if !style.node_details {
+            let hidden = node_details(&infra.nodes);
+            rows.retain(|line| !hidden.contains(line));
+        }
         if let Some(trend) = dashboard
             .trends
             .get(&summary.context)
+            .filter(|_| style.trend)
             .and_then(|trend| trend.line(usize::from(width)))
         {
             rows.push((trend, "muted"));
@@ -965,28 +992,17 @@ pub(super) fn render(
             width,
             height: height.saturating_sub(7),
         };
-        panel(out, rect, "DASHBOARD KEYS", true, color("accent"), bg).map_err(|_| "draw failed")?;
-        let help = [
-            "1..9             Focus a card; its number again toggles full screen",
-            "Arrows / Tab     Move between cards",
-            "Enter            Open focused context Pods",
-            "w                Select next recent warning",
-            "Enter on warning Open that Pod's Events (exact UID)",
-            "L on warning     Follow that Pod's logs in a pane (exact UID)",
-            "t                Tail chosen workloads across every card's cluster",
-            "e / W in a pane  Show only error / warning lines",
-            "Esc on warning   Close the log pane, then clear the selection",
-            "c                Choose up to nine context names",
-            "s                Save these contexts and namespace",
-            "B                Open saved selections",
-            "? / Esc          Close this keymap",
-            "",
-            "Pod watches and recent warning Events are independent.",
-            "Unknown, denied, stale and incomplete evidence stays explicit.",
-            "OOM evidence is current or previous container termination.",
-            "Restarts are current container counters, not a rate.",
-            "Dashboard reads never enable write capabilities.",
-        ];
+        panel(
+            out,
+            rect,
+            "DASHBOARD KEYS",
+            true,
+            color("accent"),
+            bg,
+            &app.ui,
+        )
+        .map_err(|_| "draw failed")?;
+        let help = super::keyhelp::dashboard_help_lines(app);
         for (index, text) in help
             .iter()
             .take(rect.height.saturating_sub(2) as usize)
@@ -1023,7 +1039,13 @@ pub(super) fn render(
                     },
                 )]
             } else {
-                cards(width, card_height, dashboard.rows.len(), dashboard.selected)
+                cards_styled(
+                    width,
+                    card_height,
+                    dashboard.rows.len(),
+                    dashboard.selected,
+                    &app.ui.dashboard,
+                )
             };
             for (index, rect) in layout {
                 cards_bottom = cards_bottom.max(rect.y + rect.height);
@@ -1084,23 +1106,7 @@ pub(super) fn render(
         out,
         height - 1,
         width,
-        if dashboard.help {
-            " ? keymap   Esc back"
-        } else if dashboard.picker.is_some() {
-            " Space select   Enter tail   Esc cancel"
-        } else if dashboard
-            .logs
-            .as_ref()
-            .is_some_and(|pane| pane.uid.is_empty())
-        {
-            " t close tail   e errors   W warnings   Esc close tail"
-        } else if dashboard.logs.is_some() {
-            " L close logs   w next warning   Enter Events   Esc close logs"
-        } else if dashboard.warning.is_some() {
-            " w next warning   Enter Events   L live logs   Esc clear"
-        } else {
-            " 1..9 focus   Enter Pods   w warnings   t tail workloads   ? keymap   Esc back"
-        },
+        &super::keyhelp::dashboard_hint(app, dashboard),
         color("accent"),
         bg,
     )
@@ -1330,6 +1336,44 @@ mod tests {
                 }
             }
         }
+    }
+    #[test]
+    fn configured_grid_columns_stay_bounded() {
+        for columns in 1..=3 {
+            let style = crate::ui_config::Dashboard {
+                columns,
+                min_card_height: 5,
+                ..Default::default()
+            };
+            for width in 28..180 {
+                for height in 10..55 {
+                    for count in 1..=crate::overview::MAX_LIVE_CONTEXTS {
+                        let layout = cards_styled(width, height, count, count - 1, &style);
+                        assert!(!layout.is_empty());
+                        for (_, rect) in &layout {
+                            assert!(rect.x + rect.width <= width);
+                            assert!(rect.y + rect.height <= height - 3);
+                            assert!(rect.width >= 2 && rect.height >= 3);
+                        }
+                    }
+                }
+            }
+        }
+        let wide = crate::ui_config::Dashboard {
+            min_card_width: 50,
+            ..Default::default()
+        };
+        let layout = cards_styled(160, 50, 6, 0, &wide);
+        assert_eq!(layout.iter().filter(|(_, rect)| rect.y == 4).count(), 3);
+        let single = crate::ui_config::Dashboard {
+            columns: 1,
+            ..Default::default()
+        };
+        assert!(
+            cards_styled(160, 50, 4, 0, &single)
+                .iter()
+                .all(|(_, rect)| rect.x == 0)
+        );
     }
     #[test]
     fn missing_or_unavailable_evidence_never_claims_ready() {

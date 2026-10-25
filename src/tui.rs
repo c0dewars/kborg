@@ -28,6 +28,7 @@ mod dashboard_ui;
 mod format;
 #[path = "ui_helm.rs"]
 mod helm_ui;
+mod keyhelp;
 mod keys;
 #[path = "ui_navigation.rs"]
 mod nav;
@@ -38,6 +39,7 @@ mod review_ui;
 #[path = "ui_selections.rs"]
 mod selections_ui;
 mod startup;
+mod table_keys;
 #[path = "ui_metrics.rs"]
 mod table_metrics;
 #[cfg(test)]
@@ -96,7 +98,7 @@ enum Modal {
     SessionConfirm(Box<crate::ops::ReviewedOperation>, String),
     Scale(String, String, String, Option<String>, String),
     Resources(String, String, String, Option<String>, String),
-    Help(usize),
+    Help(Box<keyhelp::HelpView>),
     EditContainers(
         String,
         String,
@@ -249,10 +251,14 @@ struct App {
     saved: Vec<crate::screendump::Record>,
     aliases: crate::aliases::Aliases,
     hotkeys: crate::hotkeys::Hotkeys,
+    /// keymap.yaml: effective keys of every registered action.
+    keymap: crate::keymap::Keymap,
     /// Ctrl-Z: show only objects that need attention (k9s faults view).
     faults_only: bool,
     /// k9s-format views.yaml: per-resource columns and default sort.
     views: crate::views::Views,
+    /// Data-only ui.yaml: borders, chrome rows, table style, color overrides.
+    ui: crate::ui_config::UiConfig,
     /// Ctrl-W: wide columns.
     wide: bool,
     /// Reverse the current sort (pressing the same sort key again).
@@ -328,13 +334,14 @@ impl App {
         if matches!(self.modal, Modal::None | Modal::LiveOverview(..))
             && !self.write_inflight
             && mouse.row == 0
+            && (self.ui.header.show || matches!(self.modal, Modal::LiveOverview(..)))
             && matches!(
                 mouse.kind,
                 MouseEventKind::Down(crossterm::event::MouseButton::Left)
             )
             && topbar::help_at(width, mouse.column)
         {
-            if let Err(error) = self.key(KeyCode::Char('?')) {
+            if let Err(error) = self.press_help() {
                 self.status = error;
             }
             return;
@@ -342,7 +349,7 @@ impl App {
         if !matches!(self.modal, Modal::None) {
             return;
         }
-        let layout = Layout::new(width, height);
+        let layout = Layout::for_ui(width, height, &self.ui);
         match mouse.kind {
             MouseEventKind::ScrollDown => {
                 self.selected = (self.selected + 1).min(self.visible().len().saturating_sub(1));
@@ -355,7 +362,11 @@ impl App {
                 let start = self
                     .selected
                     .saturating_sub(layout.table_rows().saturating_sub(1));
-                self.selected = (start + usize::from(mouse.row - layout.table.y - 2))
+                let line = mouse.row - layout.table.y - 2;
+                if !line.is_multiple_of(layout.step.max(1)) {
+                    return;
+                }
+                self.selected = (start + usize::from(line / layout.step.max(1)))
                     .min(self.visible().len().saturating_sub(1));
             }
             _ => {}
@@ -757,11 +768,41 @@ impl App {
     }
 }
 
+/// The theme for this session: `--theme`, else ui.yaml `theme`, else the saved
+/// choice, with ui.yaml color overrides. A ui.yaml problem is reported and
+/// falls back to the saved theme without overrides.
+fn ui_theme(ui: &crate::ui_config::UiConfig, cli: Option<&str>) -> Result<(Theme, Option<String>)> {
+    let saved = || themes::find(cli.map_or_else(themes::selected, str::to_owned).as_str());
+    let (base, mut error) = match (cli, &ui.theme) {
+        (None, Some(id)) => match themes::find(id) {
+            Ok(theme) => (theme, None),
+            Err(error) => (saved()?, Some(format!("ui.yaml {error}"))),
+        },
+        _ => (saved()?, None),
+    };
+    let theme = match ui.apply(&base) {
+        Ok(theme) => theme,
+        Err(failure) => {
+            error = error.or(Some(failure));
+            base
+        }
+    };
+    Ok((theme, error))
+}
+
 pub fn run(options: Options) -> Result<()> {
-    let first_run = options.theme.is_none() && themes::first_run()?;
-    let theme = themes::find(options.theme.as_deref().unwrap_or(&themes::selected()))?;
+    let (ui, mut ui_error) = match crate::ui_config::load() {
+        Ok(ui) => (ui, None),
+        Err(error) => (crate::ui_config::UiConfig::default(), Some(error)),
+    };
+    let first_run = options.theme.is_none() && ui.theme.is_none() && themes::first_run()?;
+    let (theme, theme_error) = ui_theme(&ui, options.theme.as_deref())?;
+    ui_error = ui_error.or(theme_error);
     let mut terminal_guard = Some(Terminal::enter(options.mouse)?);
-    if options.splash && themes::animation_enabled() && !startup_animation(&theme, options.color)? {
+    if options.splash
+        && ui.splash.unwrap_or_else(themes::animation_enabled)
+        && !startup_animation(&theme, options.color)?
+    {
         return Ok(());
     }
     let (aliases, alias_error) = match crate::aliases::load() {
@@ -770,6 +811,12 @@ pub fn run(options: Options) -> Result<()> {
     };
     let (hotkeys, hotkey_error) = match crate::hotkeys::load() {
         Ok(hotkeys) => (hotkeys, None),
+        Err(error) => (Default::default(), Some(error)),
+    };
+    let (keymap, keymap_error) = match crate::keymap::load()
+        .and_then(|keymap| keymap.check_hotkeys(&hotkeys).map(|()| keymap))
+    {
+        Ok(keymap) => (keymap, None),
         Err(error) => (Default::default(), Some(error)),
     };
     let (views, view_error) = match crate::views::load() {
@@ -807,8 +854,10 @@ pub fn run(options: Options) -> Result<()> {
         saved: vec![],
         aliases,
         hotkeys,
+        keymap,
         faults_only: false,
         views,
+        ui,
         wide: false,
         sort_desc: false,
         sort_column: None,
@@ -863,10 +912,26 @@ pub fn run(options: Options) -> Result<()> {
         app.theme_picker()?;
         app.status = "Welcome! Arrows preview, Enter chooses; Esc keeps Flexoki Dark.".into();
     }
+    if let Some(error) = ui_error {
+        app.modal = Modal::Detail(
+            format!(
+                "Custom UI settings unavailable\n{error}\n\nThe built-in layout and the saved theme remain in use. Fix ui.yaml, then :ui reload. Esc closes this notice."
+            ),
+            0,
+        );
+    }
     if let Some(error) = view_error {
         app.modal = Modal::Detail(
             format!(
                 "Custom views unavailable\n{error}\n\nDefault columns remain available. Esc closes this notice."
+            ),
+            0,
+        );
+    }
+    if let Some(error) = keymap_error {
+        app.modal = Modal::Detail(
+            format!(
+                "Custom keymap unavailable\n{error}\n\nDefault keys remain available; :keymap lists them. Esc closes this notice."
             ),
             0,
         );

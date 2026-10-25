@@ -25,8 +25,7 @@ impl App {
         }
         if code == KeyCode::Char(':')
             && match &self.modal {
-                Modal::None
-                | Modal::Detail(..)
+                Modal::Detail(..)
                 | Modal::Overview(..)
                 | Modal::PodContainers(..)
                 | Modal::Metrics(..)
@@ -34,8 +33,8 @@ impl App {
                 | Modal::Directory(..)
                 | Modal::ForwardView
                 | Modal::HelmDocument(..)
-                | Modal::AdviceDocument(..)
-                | Modal::Help(..) => true,
+                | Modal::AdviceDocument(..) => true,
+                Modal::Help(view) => !view.typing,
                 Modal::Follow(view) => !view.is_filtering(),
                 Modal::Helm(table) => !table.is_filtering(),
                 _ => false,
@@ -49,6 +48,12 @@ impl App {
             self.history_index = None;
             self.completion = None;
             self.modal = Modal::Input("Command", String::new());
+            return Ok(false);
+        }
+        if code == KeyCode::Char('?')
+            && let Some(scope) = keyhelp::help_scope(&self.modal)
+        {
+            self.open_help(scope, keyhelp::Mode::Context);
             return Ok(false);
         }
         self.sticky_status = false;
@@ -1281,16 +1286,16 @@ impl App {
                                 10 => self.prepare(Action::Delete),
                                 _ => {
                                     let key = match index {
-                                        0 => KeyCode::Char('d'),
-                                        1 => KeyCode::Char('y'),
-                                        5 => KeyCode::Char('m'),
-                                        11 => KeyCode::Char('J'),
-                                        12 => KeyCode::Char('s'),
-                                        13 => KeyCode::Char('M'),
-                                        14 => KeyCode::Char('V'),
-                                        _ => KeyCode::Null,
+                                        0 => 'd',
+                                        1 => 'y',
+                                        5 => 'm',
+                                        11 => 'J',
+                                        12 => 's',
+                                        13 => 'M',
+                                        14 => 'V',
+                                        _ => return Ok(false),
                                     };
-                                    return self.key(key);
+                                    return self.default_table_key(crate::keymap::Key::Char(key));
                                 }
                             }
                         } else if label == "Aliases" {
@@ -1499,266 +1504,18 @@ impl App {
                 }
                 _ => self.modal = Modal::Resources(k, n, name, uid, text),
             },
-            Modal::Help(offset) => match code {
-                KeyCode::Esc | KeyCode::Char('?') | KeyCode::Char('q') => {}
-                _ => self.modal = Modal::Help(scroll_offset(TUI_HELP, offset, code)),
-            },
-            Modal::None => match code {
-                KeyCode::Char('q') => return Ok(true),
-                KeyCode::Esc => {
-                    if !self.filter.is_empty() {
-                        let uid = self.selected_uid();
-                        self.filter.clear();
-                        self.selected = uid
-                            .and_then(|uid| {
-                                self.visible().iter().position(|object| {
-                                    object["metadata"]["uid"].as_str() == Some(&uid)
-                                })
-                            })
-                            .unwrap_or(0);
-                    } else if !self.selector.is_empty() {
-                        self.selector.clear();
-                        self.changed();
-                    } else {
-                        self.go_back();
-                    }
+            Modal::Help(mut view) => {
+                if keyhelp::help_key(self, &mut view, code) {
+                    self.close_subview();
+                } else {
+                    self.modal = Modal::Help(view);
                 }
-                KeyCode::Char('[') => self.go_back(),
-                KeyCode::Char(']') => self.go_forward(),
-                KeyCode::Char('-') => self.last_view(),
-                KeyCode::Tab | KeyCode::BackTab => {
-                    self.command_cursor = 0;
-                    self.modal = Modal::Input("Command", String::new());
+            }
+            Modal::None => {
+                if let Some(key) = crate::keymap::Key::from_event(code, KeyModifiers::NONE) {
+                    return self.table_key(key);
                 }
-                KeyCode::PageDown | KeyCode::PageUp | KeyCode::Home | KeyCode::End => {
-                    let page = terminal::size()
-                        .map(|(w, h)| Layout::new(w, h).table_rows())
-                        .unwrap_or(15)
-                        .max(1);
-                    let len = self.visible().len();
-                    self.selected = match code {
-                        KeyCode::PageDown => self
-                            .selected
-                            .saturating_add(page)
-                            .min(len.saturating_sub(1)),
-                        KeyCode::PageUp => self.selected.saturating_sub(page),
-                        KeyCode::Home => 0,
-                        _ => len.saturating_sub(1),
-                    };
-                }
-                KeyCode::Down | KeyCode::Char('j') => {
-                    self.selected = (self.selected + 1).min(self.visible().len().saturating_sub(1))
-                }
-                KeyCode::Up | KeyCode::Char('k') => self.selected = self.selected.saturating_sub(1),
-                KeyCode::Enter => {
-                    self.drilldown();
-                }
-                KeyCode::Char('/') => {
-                    self.modal = Modal::Filter(
-                        self.filter.clone(),
-                        self.filter.clone(),
-                        self.selected_uid(),
-                        self.selected,
-                    )
-                }
-                KeyCode::Char(':') => {
-                    self.history_index = None;
-                    self.completion = None;
-                    self.command_cursor = 0;
-                    self.modal = Modal::Input("Command", String::new());
-                }
-                KeyCode::Char('J') => {
-                    if let Some((k, n, name)) = self.selected_target() {
-                        self.send(Task::Get(k, n, name));
-                    }
-                }
-                KeyCode::Char('d') => {
-                    if let Some((k, n, name)) = self.selected_target() {
-                        self.send(Task::Inspect(k, n, name));
-                    }
-                }
-                KeyCode::Char('S') => self.set_sort(Sort::Status),
-                KeyCode::Char('N') => self.set_sort(Sort::Name),
-                KeyCode::Char('A') => self.set_sort(Sort::Age),
-                KeyCode::Char('E') => self.request_shell(),
-                KeyCode::Char('n') => {
-                    if let Some((_, namespace, _)) = self.selected_target() {
-                        self.copy_text(&namespace)?;
-                        self.status =
-                            "Namespace sent to terminal clipboard (OSC52 support required).".into();
-                    }
-                }
-                KeyCode::Char('c') => {
-                    if self.kind() == "nodes" && self.options.connection.writable {
-                        self.node_maintenance(crate::node_maintenance::Request::Cordon);
-                        return Ok(false);
-                    }
-                    if let Some(object) = self.visible().get(self.selected) {
-                        self.copy_text(name(object))?;
-                        self.status =
-                            "Name sent to terminal clipboard (OSC52 support required).".into();
-                    }
-                }
-                KeyCode::Char('t') => {
-                    if self.kind() == "cronjobs.batch" {
-                        self.prepare(Action::Trigger);
-                    } else {
-                        self.status = "Copy files with :cp-from / :cp-to (--allow-file-copy). t triggers a selected CronJob.".into()
-                    }
-                }
-                KeyCode::Char('b') => self.save_resource_selection()?,
-                KeyCode::Char('B') => self.open_saved_selections()?,
-                KeyCode::Char('?') => self.modal = Modal::Help(0),
-                KeyCode::Char('D') => self.open_dashboard(vec![self.context.clone()])?,
-                KeyCode::Char('u') => {
-                    self.node_maintenance(crate::node_maintenance::Request::Uncordon)
-                }
-                KeyCode::Char('z') => self.status =
-                    "Inspection is already redacted; additional k9s sanitization is unavailable."
-                        .into(),
-                KeyCode::Char('r') => {
-                    if self.kind() == "nodes" {
-                        self.node_maintenance(crate::node_maintenance::Request::Drain {
-                            seconds: 120,
-                        });
-                        return Ok(false);
-                    }
-                    if crate::edit::supports_resource(&self.kind()) {
-                        self.prepare(Action::Restart);
-                        return Ok(false);
-                    }
-                    if self.watch_blocked {
-                        self.options.connection.context = Some(self.context.clone());
-                        self.connect();
-                        self.namespace_override = true;
-                    } else if self.connected {
-                        self.refresh = true;
-                    } else if !self.busy {
-                        self.connect();
-                    }
-                }
-                KeyCode::Char('R') => self.set_sort(Sort::Ready),
-                KeyCode::Char('m') => {
-                    self.metrics_resources = false;
-                    self.request_metrics();
-                }
-                KeyCode::Char('M' | 'C') => {
-                    if matches!(self.kind().as_str(), "pods" | "nodes") {
-                        self.set_sort(if code == KeyCode::Char('C') {
-                            Sort::Cpu
-                        } else {
-                            Sort::Memory
-                        });
-                        if !self.busy && self.last_table_metrics.is_none() {
-                            self.refresh_table_metrics();
-                        }
-                    } else {
-                        self.status="CPU/memory usage sorting applies to Pod and Node tables; :metrics shows exact samples.".into();
-                    }
-                }
-                KeyCode::Char('w') => {
-                    if let Some((_, namespace, _)) = self.selected_target() {
-                        return self.command(&format!("ns {namespace}"));
-                    }
-                }
-                KeyCode::Char('0') => return self.command("ns all"),
-                KeyCode::Char(digit @ '1'..='9') => {
-                    let index = usize::from(digit as u8 - b'1');
-                    let recent = self.recent.namespaces(&self.context);
-                    match recent.get(index).cloned() {
-                        Some(namespace) => return self.command(&format!("ns {namespace}")),
-                        None => {
-                            self.status = if recent.is_empty() {
-                                "No recent namespaces yet; :ns opens the picker. 1-9 then jump to the last nine.".into()
-                            } else {
-                                format!(
-                                    "Recent: {}",
-                                    recent
-                                        .iter()
-                                        .enumerate()
-                                        .map(|(i, ns)| format!("{} {ns}", i + 1))
-                                        .collect::<Vec<_>>()
-                                        .join("  ")
-                                )
-                            }
-                        }
-                    }
-                }
-                KeyCode::Char(' ') => {
-                    if let Some(uid) = self.selected_uid() {
-                        if !self.marks.remove(&uid) {
-                            self.marks.insert(uid);
-                        }
-                        self.selected =
-                            (self.selected + 1).min(self.visible().len().saturating_sub(1));
-                        self.status = format!(
-                            "{} marked | mutations still review one selected UID",
-                            self.marks.len()
-                        );
-                    }
-                }
-                KeyCode::Char('a') => self.request_session(true),
-                KeyCode::Char('y') | KeyCode::Char('v') => {
-                    if let Some((k, n, name)) = self.selected_target() {
-                        self.send(Task::Yaml(k, n, name));
-                    }
-                }
-                KeyCode::Char('o') => {
-                    if self.kind() != "pods" {
-                        self.status = "Show Node applies to core Pods.".into();
-                        return Ok(false);
-                    }
-                    let node = self
-                        .visible()
-                        .get(self.selected)
-                        .and_then(|object| object["spec"]["nodeName"].as_str())
-                        .map(str::to_owned);
-                    if let Some(node) = node {
-                        return self.command(&format!("v1/nodes /^{node}$"));
-                    }
-                    self.status =
-                        "Show Node requires a scheduled Pod. :overview opens multiple contexts."
-                            .into();
-                }
-                KeyCode::Char('e') => self.yaml_editor(),
-                KeyCode::Char('V') => {
-                    if !self.options.connection.writable {
-                        self.status = "READ ONLY: resource budgets require --write.".into();
-                    } else if !crate::edit::supports_resource(&self.kind()) {
-                        self.status =
-                            "Resource budgets apply to supported workload containers.".into();
-                    } else if let Some((k, n, name)) = self.selected_target() {
-                        self.modal =
-                            Modal::Resources(k, n, name, self.selected_uid(), String::new());
-                    }
-                }
-                KeyCode::Char('l') => self.request_logs(false, true),
-                KeyCode::Char('L' | 'p') => self.request_logs(true, false),
-                KeyCode::Char('s') => {
-                    if self.kind() == "pods" {
-                        self.request_shell();
-                    } else if self.kind() == "nodes" {
-                        self.node_shell();
-                    } else if self.kind() == "cronjobs.batch" {
-                        let suspended = self
-                            .visible()
-                            .get(self.selected)
-                            .is_some_and(|cron| cron["spec"]["suspend"] == true);
-                        self.prepare(Action::Suspend(!suspended));
-                    } else {
-                        return self.scale();
-                    }
-                }
-                KeyCode::Char('f') => self.modal = Modal::ForwardView,
-                KeyCode::Char('F') => self.request_forward(),
-                KeyCode::Char('x') => {
-                    self.status =
-                        "Use :xray RESOURCE for relationships or :restart for a reviewed rollout."
-                            .into()
-                }
-                KeyCode::Delete => self.prepare(Action::Delete),
-                _ => {}
-            },
+            }
         }
         Ok(false)
     }
@@ -1783,6 +1540,9 @@ impl App {
         if self.write_inflight {
             return self.key(code);
         }
+        let Some((code, modifiers)) = self.translate_key(code, modifiers) else {
+            return Ok(false);
+        };
         if matches!(self.modal, Modal::YamlEditor(..)) {
             if let Modal::YamlEditor(mut editor) = std::mem::replace(&mut self.modal, Modal::None) {
                 match editor.key(crossterm::event::KeyEvent::new(code, modifiers)) {
@@ -1904,81 +1664,19 @@ impl App {
                 }
                 return Ok(false);
             }
-            if matches!(self.modal, Modal::None) {
-                match code {
-                    KeyCode::Char('a') => self.aliases(),
-                    KeyCode::Char('w') => {
-                        self.wide = !self.wide;
-                        self.status = if self.wide {
-                            "Wide columns on (Node, IP and |W view columns). Ctrl-W turns them off."
-                        } else {
-                            "Wide columns off."
-                        }
-                        .into();
-                    }
-                    KeyCode::Char('z') => {
-                        self.faults_only = !self.faults_only;
-                        self.selected = 0;
-                        self.status = if self.faults_only {
-                            "Errors only: unhealthy Pods, degraded workloads, NotReady Nodes, warnings. Ctrl-Z shows all."
-                        } else {
-                            "Showing all objects."
-                        }
-                        .into();
-                    }
-                    KeyCode::Char('d') => self.prepare(Action::Delete),
-                    KeyCode::Char('k') => self.kill(),
-                    KeyCode::Char('r') => {
-                        if self.connected {
-                            self.refresh = true;
-                        } else if !self.busy {
-                            self.connect();
-                        }
-                    }
-                    KeyCode::Char('s') => {
-                        let values = self.visible().into_iter().cloned().collect::<Vec<_>>();
-                        match crate::screendump::save(
-                            &self.context,
-                            &self.namespace,
-                            &self.kind(),
-                            &values,
-                        ) {
-                            Ok(record) => {
-                                self.status =
-                                    format!("Saved {} | :sd opens saved resources", record.title)
-                            }
-                            Err(error) => self.status = error,
-                        };
-                    }
-                    KeyCode::Char(' ') => {
-                        let uids = self
-                            .visible()
-                            .iter()
-                            .take(self.selected + 1)
-                            .filter_map(|object| {
-                                object["metadata"]["uid"].as_str().map(str::to_owned)
-                            })
-                            .collect::<Vec<_>>();
-                        self.marks.extend(uids);
-                        self.status = format!(
-                            "{} marked | actions still target one selected UID",
-                            self.marks.len()
-                        );
-                    }
-                    KeyCode::Char('\\') => {
-                        self.marks.clear();
-                        self.status = "Marks cleared.".into();
-                    }
-                    _ => {
-                        self.status =
-                            "This k9s shortcut is not available here; ? lists supported actions."
-                                .into()
-                    }
-                }
+            if matches!(self.modal, Modal::None)
+                && let Some(key) = crate::keymap::Key::from_event(code, modifiers)
+            {
+                return self.table_key(key);
             }
             return Ok(false);
         }
         if modifiers.contains(KeyModifiers::ALT) {
+            if matches!(self.modal, Modal::None)
+                && let Some(key) = crate::keymap::Key::from_event(code, modifiers)
+            {
+                return self.table_key(key);
+            }
             return Ok(false);
         }
         self.key(code)

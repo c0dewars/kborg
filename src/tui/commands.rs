@@ -24,7 +24,23 @@ impl App {
         let args = &words[1..];
         match (cmd.as_str(), args) {
             ("q" | "q!" | "qa" | "quit" | "exit", []) => return Ok(true),
-            ("?" | "h" | "help", []) => self.modal = Modal::Help(0),
+            ("?" | "h" | "help", []) => {
+                let scope = self
+                    .subviews
+                    .last()
+                    .and_then(keyhelp::help_scope)
+                    .unwrap_or(crate::keymap::Scope::Table);
+                self.open_help(scope, keyhelp::Mode::Context);
+            }
+            ("keymap" | "keys", []) => {
+                self.open_help(crate::keymap::Scope::Table, keyhelp::Mode::Keymap)
+            }
+            ("keymap" | "keys", [filter]) => {
+                self.open_help(crate::keymap::Scope::Table, keyhelp::Mode::Keymap);
+                if let Modal::Help(view) = &mut self.modal {
+                    view.filter = filter.chars().take(64).collect();
+                }
+            }
             ("a" | "alias" | "aliases", []) => self.aliases(),
             ("actions", []) => self.modal = Modal::Picker("Actions", self.action_menu(), 0),
             ("export", []) => self.request_export(),
@@ -69,6 +85,7 @@ impl App {
                 if let Some(sort) = sort { self.set_sort(sort); } else { self.status = "Sort: name | namespace | status | restarts | age | ready | cpu | memory".into(); }
             }
             ("themes", []) => self.theme_picker()?,
+            ("ui", [action]) if action == "reload" => self.reload_ui()?,
             ("overview", []) => self.modal = Modal::Input(OVERVIEW_CONTEXTS_LABEL, self.context.clone()),
             ("metrics", []) => { self.metrics_resources = false; self.request_metrics(); }
             ("metrics",[mode]) if mode=="resources"=>{self.metrics_resources=true;self.request_metrics();}

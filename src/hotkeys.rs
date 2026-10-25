@@ -64,6 +64,18 @@ impl Shortcut {
         }
     }
 
+    /// The key event this shortcut answers to (for conflict checks).
+    pub fn event(self) -> (KeyCode, KeyModifiers) {
+        match self {
+            Self::Shift(digit) => (
+                KeyCode::Char(char::from(SHIFTED_DIGITS[usize::from(digit)])),
+                KeyModifiers::NONE,
+            ),
+            Self::Alt(key) => (KeyCode::Char(key), KeyModifiers::ALT),
+            Self::Ctrl(key) => (KeyCode::Char(key), KeyModifiers::CONTROL),
+            Self::F(number) => (KeyCode::F(number), KeyModifiers::NONE),
+        }
+    }
     pub fn matches(self, code: KeyCode, modifiers: KeyModifiers) -> bool {
         match (self, code) {
             (Self::Shift(digit), KeyCode::Char(c)) => {
@@ -109,7 +121,7 @@ fn parse(text: &str) -> Result<Hotkeys> {
         budget: serde_saphyr::budget! {
             max_reader_input_bytes: Some(64*1024), max_events: 5000, max_aliases: 0, max_anchors: 0,
             max_depth: 4, max_inclusion_depth: 0, max_documents: 1, max_nodes: 1024,
-            max_total_scalar_bytes: 64*1024, max_total_comment_bytes: 64*1024, max_merge_keys: 0,
+            max_total_scalar_bytes: 64*1024, max_merge_keys: 0,
         },
         duplicate_keys: serde_saphyr::DuplicateKeyPolicy::Error,
         merge_keys: serde_saphyr::MergeKeyPolicy::Error,

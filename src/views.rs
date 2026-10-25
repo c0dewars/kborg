@@ -188,7 +188,7 @@ pub fn parse(text: &str) -> Result<Views> {
         budget: serde_saphyr::budget! {
             max_reader_input_bytes: Some(64*1024), max_events: 20_000, max_aliases: 0, max_anchors: 0,
             max_depth: 5, max_inclusion_depth: 0, max_documents: 1, max_nodes: 8192,
-            max_total_scalar_bytes: 64*1024, max_total_comment_bytes: 64*1024, max_merge_keys: 0,
+            max_total_scalar_bytes: 64*1024, max_merge_keys: 0,
         },
         duplicate_keys: serde_saphyr::DuplicateKeyPolicy::Error,
         merge_keys: serde_saphyr::MergeKeyPolicy::Error,

@@ -47,6 +47,8 @@ Put these in the config directory (macOS: `~/Library/Application Support/KBorg`,
 - `views.yaml`: per-resource columns and default sort ([format](K9S_COMPATIBILITY.md#custom-views-columns-and-sort)).
 - `hotkeys.yaml`: keys that run commands ([format](K9S_COMPATIBILITY.md#custom-hotkeys)).
 - `aliases.yaml`: your own command names.
+- `ui.yaml`: borders, header and hint rows, table style, dashboard cards and color overrides (`kborg ui init` writes a commented example; `:ui reload` applies edits; [options](themes.md#uiyaml)).
+- `keymap.yaml`: remap any built-in key; `?` and `:keymap` show your bindings ([format](K9S_COMPATIBILITY.md#custom-keymap)).
 
 Your existing k9s `views.yaml`, `hotkeys.yaml` and `aliases.yaml` should work as-is. If one doesn't, please report it.
 

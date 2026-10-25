@@ -461,7 +461,7 @@ pub fn import_k9s(text: &str) -> Result<String> {
         budget: serde_saphyr::budget! {
             max_reader_input_bytes: Some(256*1024), max_events: 50_000, max_aliases: 0, max_anchors: 0,
             max_depth: 8, max_inclusion_depth: 0, max_documents: 1, max_nodes: 20_000,
-            max_total_scalar_bytes: 256*1024, max_total_comment_bytes: 256*1024, max_merge_keys: 0,
+            max_total_scalar_bytes: 256*1024, max_merge_keys: 0,
         },
         duplicate_keys: serde_saphyr::DuplicateKeyPolicy::Error,
         merge_keys: serde_saphyr::MergeKeyPolicy::Error,

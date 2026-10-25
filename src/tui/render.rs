@@ -49,30 +49,16 @@ pub(super) fn panel(
     focused: bool,
     fg: Color,
     bg: Color,
+    ui: &crate::ui_config::UiConfig,
 ) -> io::Result<()> {
     if rect.width < 2 || rect.height < 2 {
         return Ok(());
     }
     let width = usize::from(rect.width - 2);
-    let title = display(
-        &format!(" {} {title} ", if focused { ">" } else { " " }),
-        width,
-    );
+    let title = display(&ui.panel_title(title, focused), width);
     // Only these trusted, single-cell box glyphs bypass data's ASCII display
-    // policy. Non-UTF-8 locales keep the conservative ASCII frame.
-    let unicode = ["LC_ALL", "LC_CTYPE", "LANG"]
-        .iter()
-        .filter_map(|key| std::env::var(key).ok())
-        .find(|value| !value.is_empty())
-        .is_some_and(|value| {
-            let value = value.to_ascii_lowercase();
-            value.contains("utf-8") || value.contains("utf8")
-        });
-    let (tl, tr, bl, br, horizontal, vertical) = if unicode {
-        ("╭", "╮", "╰", "╯", "─", "│")
-    } else {
-        ("+", "+", "+", "+", "-", "|")
-    };
+    // policy. Non-UTF-8 locales keep the conservative ASCII frame by default.
+    let [tl, tr, bl, br, horizontal, vertical] = ui.borders.glyphs();
     let mut line = |y, text: String| {
         queue!(
             out,
@@ -99,14 +85,21 @@ pub(super) fn panel(
 }
 
 /// The actions that actually work for the selected resource type with the
-/// capabilities this session was started with. Disabled actions are omitted
-/// so the row never advertises a key that would only print a refusal.
-pub(super) fn table_hints(app: &App) -> Vec<(&'static str, &'static str)> {
+/// capabilities this session was started with, shown with the user's keys
+/// from keymap.yaml. Disabled or unbound actions are omitted so the row never
+/// advertises a key that would only print a refusal.
+pub(super) fn table_hints(app: &App) -> Vec<(String, &'static str)> {
     let connection = &app.options.connection;
     let kind = app.kind();
     let write = connection.writable;
     let logs = connection.logs || connection.demo;
-    let mut hints = vec![("?", "all keys")];
+    let mut hints = Vec::new();
+    let push = |hints: &mut Vec<(String, &'static str)>, action: &str, label| {
+        if let Some(key) = app.keymap.primary(action) {
+            hints.push((key, label));
+        }
+    };
+    push(&mut hints, "help", "all keys");
     let drill = match kind.as_str() {
         "pods" => Some("containers"),
         "nodes" | "namespaces" => Some("pods"),
@@ -114,46 +107,52 @@ pub(super) fn table_hints(app: &App) -> Vec<(&'static str, &'static str)> {
         _ => None,
     };
     if let Some(drill) = drill {
-        hints.push(("Enter", drill));
+        hints.push(("Enter".into(), drill));
     }
     match kind.as_str() {
         "pods" => {
             if logs {
-                hints.push(("l", "logs"));
+                push(&mut hints, "logs", "logs");
             }
             if write && connection.allow_exec {
-                hints.push(("s", "shell"));
+                push(&mut hints, "shell", "shell");
             }
             if write && connection.allow_port_forward {
-                hints.push(("F", "forward"));
+                push(&mut hints, "forward", "forward");
             }
         }
         "nodes" => {
             if write && connection.allow_node_maintenance {
-                hints.extend([("c", "cordon"), ("u", "uncordon"), ("r", "drain")]);
+                push(&mut hints, "cordon", "cordon");
+                push(&mut hints, "uncordon", "uncordon");
+                push(&mut hints, "drain", "drain");
+            }
+        }
+        "cronjobs.batch" => {
+            if write {
+                push(&mut hints, "trigger", "trigger");
+                push(&mut hints, "suspend", "suspend");
             }
         }
         kind if supports_group_logs(kind) => {
             if logs {
-                hints.push(("l", "logs"));
+                push(&mut hints, "logs", "logs");
             }
             if write && ["deployments.apps", "statefulsets.apps"].contains(&kind) {
-                hints.push(("s", "scale"));
+                push(&mut hints, "scale", "scale");
             }
             if write && crate::edit::supports_resource(kind) {
-                hints.push(("r", "restart"));
+                push(&mut hints, "restart", "restart");
             }
         }
         _ => {}
     }
-    hints.extend([
-        ("d", "describe"),
-        ("y", "yaml"),
-        ("/", "filter"),
-        (":", "command"),
-    ]);
+    push(&mut hints, "describe", "describe");
+    push(&mut hints, "yaml", "yaml");
+    push(&mut hints, "filter", "filter");
+    push(&mut hints, "command", "command");
     if write && connection.allow_yaml_edit {
-        hints.push(("e", "edit"));
+        push(&mut hints, "edit", "edit");
     }
     let deletable = matches!(
         kind.as_str(),
@@ -166,25 +165,26 @@ pub(super) fn table_hints(app: &App) -> Vec<(&'static str, &'static str)> {
             | "cronjobs.batch"
     );
     if write && deletable {
-        hints.push(("Ctrl-D", "delete"));
+        push(&mut hints, "delete", "delete");
     }
     if write && connection.allow_force_kill && kind == "pods" {
-        hints.push(("Ctrl-K", "kill"));
+        push(&mut hints, "kill", "kill");
     }
-    hints.push(("D", "dashboard"));
+    push(&mut hints, "dashboard", "dashboard");
     hints
 }
 pub(super) fn key_hints(
     out: &mut impl Write,
     y: u16,
     width: u16,
-    hints: &[(&str, &str)],
+    hints: &[(impl AsRef<str>, impl AsRef<str>)],
     colors: [Color; 3],
 ) -> io::Result<()> {
     let [key, text, bg] = colors;
     row(out, y, width, "", text, bg)?;
     let mut x = 1;
     for (shortcut, label) in hints {
+        let (shortcut, label) = (shortcut.as_ref(), label.as_ref());
         let label = format!(" {label}{}", if width < 50 { " " } else { "   " });
         // Keep complete actions together; a clipped shortcut is misleading.
         if x + shortcut.len() as u16 + label.len() as u16 > width {
@@ -367,6 +367,26 @@ pub(super) fn draw(app: &mut App) -> Result<()> {
     }
     Ok(())
 }
+/// `age: long` needs two more cells than the six-wide AGE column; NAME gives
+/// them up while it stays usable.
+fn widen_age(cols: &mut [(Column, usize)]) {
+    let name_room = cols
+        .iter()
+        .any(|(column, width)| matches!(column, Column::Name) && *width >= 12);
+    if !name_room {
+        return;
+    }
+    let mut widened = false;
+    for (column, width) in cols.iter_mut() {
+        if matches!(column, Column::Age) && *width < 8 {
+            *width += 2;
+            widened = true;
+        }
+    }
+    if widened && let Some((_, width)) = cols.iter_mut().find(|(c, _)| matches!(c, Column::Name)) {
+        *width -= 2;
+    }
+}
 pub(super) fn modal_rect(modal: &Modal, width: u16, height: u16) -> Rect {
     let available = height.saturating_sub(6);
     let compact = matches!(
@@ -495,11 +515,12 @@ pub(super) fn render_log_modal(
             )
         })
         .unwrap_or_else(|| format!("LOGS {}", view.title()));
-    panel(out, rect, &title, true, color("accent"), bg).map_err(|_| "draw failed")?;
+    panel(out, rect, &title, true, color("accent"), bg, &app.ui).map_err(|_| "draw failed")?;
     for (index, line) in view
-        .render(
+        .render_with(
             usize::from(w.saturating_sub(2)),
             usize::from(rect.height.saturating_sub(2)),
+            app.ui.local_time(),
         )
         .iter()
         .enumerate()
@@ -512,16 +533,14 @@ pub(super) fn render_log_modal(
         cell(out, 1, y + 1 + index as u16, w - 2, line, color(role), bg)
             .map_err(|_| "draw failed")?;
     }
-    row(out, h - 2, w, view.help(), color("accent"), bg).map_err(|_| "draw failed")?;
-    row(
-        out,
-        h - 1,
-        w,
-        "0 tail 1 head 2 1m 3 5m 4 15m 5 30m 6 1h | Esc back",
-        color("muted"),
-        bg,
-    )
-    .map_err(|_| "draw failed")?;
+    let (actions, ranges) = keyhelp::log_hints(app);
+    let actions = if view.is_filtering() {
+        view.help()
+    } else {
+        actions.as_str()
+    };
+    row(out, h - 2, w, actions, color("accent"), bg).map_err(|_| "draw failed")?;
+    row(out, h - 1, w, &ranges, color("muted"), bg).map_err(|_| "draw failed")?;
     out.flush().map_err(|_| "draw failed".into())
 }
 pub(super) fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
@@ -571,17 +590,33 @@ pub(super) fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<
     } else {
         Color::Reset
     };
-    row(out, 0, w, "", fg, surface).map_err(|_| "draw failed")?;
-    cell(
-        out,
-        0,
-        0,
-        8.min(w),
-        " KBORG ",
-        color("selection_text"),
-        color("selection_background"),
-    )
-    .map_err(|_| "draw failed")?;
+    // The dashboard keeps its own fixed layout; ui.yaml chrome rows apply to
+    // the resource table view.
+    let dashboard = matches!(app.modal, Modal::LiveOverview(..));
+    let chrome = if dashboard {
+        crate::ui_config::UiConfig::default().chrome()
+    } else {
+        app.ui.chrome()
+    };
+    let mode_color = if app.options.connection.writable && !app.options.connection.demo {
+        color("warning")
+    } else {
+        color("muted")
+    };
+    let mode_width = (mode.len() as u16 + 1).min(w);
+    if let Some(y) = chrome.header {
+        row(out, y, w, "", fg, surface).map_err(|_| "draw failed")?;
+        cell(
+            out,
+            0,
+            y,
+            8.min(w),
+            " KBORG ",
+            color("selection_text"),
+            color("selection_background"),
+        )
+        .map_err(|_| "draw failed")?;
+    }
     let title = match &app.modal {
         Modal::LiveOverview(..) => "Dashboard".to_owned(),
         Modal::Helm(..) | Modal::HelmForm(..) | Modal::HelmReview(..) => "Helm releases".to_owned(),
@@ -594,50 +629,91 @@ pub(super) fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<
             .map(resource_label)
             .unwrap_or_else(|| app.kind()),
     };
-    if w >= 64 {
-        cell(out, 10, 0, w.saturating_sub(16), &title, fg, surface).map_err(|_| "draw failed")?;
-        cell(out, w - 4, 0, 4, " ? ", color("accent"), surface).map_err(|_| "draw failed")?;
+    let help_width = if w >= 64 { 4 } else { 0 };
+    match (chrome.header, chrome.identity) {
+        // Folded identity: context, namespace and mode share the header bar.
+        (Some(y), None) => {
+            let mode_x = w.saturating_sub(mode_width + help_width);
+            let identity_width = mode_x.saturating_sub(9);
+            cell(
+                out,
+                9,
+                y,
+                identity_width,
+                &identity_line(
+                    &app.context,
+                    &app.namespace,
+                    &app.server,
+                    usize::from(identity_width),
+                ),
+                fg,
+                surface,
+            )
+            .map_err(|_| "draw failed")?;
+            cell(
+                out,
+                mode_x,
+                y,
+                mode_width,
+                &format!(" {mode}"),
+                mode_color,
+                surface,
+            )
+            .map_err(|_| "draw failed")?;
+        }
+        (Some(y), Some(_)) if w >= 64 => {
+            cell(out, 10, y, w.saturating_sub(16), &title, fg, surface)
+                .map_err(|_| "draw failed")?;
+        }
+        _ => {}
+    }
+    if let Some(y) = chrome.header
+        && w >= 64
+    {
+        cell(out, w - 4, y, 4, " ? ", color("accent"), surface).map_err(|_| "draw failed")?;
     }
     if let Modal::LiveOverview(dashboard) = &app.modal {
         return dashboard_ui::render(app, dashboard, w, h, out);
     }
-    row(out, 1, w, "", fg, bg).map_err(|_| "draw failed")?;
-    let mode_color = if app.options.connection.writable && !app.options.connection.demo {
-        color("warning")
-    } else {
-        color("muted")
-    };
-    let mode_width = (mode.len() as u16 + 1).min(w);
-    let identity_width = if w >= 64 {
-        w.saturating_sub(mode_width + 1)
-    } else {
-        w
-    };
-    cell(
-        out,
-        0,
-        1,
-        identity_width,
-        &identity_line(
-            &app.context,
-            &app.namespace,
-            &app.server,
-            usize::from(identity_width),
-        ),
-        fg,
-        bg,
-    )
-    .map_err(|_| "draw failed")?;
-    cell(
-        out,
-        w - mode_width,
-        if w >= 64 { 1 } else { 0 },
-        mode_width,
-        &format!(" {mode}"),
-        mode_color,
-        if w >= 64 { bg } else { surface },
-    )
-    .map_err(|_| "draw failed")?;
+    if let Some(y) = chrome.identity {
+        row(out, y, w, "", fg, bg).map_err(|_| "draw failed")?;
+        // Narrow terminals put the mode on the header bar when there is one.
+        let mode_inline = w >= 64 || chrome.header.is_none();
+        let identity_width = if mode_inline {
+            w.saturating_sub(mode_width + 1)
+        } else {
+            w
+        };
+        cell(
+            out,
+            0,
+            y,
+            identity_width,
+            &identity_line(
+                &app.context,
+                &app.namespace,
+                &app.server,
+                usize::from(identity_width),
+            ),
+            fg,
+            bg,
+        )
+        .map_err(|_| "draw failed")?;
+        cell(
+            out,
+            w - mode_width,
+            if mode_inline {
+                y
+            } else {
+                chrome.header.unwrap_or(y)
+            },
+            mode_width,
+            &format!(" {mode}"),
+            mode_color,
+            if mode_inline { bg } else { surface },
+        )
+        .map_err(|_| "draw failed")?;
+    }
     let freshness = if app.busy {
         "LOADING"
     } else if app.stale {
@@ -652,7 +728,6 @@ pub(super) fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<
         "CACHED"
     };
     let visible = app.visible();
-    row(out, 2, w, "", fg, bg).map_err(|_| "draw failed")?;
     let healthy = visible
         .iter()
         .filter(|object| health(object) == Health::Healthy)
@@ -746,16 +821,20 @@ pub(super) fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<
             "accent",
         ));
     }
-    let mut x = 0u16;
-    for (text, role) in bands {
-        let width = (text.len() as u16).min(w.saturating_sub(x));
-        if width == 0 {
-            break;
+    if let Some(y) = chrome.summary {
+        row(out, y, w, "", fg, bg).map_err(|_| "draw failed")?;
+        let mut x = 0u16;
+        for (text, role) in bands {
+            let width = (text.len() as u16).min(w.saturating_sub(x));
+            if width == 0 {
+                break;
+            }
+            cell(out, x, y, width, &text, color(role), bg).map_err(|_| "draw failed")?;
+            x += width;
         }
-        cell(out, x, 2, width, &text, color(role), bg).map_err(|_| "draw failed")?;
-        x += width;
     }
-    let layout = Layout::new(w, h);
+    let style = &app.ui.table;
+    let layout = Layout::for_ui(w, h, &app.ui);
     let height = layout.table_rows();
     {
         let rect = layout.table;
@@ -775,13 +854,14 @@ pub(super) fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<
         } else {
             title
         };
-        panel(out, rect, "", false, border, bg).map_err(|_| "draw failed")?;
+        panel(out, rect, "", false, border, bg, &app.ui).map_err(|_| "draw failed")?;
+        let title = app.ui.inline_title(&title);
         cell(
             out,
             rect.x + 1,
             rect.y,
-            (title.len() as u16 + 2).min(rect.width - 2),
-            &format!(" {title} "),
+            (title.len() as u16).min(rect.width - 2),
+            &title,
             color("accent"),
             bg,
         )
@@ -793,7 +873,7 @@ pub(super) fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<
         let column_width = usize::from(rect.width - 5);
         let view = app.current_view();
         let custom: &[crate::views::ColumnSpec] = view.map_or(&[], |view| view.columns.as_slice());
-        let cols = if let Some(view) = view {
+        let mut cols = if let Some(view) = view {
             view_columns(view, column_width, app.wide)
         } else {
             let measured = matches!(app.kind().as_str(), "pods" | "nodes") && column_width >= 70;
@@ -817,6 +897,9 @@ pub(super) fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<
             }
             cols
         };
+        if style.long_age() {
+            widen_age(&mut cols);
+        }
         let now = k8s_openapi::jiff::Timestamp::now().as_second();
         let sort_title = app.sort_column.clone().unwrap_or_else(|| {
             match app.sort {
@@ -838,7 +921,12 @@ pub(super) fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<
             rect.width - 2,
             &format!(
                 "   {}",
-                header_line(&cols, custom, Some((sort_title.as_str(), app.sort_desc)))
+                header_line(
+                    &cols,
+                    custom,
+                    Some((sort_title.as_str(), app.sort_desc)),
+                    style
+                )
             ),
             color("muted"),
             surface,
@@ -847,6 +935,12 @@ pub(super) fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<
         let start = app.selected.saturating_sub(height.saturating_sub(1));
         for (r, object) in visible.iter().skip(start).take(height).enumerate() {
             let selected = start + r == app.selected;
+            let y = rect.y + 2 + r as u16 * layout.step;
+            let row_bg = if style.zebra && (start + r) % 2 == 1 {
+                surface
+            } else {
+                bg
+            };
             let status = summary(object);
             let unhealthy = [
                 "Failed",
@@ -862,25 +956,26 @@ pub(super) fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<
             cell(
                 out,
                 rect.x + 1,
-                rect.y + 2 + r as u16,
+                y,
                 rect.width - 2,
                 &format!(
                     "{}{} {}",
-                    if start + r == app.selected { ">" } else { " " },
+                    if selected { style.selection() } else { ' ' },
                     if object["metadata"]["uid"]
                         .as_str()
                         .is_some_and(|uid| app.marks.contains(uid))
                     {
-                        "*"
+                        style.mark()
                     } else {
-                        " "
+                        ' '
                     },
                     table_line_custom(
                         &cols,
                         object,
                         now,
                         app.table_metrics.usage(object, Instant::now()),
-                        custom
+                        custom,
+                        style
                     )
                 ),
                 if selected {
@@ -891,7 +986,7 @@ pub(super) fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<
                 if selected {
                     color("selection_background")
                 } else {
-                    bg
+                    row_bg
                 },
             )
             .map_err(|_| "draw failed")?;
@@ -902,7 +997,7 @@ pub(super) fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<
                         cell(
                             out,
                             x,
-                            rect.y + 2 + r as u16,
+                            y,
                             *width as u16,
                             &status,
                             if unhealthy {
@@ -912,7 +1007,7 @@ pub(super) fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<
                             } else {
                                 color("muted")
                             },
-                            bg,
+                            row_bg,
                         )
                         .map_err(|_| "draw failed")?;
                     }
@@ -944,9 +1039,10 @@ pub(super) fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<
             .map_err(|_| "draw failed")?;
         }
     }
+    let status_y = h.saturating_sub(chrome.bottom);
     row(
         out,
-        h - 3,
+        status_y,
         w,
         &format!(
             " {}{}",
@@ -962,19 +1058,25 @@ pub(super) fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<
     )
     .map_err(|_| "draw failed")?;
     // Keep the everyday workspace quiet. The complete keyboard map lives behind ?.
-    row(out, h - 2, w, "", color("muted"), bg).map_err(|_| "draw failed")?;
-    row(out, h - 1, w, "", color("muted"), bg).map_err(|_| "draw failed")?;
+    for y in status_y + 1..h {
+        row(out, y, w, "", color("muted"), bg).map_err(|_| "draw failed")?;
+    }
     match &app.modal {
-        Modal::None => {
+        Modal::None if app.ui.hints.show => {
             key_hints(
                 out,
                 h - 1,
                 w,
                 &table_hints(app),
-                [color("accent"), color("muted"), bg],
+                [
+                    color(&app.ui.hints.key_role),
+                    color(&app.ui.hints.text_role),
+                    bg,
+                ],
             )
             .map_err(|_| "draw failed")?;
         }
+        Modal::None => {}
         Modal::Input("Command", text) => {
             let suggestions = app.suggestions(
                 app.completion
@@ -1092,7 +1194,7 @@ pub(super) fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<
                 Modal::Confirm(..) => "REVIEW MUTATION / explicit confirmation required",
                 Modal::Scale(..) => "SCALE DEPLOYMENT",
                 Modal::Resources(..) => "RESOURCE BUDGET / reviewed deployment edit",
-                Modal::Help(..) => "HELP / PgUp PgDown / Esc close",
+                Modal::Help(..) => "HELP / KEYMAP",
                 Modal::EditContainers(..) => "EDIT WORKLOAD / choose ordinary container",
                 Modal::Editor(..) => "EDIT CONTAINER / server dry-run and review required",
                 Modal::Export(_) => "EXPORT / review local file",
@@ -1116,13 +1218,14 @@ pub(super) fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<
             } else {
                 bg
             };
-            panel(out, rect, "", false, border, modal_bg).map_err(|_| "draw failed")?;
+            panel(out, rect, "", false, border, modal_bg, &app.ui).map_err(|_| "draw failed")?;
+            let title = app.ui.inline_title(title);
             cell(
                 out,
                 rect.x + 1,
                 rect.y,
-                (title.len() as u16 + 2).min(rect.width.saturating_sub(2)),
-                &format!(" {title} "),
+                (title.len() as u16).min(rect.width.saturating_sub(2)),
+                &title,
                 if matches!(modal, Modal::HelmReview(..)) || matches!(modal,Modal::HelmForm(form) if matches!(form.intent,helm_ui::Intent::DeleteCrds | helm_ui::Intent::Uninstall(_))) {
                     color("warning")
                 } else {
@@ -1184,7 +1287,7 @@ pub(super) fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<
                     let offset = (*offset).min(wrapped.lines().count().saturating_sub(1));
                     wrapped.lines().skip(offset).map(str::to_owned).collect()
                 }
-                Modal::Follow(view)=>view.render(usize::from(rect.width.saturating_sub(2)),height),
+                Modal::Follow(view)=>view.render_with(usize::from(rect.width.saturating_sub(2)),height,app.ui.local_time()),
                 Modal::Overview(object, offset) => {
                     let wrapped = wrap_text(
                         &format!("{}{}",overview_text(object, &app.context),app.table_metrics.usage(object,Instant::now()).map(|usage|format!("\n\nMEASURED USAGE\nCPU {}m | Memory {}B ({})\nTimestamp {} | Window {}\nBound UID {} | {}",crate::metrics::format_millicores(usage.cpu_nanocores),usage.memory_bytes,crate::metrics::format_memory(usage.memory_bytes),usage.timestamp,usage.window,usage.identity_uid,if usage.identity_verified{"Metrics API UID verified"}else{"Metrics API UID absent; entire sample window checked against current object creation"})).unwrap_or_default()),
@@ -1301,11 +1404,14 @@ pub(super) fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<
                 Modal::SessionConfirm(prepared, text) => {
                     confirmation_lines(prepared.summary(), text, w.saturating_sub(1))
                 }
-                Modal::Help(offset) => {
-                    let wrapped = wrap_text(TUI_HELP, usize::from(rect.width.saturating_sub(2)));
+                Modal::Help(view) => {
+                    let wrapped = wrap_text(
+                        &keyhelp::help_body(app, view),
+                        usize::from(rect.width.saturating_sub(2)),
+                    );
                     wrapped
                         .lines()
-                        .skip((*offset).min(wrapped.lines().count().saturating_sub(1)))
+                        .skip(view.offset.min(wrapped.lines().count().saturating_sub(1)))
                         .map(str::to_owned)
                         .collect()
                 }
@@ -1362,7 +1468,10 @@ pub(super) fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<
                 )
                 .map_err(|_| "draw failed")?;
             }
-            let hints = if let Modal::Confirm(prepared, text) = modal {
+            let generated = keyhelp::modal_hint(app, modal);
+            let hints = if let Some(generated) = generated.as_deref() {
+                generated
+            } else if let Modal::Confirm(prepared, text) = modal {
                 if confirmation_fits(&prepared.summary, text, w, h) {
                     "Enter execute | Esc cancel"
                 } else {
@@ -1374,8 +1483,6 @@ pub(super) fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<
                 } else {
                     "Esc cancel | Enlarge terminal to review complete session."
                 }
-            } else if matches!(modal, Modal::YamlEditor(_)) {
-                "Arrows move  Tab indent  Ctrl-S review  Ctrl-E $EDITOR  Esc cancel"
             } else if matches!(modal, Modal::WriteReview(_)) {
                 "PgUp/PgDown read all changes  Type target  Enter apply  Esc back"
             } else if matches!(modal, Modal::WriteRunning) {
@@ -1384,8 +1491,6 @@ pub(super) fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<
                 "Esc cancel | Enter run | :pods :deploy :svc :nodes | :ns NAME | :sort FIELD"
             } else if matches!(modal, Modal::LiveOverview(..)) {
                 "1..9 focus | Enter Pods | w warnings | ? keymap | Esc back"
-            } else if matches!(modal, Modal::Overview(..)) {
-                "Esc close | J redacted JSON | y YAML | PgUp/PgDown scroll"
             } else if matches!(modal, Modal::AdviceRunning) {
                 "Ctrl-C cancel | waiting for advice | no automatic execution"
             } else if matches!(modal, Modal::AdviceDocument(..) | Modal::AdviceLoading) {
@@ -1410,8 +1515,6 @@ pub(super) fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<
                 "Enter bindings and rules | / filter | j k PgUp PgDn move | Esc back"
             } else if matches!(modal, Modal::Secrets(..)) {
                 "Enter open keys | x reveal or hide one key (30s) | j k move | Esc back"
-            } else if matches!(modal, Modal::PodContainers(..)) {
-                "Enter logs | s shell | a attach | d describe | j k move | Esc back"
             } else if matches!(
                 modal,
                 Modal::Picker(..)
@@ -1422,14 +1525,8 @@ pub(super) fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<
                 "Enter choose | j k move | Esc cancel"
             } else if matches!(modal, Modal::Directory(..)) {
                 "Enter open | j k move | Esc back"
-            } else if matches!(modal, Modal::ForwardView) {
-                "F new forward | s stop selected | j k move | Esc back"
             } else if matches!(modal, Modal::Themes(..)) {
                 "Arrows preview | Enter save | N new custom theme | Esc restore"
-            } else if matches!(modal, Modal::Detail(..) | Modal::Help(..)) {
-                "PgUp PgDown scroll | : command | Esc close"
-            } else if matches!(modal, Modal::Metrics(..)) {
-                "Esc close | m refresh | M requests/limits (extra reads) | PgUp/PgDown"
             } else {
                 "Esc close | Enter select | arrows / j k | PgUp PgDown scroll"
             };
