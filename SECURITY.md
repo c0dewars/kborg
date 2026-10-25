@@ -14,6 +14,16 @@ Before production: independent sensitive-code review, dependency advisories/lice
 
 See docs/REMAINING_WORK.md and the linked current acceptance report for requirements and known limitations. Client safeguards do not constrain a hostile same-user process. The API server and organizational controls are authoritative.
 
+Error messages show cluster text only where it is the actionable part:
+admission webhook and policy denials, Pod Security, quota and field validation
+messages. That text has control and bidirectional characters removed,
+credential-like values (`token=`, `password:`, bearer tokens, `Invalid value`
+payloads, long mixed-case opaque strings) replaced with `[withheld]`, and is cut
+to 160 characters. RBAC denials are parsed into validated verb, resource and
+namespace tokens; the user name in the server message is never shown. Other
+server messages and raw transport errors are classified, not echoed, and the
+server URL is reduced to its host.
+
 Secret inspection is off by default. `--allow-secret-reveal` enables `:secrets`,
 which lists names, types, key names and sizes for one namespace and decodes a
 single key only on an explicit `x`, for 30 seconds; values are never exported,
