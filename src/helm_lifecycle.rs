@@ -859,7 +859,7 @@ fn parse_resources_with(
     if manifest.len() > 4 * 1024 * 1024 {
         return Err("rendered manifest exceeds 4 MiB".into());
     }
-    let options = serde_saphyr::options! {budget:serde_saphyr::budget!{max_events:200_000,max_aliases:0,max_anchors:0,max_depth:64,max_inclusion_depth:0,max_documents:MAX_RESOURCES,max_nodes:100_000,max_total_scalar_bytes:4*1024*1024,max_total_comment_bytes:1024*1024,max_merge_keys:0},merge_keys:serde_saphyr::MergeKeyPolicy::Error,duplicate_keys:serde_saphyr::DuplicateKeyPolicy::Error,with_snippet:false};
+    let options = serde_saphyr::options! {budget:serde_saphyr::budget!{max_events:200_000,max_aliases:0,max_anchors:0,max_depth:64,max_inclusion_depth:0,max_documents:MAX_RESOURCES,max_nodes:100_000,max_total_scalar_bytes:4*1024*1024,max_merge_keys:0},merge_keys:serde_saphyr::MergeKeyPolicy::Error,duplicate_keys:serde_saphyr::DuplicateKeyPolicy::Error,with_snippet:false};
     let docs:Vec<Value>=serde_saphyr::from_multiple_with_options(manifest,options).map_err(|_|"rendered manifest is malformed, uses YAML indirection or exceeds review limits; contents suppressed")?;
     let mut resources = BTreeMap::new();
     for mut object in docs {

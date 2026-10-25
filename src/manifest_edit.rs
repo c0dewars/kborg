@@ -195,7 +195,7 @@ fn parse(text: &str) -> Result<Value> {
     {
         return Err("YAML contains terminal controls or unsupported text".into());
     }
-    let options = serde_saphyr::options! {budget:serde_saphyr::budget!{max_events:20_000,max_aliases:0,max_anchors:0,max_depth:32,max_inclusion_depth:0,max_documents:1,max_nodes:10_000,max_total_scalar_bytes:MAX_DOCUMENT,max_total_comment_bytes:MAX_DOCUMENT,max_merge_keys:0},merge_keys:serde_saphyr::MergeKeyPolicy::Error,duplicate_keys:serde_saphyr::DuplicateKeyPolicy::Error,with_snippet:false};
+    let options = serde_saphyr::options! {budget:serde_saphyr::budget!{max_events:20_000,max_aliases:0,max_anchors:0,max_depth:32,max_inclusion_depth:0,max_documents:1,max_nodes:10_000,max_total_scalar_bytes:MAX_DOCUMENT,max_merge_keys:0},merge_keys:serde_saphyr::MergeKeyPolicy::Error,duplicate_keys:serde_saphyr::DuplicateKeyPolicy::Error,with_snippet:false};
     let documents: Vec<Value> = serde_saphyr::from_multiple_with_options(text, options).map_err(|_| "invalid or excessive YAML; aliases, duplicate keys and multiple documents are forbidden (contents suppressed)")?;
     if documents.len() != 1 {
         return Err("provide exactly one YAML resource".into());

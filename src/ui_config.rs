@@ -413,7 +413,7 @@ pub fn parse(text: &str) -> Result<UiConfig> {
         budget: serde_saphyr::budget! {
             max_reader_input_bytes: Some(MAX_BYTES), max_events: 2000, max_aliases: 0, max_anchors: 0,
             max_depth: 4, max_inclusion_depth: 0, max_documents: 1, max_nodes: 512,
-            max_total_scalar_bytes: MAX_BYTES, max_total_comment_bytes: MAX_BYTES, max_merge_keys: 0,
+            max_total_scalar_bytes: MAX_BYTES, max_merge_keys: 0,
         },
         duplicate_keys: serde_saphyr::DuplicateKeyPolicy::Error,
         merge_keys: serde_saphyr::MergeKeyPolicy::Error,
