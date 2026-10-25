@@ -1,4 +1,5 @@
 mod apply;
+mod batch;
 mod catalog;
 mod demo;
 #[path = "discovery.rs"]
@@ -16,6 +17,10 @@ use crate::{
     Result,
     policy::{Action, Approval, Policy, Target},
     safety,
+};
+pub use batch::{
+    BatchReport, BatchRequest, BatchTarget, MAX_BATCH, PreparedBatch, batch_confirmation,
+    batch_supported,
 };
 use catalog::*;
 pub use catalog::{Kind, kinds};

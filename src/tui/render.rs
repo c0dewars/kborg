@@ -94,6 +94,7 @@ pub(super) fn table_hints(app: &App) -> Vec<(String, &'static str)> {
     let write = connection.writable;
     let logs = connection.logs || connection.demo;
     let mut hints = Vec::new();
+    let marked = !app.marks.is_empty();
     let push = |hints: &mut Vec<(String, &'static str)>, action: &str, label| {
         if let Some(key) = app.keymap.primary(action) {
             hints.push((key, label));
@@ -131,7 +132,15 @@ pub(super) fn table_hints(app: &App) -> Vec<(String, &'static str)> {
         "cronjobs.batch" => {
             if write {
                 push(&mut hints, "trigger", "trigger");
-                push(&mut hints, "suspend", "suspend");
+                push(
+                    &mut hints,
+                    "suspend",
+                    if marked {
+                        "suspend all marked"
+                    } else {
+                        "suspend"
+                    },
+                );
             }
         }
         kind if supports_group_logs(kind) => {
@@ -142,7 +151,15 @@ pub(super) fn table_hints(app: &App) -> Vec<(String, &'static str)> {
                 push(&mut hints, "scale", "scale");
             }
             if write && crate::edit::supports_resource(kind) {
-                push(&mut hints, "restart", "restart");
+                push(
+                    &mut hints,
+                    "restart",
+                    if marked {
+                        "restart all marked"
+                    } else {
+                        "restart"
+                    },
+                );
             }
         }
         _ => {}
@@ -165,7 +182,18 @@ pub(super) fn table_hints(app: &App) -> Vec<(String, &'static str)> {
             | "cronjobs.batch"
     );
     if write && deletable {
-        push(&mut hints, "delete", "delete");
+        push(
+            &mut hints,
+            "delete",
+            if marked {
+                "delete all marked"
+            } else {
+                "delete"
+            },
+        );
+    }
+    if marked {
+        push(&mut hints, "marks.clear", "clear marks");
     }
     if write && connection.allow_force_kill && kind == "pods" {
         push(&mut hints, "kill", "kill");
@@ -1199,6 +1227,9 @@ pub(super) fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<
                 Modal::Editor(..) => "EDIT CONTAINER / server dry-run and review required",
                 Modal::Export(_) => "EXPORT / review local file",
                 Modal::YamlEditor(_) => "YAML EDITOR / spec fields",
+                Modal::WriteReview(review) if matches!(review.plan, WritePlan::Batch(_)) => {
+                    "REVIEW BATCH / every marked object / approval required"
+                }
                 Modal::WriteReview(_) => "REVIEW CHANGES / approval required",
                 Modal::WriteRunning => "APPLYING REVIEWED CHANGES",
                 Modal::PodContainers(..) => "CONTAINERS / Enter logs / d describe / Esc back",
@@ -1483,6 +1514,10 @@ pub(super) fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<
                 } else {
                     "Esc cancel | Enlarge terminal to review complete session."
                 }
+            } else if let Modal::WriteReview(review) = modal
+                && matches!(review.plan, WritePlan::Batch(_))
+            {
+                "PgUp/PgDown read every target  Type verb and count  Enter run batch  Esc back"
             } else if matches!(modal, Modal::WriteReview(_)) {
                 "PgUp/PgDown read all changes  Type target  Enter apply  Esc back"
             } else if matches!(modal, Modal::WriteRunning) {

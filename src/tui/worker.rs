@@ -86,6 +86,9 @@ pub(super) enum Task {
     ),
     Prepare(String, String, String, Option<String>, Action),
     Execute(Box<Prepared>, Approval),
+    /// Marked objects: prepare and dry-run every target for one review.
+    BatchPrepare(Box<crate::gateway::BatchRequest>),
+    BatchExecute(Box<crate::gateway::PreparedBatch>, String),
 }
 pub(super) enum Reply {
     Connected(String, String, String, Vec<Kind>),
@@ -127,6 +130,8 @@ pub(super) enum Reply {
     CatalogFailure(String),
     Namespaces(Vec<String>),
     Prepared(Box<Prepared>),
+    BatchPrepared(Box<crate::gateway::PreparedBatch>),
+    BatchOutcome(Result<crate::gateway::BatchReport>),
     Notice(String),
     Failure(String),
     Watching,
@@ -610,6 +615,16 @@ pub(super) fn worker() -> Worker {
                         None=>Reply::Failure("Not connected; nothing was added.".into()),
                     },
                     Task::ApplyExecute(prepared,typed)=>Reply::WriteOutcome(if let Some(g)=gateway.as_ref(){g.execute_apply(*prepared,&typed).await}else{Err("Not connected; nothing was applied.".into())}),
+                    Task::BatchPrepare(request)=>match gateway.as_ref() {
+                        Some(g)=>match tokio::time::timeout(Duration::from_secs(120),g.prepare_batch(*request)).await {
+                            Ok(Ok(batch))=>Reply::BatchPrepared(Box::new(batch)),
+                            Ok(Err(error))=>Reply::Failure(error),
+                            Err(_)=>Reply::Failure("Batch dry runs timed out; nothing was changed.".into()),
+                        },
+                        None=>Reply::Failure("Not connected; nothing was prepared.".into()),
+                    },
+                    // Each step is bounded by its own read and write budgets.
+                    Task::BatchExecute(batch,typed)=>Reply::BatchOutcome(if let Some(g)=gateway.as_mut(){g.execute_batch(*batch,&typed).await}else{Err("Not connected; no batch write started.".into())}),
                     Task::NodeExecute(prepared,typed)=>Reply::WriteOutcome(if let Some(g)=gateway.as_ref(){crate::node_maintenance::execute(g,*prepared,&typed).await.map(|report|report.summary())}else{Err("Not connected; no node operation started.".into())}),
                     Task::RunSession(reviewed, typed) => {
                         if let Some(g) = gateway.as_ref() {
@@ -815,7 +830,7 @@ pub(super) fn worker() -> Worker {
                                         Reply::Prepared(Box::new(prepared))
                                     },
                                     Task::Execute(p,a) => Reply::Notice(g.execute(*p,a).await?),
-                                    Task::YamlPrepare(..) | Task::YamlExecute(..) | Task::ApplyPrepare(..) | Task::ApplyExecute(..) | Task::NodeShellPrepare(..) | Task::NodeShellStart(..) | Task::DebugPrepare(..) | Task::DebugStart(..) | Task::Bench(..) | Task::NodeExecute(..) | Task::DashboardLogs(..) | Task::DashboardWorkloads(..) | Task::DashboardTail(..) | Task::Overview(..) | Task::Connect(_) | Task::Watch(..) | Task::Metrics(..) | Task::RunSession(..) | Task::RunForward(..) | Task::Directory(_) | Task::Manifest(_) | Task::Helm(..) | Task::HelmPrepare(..) | Task::HelmExecute(..) | Task::AdvicePrepare(..) | Task::AdviceExecute(..) => return Err("invalid worker task".into()),
+                                    Task::YamlPrepare(..) | Task::YamlExecute(..) | Task::ApplyPrepare(..) | Task::ApplyExecute(..) | Task::NodeShellPrepare(..) | Task::NodeShellStart(..) | Task::DebugPrepare(..) | Task::DebugStart(..) | Task::Bench(..) | Task::NodeExecute(..) | Task::DashboardLogs(..) | Task::DashboardWorkloads(..) | Task::DashboardTail(..) | Task::Overview(..) | Task::Connect(_) | Task::Watch(..) | Task::Metrics(..) | Task::RunSession(..) | Task::RunForward(..) | Task::Directory(_) | Task::Manifest(_) | Task::Helm(..) | Task::HelmPrepare(..) | Task::HelmExecute(..) | Task::AdvicePrepare(..) | Task::AdviceExecute(..) | Task::BatchPrepare(..) | Task::BatchExecute(..) => return Err("invalid worker task".into()),
                                 })
                             };
                             match tokio::time::timeout(Duration::from_secs(25), future).await {

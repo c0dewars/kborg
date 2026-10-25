@@ -102,6 +102,7 @@ impl App {
                             WritePlan::Debug(prepared) => {
                                 Task::DebugStart(prepared, review.view.typed)
                             }
+                            WritePlan::Batch(batch) => Task::BatchExecute(batch, review.view.typed),
                         };
                         self.send(task);
                         if !self.write_inflight {
