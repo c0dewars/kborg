@@ -1,7 +1,12 @@
 #requires -Version 7.0
 param(
     [Parameter(Mandatory)][ValidateSet('x86_64-pc-windows-msvc','aarch64-pc-windows-msvc','x86_64-unknown-linux-gnu','aarch64-unknown-linux-gnu','x86_64-apple-darwin','aarch64-apple-darwin')][string]$Target,
-    [Parameter(Mandatory)][ValidatePattern('^[a-f0-9]{40}$')][string]$SourceCommit
+    [Parameter(Mandatory)][ValidatePattern('^[a-f0-9]{40}$')][string]$SourceCommit,
+    # Optional macOS Developer ID identity (certificate SHA-1 from `security
+    # find-identity`). Signs the fresh binary with the hardened runtime before
+    # the smoke checks, so the packaged binary is exactly the signed one.
+    # Notarization is a separate step (.github/workflows/release.yml).
+    [ValidatePattern('^[A-F0-9]{40}$')][string]$CodesignIdentity
 )
 $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path $PSScriptRoot -Parent
@@ -65,6 +70,15 @@ try {
     Assert-CleanSource
     $binary = Join-Path $buildDirectory "$Target/release/$binaryName"
     if (!(Test-Path -LiteralPath $binary -PathType Leaf)) { throw 'Fresh target binary is missing' }
+    $codesigned = $false
+    if ($CodesignIdentity) {
+        if (!$IsMacOS) { throw 'CodesignIdentity is only valid on macOS' }
+        & codesign --force --options runtime --timestamp --sign $CodesignIdentity $binary
+        if ($LASTEXITCODE -ne 0) { throw 'codesign failed' }
+        & codesign --verify --strict --verbose=2 $binary
+        if ($LASTEXITCODE -ne 0) { throw 'codesign verification failed' }
+        $codesigned = $true
+    }
     $binarySha256 = (Get-FileHash -LiteralPath $binary -Algorithm SHA256).Hash.ToLowerInvariant()
     $versionText = @(& $binary --version)
     if ($LASTEXITCODE -ne 0 -or $versionText.Count -ne 1 -or $versionText[0] -cne "KBorg $($package.version)") { throw 'Binary version must exactly match Cargo package version' }
@@ -185,7 +199,7 @@ try {
     }
     $sbom = [ordered]@{bomFormat='CycloneDX';specVersion='1.6';version=1;metadata=@{timestamp=[DateTime]::UtcNow.ToString('o');component=@{type='application';name='kborg';version=$package.version;'bom-ref'=$referenceMap[$package.id]}};components=$components;dependencies=$edges}
     $sbom | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath (Join-Path $stage 'SBOM.cdx.json') -Encoding utf8NoBOM
-    $build = [ordered]@{schema=2;version=$package.version;target=$Target;sourceCommit=$SourceCommit;sourceTree=((& git rev-parse 'HEAD^{tree}' | Out-String).Trim());cleanCheckoutVerified=$true;freshNativeBuild=$true;rust=$rustDetails;buildStartedAtUtc=$buildStarted;buildFinishedAtUtc=$buildFinished;packagedAtUtc=[DateTime]::UtcNow.ToString('o');binarySha256=$binarySha256;tests=@{packagingSmoke=@('exact-version','demo-pods-json','theme-inventory','demo-metrics','four-shell-completions','default-read-only-config');nativeUnitTests='not run by this packager; consult source-specific acceptance evidence'};signed=$false;productionCertified=$false}
+    $build = [ordered]@{schema=2;version=$package.version;target=$Target;sourceCommit=$SourceCommit;sourceTree=((& git rev-parse 'HEAD^{tree}' | Out-String).Trim());cleanCheckoutVerified=$true;freshNativeBuild=$true;rust=$rustDetails;buildStartedAtUtc=$buildStarted;buildFinishedAtUtc=$buildFinished;packagedAtUtc=[DateTime]::UtcNow.ToString('o');binarySha256=$binarySha256;tests=@{packagingSmoke=@('exact-version','demo-pods-json','theme-inventory','demo-metrics','four-shell-completions','default-read-only-config');nativeUnitTests='not run by this packager; consult source-specific acceptance evidence'};signed=$codesigned;signature=$(if($codesigned){'macOS Developer ID codesign, hardened runtime; notarization and Sigstore signatures are added by the release workflow'}else{'none'});productionCertified=$false}
     $build | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $stage 'BUILD.json') -Encoding utf8NoBOM
     Assert-CleanSource
     if ($Target -like '*windows*') {
