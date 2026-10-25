@@ -127,9 +127,18 @@ fn save_lock(directory: &Path) -> Result<std::fs::File> {
         .open(&path)
         .map_err(|_| "cannot open snapshot lock")?;
     check_lock(&path)?;
-    file.try_lock()
-        .map_err(|_| "another snapshot is being saved; retry shortly")?;
-    Ok(file)
+    // A lock can outlive its holder briefly: a process spawned elsewhere in
+    // this program shares the descriptor until its exec. Retry for up to
+    // half a second before reporting a concurrent save.
+    for attempt in 0..20 {
+        if file.try_lock().is_ok() {
+            return Ok(file);
+        }
+        if attempt < 19 {
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+    }
+    Err("another snapshot is being saved; retry shortly".into())
 }
 fn save_at(
     directory: &Path,
