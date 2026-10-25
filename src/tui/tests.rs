@@ -123,6 +123,7 @@ fn harness() -> Harness {
             items_generation: 0,
             visible_cache: Default::default(),
             metrics_resources: false,
+            metrics_chart: false,
             overview: None,
             selection_ui: Default::default(),
             pending_session: None,
@@ -841,6 +842,7 @@ fn screen(app: &App, width: u16, height: u16) -> Vec<String> {
                         character,
                         '╭' | '╮' | '╰' | '╯' | '┌' | '┐' | '└' | '┘' | '─' | '│'
                     )
+                    || crate::chart::trusted_glyph(character)
             );
             assert!(
                 x < usize::from(width) && y < usize::from(height),
@@ -3551,5 +3553,163 @@ fn completed_batch_clears_marks_and_stopped_batch_keeps_unfinished_ones() -> Res
         .map_err(|_| "reply")?;
     app.receive();
     assert!(app.marks.is_empty());
+    Ok(())
+}
+
+fn chart_app(style: crate::ui_config::ChartStyle) -> Result<App> {
+    let (mut app, _replies, _commands) = harness();
+    app.ui.charts.style = style;
+    app.desired_resource = Some("pods".into());
+    app.items = vec![
+        serde_json::json!({"apiVersion":"v1","kind":"Pod","metadata":{"name":"api-7d4f9","namespace":"demo","uid":"demo-Pod-api-7d4f9"},"spec":{"containers":[{"name":"app","resources":{"requests":{"cpu":"250m","memory":"128Mi"},"limits":{"cpu":"1","memory":"512Mi"}}}]}}),
+    ];
+    app.namespace = "demo".into();
+    let start = Instant::now()
+        .checked_sub(Duration::from_secs(120))
+        .ok_or("clock")?;
+    for step in 0..9u64 {
+        let snapshot = crate::metrics::demo_step(crate::metrics::MetricsScope::Pods, "demo", step)?;
+        app.metrics_history.record(
+            &app.context.clone(),
+            &snapshot,
+            start + Duration::from_secs(step * 15),
+        );
+    }
+    app.modal = Modal::Metrics("METRICS text view".into(), 0);
+    Ok(app)
+}
+#[test]
+fn metrics_chart_mode_renders_axes_units_and_percentages() -> Result<()> {
+    let mut app = chart_app(crate::ui_config::ChartStyle::Ascii)?;
+    let text = screen(&app, 100, 32).join("\n");
+    assert!(
+        text.contains("METRICS text view") && text.contains("g chart"),
+        "{text}"
+    );
+    app.key(KeyCode::Char('g'))?;
+    assert!(app.metrics_chart && matches!(app.modal, Modal::Metrics(..)));
+    let frame = screen(&app, 100, 32);
+    let text = frame.join("\n");
+    assert!(text.contains("METRICS CHART"), "{text}");
+    assert!(
+        text.contains("CHART Pod demo/api-7d4f9 | 9 samples"),
+        "{text}"
+    );
+    // Latest step 8 is 125m x 105% = 131m; request 250m, limit 1 core.
+    assert!(
+        text.contains("CPU latest 131m | 52% of request 250m | 13% of limit 1000m"),
+        "{text}"
+    );
+    assert!(
+        text.contains("MEMORY latest 67Mi | 52% of request 128Mi"),
+        "{text}"
+    );
+    // Value axes carry units; the time axis runs to now.
+    // The request (250m) is a dashed reference line and the axis maximum.
+    assert!(
+        text.contains("250m|- - -") && text.contains("125m|"),
+        "{text}"
+    );
+    assert!(text.contains("   0|") && text.contains("128Mi|"), "{text}");
+    assert!(text.contains("-2m30s") && text.contains("now"), "{text}");
+    assert!(text.contains('#') && text.contains("+-----"), "{text}");
+    assert!(text.contains("g text view"), "{text}");
+    app.key(KeyCode::Char('g'))?;
+    assert!(!app.metrics_chart);
+    assert!(
+        screen(&app, 100, 32)
+            .join("\n")
+            .contains("METRICS text view")
+    );
+    Ok(())
+}
+#[test]
+fn metrics_chart_braille_and_blocks_use_only_trusted_glyphs() -> Result<()> {
+    for (style, range) in [
+        (
+            crate::ui_config::ChartStyle::Braille,
+            '\u{2801}'..='\u{28FF}',
+        ),
+        (
+            crate::ui_config::ChartStyle::Blocks,
+            '\u{2581}'..='\u{2588}',
+        ),
+    ] {
+        let mut app = chart_app(style)?;
+        app.metrics_chart = true;
+        let text = screen(&app, 90, 30).join("\n");
+        assert!(text.chars().any(|c| range.contains(&c)), "{text}");
+        assert!(text.contains('│') && text.contains('└'), "{text}");
+        // Data text keeps the ASCII policy even beside chart glyphs.
+        app.items[0]["metadata"]["name"] = "api-7d4f9\u{2588}".into();
+        let text = screen(&app, 90, 30).join("\n");
+        assert!(text.contains("CHART needs a selected Pod") || !text.contains("api-7d4f9\u{2588}"));
+    }
+    // Hidden axes: no unit labels, only the series.
+    let mut app = chart_app(crate::ui_config::ChartStyle::Ascii)?;
+    app.ui.charts.show_axes = false;
+    app.metrics_chart = true;
+    let text = screen(&app, 90, 30).join("\n");
+    assert!(!text.contains("250m|") && text.contains('#'), "{text}");
+    // A non-Pod/Node view explains what chart mode needs.
+    app.desired_resource = Some("deployments.apps".into());
+    let text = screen(&app, 90, 30).join("\n");
+    assert!(
+        text.contains("CHART needs a selected Pod or Node"),
+        "{text}"
+    );
+    Ok(())
+}
+#[test]
+fn dashboard_chart_panel_renders_trend_axes_for_the_focused_card() -> Result<()> {
+    let (mut app, _replies, _commands) = harness();
+    app.ui.charts.style = crate::ui_config::ChartStyle::Ascii;
+    let mut dashboard = dashboard_ui::Dashboard::new(&["demo".into()], true);
+    let mut row = crate::overview::ContextSummary::connecting("demo".into(), true);
+    row.unhealthy = Some(1);
+    let mut infra = crate::cluster_health::InfraSummary::connecting();
+    infra.nodes.cpu_percent = Some(21);
+    infra.nodes.memory_percent = Some(14);
+    row.infra = Some(infra);
+    let start = Instant::now()
+        .checked_sub(Duration::from_secs(60))
+        .ok_or("clock")?;
+    let trend = dashboard.trends.entry("demo".into()).or_default();
+    for step in 0..5u32 {
+        row.unhealthy = Some(1 + (step as usize % 3));
+        trend.sample(&row, start + Duration::from_secs(15) * step);
+    }
+    dashboard.rows = vec![row];
+    app.modal = Modal::LiveOverview(dashboard);
+    let text = screen(&app, 100, 40).join("\n");
+    assert!(text.contains("G charts"), "{text}");
+    app.key(KeyCode::Char('G'))?;
+    assert!(matches!(&app.modal, Modal::LiveOverview(d) if d.chart));
+    let text = screen(&app, 100, 40).join("\n");
+    assert!(text.contains("CHARTS demo"), "{text}");
+    assert!(text.contains("PODS NEEDING ATTENTION  latest 2"), "{text}");
+    assert!(
+        text.contains("RESTARTS DELTA per sample  latest unknown"),
+        "{text}"
+    );
+    assert!(
+        text.contains("NODE CPU % of allocatable  latest 21%"),
+        "{text}"
+    );
+    assert!(
+        text.contains("NODE MEMORY % of allocatable  latest 14%"),
+        "{text}"
+    );
+    assert!(
+        text.contains("100%|") && text.contains("-90s") && text.contains("now"),
+        "{text}"
+    );
+    assert!(
+        text.contains("  3|") && text.contains("1.5|") && text.contains("\n|2|"),
+        "{text}"
+    );
+    assert!(text.contains("G close charts"), "{text}");
+    app.key(KeyCode::Esc)?;
+    assert!(matches!(&app.modal, Modal::LiveOverview(d) if !d.chart));
     Ok(())
 }

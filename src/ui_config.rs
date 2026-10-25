@@ -219,6 +219,50 @@ impl Default for Dashboard {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ChartStyle {
+    /// Braille in UTF-8 locales, ASCII otherwise (built-in).
+    #[default]
+    Auto,
+    Braille,
+    Blocks,
+    Ascii,
+}
+impl ChartStyle {
+    pub fn resolve(self) -> crate::chart::Style {
+        match self {
+            Self::Auto if utf8_locale() => crate::chart::Style::Braille,
+            Self::Auto | Self::Ascii => crate::chart::Style::Ascii,
+            Self::Braille => crate::chart::Style::Braille,
+            Self::Blocks => crate::chart::Style::Blocks,
+        }
+    }
+}
+
+/// `:metrics` chart mode and the dashboard chart panel.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct Charts {
+    pub style: ChartStyle,
+    /// Value and time axes with unit labels.
+    pub show_axes: bool,
+    /// Palette role for CPU series.
+    pub cpu_role: String,
+    /// Palette role for memory series.
+    pub memory_role: String,
+}
+impl Default for Charts {
+    fn default() -> Self {
+        Self {
+            style: ChartStyle::Auto,
+            show_axes: true,
+            cpu_role: "accent".into(),
+            memory_role: "success".into(),
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct UiConfig {
@@ -236,6 +280,7 @@ pub struct UiConfig {
     /// Role → `#RRGGBB` overrides on top of the active theme.
     pub colors: BTreeMap<String, String>,
     pub dashboard: Dashboard,
+    pub charts: Charts,
 }
 impl Default for UiConfig {
     fn default() -> Self {
@@ -251,6 +296,7 @@ impl Default for UiConfig {
             timestamps: Timestamps::Utc,
             colors: BTreeMap::new(),
             dashboard: Dashboard::default(),
+            charts: Charts::default(),
         }
     }
 }
@@ -341,6 +387,8 @@ impl UiConfig {
         for (name, role) in [
             ("hints.key_role", &self.hints.key_role),
             ("hints.text_role", &self.hints.text_role),
+            ("charts.cpu_role", &self.charts.cpu_role),
+            ("charts.memory_role", &self.charts.memory_role),
         ] {
             if !ROLES.contains(&role.as_str()) {
                 return Err(format!(
@@ -571,6 +619,13 @@ dashboard:
   min_card_height: 9    # 5..40; below it one focused card is shown
   trend: true           # sparkline trend line on cards
   node_details: true    # busiest-Node detail lines under NODES
+
+# :metrics chart mode (g) and the dashboard chart panel (G).
+charts:
+  style: auto           # auto (braille in UTF-8 locales, ASCII otherwise) | braille | blocks | ascii
+  show_axes: true       # value axis with units and a time axis
+  cpu_role: accent      # palette role for CPU lines
+  memory_role: success  # palette role for memory lines
 "##;
 
 #[cfg(test)]
@@ -601,7 +656,7 @@ mod tests {
     #[test]
     fn full_file_parses_every_option() -> Result<()> {
         let config = parse(
-            "version: 1\ntheme: nord\nsplash: false\nborders: ascii\npanel_title: bracketed\nheader:\n  show: true\n  identity: false\n  summary: false\n  compact: true\nhints:\n  show: false\n  key_role: warning\n  text_role: text\ntable:\n  density: relaxed\n  selection_marker: \"\"\n  mark_marker: \"+\"\n  zebra: true\n  column_separator: \"|\"\n  age: long\n  sort_ascending: \"<\"\n  sort_descending: \">\"\ntimestamps: local\ncolors:\n  accent: \"#88C0D0\"\ndashboard:\n  columns: 2\n  min_card_width: 40\n  min_card_height: 12\n  trend: false\n  node_details: false\n",
+            "version: 1\ntheme: nord\nsplash: false\nborders: ascii\npanel_title: bracketed\nheader:\n  show: true\n  identity: false\n  summary: false\n  compact: true\nhints:\n  show: false\n  key_role: warning\n  text_role: text\ntable:\n  density: relaxed\n  selection_marker: \"\"\n  mark_marker: \"+\"\n  zebra: true\n  column_separator: \"|\"\n  age: long\n  sort_ascending: \"<\"\n  sort_descending: \">\"\ntimestamps: local\ncolors:\n  accent: \"#88C0D0\"\ndashboard:\n  columns: 2\n  min_card_width: 40\n  min_card_height: 12\n  trend: false\n  node_details: false\ncharts:\n  style: blocks\n  show_axes: false\n  cpu_role: warning\n  memory_role: focus\n",
         )?;
         assert_eq!(config.theme.as_deref(), Some("nord"));
         assert_eq!(config.splash, Some(false));
@@ -615,6 +670,16 @@ mod tests {
         assert_eq!(config.table.step(), 2);
         assert!(config.table.long_age() && config.local_time());
         assert_eq!(config.dashboard.columns, 2);
+        assert_eq!(config.charts.style, ChartStyle::Blocks);
+        assert_eq!(config.charts.style.resolve(), crate::chart::Style::Blocks);
+        assert!(!config.charts.show_axes);
+        assert_eq!(
+            (
+                config.charts.cpu_role.as_str(),
+                config.charts.memory_role.as_str()
+            ),
+            ("warning", "focus")
+        );
         assert_eq!(
             config.chrome(),
             Chrome {
@@ -625,6 +690,25 @@ mod tests {
                 bottom: 1
             }
         );
+        Ok(())
+    }
+
+    #[test]
+    fn chart_styles_parse_and_resolve() -> Result<()> {
+        assert_eq!(UiConfig::default().charts.style, ChartStyle::Auto);
+        assert!(UiConfig::default().charts.show_axes);
+        for (text, style) in [
+            ("braille", crate::chart::Style::Braille),
+            ("blocks", crate::chart::Style::Blocks),
+            ("ascii", crate::chart::Style::Ascii),
+        ] {
+            let config = parse(&format!("charts:\n  style: {text}\n"))?;
+            assert_eq!(config.charts.style.resolve(), style);
+        }
+        assert!(matches!(
+            ChartStyle::Auto.resolve(),
+            crate::chart::Style::Braille | crate::chart::Style::Ascii
+        ));
         Ok(())
     }
 
@@ -657,6 +741,11 @@ mod tests {
             "hints:\n  key_role: neon\n",
             "dashboard:\n  columns: 4\n",
             "dashboard:\n  min_card_height: 2\n",
+            "charts:\n  style: sixel\n",
+            "charts:\n  show_axes: maybe\n",
+            "charts:\n  cpu_role: neon\n",
+            "charts:\n  memory_role: \"\"\n",
+            "charts:\n  height: 10\n",
             "theme: Not A Theme\n",
             "version: 2\n",
             "base: &a {show: true}\nheader: *a\n",

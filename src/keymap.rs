@@ -630,6 +630,12 @@ pub const ACTIONS: &[Action] = &[
         "Open saved selections",
     ),
     act(
+        "dashboard.chart",
+        Dashboard,
+        &["G"],
+        "Charts for the focused card: attention, restarts, Node CPU and memory",
+    ),
+    act(
         "dashboard.close",
         Dashboard,
         &["q"],
@@ -720,6 +726,12 @@ pub const ACTIONS: &[Action] = &[
         Metrics,
         &["M"],
         "Compare requests/limits (extra reads)",
+    ),
+    act(
+        "metrics.chart",
+        Metrics,
+        &["g"],
+        "Chart CPU and memory over time for the selected Pod or Node",
     ),
     // YAML editor: plain keys are typed text, so only modified keys bind.
     act(

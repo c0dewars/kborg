@@ -1153,6 +1153,7 @@ impl App {
                 match code {
                     KeyCode::Char('?') => dashboard.help = !dashboard.help,
                     KeyCode::Esc if dashboard.help => dashboard.help = false,
+                    KeyCode::Esc if dashboard.chart => dashboard.chart = false,
                     KeyCode::Esc if dashboard.logs.is_some() => {
                         dashboard.logs = None;
                         self.worker.logs.cancel();
@@ -1284,6 +1285,10 @@ impl App {
                     self.metrics_resources = true;
                     self.modal = Modal::Metrics(text, offset);
                     self.request_metrics();
+                }
+                KeyCode::Char('g') => {
+                    self.metrics_chart = !self.metrics_chart;
+                    self.modal = Modal::Metrics(text, offset);
                 }
                 _ => {
                     offset = scroll_offset(&text, offset, code);

@@ -17,6 +17,7 @@ Press `D` from a resource table to open the current context and namespace. The h
 | `c` | Choose one to nine explicit context names, comma separated; Ctrl-U clears the input |
 | `s` | Name and save the dashboard's context group and namespace |
 | `B` | Open saved selections |
+| `G` | Charts for the focused card (see below); `G` or Esc closes them |
 | `?` | Show the dashboard keymap and evidence legend; watches keep running |
 | Esc | Close help, or close the dashboard and cancel its watches |
 
@@ -27,6 +28,18 @@ Expanded cards also show `NODES ready/total` (with cordoned Nodes and cluster CP
 `kborg --contexts a,b` opens the TUI directly in this dashboard for one to nine contexts. Wide terminals (150+ columns) use three columns once five or more clusters are shown.
 
 Cards also raise two alerts. `RESTARTS` counts Pods whose busiest container has restarted 5 or more times and names the top three. `EVENTS` counts Warning events from the last 15 minutes about objects other than Pods (Nodes, ReplicaSets, Deployments, PersistentVolumeClaims…), read from the dashboard namespace plus `default`, where Node events are recorded; the newest three are named.
+
+### Trend charts
+
+`G` replaces the cards with four live charts for the focused card's cluster over the trend window (one sample every 15 seconds, at most 60 samples, so 15 minutes): Pods needing attention, the restart delta per sample (increase of the summed container restart counters since the previous sample; a counter that drops because Pods were replaced counts as 0), and Node CPU and memory as a percentage of summed allocatable. Each chart has a value axis with units and a time axis ending at `now`. A sample whose evidence is unknown or denied is a gap, never zero; the first restart sample has no delta. Charts need two samples; until then the panel says it is collecting. Wide terminals (100+ columns) show a 2x2 grid, narrower ones stack the charts. The history is the same bounded, session-local trend the cards' sparklines use; nothing is persisted. Style and colors come from `ui.yaml` `charts:` ([themes.md](themes.md#uiyaml)).
+
+![Dashboard trend charts](screenshots/dashboard-charts.png)
+
+### Metrics chart mode
+
+In `:metrics` (opened from `:pods` or `:nodes`), `g` switches between the text history and a full-width chart of the selected Pod (all containers summed) or Node: CPU in millicores and memory in Ki/Mi/Gi over the session history (at most 60 samples within 10 minutes, refreshed every 5 seconds while the view is open). The headers show the latest value and, when known, its percentage of the Pod's request and limit (every container must state them) or the Node's allocatable; a dashed line marks the request or allocatable when it does not flatten the series. An error, a missing row or a sample missing one of the Pod's containers is a gap, never a partial sum or zero. Chart mode draws only what the Metrics API returned in this session.
+
+![Metrics chart, braille](screenshots/metrics-chart-braille.png)
 
 ### Remembered dashboard
 
