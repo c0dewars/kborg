@@ -148,3 +148,18 @@ jobs:
           version=$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n 1)
           test "$RELEASE_TAG" = "v$version"
           gh release create "$RELEASE_TAG" release-assets/* --verify-tag --draft --title "KBorg $version" --notes-file docs/RELEASE_NOTES.md
+  # cargo-deny: RustSec advisories, licenses, duplicate crates and sources
+  # (policy in deny.toml). Fails on any new advisory affecting Cargo.lock.
+  supply-chain:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install pinned toolchain
+        run: rustup toolchain install 1.99.0 --profile minimal
+      - name: Install pinned cargo-deny
+        run: cargo install --locked --version 0.20.2 cargo-deny
+      - name: cargo deny check
+        run: cargo deny --locked check
