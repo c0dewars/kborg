@@ -729,6 +729,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "tower",
+ "unicode-width",
 ]
 
 [[package]]

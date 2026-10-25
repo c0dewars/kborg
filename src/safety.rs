@@ -7,18 +7,37 @@ use std::path::{Path, PathBuf};
 pub const MAX_FILE: u64 = 64 * 1024;
 
 /// Plain text only. No untrusted terminal escape, C1, bidi or overwrite controls.
+/// The one kept format character is a zero-width joiner between two emoji,
+/// which only forms an emoji ZWJ sequence (a family, a profession) and cannot
+/// reorder or hide text.
 pub fn safe_text(input: &str, max_chars: usize) -> String {
-    input
-        .chars()
-        .filter(|c| {
-            !c.is_control()
-                && !matches!(*c,
+    let mut output = String::new();
+    let mut kept = 0usize;
+    let mut emoji = false;
+    let mut chars = input.chars().peekable();
+    while kept < max_chars {
+        let Some(c) = chars.next() else { break };
+        let joiner = c == '\u{200d}'
+            && emoji
+            && chars
+                .peek()
+                .is_some_and(|next| crate::text::pictographic(*next));
+        if !joiner && hidden(c) {
+            continue;
+        }
+        emoji = crate::text::pictographic(c)
+            || (emoji && matches!(c, '\u{fe0f}' | '\u{1f3fb}'..='\u{1f3ff}'));
+        output.push(c);
+        kept += 1;
+    }
+    output
+}
+fn hidden(c: char) -> bool {
+    c.is_control()
+        || matches!(c,
         '\u{00ad}' | '\u{061c}' | '\u{180e}' | '\u{200b}'..='\u{200f}' |
         '\u{2028}'..='\u{202e}' | '\u{2060}'..='\u{206f}' | '\u{feff}' |
         '\u{fff9}'..='\u{fffb}' | '\u{e0000}'..='\u{e007f}')
-        })
-        .take(max_chars)
-        .collect()
 }
 
 pub fn safe_lines(input: &str, max_chars: usize) -> String {
@@ -450,6 +469,10 @@ mod tests {
         let output = safe_text("ok\x1b]52;c;payload\x07\r\u{009b}\u{202e}x", 100);
         assert!(!output.chars().any(char::is_control));
         assert!(!output.contains('\u{202e}'));
+        let family = "\u{1f468}\u{200d}\u{1f469}\u{200d}\u{1f467}";
+        assert_eq!(safe_text(family, 100), family);
+        assert_eq!(safe_text("a\u{200d}b\u{200d}\u{1f600}", 100), "ab\u{1f600}");
+        assert_eq!(safe_text("\u{1f600}\u{200d}", 100), "\u{1f600}");
     }
     #[test]
     fn blocks_path_ids() {
