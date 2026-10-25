@@ -28,6 +28,8 @@
 - **Port-forward benchmark**: `b` in `:pf` or `:bench` — bounded HTTP GETs over the loopback forward with p50/p90/p99 latency.
 - **Busiest Nodes on dashboard cards**: up to three Nodes per cluster, NotReady and cordoned first, then the highest CPU or memory share of each Node's own allocatable.
 - **Security**: external [audit pack](SECURITY_AUDIT_PACK.md); configuration profiles now gate every capability; stricter sanitizing of invisible Unicode and object keys; OCI redirects and token realms that resolve to private addresses are refused; stale Helm credential workspaces are swept after a crash.
+- **Signed, attested releases**: a manual `Signed release` workflow builds every archive plus `.deb`/`.rpm`, writes `SHA256SUMS`, signs each asset with keyless cosign, records GitHub build provenance and opens a draft release; macOS binaries are codesigned and notarized once the Apple secrets are configured. Verify with `gh attestation verify` or `cosign verify-blob` (see [Release process](RELEASE_PROCESS.md#verify-a-release-asset)).
+- **Supply chain gates**: `deny.toml` with cargo-deny (advisories, licenses, duplicate crates, crates.io only) in CI, and a manual OpenSSF Scorecard workflow.
 
 ## Upgrade notes
 

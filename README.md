@@ -107,7 +107,17 @@ shasum -a 256 kborg-0.4.0-aarch64-apple-darwin.tar.gz
 tar -xzf kborg-0.4.0-aarch64-apple-darwin.tar.gz
 ```
 
-Packages are currently unsigned; see [Operations](docs/OPERATIONS.md) for verification, updates and rollback.
+Releases built by the signed release workflow carry a Sigstore bundle (`FILE.sigstore.json`) and GitHub build provenance for every asset. Verify before installing:
+
+```sh
+gh attestation verify kborg-0.6.0-aarch64-apple-darwin.tar.gz --repo c0dewars/kborg
+cosign verify-blob kborg-0.6.0-aarch64-apple-darwin.tar.gz \
+  --bundle kborg-0.6.0-aarch64-apple-darwin.tar.gz.sigstore.json \
+  --certificate-identity-regexp '^https://github\.com/c0dewars/kborg/\.github/workflows/release\.yml@refs/tags/v' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+```
+
+Releases up to 0.5.0-rc.3 are unsigned. See [Release process](docs/RELEASE_PROCESS.md#verify-a-release-asset) for details and [Operations](docs/OPERATIONS.md) for updates and rollback.
 
 ### Debian/Ubuntu (.deb) and Fedora/RHEL (.rpm)
 
@@ -287,7 +297,7 @@ Details: [SECURITY.md](SECURITY.md) and the [security review](docs/MAC_V1_SECURI
 | [Performance comparison](docs/PERFORMANCE_COMPARISON.md) | Memory, CPU and API traffic vs k9s and k10s |
 | [Remaining work](docs/REMAINING_WORK.md) | What's done, partial and planned |
 
-**Release 0.4.0** (Homebrew), with **0.5.0-rc.3** in testing: see the [release notes](docs/RELEASE_NOTES.md) for apply, node shell, debug containers, file and directory copy, bulk actions, image scanning, `:lint`, live charts, masked Secret YAML and full keymap and UI customization. CI builds and tests Linux, macOS and Windows (x86_64 and ARM). Packages are unsigned; signing, an external security audit and an organizational pilot are open release gates.
+**Release 0.4.0** (Homebrew), with **0.5.0-rc.3** in testing: see the [release notes](docs/RELEASE_NOTES.md) for apply, node shell, debug containers, file and directory copy, bulk actions, image scanning, `:lint`, live charts, masked Secret YAML and full keymap and UI customization. CI builds and tests Linux, macOS and Windows (x86_64 and ARM). Packages up to 0.5.0-rc.3 are unsigned; the signed, attested release workflow is in place for the next release (first run pending). An external security audit and an organizational pilot are open release gates.
 
 ## Credits
 
