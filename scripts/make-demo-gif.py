@@ -49,8 +49,9 @@ _INCOMPLETE = re.compile(rb"\x1b(?:\][^\x07]*|[P^_].*|\[[0-9;?<>= -/]*|[()])?$",
 
 
 class Session:
-    def __init__(self, binary, frames_dir):
+    def __init__(self, binary, frames_dir, extra_args=()):
         self.frames_dir = frames_dir
+        self.caption = ""
         self.frames = []  # (png path, duration ms)
         self.tmp = tempfile.TemporaryDirectory(prefix="kborg-demo-gif-")
         home = Path(self.tmp.name).resolve()
@@ -67,15 +68,15 @@ class Session:
         self.screen = Screen(WIDTH, HEIGHT)
         self.pending = b""
         self.started = time.monotonic()
-        self.proc = _spawn([str(binary)] + ARGS, env, self.slave)
+        self.proc = _spawn([str(binary)] + ARGS + list(extra_args), env, self.slave)
 
     # ------------------------------------------------------------ terminal
 
     def drain(self, seconds):
         until = time.monotonic() + seconds
         while time.monotonic() < until:
-            if time.monotonic() - self.started > 120:
-                raise RuntimeError("demo recording exceeded 120 s")
+            if time.monotonic() - self.started > 300:
+                raise RuntimeError("demo recording exceeded 300 s")
             if not select.select([self.master], [], [], 0.02)[0]:
                 continue
             try:
@@ -125,13 +126,20 @@ class Session:
     def frame(self, duration_ms):
         """Capture the current screen; identical consecutive frames are merged."""
         text = self.screen.text()
-        if self.frames and self.frames[-1][2] == text:
-            path, duration, _ = self.frames[-1]
-            self.frames[-1] = (path, duration + duration_ms, text)
+        if self.frames and self.frames[-1][2] == text and self.frames[-1][3] == self.caption:
+            path, duration, _, caption = self.frames[-1]
+            self.frames[-1] = (path, duration + duration_ms, text, caption)
             return
         path = self.frames_dir / f"frame-{len(self.frames):03d}.png"
         self.screen.png(path)
-        self.frames.append((path, duration_ms, text))
+        self.frames.append((path, duration_ms, text, self.caption))
+
+    def soft_wait(self, pattern, timeout=8):
+        """Like wait, but carry on (and say so) if the marker never appears."""
+        try:
+            self.wait(pattern, timeout)
+        except RuntimeError:
+            print(f"warning: {pattern!r} not seen; continuing", file=sys.stderr)
 
     def close(self):
         if self.proc.poll() is None:
@@ -199,11 +207,130 @@ def record(session):
         raise RuntimeError(f"kborg did not quit cleanly (status {s.proc.returncode})")
 
 
+def tour(session):
+    """A longer walk through the main features, one caption per feature."""
+    s = session
+
+    def step(caption, hold=2400):
+        s.caption = caption
+        s.drain(0.4)
+        s.frame(hold)
+
+    def command(text, marker=None, hold=2400, caption=None):
+        if caption:
+            s.caption = caption
+        s.type(text, 90)
+        s.keys(b"\r", 0.4)
+        if marker:
+            s.soft_wait(marker)
+        s.drain(0.6)
+        s.frame(hold)
+
+    s.wait(r"api-7d4f9", 30)
+    s.soft_wait(r"METRICS [0-9]+ measured", 15)
+    step("Browse every resource with k9s keys and commands", 2600)
+    s.keys(b"j", 0.25)
+    step("Live tables: health, restarts, CPU and memory", 1600)
+    s.keys(b"/", 0.3)
+    s.caption = "/ filters with regex, !inverse, -f fuzzy or -l labels"
+    s.type("worker", 90)
+    s.keys(b"\r", 0.4)
+    step(s.caption, 2000)
+    s.keys(b"\x1b", 0.4)
+    s.keys(b"\x1a", 0.4)
+    step("Ctrl-Z shows only what needs attention", 2200)
+    s.keys(b"\x1a", 0.4)
+    s.keys(b"N", 0.2)
+    s.keys(b"N", 0.4)
+    step("Sort by any column; press again to reverse", 1800)
+    s.keys(b"N", 0.3)
+    s.keys(b"d", 0.5)
+    s.soft_wait(r"OVERVIEW|DESCRIBE|Overview")
+    step("d describes, y shows YAML, always redacted", 2200)
+    s.keys(b"\x1b", 0.4)
+    s.keys(b"l", 0.4)
+    s.soft_wait(r"LOGS")
+    s.drain(1.2)
+    step("l follows logs: search, error and warning filters, time ranges", 2600)
+    s.keys(b"\x1b", 0.4)
+    command(":lint", r"LINT", 2800, ":lint finds misconfigurations, read-only")
+    s.keys(b"\x1b", 0.4)
+    command(":metrics", r"METRICS", 600, "Live charts: :metrics then g")
+    s.keys(b"g", 0.4)
+    s.drain(25.0)  # a few more samples (the demo series steps every refresh)
+    step("Live charts: CPU and memory over time, % of request and limit", 3000)
+    s.keys(b"\x1b", 0.4)
+    command(":deploy", r"deployments", 1200, "Every change is dry-run, reviewed and typed to confirm")
+    s.keys(b"s", 0.5)
+    s.type("3", 120)
+    s.keys(b"\r", 0.6)
+    s.soft_wait(r"Type |REVIEW|DEMO")
+    step("Every change is dry-run, reviewed and typed to confirm", 3200)
+    s.keys(b"\x1b", 0.4)
+    s.keys(b"\x1b", 0.4)
+    command(":secrets", r"(?i)secret", 1200, ":secrets: masked YAML, reveal one key for 30 s")
+    s.keys(b"y", 0.6)
+    s.soft_wait(r"hidden")
+    step(":secrets: masked YAML, reveal one key for 30 s", 2800)
+    s.keys(b"\x1b", 0.4)
+    s.keys(b"\x1b", 0.4)
+    command(":pods", r"api-7d4f9", 400)
+    s.keys(b"D", 0.4)
+    s.soft_wait(r"CONTEXT OVERVIEW", 10)
+    s.drain(1.0)
+    step("Dashboard for up to nine clusters", 2800)
+    s.drain(32.0)  # trend charts need samples 15 s apart
+    s.keys(b"G", 0.6)
+    step("G: trend charts for the focused cluster", 2600)
+    s.keys(b"\x1b", 0.4)
+    s.keys(b"\x1b", 0.4)
+    command(":themes", r"(?i)theme", 900, ":themes previews 20 themes live; ui.yaml styles everything")
+    for _ in range(3):
+        s.keys(b"j", 0.35)
+        s.frame(700)
+    s.keys(b"\x1b", 0.4)
+    s.keys(b"?", 0.5)
+    step("? opens help for the screen you are on", 2400)
+    s.keys(b"\x1b", 0.4)
+    command(":keymap", r"(?i)keymap|action", 2600, ":keymap: every key, remappable in keymap.yaml")
+    s.keys(b"\x1b", 0.4)
+    step("KBorg: fast, safe, yours to customize", 2600)
+    s.keys(b":", 0.2)
+    s.keys(b"q", 0.2)
+    s.keys(b"\r", 0.5)
+    deadline = time.monotonic() + 5
+    while s.proc.poll() is None and time.monotonic() < deadline:
+        s.drain(0.1)
+
+
+def captioned(image, caption):
+    """Add a caption bar under a frame."""
+    from PIL import Image, ImageDraw, ImageFont
+    if not caption:
+        return image
+    bar = 46
+    out = Image.new("RGB", (image.width, image.height + bar), (16, 15, 15))
+    out.paste(image, (0, 0))
+    draw = ImageDraw.Draw(out)
+    font = None
+    for candidate in ("/System/Library/Fonts/SFNS.ttf", "/System/Library/Fonts/Helvetica.ttc",
+                      "/System/Library/Fonts/Menlo.ttc", "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"):
+        try:
+            font = ImageFont.truetype(candidate, 24)
+            break
+        except OSError:
+            continue
+    font = font or ImageFont.load_default()
+    draw.rectangle((0, image.height, image.width, image.height + 3), fill=(255, 122, 26))
+    draw.text((18, image.height + 10), caption, fill=(236, 226, 204), font=font)
+    return out
+
+
 def assemble(frames, out, scale):
     from PIL import Image
     images, durations = [], []
-    for path, duration, _ in frames:
-        image = Image.open(path).convert("RGB")
+    for path, duration, _, caption in frames:
+        image = captioned(Image.open(path).convert("RGB"), caption)
         if scale != 1:
             image = image.resize((round(image.width * scale), round(image.height * scale)),
                                  Image.Resampling.LANCZOS)
@@ -224,6 +351,8 @@ def main():
     parser.add_argument("--out", type=Path, default=REPO / "docs/screenshots/demo.gif")
     parser.add_argument("--frames", type=Path, help="keep the PNG frames in this directory")
     parser.add_argument("--scale", type=float, default=1.0, help="resize frames before encoding")
+    parser.add_argument("--tour", action="store_true",
+                        help="record the full feature tour (with captions) instead of the short demo")
     args = parser.parse_args()
     binary = args.binary.resolve(strict=True)
     with tempfile.TemporaryDirectory(prefix="kborg-demo-frames-") as tmp:
@@ -231,9 +360,10 @@ def main():
         frames_dir.mkdir(parents=True, exist_ok=True)
         for old in frames_dir.glob("frame-*.png"):
             old.unlink()
-        session = Session(binary, frames_dir)
+        extra = ["--write", "--allow-secret-reveal"] if args.tour else []
+        session = Session(binary, frames_dir, extra)
         try:
-            record(session)
+            (tour if args.tour else record)(session)
         finally:
             session.close()
         total = assemble(session.frames, args.out, args.scale)
