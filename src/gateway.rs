@@ -33,6 +33,8 @@ use kube::{
     },
     config::{KubeConfigOptions, Kubeconfig},
 };
+#[cfg(any(test, fuzzing))]
+pub(crate) use kubeconfig::parse_config_text;
 use kubeconfig::*;
 pub use kubeconfig::{contexts, plugin_identity, review_auth_helper};
 use serde::{Deserialize, Serialize};
