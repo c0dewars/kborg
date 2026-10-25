@@ -2548,6 +2548,115 @@ fn secrets_are_opt_in_hidden_by_default_and_reveal_one_key() -> Result<()> {
     Ok(())
 }
 #[test]
+fn secret_masked_yaml_opens_on_remappable_keys_and_reveal_is_dropped_behind_help() -> Result<()> {
+    let (mut app, replies, mut commands) = harness();
+    app.keymap = crate::keymap::parse("scopes:\n  secrets:\n    yaml: Alt-y\n")?;
+    app.namespace = "demo".into();
+    app.options.connection.allow_secret_reveal = true;
+    app.command("secrets")?;
+    let _ = commands.try_recv();
+    let data = crate::secrets::demo_data();
+    replies
+        .send((
+            app.epoch,
+            Reply::Secrets(crate::secrets::SecretIndex {
+                namespace: "demo".into(),
+                items: vec![crate::secrets::entry(
+                    "api-credentials",
+                    "demo-secret-uid",
+                    None,
+                    Some(&data),
+                )],
+                truncated: false,
+            }),
+        ))
+        .map_err(|_| "reply closed")?;
+    app.receive();
+    let bottom = screen(&app, 140, 30).join("\n");
+    assert!(bottom.contains("Alt-y masked YAML"), "{bottom}");
+    // The built-in y moved to Alt-y.
+    app.key_event(KeyCode::Char('y'), KeyModifiers::NONE)?;
+    assert!(commands.try_recv().is_err());
+    app.key_event(KeyCode::Char('y'), KeyModifiers::ALT)?;
+    assert!(matches!(
+        commands.try_recv(),
+        Ok((_, Task::SecretYaml(ns, name, uid)))
+            if (ns.as_str(), name.as_str(), uid.as_str()) == ("demo", "api-credentials", "demo-secret-uid")
+    ));
+    let mut secret = crate::secrets::demo_secret("demo");
+    let doc = crate::secrets::masked(&secret);
+    crate::secrets::wipe_secret(&mut secret);
+    replies
+        .send((
+            app.epoch,
+            Reply::SecretYaml("demo-secret-uid".into(), Ok(doc)),
+        ))
+        .map_err(|_| "reply closed")?;
+    app.receive();
+    let text = screen(&app, 140, 30).join("\n");
+    assert!(
+        text.contains("SECRET YAML") && text.contains("<hidden: 19 bytes>"),
+        "{text}"
+    );
+    assert!(!text.contains("not-a-real-password"));
+    app.key_event(KeyCode::Char('x'), KeyModifiers::NONE)?;
+    assert!(
+        matches!(commands.try_recv(), Ok((_, Task::SecretValue(_, _, _, key))) if key == "blob.bin")
+    );
+    replies
+        .send((
+            app.epoch,
+            Reply::SecretValue(
+                "demo-secret-uid".into(),
+                "blob.bin".into(),
+                Ok(crate::secrets::reveal(&data["blob.bin"])),
+            ),
+        ))
+        .map_err(|_| "reply closed")?;
+    app.receive();
+    assert!(
+        screen(&app, 140, 30)
+            .join("\n")
+            .contains("hex: 00 9f 92 96")
+    );
+    // Help lists the secrets scope and the revealed value is dropped first.
+    app.key_event(KeyCode::Char('?'), KeyModifiers::NONE)?;
+    let Modal::Help(view) = &app.modal else {
+        return Err("help closed".into());
+    };
+    assert_eq!(view.scope, crate::keymap::Scope::Secrets);
+    let help = keyhelp::help_body(&app, view);
+    assert!(
+        help.contains("SECRETS (:secrets") && help.contains("Masked YAML/describe"),
+        "{help}"
+    );
+    app.key_event(KeyCode::Esc, KeyModifiers::NONE)?;
+    let text = screen(&app, 140, 30).join("\n");
+    assert!(
+        text.contains("SECRET YAML") && !text.contains("hex: 00"),
+        "{text}"
+    );
+    Ok(())
+}
+#[test]
+fn generic_secret_reads_refuse_and_point_to_the_masked_view() {
+    for alias in [
+        "secrets",
+        "secret",
+        "sec",
+        "v1/secrets",
+        "Secret",
+        "secrets.",
+    ] {
+        assert!(crate::secrets::is_secret_alias(alias), "{alias}");
+    }
+    for other in ["pods", "secretstores.external-secrets.io", "configmaps"] {
+        assert!(!crate::secrets::is_secret_alias(other), "{other}");
+    }
+    assert!(crate::secrets::GENERIC_REFUSAL.contains(":secrets"));
+    assert!(crate::secrets::GENERIC_REFUSAL.contains("masked YAML"));
+}
+#[test]
 fn dashboard_warning_opens_exact_pod_events_and_esc_clears_selection_first() {
     let (mut app, _replies, mut commands) = harness();
     app.namespace = "*".into();

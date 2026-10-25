@@ -1238,6 +1238,9 @@ pub(super) fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<
                 Modal::Directory(..) => {
                     "DIRECTORY / Enter open / YAML and JSON previews / Esc back"
                 }
+                Modal::Secrets(view) if view.mode() == crate::ui_secrets::Mode::Yaml => {
+                    "SECRET YAML / values masked / x reveals one key"
+                }
                 Modal::Secrets(..) => "SECRETS / values hidden / x reveals one key",
                 Modal::Subjects(view) => view.title,
                 Modal::ForwardView => "PORT FORWARDS / independently reviewed sessions",
@@ -1556,8 +1559,6 @@ pub(super) fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<
                 "Stored revision read | PgUp/PgDown scroll | Esc back"
             } else if matches!(modal, Modal::Subjects(..)) {
                 "Enter bindings and rules | / filter | j k PgUp PgDn move | Esc back"
-            } else if matches!(modal, Modal::Secrets(..)) {
-                "Enter open keys | x reveal or hide one key (30s) | j k move | Esc back"
             } else if matches!(
                 modal,
                 Modal::Picker(..)

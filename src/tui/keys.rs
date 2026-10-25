@@ -491,6 +491,10 @@ impl App {
                     self.modal = Modal::Secrets(view);
                     self.send(Task::SecretValue(namespace, name, uid, key));
                 }
+                crate::ui_secrets::Outcome::Yaml(namespace, name, uid) => {
+                    self.modal = Modal::Secrets(view);
+                    self.send(Task::SecretYaml(namespace, name, uid));
+                }
             },
             Modal::Directory(directory, mut index) => match code {
                 KeyCode::Esc | KeyCode::Char('q') => self.close_subview(),

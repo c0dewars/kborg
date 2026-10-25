@@ -46,6 +46,7 @@ pub(super) fn translated_scope(modal: &Modal) -> Option<Scope> {
         Modal::Metrics(..) => Scope::Metrics,
         Modal::YamlEditor(..) => Scope::Editor,
         Modal::Help(view) if !view.typing => Scope::Help,
+        Modal::Secrets(..) => Scope::Secrets,
         _ => return None,
     })
 }
@@ -420,6 +421,39 @@ pub(super) fn modal_hint(app: &App, modal: &Modal) -> Option<String> {
                 key_of(app, "containers.down"),
                 key_of(app, "containers.up")
             ));
+            parts.extend(pairs(app, &[("help", "keys")]));
+            parts.push("Esc back".into());
+            parts.join(" | ")
+        }
+        Modal::Secrets(view) => {
+            use crate::ui_secrets::Mode as SecretsMode;
+            let mode = view.mode();
+            let mut parts = if mode == SecretsMode::List {
+                vec!["Enter keys".to_owned()]
+            } else {
+                Vec::new()
+            };
+            let reveal = if mode == SecretsMode::List {
+                "keys"
+            } else {
+                "reveal/hide key (30s)"
+            };
+            parts.extend(pairs(app, &[("secrets.reveal", reveal)]));
+            if mode != SecretsMode::Yaml {
+                parts.extend(pairs(app, &[("secrets.yaml", "masked YAML")]));
+            }
+            parts.push(format!(
+                "{} {} move",
+                key_of(app, "secrets.down"),
+                key_of(app, "secrets.up")
+            ));
+            if mode == SecretsMode::Yaml {
+                parts.push(format!(
+                    "{} {} scroll",
+                    key_of(app, "secrets.page-up"),
+                    key_of(app, "secrets.page-down")
+                ));
+            }
             parts.extend(pairs(app, &[("help", "keys")]));
             parts.push("Esc back".into());
             parts.join(" | ")

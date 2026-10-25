@@ -439,7 +439,12 @@ fn demo_never_reads_missing_credentials_and_readonly_fails_closed() {
         .await
         .unwrap_or_else(|e| panic!("{e}"));
         assert!(g.list("pods", "demo").await.is_ok());
-        assert!(g.list("secrets", "demo").await.is_err());
+        for alias in ["secrets", "secret", "sec"] {
+            let error = g.list(alias, "demo").await.err().unwrap_or_default();
+            assert_eq!(error, crate::secrets::GENERIC_REFUSAL, "{alias}");
+            let error = g.get(alias, "demo", "api").await.err().unwrap_or_default();
+            assert_eq!(error, crate::secrets::GENERIC_REFUSAL, "{alias}");
+        }
         assert!(
             g.prepare("deployments", "demo", "api", Action::Restart)
                 .await

@@ -418,7 +418,11 @@ impl App {
             }
         }
     }
-    pub(super) fn push_subview(&mut self, modal: Modal) {
+    pub(super) fn push_subview(&mut self, mut modal: Modal) {
+        // A revealed Secret value never waits behind another view.
+        if let Modal::Secrets(view) = &mut modal {
+            view.hide();
+        }
         if self.subviews.len() >= 16 {
             self.subviews.remove(0);
         }

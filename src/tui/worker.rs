@@ -67,6 +67,8 @@ pub(super) enum Task {
     /// RBAC subject list: namespace scope, subject kind filter, view title.
     Subjects(String, Option<&'static str>, &'static str),
     SecretValue(String, String, String, String),
+    /// Masked YAML of one Secret: namespace, name, uid.
+    SecretYaml(String, String, String),
     Xray(String, String),
     Workloads(String),
     Can(String, String),
@@ -124,6 +126,7 @@ pub(super) enum Reply {
     Subjects(&'static str, String, crate::navigation_views::SubjectIndex),
     DashboardWorkloads(Vec<(String, Result<Vec<crate::workload_tail::WorkloadRef>>)>),
     SecretValue(String, String, Result<crate::secrets::Revealed>),
+    SecretYaml(String, Result<crate::secrets::MaskedSecret>),
     Helm(u64, Result<helm_ui::Response>),
     HelmPrepared(u64, Result<Box<crate::helm_lifecycle::Prepared>>),
     AdvicePrepared(Result<(Option<crate::advice::PreparedAdvice>, String)>),
@@ -784,6 +787,7 @@ pub(super) fn worker() -> Worker {
                                     Task::Pulses(n)=>Reply::Detail(crate::insights::pulses(g,&n).await?),
                                     Task::Secrets(n)=>Reply::Secrets(g.secret_index(&n).await?),
                                     Task::SecretValue(n,name,uid,key)=>{let value=g.secret_value(&n,&name,&uid,&key).await;Reply::SecretValue(uid,key,value)},
+                                    Task::SecretYaml(n,name,uid)=>{let doc=g.secret_yaml(&n,&name,&uid).await;Reply::SecretYaml(uid,doc)},
                                     Task::Xray(k,n)=>Reply::Detail(crate::insights::xray(g,&k,&n).await?),
                                     Task::Lint(n)=>{let (found,notes)=crate::lint::collect(g,&n).await?;Reply::Detail(crate::lint::report(&g.context,&n,&found,&notes))},
                                     Task::Workloads(n)=>Reply::Detail(crate::insights::workloads(g,&n).await?),
