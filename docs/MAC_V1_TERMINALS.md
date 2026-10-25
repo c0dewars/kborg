@@ -16,7 +16,7 @@ The usable minimum is 28 columns by 10 rows. Below that size, the application sh
 | `TERM=xterm-256color`, no `COLORTERM` | Indexed 256-color output, keyboard navigation |
 | `TERM=xterm`, no `COLORTERM` | Basic 16-color SGR; appearance depends on the host palette |
 | `TERM=screen-256color` / `tmux-256color` | Indexed output and navigation in fresh PTYs |
-| `LC_ALL=C` | ASCII-only text and `+`, `-`, `|` frame fallback |
+| `LC_ALL=C` | ASCII-only text (`?` for non-ASCII) and `+`, `-`, `|` frame fallback |
 | `NO_COLOR=1` | No nondefault foreground/background color escapes |
 | `--color=never` | No nondefault foreground/background color escapes |
 | `NO_COLOR=1 --color=always` | Explicit command-line choice enables color |
@@ -56,7 +56,9 @@ Before general release, manually complete the following in dedicated Terminal, i
 6. Exit normally and with Ctrl-C. Verify the original shell responds, typed characters echo, the cursor is visible, line wrapping works and mouse selection belongs to the terminal again.
 7. Repeat through a deliberately configured SSH connection and attached tmux client. Record both server/client terminal identities, font, size, OS and release digest. No remote SSH test was available in this session.
 
-Screen-reader behavior, alternate fonts, bidirectional/wide Unicode text and forced termination remain separate release considerations. Sensitive review text uses explicit ASCII code-point escapes for non-ASCII characters so distinct proposed values cannot collapse to the same visible question marks. This is a review safety measure, not full Unicode UI support. `SIGKILL` cannot run cleanup; after a forced kill, the user's shell may need `stty sane` or `reset`.
+Screen-reader behavior, alternate fonts and forced termination remain separate release considerations. Sensitive review text uses explicit ASCII code-point escapes for non-ASCII characters so distinct proposed values cannot collapse to the same visible glyphs or question marks.
+
+**Unicode display (0.6, U1).** In UTF-8 locales normal views draw real glyphs with grapheme-aware widths: East Asian wide characters and emoji (ZWJ sequences, flags, skin-tone modifiers) take two cells, combining marks none. Screen tests replay frames into a width-aware grid with Japanese, emoji, ZWJ family, flag, combining-accent and Hebrew/Arabic Pod names and check column alignment and truncation. A live PTY run (120x30, Docker Desktop, Roles with the same names, a Pod logging the same text) kept every column aligned; `LC_ALL=C` still showed `?`. Terminals that size emoji ZWJ sequences per code point (older wcwidth-based ones) draw a family wider than two cells and can shift that row; use `text: ascii` in `ui.yaml` there. Right-to-left text is drawn in logical order; bidi controls are removed. `SIGKILL` cannot run cleanup; after a forced kill, the user's shell may need `stty sane` or `reset`.
 
 ## Reproduce
 

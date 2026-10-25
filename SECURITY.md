@@ -12,6 +12,8 @@ Use dedicated least-privilege identities. Never use CI production credentials. D
 
 Before production: independent sensitive-code review, dependency advisories/licenses, cloud-auth trust, protected audit, OS file-permission/race hardening, denial-of-service/fuzz tests, revocation/uncertain-result drills, supported platform matrix, release authenticity and deployment-specific RBAC/admission evidence.
 
+Cluster text is sanitized before it is drawn: control, bidi and invisible format characters are removed (a zero-width joiner is kept only between two emoji). In UTF-8 terminals normal views then show real Unicode glyphs, so look-alike characters can appear in names; approval and typed-confirmation screens always show non-ASCII as reversible `\u{...}` escapes so a reviewer can tell them apart. `text: ascii` in `ui.yaml` draws `?` everywhere instead.
+
 See docs/REMAINING_WORK.md and the linked current acceptance report for requirements and known limitations. Client safeguards do not constrain a hostile same-user process. The API server and organizational controls are authoritative.
 
 Error messages show cluster text only where it is the actionable part:
