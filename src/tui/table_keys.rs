@@ -137,6 +137,26 @@ impl App {
             }
             "exec" | "shell" => self.request_shell(),
             "node.shell" => self.node_shell(),
+            "suspend" if !self.marks.is_empty() => {
+                // One direction for the whole batch, taken from the marked rows.
+                let states = self
+                    .items
+                    .iter()
+                    .filter(|cron| {
+                        cron["metadata"]["uid"]
+                            .as_str()
+                            .is_some_and(|uid| self.marks.contains(uid))
+                    })
+                    .map(|cron| cron["spec"]["suspend"] == true)
+                    .collect::<std::collections::BTreeSet<_>>();
+                match states.into_iter().collect::<Vec<_>>().as_slice() {
+                    [suspended] => self.prepare_batch(Action::Suspend(!suspended)),
+                    [] => self.prepare_batch(Action::Suspend(true)),
+                    _ => {
+                        self.status = "Marked CronJobs mix suspended and active; mark only one state to suspend or resume them together.".into()
+                    }
+                }
+            }
             "suspend" => {
                 let suspended = self
                     .visible()
@@ -184,11 +204,14 @@ impl App {
                     self.node_maintenance(crate::node_maintenance::Request::Drain { seconds: 120 });
                 }
             }
-            "restart" => {
-                if crate::edit::supports_resource(&self.kind()) {
+            "restart" if crate::edit::supports_resource(&self.kind()) => {
+                if self.marks.is_empty() {
                     self.prepare(Action::Restart);
+                } else {
+                    self.prepare_batch(Action::Restart);
                 }
             }
+            "restart" => {}
             "refresh.r" => {
                 if self.watch_blocked {
                     self.options.connection.context = Some(self.context.clone());
@@ -224,10 +247,7 @@ impl App {
                         self.marks.insert(uid);
                     }
                     self.selected = (self.selected + 1).min(self.visible().len().saturating_sub(1));
-                    self.status = format!(
-                        "{} marked | mutations still review one selected UID",
-                        self.marks.len()
-                    );
+                    self.status = self.marks_status();
                 }
             }
             "mark.range" => {
@@ -238,14 +258,11 @@ impl App {
                     .filter_map(|object| object["metadata"]["uid"].as_str().map(str::to_owned))
                     .collect::<Vec<_>>();
                 self.marks.extend(uids);
-                self.status = format!(
-                    "{} marked | actions still target one selected UID",
-                    self.marks.len()
-                );
+                self.status = self.marks_status();
             }
             "marks.clear" => {
                 self.marks.clear();
-                self.status = "Marks cleared.".into();
+                self.status = self.marks_status();
             }
             "attach" => self.request_session(true),
             "node.show" => {
@@ -278,6 +295,7 @@ impl App {
             "logs.previous" => self.request_logs(true, false),
             "forwards" => self.modal = Modal::ForwardView,
             "forward" => self.request_forward(),
+            "delete" if !self.marks.is_empty() => self.prepare_batch(Action::Delete),
             "delete" => self.prepare(Action::Delete),
             "kill" => self.kill(),
             "aliases" => self.aliases(),

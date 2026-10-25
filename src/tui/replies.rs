@@ -109,6 +109,44 @@ impl App {
                     }));
                     self.status = "Read every change, then type the confirmation to apply.".into();
                 }
+                Reply::BatchPrepared(batch) => {
+                    let view = review_ui::Review::new(
+                        batch.summary().into(),
+                        batch.confirmation(),
+                        self.epoch,
+                    );
+                    self.status = format!(
+                        "BATCH of {}: read every target, then type '{}' to execute.",
+                        batch.len(),
+                        batch.confirmation()
+                    );
+                    self.modal = Modal::WriteReview(Box::new(WriteReview {
+                        plan: WritePlan::Batch(batch),
+                        view,
+                    }));
+                }
+                Reply::BatchOutcome(result) => {
+                    self.subviews.clear();
+                    self.stale = true;
+                    self.refresh = true;
+                    let text = match result {
+                        Ok(report) => {
+                            if report.complete() {
+                                self.marks.clear();
+                            } else {
+                                for target in &report.succeeded {
+                                    self.marks.remove(&target.uid);
+                                }
+                            }
+                            report.text()
+                        }
+                        Err(error) => format!(
+                            "Batch not started\n\n{error}\n\nMarks are kept; prepare and review again."
+                        ),
+                    };
+                    self.modal = Modal::Detail(text, 0);
+                    self.status = "Batch finished. Inspect the outcome before continuing.".into();
+                }
                 Reply::WriteOutcome(result) => {
                     self.subviews.clear();
                     self.stale = true;
@@ -1305,12 +1343,8 @@ impl App {
         })
         .collect()
     }
-    pub(super) fn prepare(&mut self, action: Action) {
-        if !self.options.connection.writable {
-            self.status = "READ ONLY: enable --write before requesting a mutation.".into();
-            return;
-        }
-        let allowed = match &action {
+    fn action_allowed(&self, action: &Action) -> bool {
+        match action {
             Action::Scale(_) => {
                 ["deployments.apps", "statefulsets.apps"].contains(&self.kind().as_str())
             }
@@ -1333,13 +1367,129 @@ impl App {
             Action::Trigger | Action::Suspend(_) => self.kind() == "cronjobs.batch",
             Action::Rollback(_) => ["deployments.apps", "statefulsets.apps", "daemonsets.apps"]
                 .contains(&self.kind().as_str()),
-        };
-        if !allowed {
+        }
+    }
+    pub(super) fn prepare(&mut self, action: Action) {
+        if !self.options.connection.writable {
+            self.status = "READ ONLY: enable --write before requesting a mutation.".into();
+            return;
+        }
+        if !self.action_allowed(&action) {
             self.status = "This operation is disabled for the selected resource.".into();
             return;
         }
         if let Some((k, n, name)) = self.selected_target() {
             self.send(Task::Prepare(k, n, name, self.selected_uid(), action));
+        }
+    }
+    /// Marks exist: prepare one reviewed batch over every marked object of
+    /// the current table instead of the selected row.
+    pub(super) fn prepare_batch(&mut self, action: Action) {
+        if !self.options.connection.writable {
+            self.status = "READ ONLY: enable --write before requesting a mutation.".into();
+            return;
+        }
+        let resource = self.kind();
+        if !crate::gateway::batch_supported(&resource, &action) || !self.action_allowed(&action) {
+            self.status = format!(
+                "Bulk {} is not available here; batches cover delete, workload restart and CronJob suspend/resume.",
+                action.operation_name()
+            );
+            return;
+        }
+        // Table order first, then marked rows the filter currently hides.
+        let visible = self.visible_order();
+        let mut shown = vec![false; self.items.len()];
+        for &index in visible.iter() {
+            if let Some(flag) = shown.get_mut(index) {
+                *flag = true;
+            }
+        }
+        let hidden = (0..self.items.len()).filter(|index| shown.get(*index) != Some(&true));
+        let targets = visible
+            .iter()
+            .copied()
+            .chain(hidden)
+            .filter_map(|index| self.items.get(index))
+            .filter_map(|object| {
+                let uid = object["metadata"]["uid"].as_str()?;
+                self.marks
+                    .contains(uid)
+                    .then(|| crate::gateway::BatchTarget {
+                        namespace: namespace(object).to_owned(),
+                        name: name(object).to_owned(),
+                        uid: uid.to_owned(),
+                    })
+            })
+            .collect::<Vec<_>>();
+        let clear = self
+            .keymap
+            .primary("marks.clear")
+            .unwrap_or_else(|| "Ctrl-\\".into());
+        let missing = self.marks.len().saturating_sub(targets.len());
+        if missing > 0 {
+            self.status = format!(
+                "{missing} marked object(s) are no longer listed; {clear} clears marks. Nothing was prepared."
+            );
+            return;
+        }
+        if targets.len() > crate::gateway::MAX_BATCH {
+            self.status = format!(
+                "{} marked; one batch covers at most {}. Unmark some rows ({clear} clears all).",
+                targets.len(),
+                crate::gateway::MAX_BATCH
+            );
+            return;
+        }
+        let count = targets.len();
+        self.send(Task::BatchPrepare(Box::new(crate::gateway::BatchRequest {
+            context: self.context.clone(),
+            resource,
+            action,
+            targets,
+        })));
+        if self.busy {
+            self.status = format!("Dry-running {count} marked objects for one batch review...");
+        }
+    }
+    /// Status after marking: how many rows are marked and which keys act on
+    /// all of them, using the effective keymap.
+    pub(super) fn marks_status(&self) -> String {
+        let count = self.marks.len();
+        if count == 0 {
+            return "Marks cleared.".into();
+        }
+        let kind = self.kind();
+        let key = |action: &str| self.keymap.primary(action);
+        let mut actions = vec![];
+        if self.options.connection.writable {
+            if crate::gateway::batch_supported(&kind, &Action::Delete)
+                && let Some(key) = key("delete")
+            {
+                actions.push(format!("{key} deletes all"));
+            }
+            if crate::gateway::batch_supported(&kind, &Action::Restart)
+                && let Some(key) = key("restart")
+            {
+                actions.push(format!("{key} restarts all"));
+            }
+            if crate::gateway::batch_supported(&kind, &Action::Suspend(true))
+                && let Some(key) = key("suspend")
+            {
+                actions.push(format!("{key} suspends/resumes all"));
+            }
+        }
+        let clear = key("marks.clear").unwrap_or_else(|| "Ctrl-\\".into());
+        if actions.is_empty() {
+            format!(
+                "{count} marked | no bulk action here (--write; delete, restart, CronJob suspend) | {clear} clears"
+            )
+        } else {
+            format!(
+                "{count} marked: {} (one reviewed batch, max {}) | {clear} clears",
+                actions.join(", "),
+                crate::gateway::MAX_BATCH
+            )
         }
     }
 }

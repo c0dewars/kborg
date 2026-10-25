@@ -956,6 +956,7 @@ impl App {
         let writes = matches!(
             &task,
             Task::Execute(..)
+                | Task::BatchExecute(..)
                 | Task::YamlExecute(..)
                 | Task::ApplyExecute(..)
                 | Task::NodeShellStart(..)

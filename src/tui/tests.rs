@@ -3339,7 +3339,7 @@ fn keymap_command_lists_every_action_and_filters() -> Result<()> {
         return Err("keymap closed".into());
     };
     let filtered = keyhelp::help_body(&app, view);
-    assert!(filtered.contains("Ctrl-X") && filtered.contains("Reviewed deletion *"));
+    assert!(filtered.contains("Ctrl-X") && filtered.contains("all marked *"));
     assert!(!filtered.contains("sort.name") && !filtered.contains("Ctrl-D"));
     app.key(KeyCode::Enter)?;
     app.key(KeyCode::Esc)?;
@@ -3363,5 +3363,152 @@ fn dashboard_legend_and_hints_follow_the_keymap() -> Result<()> {
     }
     let bottom = screen(&app, 120, 36).pop().unwrap_or_default();
     assert!(bottom.contains("T tail workloads") && bottom.contains("1..9 focus"));
+    Ok(())
+}
+fn marked_deployments() -> Vec<Value> {
+    ["api", "web", "jobs"]
+        .iter()
+        .map(|name| {
+            serde_json::json!({"kind":"Deployment","metadata":{"name":name,"namespace":"test","uid":format!("uid-{name}"),"resourceVersion":"1"},"spec":{"replicas":1}})
+        })
+        .collect()
+}
+#[test]
+fn marks_turn_delete_into_one_batch_prepare_of_every_marked_object() -> Result<()> {
+    let (mut app, replies, mut commands) = harness();
+    app.options.connection.writable = true;
+    app.desired_resource = Some("deployments.apps".into());
+    app.items = marked_deployments();
+    app.key_event(KeyCode::Char(' '), KeyModifiers::NONE)?;
+    app.key_event(KeyCode::Char(' '), KeyModifiers::NONE)?;
+    assert!(
+        app.status
+            .starts_with("2 marked: Ctrl-D deletes all, r restarts all"),
+        "{}",
+        app.status
+    );
+    assert!(table_hints(&app).contains(&("Ctrl-D".to_owned(), "delete all marked")));
+    app.key_event(KeyCode::Char('d'), KeyModifiers::CONTROL)?;
+    let batch = match commands.try_recv() {
+        Ok((_, Task::BatchPrepare(request))) => request,
+        _ => return Err("marks + Ctrl-D must queue one batch prepare".into()),
+    };
+    assert_eq!(batch.context, "test");
+    assert_eq!(batch.resource, "deployments.apps");
+    assert!(batch.action == Action::Delete);
+    let names = batch
+        .targets
+        .iter()
+        .map(|target| target.name.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(names, ["api", "jobs"]);
+    assert!(commands.try_recv().is_err());
+    // The worker's reply opens the batch review with the count confirmation.
+    let rt = runtime()?;
+    let gateway = rt.block_on(Gateway::connect(Connection {
+        demo: true,
+        writable: true,
+        ..Default::default()
+    }))?;
+    let prepared = rt.block_on(gateway.prepare_batch(crate::gateway::BatchRequest {
+        context: gateway.context.clone(),
+        resource: "deployments.apps".into(),
+        action: Action::Delete,
+        targets: vec![crate::gateway::BatchTarget {
+            namespace: "demo".into(),
+            name: "api".into(),
+            uid: "demo-Deployment-api".into(),
+        }],
+    }))?;
+    replies
+        .send((app.epoch, Reply::BatchPrepared(Box::new(prepared))))
+        .map_err(|_| "reply")?;
+    app.receive();
+    match &app.modal {
+        Modal::WriteReview(review) => {
+            assert!(matches!(review.plan, WritePlan::Batch(_)));
+            assert_eq!(review.view.confirmation, "delete 1 object");
+        }
+        _ => return Err("batch review not shown".into()),
+    }
+    let frame = screen(&app, 100, 30).join("\n");
+    assert!(frame.contains("REVIEW BATCH") && frame.contains("BATCH OF 1 OBJECTS"));
+    for ch in "delete 1 object".chars() {
+        app.key_event(KeyCode::Char(ch), KeyModifiers::NONE)?;
+    }
+    match &app.modal {
+        Modal::WriteReview(review) => assert_eq!(review.view.typed, "delete 1 object"),
+        _ => return Err("batch review closed while typing".into()),
+    }
+    Ok(())
+}
+#[test]
+fn batch_marks_refuse_unlisted_objects_and_mixed_cronjob_states() -> Result<()> {
+    let (mut app, _replies, mut commands) = harness();
+    app.options.connection.writable = true;
+    app.desired_resource = Some("deployments.apps".into());
+    app.items = marked_deployments();
+    app.marks.insert("uid-api".into());
+    app.marks.insert("uid-gone".into());
+    app.key_event(KeyCode::Char('d'), KeyModifiers::CONTROL)?;
+    assert!(app.status.contains("no longer listed"), "{}", app.status);
+    assert!(commands.try_recv().is_err());
+    app.marks.clear();
+    app.desired_resource = Some("cronjobs.batch".into());
+    app.items = vec![
+        serde_json::json!({"metadata":{"name":"a","namespace":"test","uid":"uid-a"},"spec":{"suspend":true}}),
+        serde_json::json!({"metadata":{"name":"b","namespace":"test","uid":"uid-b"},"spec":{"suspend":false}}),
+    ];
+    app.marks.extend(["uid-a".to_owned(), "uid-b".to_owned()]);
+    app.key_event(KeyCode::Char('s'), KeyModifiers::NONE)?;
+    assert!(
+        app.status.contains("mix suspended and active"),
+        "{}",
+        app.status
+    );
+    assert!(commands.try_recv().is_err());
+    app.marks.remove("uid-b");
+    app.key_event(KeyCode::Char('s'), KeyModifiers::NONE)?;
+    match commands.try_recv() {
+        Ok((_, Task::BatchPrepare(request))) => {
+            assert!(request.action == Action::Suspend(false));
+        }
+        _ => return Err("suspended marks must queue a resume batch".into()),
+    }
+    Ok(())
+}
+#[test]
+fn completed_batch_clears_marks_and_stopped_batch_keeps_unfinished_ones() -> Result<()> {
+    let (mut app, replies, _commands) = harness();
+    let target = |name: &str| crate::gateway::BatchTarget {
+        namespace: "test".into(),
+        name: name.into(),
+        uid: format!("uid-{name}"),
+    };
+    app.marks
+        .extend(["uid-api", "uid-web", "uid-jobs"].map(str::to_owned));
+    let stopped = crate::gateway::BatchReport {
+        verb: "delete",
+        succeeded: vec![target("api")],
+        failed: Some((target("web"), "changed".into())),
+        not_attempted: vec![target("jobs")],
+    };
+    replies
+        .send((app.epoch, Reply::BatchOutcome(Ok(stopped))))
+        .map_err(|_| "reply")?;
+    app.receive();
+    assert_eq!(app.marks.len(), 2);
+    assert!(matches!(&app.modal, Modal::Detail(text, _) if text.starts_with("BATCH STOPPED")));
+    let complete = crate::gateway::BatchReport {
+        verb: "delete",
+        succeeded: vec![target("web"), target("jobs")],
+        failed: None,
+        not_attempted: vec![],
+    };
+    replies
+        .send((app.epoch, Reply::BatchOutcome(Ok(complete))))
+        .map_err(|_| "reply")?;
+    app.receive();
+    assert!(app.marks.is_empty());
     Ok(())
 }

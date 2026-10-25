@@ -148,6 +148,8 @@ enum WritePlan {
     Tool(Box<crate::handoff::Prepared>),
     NodeShell(Box<crate::node_shell::Prepared>),
     Debug(Box<crate::debug_container::Prepared>),
+    /// One reviewed action on every marked object of the current kind.
+    Batch(Box<crate::gateway::PreparedBatch>),
 }
 struct WriteReview {
     plan: WritePlan,

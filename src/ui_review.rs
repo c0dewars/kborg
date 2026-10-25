@@ -94,7 +94,8 @@ impl Review {
             KeyCode::Backspace => {
                 self.typed.pop();
             }
-            KeyCode::Char(ch) if ch.is_ascii_graphic() && self.typed.len() < 320 => {
+            // Space: batch confirmations read like `delete 7 objects`.
+            KeyCode::Char(ch) if (ch.is_ascii_graphic() || ch == ' ') && self.typed.len() < 320 => {
                 self.typed.push(ch)
             }
             _ => {}
