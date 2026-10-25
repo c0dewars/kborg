@@ -708,7 +708,7 @@ mod tests {
             json!({"fixture":"copy","value":"CANARY_PASSWORD","safe":"$(touch SHOULD_NOT_EXIST); literal"}),
         )?;
         let outcome = run(prepared, CONFIRMATION, true)?;
-        assert!(outcome.success, "{}", outcome.stderr);
+        assert!(outcome.success, "fixture tool exited unsuccessfully");
         assert!(!outcome.stdout.contains("CANARY_PASSWORD"));
         assert!(
             outcome
@@ -717,8 +717,7 @@ mod tests {
         );
         assert!(
             outcome.stdout.contains("credential_environment_empty=true"),
-            "{}",
-            outcome.stdout
+            "fixture saw credential environment variables"
         );
         assert!(!outcome.stdout.contains('\u{1b}'));
         let private_home = outcome
@@ -745,7 +744,7 @@ mod tests {
             Duration::from_secs(2),
             MAX_OUTPUT,
         )?;
-        assert!(outcome.success, "{}", outcome.stderr);
+        assert!(outcome.success, "fixture tool exited unsuccessfully");
         assert!(outcome.stdout.contains("descendant_pid="));
         assert!(started.elapsed() < Duration::from_secs(3));
         Ok(())
@@ -765,7 +764,7 @@ mod tests {
             Format::Json,
         )?;
         let outcome = run(prepared, CONFIRMATION, true)?;
-        assert!(outcome.success, "{}", outcome.stderr);
+        assert!(outcome.success, "fixture tool exited unsuccessfully");
         assert_eq!(outcome.stdout.trim_end(), argument);
         Ok(())
     }
