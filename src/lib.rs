@@ -12,6 +12,20 @@ pub mod workload_tail;
 
 pub type Result<T> = std::result::Result<T, String>;
 
+#[cfg(test)]
+pub(crate) mod test_paths {
+    /// Turns a Unix-style absolute fixture path into one that `Path::is_absolute`
+    /// accepts on the host platform: unchanged on Unix, drive-qualified on Windows.
+    pub(crate) fn abs(unix: &str) -> String {
+        assert!(unix.starts_with('/'), "fixture path must start with '/'");
+        if cfg!(windows) {
+            format!("C:{}", unix.replace('/', "\\"))
+        } else {
+            unix.to_owned()
+        }
+    }
+}
+
 pub mod audit;
 pub mod cluster_health;
 pub mod completions;

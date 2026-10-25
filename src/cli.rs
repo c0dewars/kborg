@@ -1728,6 +1728,7 @@ fn theme_command(opts: &Options) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_paths::abs;
     #[test]
     fn all_namespaces_spellings_select_every_namespace() -> Result<()> {
         for args in [["-n", "all"], ["--namespace", "all"], ["-A", "pods"]] {
@@ -1756,6 +1757,8 @@ mod tests {
     }
     #[test]
     fn explicit_signature_and_advice_policies_have_strict_scope() -> Result<()> {
+        let policy = abs("/tmp/p.json");
+        let words = |s: String| s.split_whitespace().map(str::to_owned).collect::<Vec<_>>();
         assert!(
             parse(
                 "--helm-sigstore-policy relative.json ui"
@@ -1765,24 +1768,8 @@ mod tests {
             )
             .is_err()
         );
-        assert!(
-            parse(
-                "--helm-sigstore-policy /tmp/p.json list pods"
-                    .split_whitespace()
-                    .map(str::to_owned)
-                    .collect()
-            )
-            .is_err()
-        );
-        assert!(
-            parse(
-                "--copilot-policy /tmp/p.json list pods"
-                    .split_whitespace()
-                    .map(str::to_owned)
-                    .collect()
-            )
-            .is_err()
-        );
+        assert!(parse(words(format!("--helm-sigstore-policy {policy} list pods"))).is_err());
+        assert!(parse(words(format!("--copilot-policy {policy} list pods"))).is_err());
         assert!(
             parse(
                 "--json helm crds-migrate web /tmp/chart.tgz"
@@ -1792,25 +1779,22 @@ mod tests {
             )
             .is_err()
         );
-        let options = parse(
-            "--copilot-policy /tmp/p.json copilot diagnose pods web"
-                .split_whitespace()
-                .map(str::to_owned)
-                .collect(),
-        )?;
-        assert_eq!(options.copilot_policy, Some("/tmp/p.json".into()));
-        let options = parse(
-            "--helm-sigstore-policy /tmp/p.json helm crds-migrate web /tmp/chart.tgz"
-                .split_whitespace()
-                .map(str::to_owned)
-                .collect(),
-        )?;
-        assert_eq!(options.helm_sigstore_policy, Some("/tmp/p.json".into()));
+        let options = parse(words(format!(
+            "--copilot-policy {policy} copilot diagnose pods web"
+        )))?;
+        assert_eq!(options.copilot_policy, Some(policy.clone().into()));
+        let options = parse(words(format!(
+            "--helm-sigstore-policy {policy} helm crds-migrate web /tmp/chart.tgz"
+        )))?;
+        assert_eq!(options.helm_sigstore_policy, Some(policy.into()));
         assert!(HelmCommand::parse("helm", &options.command[1..])?.is_mutation());
         Ok(())
     }
     #[test]
     fn oci_and_helm_extension_flags_validate_before_connecting() -> Result<()> {
+        let ca = abs("/tmp/registry-ca.pem");
+        let auth = abs("/tmp/registry-auth.json");
+        let keyring = abs("/tmp/public.gpg");
         let pinned = format!(
             "oci://registry.example:5443/team/chart@sha256:{}",
             "a".repeat(64)
@@ -1827,9 +1811,9 @@ mod tests {
                 "--allow-helm-hooks".into(),
                 "--allow-helm-crds".into(),
                 "--helm-registry-ca".into(),
-                "/tmp/registry-ca.pem".into(),
+                ca.clone(),
                 "--helm-registry-auth".into(),
-                "/tmp/registry-auth.json".into(),
+                auth.clone(),
                 "helm".into(),
                 mode.into(),
                 "my.api".into(),
@@ -1837,14 +1821,8 @@ mod tests {
             ])?;
             assert!(options.connection.allow_helm_hooks);
             assert!(options.connection.allow_helm_crds);
-            assert_eq!(
-                options.helm_registry_ca,
-                Some("/tmp/registry-ca.pem".into())
-            );
-            assert_eq!(
-                options.helm_registry_auth,
-                Some("/tmp/registry-auth.json".into())
-            );
+            assert_eq!(options.helm_registry_ca, Some(ca.clone().into()));
+            assert_eq!(options.helm_registry_auth, Some(auth.clone().into()));
             let command = HelmCommand::parse("helm", &options.command[1..])?;
             assert!(command.is_mutation());
             match command {
@@ -1861,26 +1839,33 @@ mod tests {
             }
         }
         for command in [
-            "helm install web oci://registry.example/team/chart",
-            "--allow-helm-hooks list pods",
-            "--allow-helm-crds history web",
-            "--helm-registry-ca relative.pem helm list",
-            "--helm-registry-auth relative.json helm list",
-            "--helm-keyring relative.gpg helm list",
-            "--helm-keyring /tmp/public.gpg list pods",
-            "--json helm test web",
-            "--json helm crds-delete web /tmp/chart.tgz",
-            "--helm-values /tmp/values.yaml helm crds-upgrade web /tmp/chart.tgz",
-            "--helm-values /tmp/values.yaml helm crds web /tmp/chart.tgz",
-            "--json helm crds web /tmp/chart.tgz",
+            "helm install web oci://registry.example/team/chart".to_owned(),
+            "--allow-helm-hooks list pods".to_owned(),
+            "--allow-helm-crds history web".to_owned(),
+            "--helm-registry-ca relative.pem helm list".to_owned(),
+            "--helm-registry-auth relative.json helm list".to_owned(),
+            "--helm-keyring relative.gpg helm list".to_owned(),
+            format!("--helm-keyring {keyring} list pods"),
+            "--json helm test web".to_owned(),
+            "--json helm crds-delete web /tmp/chart.tgz".to_owned(),
+            "--helm-values /tmp/values.yaml helm crds-upgrade web /tmp/chart.tgz".to_owned(),
+            "--helm-values /tmp/values.yaml helm crds web /tmp/chart.tgz".to_owned(),
+            "--json helm crds web /tmp/chart.tgz".to_owned(),
         ] {
             assert!(
                 parse(command.split_whitespace().map(str::to_owned).collect()).is_err(),
                 "{command}"
             );
         }
-        let tagged = parse("--helm-keyring /tmp/public.gpg helm install web oci://registry.example/team/chart:1.2.3".split_whitespace().map(str::to_owned).collect())?;
-        assert_eq!(tagged.helm_keyring, Some("/tmp/public.gpg".into()));
+        let tagged = parse(
+            format!(
+                "--helm-keyring {keyring} helm install web oci://registry.example/team/chart:1.2.3"
+            )
+            .split_whitespace()
+            .map(str::to_owned)
+            .collect(),
+        )?;
+        assert_eq!(tagged.helm_keyring, Some(keyring.into()));
         assert_eq!(
             HelmCommand::parse("helm", &["test".into(), "web".into()])?,
             HelmCommand::Test("web".into())
@@ -1893,9 +1878,10 @@ mod tests {
     #[test]
     fn lifecycle_and_workload_scopes_validate_before_connecting() -> Result<()> {
         let words = |s: &str| parse(s.split_whitespace().map(str::to_owned).collect());
-        let options = words(
-            "--write --allow-helm --allow-helm-write --helm-tool /tmp/helm --helm-values /tmp/values.yaml helm install web ./web.tgz",
-        )?;
+        let tool = abs("/tmp/helm");
+        let options = words(&format!(
+            "--write --allow-helm --allow-helm-write --helm-tool {tool} --helm-values /tmp/values.yaml helm install web ./web.tgz",
+        ))?;
         assert!(options.connection.allow_helm_write);
         assert_eq!(options.helm_timeout_seconds, 300);
         assert_eq!(options.helm_values, Some(PathBuf::from("/tmp/values.yaml")));
@@ -1923,7 +1909,6 @@ mod tests {
             "--helm-timeout 0 helm list",
             "--helm-timeout 901 helm list",
             "--helm-values values.yaml helm rollback web 1",
-            "--helm-tool /tmp/helm list pods",
             "logs deploy/web app",
             "logs web --selector app=web",
             "logs nodes/node",
@@ -1932,6 +1917,7 @@ mod tests {
         ] {
             assert!(words(command).is_err(), "{command}");
         }
+        assert!(words(&format!("--helm-tool {tool} list pods")).is_err());
         assert!(words("logs --selector app=web --all-containers --follow").is_ok());
         assert!(!words("helm list")?.connection.allow_helm_write);
         assert!(words("logs pod/api.worker --all-containers").is_ok());

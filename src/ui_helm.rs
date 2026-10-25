@@ -195,6 +195,13 @@ pub struct WriteDraft {
     pub expected: Option<Release>,
     pub rollback_target: Option<Release>,
 }
+/// Prefilled simulated chart for demo forms. It must be absolute on the host
+/// platform because `Form::draft` rejects non-absolute local chart paths.
+const DEMO_CHART: &str = if cfg!(windows) {
+    r"C:\demo\chart.tgz"
+} else {
+    "/demo/chart.tgz"
+};
 impl Form {
     pub fn new(
         intent: Intent,
@@ -204,7 +211,7 @@ impl Form {
         demo: bool,
     ) -> Self {
         let chart = if demo {
-            "/demo/chart.tgz".into()
+            DEMO_CHART.into()
         } else {
             String::new()
         };

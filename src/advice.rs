@@ -902,8 +902,9 @@ pub async fn run(
 #[cfg(test)]
 mod policy_tests {
     use super::*;
+    use crate::test_paths::abs;
     fn policy() -> Value {
-        json!({"schema_version":1,"executable":"/native/copilot","expected_sha256":"a".repeat(64),"host":"github.com","gh_cli":{"executable":"/native/gh","expected_sha256":"b".repeat(64),"account":"c0dewars","config_dir":"/explicit/gh"},"model":"auto","seconds":60})
+        json!({"schema_version":1,"executable":abs("/native/copilot"),"expected_sha256":"a".repeat(64),"host":"github.com","gh_cli":{"executable":abs("/native/gh"),"expected_sha256":"b".repeat(64),"account":"c0dewars","config_dir":abs("/explicit/gh")},"model":"auto","seconds":60})
     }
     #[test]
     fn strict_policy_selects_one_host_account_source_and_rejects_duplicates() -> Result<()> {
@@ -913,7 +914,7 @@ mod policy_tests {
         options.validate()?;
         for changed in [
             json!({"host":"evil.example"}),
-            json!({"credential_file":"/second/source"}),
+            json!({"credential_file":abs("/second/source")}),
             json!({"seconds":121}),
         ] {
             let mut value = valid.clone();
@@ -957,7 +958,7 @@ mod policy_tests {
                 .is_err()
         );
         let server = options(
-            json!({"host":"git.corp.example","deployment":"server","allow_private_network":true,"tls_ca_file":"/etc/kborg/corp-ca.pem"}),
+            json!({"host":"git.corp.example","deployment":"server","allow_private_network":true,"tls_ca_file":abs("/etc/kborg/corp-ca.pem")}),
         )?;
         server.validate()?;
         assert_eq!(
@@ -967,7 +968,7 @@ mod policy_tests {
         for invalid in [
             json!({"allow_private_network":true}),
             json!({"host":"acme.ghe.com","allow_private_network":true}),
-            json!({"tls_ca_file":"/etc/kborg/corp-ca.pem"}),
+            json!({"tls_ca_file":abs("/etc/kborg/corp-ca.pem")}),
             json!({"host":"git.corp.example","deployment":"server","tls_ca_file":"relative.pem"}),
         ] {
             assert!(options(invalid)?.validate().is_err());
