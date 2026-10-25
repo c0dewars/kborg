@@ -402,10 +402,20 @@ pub(super) fn modal_hint(app: &App, modal: &Modal) -> Option<String> {
                 app,
                 &[
                     ("metrics.refresh", "refresh"),
+                    (
+                        "metrics.chart",
+                        if app.metrics_chart {
+                            "text view"
+                        } else {
+                            "chart"
+                        },
+                    ),
                     ("metrics.resources", "requests/limits (extra reads)"),
                 ],
             ));
-            parts.push(scroll);
+            if !app.metrics_chart {
+                parts.push(scroll);
+            }
             parts.join(" | ")
         }
         Modal::ForwardView => {
@@ -792,6 +802,14 @@ pub(super) fn dashboard_hint(app: &App, dashboard: &dashboard_ui::Dashboard) -> 
             &[
                 ("dashboard.warning", "warnings"),
                 ("dashboard.tail", "tail workloads"),
+                (
+                    "dashboard.chart",
+                    if dashboard.chart {
+                        "close charts"
+                    } else {
+                        "charts"
+                    },
+                ),
                 ("help", "keymap"),
             ],
         ));

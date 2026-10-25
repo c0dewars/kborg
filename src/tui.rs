@@ -22,6 +22,8 @@ use crossterm::{
 use serde_json::Value;
 #[path = "ui_advice.rs"]
 mod advice_ui;
+#[path = "ui_charts.rs"]
+mod charts_ui;
 mod commands;
 #[path = "ui_dashboard.rs"]
 mod dashboard_ui;
@@ -319,6 +321,8 @@ struct App {
     /// Memoized filter-and-sort order of `items`, keyed by a fingerprint.
     visible_cache: std::cell::RefCell<Option<(u64, std::rc::Rc<Vec<usize>>)>>,
     metrics_resources: bool,
+    /// `g` in :metrics: chart the selected Pod or Node instead of the text view.
+    metrics_chart: bool,
     overview: Option<crate::overview::OverviewFeed>,
     selection_ui: selections_ui::State,
     pending_session: Option<(Box<crate::ops::ReviewedOperation>, String)>,
@@ -908,6 +912,7 @@ pub fn run(options: Options) -> Result<()> {
         items_generation: 0,
         visible_cache: Default::default(),
         metrics_resources: false,
+        metrics_chart: false,
         overview: None,
         selection_ui: Default::default(),
         pending_session: None,
