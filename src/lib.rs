@@ -34,6 +34,7 @@ pub mod config;
 pub mod dashboard_health;
 pub mod dashboard_memory;
 pub mod edit;
+pub mod errors;
 pub mod exports;
 pub mod external_editor;
 pub mod inspect;

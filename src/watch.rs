@@ -122,6 +122,31 @@ pub struct WatchFeed {
     failures: u32,
     retry_jitter: u64,
     terminal: Option<String>,
+    context: String,
+    server: String,
+}
+/// Adds the next step to a watch status line that does not name one yet.
+fn with_next(message: &str) -> String {
+    if message.contains(crate::errors::NEXT) {
+        return message.into();
+    }
+    let next = if message.contains("limit exceeded") {
+        "narrow the namespace (:ns) or add a label selector; large lists fall back to bounded polling"
+    } else if message.contains("Secret watch") {
+        "use :secrets for reviewed Secret access"
+    } else if message.contains("unsupported") {
+        "refresh on demand (Ctrl-R)"
+    } else if message.contains("unavailable") {
+        "run :discover to refresh the resource catalog, then reopen the view"
+    } else if message.contains("reconnecting")
+        || message.contains("rebuilding")
+        || message.contains("initial list")
+    {
+        "none needed, KBorg retries with backoff; if it persists, check VPN/proxy and refresh (Ctrl-R)"
+    } else {
+        "refresh (Ctrl-R) to reconnect; if it repeats, check proxies between you and the API server"
+    };
+    format!("{message}. {} {next}.", crate::errors::NEXT)
 }
 impl WatchFeed {
     #[cfg(test)]
@@ -136,7 +161,7 @@ impl WatchFeed {
     ) -> Self {
         let now = Instant::now();
         let terminal = (kind.kind == "Secret" || kind.plural == "secrets")
-            .then(|| "Secret watches are forbidden".to_owned());
+            .then(|| with_next("Secret watches are forbidden"));
         Self {
             api,
             kind,
@@ -152,7 +177,44 @@ impl WatchFeed {
             failures: 0,
             retry_jitter: FEED_SERIAL.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % 251,
             terminal,
+            context: String::new(),
+            server: String::new(),
         }
+    }
+    /// Names the context and server in failure text (host only, no path).
+    pub(crate) fn with_origin(mut self, context: &str, server: &str) -> Self {
+        self.context = context.into();
+        self.server = server.into();
+        self
+    }
+    /// Watch error bodies are withheld by the transport, so a denial is
+    /// described from the request itself: verb, resource and namespace.
+    fn explained(&self, error: &kube::Error, verb: &str, outcome: &str) -> String {
+        let namespace = self.api.namespace().unwrap_or_default();
+        let scope = crate::errors::Scope {
+            context: &self.context,
+            server: &self.server,
+            namespace,
+        };
+        let mut cause = crate::errors::classify(error);
+        if cause == crate::errors::Cause::Forbidden(None) {
+            cause = crate::errors::Cause::Forbidden(Some(crate::errors::Rbac {
+                verb: verb.into(),
+                resource: safety::safe_text(&self.kind.plural, 63),
+                group: safety::safe_text(&self.kind.group, 253),
+                subresource: String::new(),
+                namespace: safety::valid_id(namespace).then(|| namespace.to_owned()),
+            }));
+        }
+        let code = match error {
+            kube::Error::Api(status) => Some(status.code),
+            _ => None,
+        };
+        let what = format!(
+            "Watch of {} ({outcome})",
+            safety::safe_text(&self.kind.plural, 63)
+        );
+        crate::errors::render_code(&what, code, &cause, &scope)
     }
     fn snapshot(&self, stale: bool, message: &str) -> WatchSnapshot {
         WatchSnapshot {
@@ -168,6 +230,7 @@ impl WatchFeed {
         }
     }
     fn fail_closed(&mut self, message: &str) -> WatchSnapshot {
+        let message = &with_next(message);
         self.cache = Cache::default();
         self.rv.clear();
         self.stream = None;
@@ -175,6 +238,7 @@ impl WatchFeed {
         self.snapshot(true, message)
     }
     fn retry(&mut self, message: &str, relist: bool) -> WatchSnapshot {
+        let message = &with_next(message);
         self.stream = None;
         if relist {
             self.cache = Cache::default();
@@ -187,10 +251,7 @@ impl WatchFeed {
         self.snapshot(true, message)
     }
     fn api_failure(&mut self, error: kube::Error) -> WatchSnapshot {
-        match error {
-            kube::Error::Api(status) if status.code == 401 || status.code == 403 => {
-                self.fail_closed("watch authorization denied; cache cleared")
-            }
+        match &error {
             kube::Error::Api(status) if status.code == 405 || status.code == 501 => {
                 self.fail_closed("watch unsupported; use polling")
             }
@@ -201,14 +262,18 @@ impl WatchFeed {
                 self.retry("watch expired; rebuilding cache", true)
             }
             kube::Error::Api(status) if (400..500).contains(&status.code) && status.code != 429 => {
-                self.fail_closed("watch request rejected; cache cleared")
+                let text = self.explained(&error, "watch", "cache cleared");
+                self.fail_closed(&text)
             }
             kube::Error::SerdeError(_) => self.fail_closed("invalid watch response; cache cleared"),
             kube::Error::ReadEvents(_) => self.retry(
                 "watch response interrupted or exceeded body limit; rebuilding cache",
                 true,
             ),
-            _ => self.retry("watch disconnected; reconnecting with backoff", false),
+            _ => {
+                let text = self.explained(&error, "watch", "reconnecting with backoff");
+                self.retry(&text, false)
+            }
         }
     }
     fn validate_scope(&self, object: &DynamicObject) -> Result<(), &'static str> {
@@ -243,7 +308,7 @@ impl WatchFeed {
                 .map_err(|_| "watch initial list budget exceeded".to_string())?
                 .map_err(|e| match e {
                     kube::Error::Api(s) if s.code == 401 || s.code == 403 => {
-                        "watch authorization denied".to_owned()
+                        self.explained(&kube::Error::Api(s), "list", "initial list stopped")
                     }
                     kube::Error::Api(s) if s.code == 404 => {
                         "watch resource unavailable; refresh resource catalog".to_owned()
@@ -530,6 +595,35 @@ mod tests {
     }
 
     #[test]
+    fn rbac_denials_name_verb_resource_namespace_and_next_step() {
+        runtime().block_on(async {
+            let denied = json!({"apiVersion":"v1","kind":"Status","status":"Failure","reason":"Forbidden","code":403,
+                "message":"pods is forbidden: User \"CANARY@example.com\" cannot watch resource \"pods\" in API group \"\" in the namespace \"default\""}).to_string();
+            let (feed, _) = feed(vec![(200, list("1")), (403, denied)]);
+            let mut feed = feed.with_origin("dev", "https://api.example.test:6443");
+            feed.next().await;
+            let snapshot = feed.next().await;
+            assert!(snapshot.terminal && snapshot.objects.is_empty());
+            for needle in ["Watch of pods (cache cleared) failed (HTTP 403)", "authorization denied", "watch on pods in namespace default", "Next:", "`kubectl auth can-i watch pods -n default`", "switch from context dev"] {
+                assert!(snapshot.message.contains(needle), "{needle}: {}", snapshot.message);
+            }
+            assert!(!snapshot.message.contains("CANARY"));
+        });
+    }
+    #[test]
+    fn transient_and_integrity_watch_messages_carry_a_next_step() {
+        for message in [
+            "watch connection timed out; reconnecting",
+            "watch cache limit exceeded; narrow namespace scope",
+            "watch response has unexpected kind",
+            "Secret watches are forbidden",
+            "watch resource unavailable; refresh resource catalog",
+        ] {
+            assert!(with_next(message).contains("Next:"), "{message}");
+        }
+        assert_eq!(with_next("x. Next: y."), "x. Next: y.");
+    }
+    #[test]
     fn http_watch_denials_clear_cached_objects_even_with_empty_or_malformed_bodies() {
         runtime().block_on(async {
             for code in [401,403] {
@@ -745,7 +839,7 @@ mod tests {
                 assert!(stopped.objects.is_empty());
                 assert!(stopped.resource_version.is_empty());
                 if code == 404 { assert!(stopped.message.contains("unavailable")); }
-                else { assert_eq!(stopped.message,"watch unsupported; use polling"); }
+                else { assert!(stopped.message.starts_with("watch unsupported; use polling. Next:")); }
                 assert!(feed.next().await.terminal);
                 assert_eq!(requests.lock().unwrap_or_else(|e| panic!("{e}")).len(), 3);
             }

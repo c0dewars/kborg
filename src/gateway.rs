@@ -25,7 +25,6 @@ pub use batch::{
 use catalog::*;
 pub use catalog::{Kind, kinds};
 use demo::*;
-use errors::*;
 use k8s_openapi::api::core::v1::Pod;
 use kube::{
     Api, Client, Config,
@@ -126,7 +125,7 @@ impl Gateway {
                 options.namespace
             };
             if namespace != "*" && !safety::valid_id(&namespace) {
-                return Err("invalid namespace".into());
+                return Err("Invalid namespace: it must be a DNS label (lowercase letters, digits, -). Next: pass a valid --namespace or pick one with :ns".into());
             }
             return Ok(Self {
                 client: None,
@@ -165,20 +164,20 @@ impl Gateway {
             .context
             .clone()
             .or_else(|| raw.current_context.clone())
-            .ok_or("select a context with --context")?;
+            .ok_or("No context selected: kubeconfig has no current-context. Next: pass --context NAME or run `kubectl config use-context NAME`")?;
         let context = raw
             .contexts
             .iter()
             .find(|c| c.name == name)
             .and_then(|c| c.context.as_ref())
-            .ok_or("context not found")?
+            .ok_or("Context not found in kubeconfig. Next: list contexts with `kubectl config get-contexts` and pass --context NAME")?
             .clone();
         let cluster = raw
             .clusters
             .iter()
             .find(|c| c.name == context.cluster)
             .and_then(|c| c.cluster.as_ref())
-            .ok_or("cluster not found")?
+            .ok_or("The context's cluster entry is missing from kubeconfig. Next: fix the cluster name in that context or re-add the cluster (for example with your cloud CLI)")?
             .clone();
         let user = context
             .user
@@ -187,24 +186,24 @@ impl Gateway {
             .and_then(|u| u.auth_info.as_ref())
             .cloned();
         if cluster.insecure_skip_tls_verify == Some(true) {
-            return Err("insecure TLS is forbidden".into());
+            return Err("kubeconfig sets insecure-skip-tls-verify, which KBorg forbids. Next: remove it and set certificate-authority or certificate-authority-data for this cluster".into());
         }
         if cluster.proxy_url.is_some() {
             return Err(
-                "proxy configurations need a reviewed adapter; unsupported in this iteration"
+                "kubeconfig proxy-url is not supported yet (proxies need a reviewed adapter). Next: remove proxy-url for this cluster and connect directly or through a VPN"
                     .into(),
             );
         }
         if let Some(u) = &user {
             if u.auth_provider.is_some() {
-                return Err("legacy authentication providers remain disabled; use a reviewed ExecCredential helper or short-lived token/certificate kubeconfig".into());
+                return Err("Legacy authentication providers are disabled. Next: use a reviewed ExecCredential helper (`kborg auth-helper review`) or a short-lived token/certificate kubeconfig".into());
             }
             if u.impersonate.is_some()
                 || u.impersonate_groups.is_some()
                 || u.impersonate_uid.is_some()
                 || u.impersonate_user_extra.is_some()
             {
-                return Err("impersonation is disabled".into());
+                return Err("Impersonation in kubeconfig is disabled. Next: remove the as/as-groups settings from this user or pick another context".into());
             }
             for path in [&u.client_certificate, &u.client_key, &u.token_file]
                 .into_iter()
@@ -220,25 +219,25 @@ impl Gateway {
             && let Some(exec) = &user.exec
         {
             if !options.allow_auth_helper {
-                return Err("authentication helper is unreviewed/disabled; review it with auth-helper review and enable --allow-auth-helper --auth-helper-policy FILE explicitly".into());
+                return Err("Authentication helper is unreviewed/disabled. Next: review it with `kborg auth-helper review`, then pass --allow-auth-helper --auth-helper-policy FILE".into());
             }
             validate_helper_user(user)?;
             let policy = options
                 .auth_helper_policy
                 .clone()
-                .ok_or("--allow-auth-helper requires --auth-helper-policy FILE")?;
-            let user_name = context.user.as_deref().ok_or("helper user missing")?;
+                .ok_or("--allow-auth-helper needs a reviewed policy. Next: add --auth-helper-policy FILE (written by `kborg auth-helper review`)")?;
+            let user_name = context.user.as_deref().ok_or("The context's user entry is missing from kubeconfig. Next: fix the user name in that context or re-add the user")?;
             let binding = crate::auth::Binding::new(&name, user_name, &cluster, exec)?;
             let credentials =
                 tokio::task::spawn_blocking(move || crate::auth::acquire(&policy, &binding))
                     .await
-                    .map_err(|_| "auth helper worker failed; credentials suppressed")??;
+                    .map_err(|_| "Authentication helper worker failed; credentials suppressed. Next: retry; if it repeats, run the helper's own login and review it again")??;
             let (auth, gate) = credentials.into_auth()?;
             let selected_user = raw
                 .auth_infos
                 .iter_mut()
                 .find(|user| user.name == user_name)
-                .ok_or("helper user missing")?;
+                .ok_or("The context's user entry is missing from kubeconfig. Next: fix the user name in that context or re-add the user")?;
             // Kube's automatic ExecCredential refresh is never configured. The
             // supervised result is the only credential source for this client.
             selected_user.auth_info = Some(auth);
@@ -254,7 +253,7 @@ impl Gateway {
             },
         )
         .await
-        .map_err(|_| "cannot load cluster credentials/CA (details suppressed)")?;
+        .map_err(|_| "Cannot load cluster credentials or CA from kubeconfig (details suppressed). Next: check that the certificate-authority, client-certificate and token files for this context exist and are readable")?;
         if config.cluster_url.scheme_str() != Some("https")
             || config.cluster_url.authority().is_none()
             || config
@@ -263,7 +262,7 @@ impl Gateway {
                 .is_some_and(|a| a.as_str().contains('@'))
             || config.cluster_url.query().is_some()
         {
-            return Err("cluster URL must be HTTPS without userinfo or query credentials".into());
+            return Err("The cluster server URL must be HTTPS without userinfo or query credentials. Next: set server to https://HOST:PORT in kubeconfig".into());
         }
         config.accept_invalid_certs = false;
         config.disable_compression = true;
@@ -289,14 +288,14 @@ impl Gateway {
             options.namespace
         };
         let builder = kube::client::ClientBuilder::try_from(config)
-            .map_err(|_| "cannot initialize verified TLS client")?;
+            .map_err(|_| "Cannot initialize the verified TLS client. Next: check that the CA and client certificate data in kubeconfig are valid PEM")?;
         let client = builder
             .with_layer(&crate::transport::BodyBudgetLayer::default())
             .with_layer(&auth_gate)
             .build();
         let serial = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .map_err(|_| "system clock error")?
+            .map_err(|_| "System clock error. Next: fix the system clock and restart KBorg")?
             .as_nanos();
         Ok(Self {
             client: Some(client),
@@ -335,12 +334,12 @@ impl Gateway {
     }
     pub(crate) fn helm_reader(&self, namespace: &str) -> Result<crate::helm::Reader> {
         if !self.allow_helm {
-            return Err("Helm release storage access requires --allow-helm".into());
+            return Err("Helm release storage access requires --allow-helm. Next: restart with --allow-helm".into());
         }
         crate::helm::Reader::new(
             self.client
                 .clone()
-                .ok_or("offline Helm data uses the demo reader")?,
+                .ok_or("Offline Helm data uses the demo reader. Next: open :helm in demo mode or connect to a cluster")?,
             namespace,
         )
     }
@@ -351,26 +350,26 @@ impl Gateway {
         Ok((
             self.client
                 .clone()
-                .ok_or("Helm lifecycle needs a real selected cluster")?,
+                .ok_or("Helm lifecycle needs a real selected cluster. Next: connect with --context NAME")?,
             self.lifecycle_connection
                 .clone()
-                .ok_or("Helm lifecycle has no static validated connection; reconnect explicitly")?,
+                .ok_or("Helm lifecycle has no static validated connection. Next: reconnect with --context NAME --write --allow-helm --allow-helm-write")?,
             self.session.clone(),
         ))
     }
     pub(crate) fn helm_lifecycle_session(&self) -> Result<&str> {
         if !self.policy.writable || !self.allow_helm_write || !self.allow_helm {
-            return Err("Helm lifecycle requires --write --allow-helm --allow-helm-write".into());
+            return Err("Helm lifecycle requires --write --allow-helm --allow-helm-write. Next: restart with those flags".into());
         }
         Ok(&self.session)
     }
     pub(crate) fn helm_extension_access(&self, hooks: bool, crds: bool) -> Result<()> {
         self.helm_lifecycle_session()?;
         if hooks && !self.allow_helm_hooks {
-            return Err("Helm hooks require explicit --allow-helm-hooks".into());
+            return Err("Helm hooks require explicit --allow-helm-hooks. Next: restart with --allow-helm-hooks".into());
         }
         if crds && !self.allow_helm_crds {
-            return Err("Helm CRD actions require explicit --allow-helm-crds".into());
+            return Err("Helm CRD actions require explicit --allow-helm-crds. Next: restart with --allow-helm-crds".into());
         }
         Ok(())
     }

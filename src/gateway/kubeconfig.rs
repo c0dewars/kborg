@@ -13,7 +13,7 @@ pub(super) fn config_paths(options: &Connection) -> Result<Vec<PathBuf>> {
             .collect();
         if paths.len() > MAX_KUBECONFIG_FILES {
             return Err(format!(
-                "KUBECONFIG lists more than {MAX_KUBECONFIG_FILES} files; pass --kubeconfig with one file"
+                "KUBECONFIG lists more than {MAX_KUBECONFIG_FILES} files. Next: pass --kubeconfig with one file"
             ));
         }
         if !paths.is_empty() {
@@ -22,7 +22,7 @@ pub(super) fn config_paths(options: &Connection) -> Result<Vec<PathBuf>> {
     }
     let home = std::env::var_os("USERPROFILE")
         .or_else(|| std::env::var_os("HOME"))
-        .ok_or("home directory unavailable")?;
+        .ok_or("Home directory unavailable, so ~/.kube/config cannot be found. Next: set HOME or pass --kubeconfig FILE")?;
     Ok(vec![PathBuf::from(home).join(".kube/config")])
 }
 const MAX_KUBECONFIG_FILES: usize = 16;
@@ -39,7 +39,7 @@ pub(super) fn merge_config_files(paths: Vec<PathBuf>) -> Result<Kubeconfig> {
         if !path.exists() {
             if single {
                 return Err(format!(
-                    "No kubeconfig found at {}. Try `kborg demo` to explore without a cluster, or point --kubeconfig / $KUBECONFIG at your cluster config.",
+                    "No kubeconfig found at {}. Next: try `kborg demo` to explore without a cluster, or point --kubeconfig / $KUBECONFIG at your cluster config.",
                     safety::safe_text(&path.to_string_lossy(), 512)
                 ));
             }
@@ -50,18 +50,21 @@ pub(super) fn merge_config_files(paths: Vec<PathBuf>) -> Result<Kubeconfig> {
             None => next,
             Some(base) => base
                 .merge(next)
-                .map_err(|_| "kubeconfig files disagree on kind or apiVersion")?,
+                .map_err(|_| "Kubeconfig files disagree on kind or apiVersion. Next: fix the file that is not apiVersion v1, or pass --kubeconfig with one file")?,
         });
     }
-    merged.ok_or_else(|| "none of the KUBECONFIG files exist".into())
+    merged.ok_or_else(|| {
+        "None of the KUBECONFIG files exist. Next: fix $KUBECONFIG or pass --kubeconfig FILE".into()
+    })
 }
 /// One kubeconfig file, validated on its own; relative file references are
 /// resolved against that file's directory before any merge.
 pub(super) fn read_config_file(path: &std::path::Path) -> Result<Kubeconfig> {
     let bytes = safety::read_small(path, 1024 * 1024)?;
-    let text = std::str::from_utf8(&bytes).map_err(|_| "kubeconfig must be UTF-8")?;
+    let text = std::str::from_utf8(&bytes)
+        .map_err(|_| "Kubeconfig must be UTF-8. Next: save the file as UTF-8")?;
     let mut raw = Kubeconfig::from_yaml(text)
-        .map_err(|_| "invalid kubeconfig YAML (details suppressed to protect credentials)")?;
+        .map_err(|_| "Invalid kubeconfig YAML (details suppressed to protect credentials). Next: check it with `kubectl config view`")?;
     for names in [
         raw.contexts
             .iter()
@@ -74,15 +77,17 @@ pub(super) fn read_config_file(path: &std::path::Path) -> Result<Kubeconfig> {
         for name in names {
             if name.is_empty() || name.len() > 253 || safety::safe_text(name, 253) != name {
                 return Err(
-                    "kubeconfig names must be bounded text without terminal controls".into(),
+                    "Kubeconfig names must be bounded text without terminal controls. Next: rename the context, cluster or user (253 characters at most, no control characters)".into(),
                 );
             }
             if !unique.insert(name) {
-                return Err("duplicate kubeconfig names are ambiguous and forbidden".into());
+                return Err("Duplicate kubeconfig names are ambiguous and forbidden. Next: rename the duplicate context, cluster or user entry".into());
             }
         }
     }
-    let parent = path.parent().ok_or("invalid kubeconfig path")?;
+    let parent = path
+        .parent()
+        .ok_or("Invalid kubeconfig path. Next: pass --kubeconfig with a file path")?;
     for cluster in &mut raw.clusters {
         if let Some(c) = &mut cluster.cluster
             && let Some(p) = &mut c.certificate_authority
@@ -134,41 +139,41 @@ pub fn review_auth_helper(
     explicit_env: &[(String, String)],
 ) -> Result<crate::auth::PreparedPolicy> {
     if options.demo {
-        return Err("offline demo has no authentication helper".into());
+        return Err("The offline demo has no authentication helper. Next: select a real context with --context".into());
     }
     let raw = read_config(options)?;
     let name = options
         .context
         .as_ref()
         .or(raw.current_context.as_ref())
-        .ok_or("select an auth helper context explicitly")?;
+        .ok_or("No auth helper context selected. Next: pass --context NAME")?;
     let context = raw
         .contexts
         .iter()
         .find(|context| &context.name == name)
         .and_then(|context| context.context.as_ref())
-        .ok_or("context not found")?;
+        .ok_or("Context not found in kubeconfig. Next: list contexts with `kubectl config get-contexts` and pass --context NAME")?;
     let cluster = raw
         .clusters
         .iter()
         .find(|cluster| cluster.name == context.cluster)
         .and_then(|cluster| cluster.cluster.as_ref())
-        .ok_or("cluster not found")?;
+        .ok_or("The context's cluster entry is missing from kubeconfig. Next: fix the cluster name in that context or re-add the cluster (for example with your cloud CLI)")?;
     let user_name = context
         .user
         .as_deref()
-        .ok_or("context authentication user missing")?;
+        .ok_or("The context has no user. Next: set a user for this context in kubeconfig")?;
     let user = raw
         .auth_infos
         .iter()
         .find(|user| user.name == user_name)
         .and_then(|user| user.auth_info.as_ref())
-        .ok_or("authentication user missing")?;
+        .ok_or("The context's user entry is missing from kubeconfig. Next: fix the user name in that context or re-add the user")?;
     validate_helper_user(user)?;
     let exec = user
         .exec
         .as_ref()
-        .ok_or("selected kubeconfig user has no ExecCredential helper")?;
+        .ok_or("The selected kubeconfig user has no ExecCredential helper. Next: pick a context whose user has an exec helper; token or certificate users need no review")?;
     crate::auth::prepare(
         crate::auth::Binding::new(name, user_name, cluster, exec)?,
         executable,
@@ -192,7 +197,7 @@ pub(super) fn validate_helper_user(user: &kube::config::AuthInfo) -> Result<()> 
         || user.impersonate_user_extra.is_some()
         || !user.other.is_empty()
     {
-        return Err("ExecCredential helpers cannot be mixed with other authentication, legacy providers or impersonation".into());
+        return Err("ExecCredential helpers cannot be mixed with other authentication, legacy providers or impersonation. Next: remove the other credentials from this kubeconfig user, or use a separate user entry".into());
     }
     Ok(())
 }

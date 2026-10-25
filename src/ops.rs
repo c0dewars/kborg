@@ -748,22 +748,11 @@ pub async fn run_forward(
     result
 }
 fn connection_error(error: kube::Error) -> String {
-    match error {
-        kube::Error::Api(status) => format!(
-            "remote connection failed (HTTP {}); outcome may be unknown",
-            status.code
-        ),
-        kube::Error::UpgradeConnection(kube::client::UpgradeConnectionError::ProtocolSwitch(
-            status,
-        )) => format!(
-            "websocket upgrade refused (HTTP {}); outcome may be unknown",
-            status.as_u16()
-        ),
-        kube::Error::UpgradeConnection(_) => {
-            "websocket protocol negotiation failed; outcome may be unknown".into()
-        }
-        _ => "remote transport failed; outcome may be unknown".into(),
-    }
+    crate::errors::explain(
+        "Remote connection (outcome may be unknown)",
+        &error,
+        &crate::errors::Scope::default(),
+    )
 }
 
 async fn read_bounded(reader: impl AsyncRead + Unpin) -> Result<String> {

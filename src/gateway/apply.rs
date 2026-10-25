@@ -18,7 +18,7 @@ impl Gateway {
         let object = tokio::time::timeout(OPERATION_BUDGET, self.api(kind, ns)?.get_opt(name))
             .await
             .map_err(|_| "reading the live object timed out")?
-            .map_err(api_error)?;
+            .map_err(|e| self.api_error(e))?;
         object
             .map(|object| serde_json::to_value(object).map_err(|_| "cannot decode object".into()))
             .transpose()
@@ -45,10 +45,10 @@ impl Gateway {
             .map_err(|_| "apply request timed out".to_owned())?
             .map_err(|error| match &error {
                 kube::Error::Api(status) if status.code == 409 => format!(
-                    "{}: conflict with fields owned by another manager or a concurrent change; KBorg never forces ownership",
+                    "{}: conflict with fields owned by another manager or a concurrent change; KBorg never forces ownership. Next: reopen the manifest and review the apply again, or coordinate with the other field manager",
                     planned.label()
                 ),
-                _ => format!("{}: {}", planned.label(), api_error(error)),
+                _ => format!("{}: {}", planned.label(), self.api_error(error)),
             })
     }
 

@@ -713,7 +713,8 @@ fn merged_previous_failure_is_source_specific_and_post_open_replacement_is_rejec
         let (api, requests) = resume_api(vec![(200, merge_pod("uid", &["one", "two"])), (400, serde_json::json!({"apiVersion":"v1","kind":"Status","status":"Failure","message":"CANARY should not leak","reason":"BadRequest","code":400}).to_string()), (200, "2026-10-22T12:00:00Z surviving\n".into()), (200, metadata("uid"))]);
         let feed = MergedLogFeed::open(api, "app", "uid", true, None, ReadOptions::default()).await?;
         let text = feed.snapshot(ReadOptions::default()).await?;
-        assert!(text.contains("one: previous logs unavailable (Kubernetes API 400)"));
+        assert!(text.contains("one: Previous logs (other container streams continue) failed (HTTP 400)"));
+        assert!(text.contains(crate::errors::NEXT));
         assert!(text.contains("[default/app:two] surviving"));
         assert!(!text.contains("CANARY"));
         {

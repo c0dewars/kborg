@@ -155,12 +155,12 @@ pub async fn prepare(
     )
     .await
     .map_err(|_| "node shell dry run timed out")?
-    .map_err(|error| match error {
-        kube::Error::Api(status) if status.code == 403 || status.code == 422 => format!(
-            "the API server refused the privileged Pod in {namespace} (HTTP {}): RBAC, Pod Security or a policy forbids it. Choose a namespace that permits privileged Pods.",
-            status.code
-        ),
-        _ => "node shell dry run failed; nothing was created".into(),
+    .map_err(|error| {
+        crate::errors::explain(
+            &format!("Node shell Pod dry run in {namespace} (nothing was created)"),
+            &error,
+            &gateway.scope(),
+        )
     })?;
     let summary = format!(
         "REVIEW NODE SHELL / root on the Node\nContext: {}\nServer: {}\nNode: {node}{}\nPod: {namespace}/{name}\nImage: {image}\nSession: up to {seconds} seconds; the Pod ends itself after {} seconds\n\nThis creates a privileged Pod with the host's PID, network and IPC namespaces and runs:\n  {}\nAnything typed runs as root on the Node and can change or break it, and every workload on it.\nThe Pod is deleted when the session ends; if KBorg is killed first, Kubernetes ends it at its deadline.\n\nPod sent to the API server (dry run passed):\n{}\nType shell {node} to create the Pod and connect. Review expires after 60 seconds.",

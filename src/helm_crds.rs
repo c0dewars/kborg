@@ -47,7 +47,7 @@ async fn document(client: &Client, path: &str) -> Result<Value> {
             .body(kube::client::Body::empty()).map_err(|_| "invalid CRD discovery request")?;
         let response = client.send(request).await.map_err(|_| "CRD discovery transport failed; details suppressed")?;
         if response.status() != http::StatusCode::OK {
-            return Err(format!("CRD discovery HTTP {}; install chart CRDs first with helm crds, or check exact schema read permission", response.status().as_u16()));
+            return Err(crate::errors::http_status("CRD discovery (install chart CRDs first with helm crds, or check exact schema read permission)", response.status().as_u16(), &crate::errors::Scope::default()));
         }
         let bytes = http_body_util::Limited::new(response.into_body(), LIMIT).collect().await
             .map_err(|_| "CRD discovery response exceeded 1 MiB or failed")?.to_bytes();
@@ -271,7 +271,7 @@ pub async fn inventory(
     let object=tokio::time::timeout(BUDGET,async {
         let request=http::Request::get(&path).header(http::header::ACCEPT,"application/json").body(kube::client::Body::empty()).map_err(|_|"invalid custom instance request")?;
         let response=client.send(request).await.map_err(|_|"cluster-wide custom instance list transport failed; details suppressed")?;
-        if response.status()!=http::StatusCode::OK { return Err(format!("cluster-wide custom instance list HTTP {}; complete all-namespace list permission is required; no schema action sent",response.status().as_u16())); }
+        if response.status()!=http::StatusCode::OK { return Err(crate::errors::http_status("Cluster-wide custom instance list (all-namespace list permission is required; no schema action sent)", response.status().as_u16(), &crate::errors::Scope::default())); }
         let data=http_body_util::Limited::new(response.into_body(),MAX_INSTANCE_BYTES).collect().await.map_err(|_|"custom instance inventory exceeds8 MiB or failed")?.to_bytes();
         *bytes=bytes.checked_add(data.len()).ok_or("instance inventory size overflow")?;
         if *bytes>MAX_INSTANCE_BYTES {return Err("combined custom instance inventory exceeds8 MiB".into());}

@@ -36,7 +36,8 @@ impl Gateway {
             kind,
             selector.into(),
             fields.into(),
-        ))
+        )
+        .with_origin(&self.context, &self.server))
     }
     pub(crate) fn metrics_api(
         &self,
@@ -141,7 +142,7 @@ impl Gateway {
         let list = tokio::time::timeout(OPERATION_BUDGET, api.list(&params))
             .await
             .map_err(|_| "Secret list timed out")?
-            .map_err(api_error)?;
+            .map_err(|e| self.api_error(e))?;
         let truncated = list
             .metadata
             .continue_
@@ -211,7 +212,7 @@ impl Gateway {
         let mut secret = tokio::time::timeout(OPERATION_BUDGET, api.get(name))
             .await
             .map_err(|_| "Secret read timed out")?
-            .map_err(api_error)?;
+            .map_err(|e| self.api_error(e))?;
         if secret.metadata.uid.as_deref() != Some(uid) {
             crate::secrets::wipe_secret(&mut secret);
             return Err("Secret was replaced; reopen :secrets".into());
@@ -243,7 +244,10 @@ impl Gateway {
     }
     pub async fn discover(&mut self) -> Result<Vec<Kind>> {
         if let Some(client) = &self.client {
-            self.kinds = discovery::collect(client).await?;
+            let kinds = discovery::collect(client)
+                .await
+                .map_err(|error| self.discovery_error(error))?;
+            self.kinds = kinds;
         }
         Ok(self.kinds.clone())
     }
@@ -304,7 +308,7 @@ impl Gateway {
             let list = tokio::time::timeout_at(deadline, api.list(&params))
                 .await
                 .map_err(|_| "list budget exceeded; narrow namespace scope")?
-                .map_err(api_error)?;
+                .map_err(|e| self.api_error(e))?;
             pages += 1;
             for item in list.items {
                 let mut value = serde_json::to_value(item).map_err(|_| "cannot decode object")?;
@@ -363,9 +367,13 @@ impl Gateway {
         if kind.namespaced && ns == "*" {
             return Err("select a concrete namespace".into());
         }
-        let mut value =
-            serde_json::to_value(self.api(kind, ns)?.get(name).await.map_err(api_error)?)
-                .map_err(|_| "cannot decode object")?;
+        let mut value = serde_json::to_value(
+            self.api(kind, ns)?
+                .get(name)
+                .await
+                .map_err(|e| self.api_error(e))?,
+        )
+        .map_err(|_| "cannot decode object")?;
         value["kind"] = json!(kind.kind);
         value["apiVersion"] = json!(kind.ar().api_version);
         Ok(value)

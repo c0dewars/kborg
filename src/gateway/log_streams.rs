@@ -103,7 +103,7 @@ impl Gateway {
         )
         .await
         .map_err(|_| "log connection timeout")?
-        .map_err(api_error)?;
+        .map_err(|e| self.api_error(e))?;
         crate::logs::LogFeed::with_read_options(stream, options, read_options)
     }
     /// Explicitly bind reconnection to a pod selected by UID. Extra pod metadata
@@ -192,7 +192,7 @@ impl Gateway {
         let output = pods
             .logs(name, &options.params(container, previous, false)?)
             .await
-            .map_err(api_error)?;
+            .map_err(|e| self.api_error(e))?;
         Ok(crate::logs::snapshot_text(&output, options))
     }
     /// Explicit Pod-wide read: ordinary containers only, one captured Pod UID,
@@ -363,7 +363,7 @@ impl Gateway {
                         )
                         .await
                         .map_err(|_| "CronJob child inventory timed out")?
-                        .map_err(api_error)?;
+                        .map_err(|e| self.api_error(e))?;
                         if list
                             .metadata
                             .resource_version

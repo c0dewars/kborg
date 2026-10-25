@@ -43,9 +43,10 @@ impl Budget {
             .map_err(|_| "discovery deadline exceeded; previous catalog retained")?
             .map_err(|_| "discovery transport failed; previous catalog retained")?;
         if !response.status().is_success() {
-            return Err(format!(
-                "discovery HTTP {}; previous catalog retained (refresh incomplete)",
-                response.status().as_u16()
+            return Err(crate::errors::http_status(
+                "API discovery (previous catalog retained)",
+                response.status().as_u16(),
+                &crate::errors::Scope::default(),
             ));
         }
         let remaining = MAX_TOTAL.saturating_sub(self.bytes);
