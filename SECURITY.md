@@ -70,6 +70,28 @@ container exits after its sleep but stays listed in the Pod. CronJob trigger,
 suspend/resume and workload rollback need `--write` and go through the same
 dry run, review, UID/resourceVersion lock and audit as other writes.
 
+Image scanning is opt-in with `--scanner ABS_PATH --allow-scan` (and `allow_scan`
+in a `--config` profile). KBorg ships no scanner or vulnerability database: it
+runs the Trivy or Grype executable you name, by absolute path without PATH
+lookup, after checking it is a regular, non-symlinked, non-group/world-writable
+native executable and identifying it from a bounded `--version` run; the file
+identity is rechecked before every process. Image references come from cluster
+objects and are untrusted: only plain registry references are accepted
+(`A-Za-z0-9./:-`, starting with a letter or digit, no scheme forms such as
+`dir:/`), each passed as one argument after `--`; Grype also gets an explicit
+`registry:` source. Each scanner process runs in its own process group with a
+300-second first-image (database download) and 120-second per-image budget, a
+20-minute total, a 32 MiB output cap and cancellation, and the whole group is
+killed and reaped. The environment is cleared except `HOME`, `PATH`, `USER`,
+proxy, TLS-certificate, Docker and scanner-cache variables, so Kubernetes and
+cloud credentials are not passed; the scanner reads and writes its normal cache
+under your HOME and uses your registry credentials (for example
+`~/.docker/config.json`). It may download its vulnerability database and pulls
+image layers from registries; the review says so before anything runs.
+Scanner output is parsed as JSON and every displayed string is sanitized. The
+scanner keeps your OS user's permissions; it is supervised, not sandboxed.
+Nothing is written to the cluster.
+
 Extensions run from the TUI (`:ext`) use the same contract as the CLI: an
 absolute registered executable with literal arguments, a whole-input review
 and `RUN TOOL` approval, 15 seconds and 256 KiB of captured output, run outside

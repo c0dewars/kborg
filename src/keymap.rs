@@ -475,6 +475,12 @@ pub const ACTIONS: &[Action] = &[
         &["Ctrl-K"],
         "Reviewed zero-grace Pod kill (--allow-force-kill)",
     ),
+    act(
+        "scan",
+        Table,
+        &[],
+        "Scan selected images with --scanner (:scan; unbound by default)",
+    ),
     // Resource table: navigation.
     act("quit", Table, &["q"], "Quit (:q also works)"),
     fixed(

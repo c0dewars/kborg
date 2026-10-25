@@ -298,6 +298,7 @@ impl App {
             "delete" if !self.marks.is_empty() => self.prepare_batch(Action::Delete),
             "delete" => self.prepare(Action::Delete),
             "kill" => self.kill(),
+            "scan" => self.scan(false),
             "aliases" => self.aliases(),
             "toggle.wide" => {
                 self.wide = !self.wide;
