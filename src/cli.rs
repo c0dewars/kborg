@@ -827,7 +827,7 @@ pub fn run_args(args: Vec<String>) -> Result<()> {
                 let mut feed = gateway.watch_selector(&args[0], &ns, &opts.selector)?;
                 loop {
                     let snapshot = feed.next().await;
-                    let record = serde_json::json!({"items":snapshot.objects,"resourceVersion":snapshot.resource_version,"stale":snapshot.stale,"truncated":snapshot.truncated,"terminal":snapshot.terminal,"status":snapshot.message});
+                    let record = serde_json::json!({"items":snapshot.objects,"resourceVersion":snapshot.resource_version,"stale":snapshot.stale,"truncated":snapshot.truncated,"terminal":snapshot.terminal,"status":snapshot.message,"relists":feed.relists()});
                     let line = if opts.json { serde_json::to_string(&record).map_err(|_| "watch output failed")? }
                         else { format!("{} | {} objects", record["status"].as_str().unwrap_or("WATCH"), record["items"].as_array().map_or(0, Vec::len)) };
                     if let Err(error) = writeln!(io::stdout().lock(), "{line}") {

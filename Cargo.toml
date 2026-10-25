@@ -30,6 +30,8 @@ tower = { version = "0.5", default-features = false, features = ["util"] }
 futures-util = { version = "0.3", default-features = false, features = ["std", "async-await", "io"] }
 # Terminal cell widths for Unicode display (already transitive via serde-saphyr).
 unicode-width = { version = "0.2", default-features = false }
+# Buf access for gzip response decoding (already transitive via http/hyper).
+bytes = "1"
 
 [profile.release]
 lto = "thin"
@@ -40,9 +42,6 @@ strip = true
 # on GNU when DWARF is enabled; production release settings are unchanged.
 [profile.test]
 debug = 0
-
-[dev-dependencies]
-bytes = "1"
 
 [lints.rust]
 unsafe_code = "forbid"

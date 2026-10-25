@@ -1,4 +1,7 @@
 //! Bounded LIST/WATCH cache. A feed belongs to exactly one caller-owned scope epoch.
+//! Watches request bookmarks and resume from the last seen resourceVersion after
+//! renewals and disconnects; only 410 Gone (or a repeated unreadable stream)
+//! rebuilds the cache with a fresh LIST.
 use crate::{gateway::Kind, safety};
 use futures_util::{Stream, StreamExt};
 use kube::{
@@ -21,7 +24,14 @@ const MAX_BYTES: usize = 64 * 1024 * 1024;
 /// Objects per initial-list page; ten pages cover MAX_OBJECTS.
 const PAGE_SIZE: u32 = 500;
 const LIST_BUDGET: Duration = Duration::from_secs(15);
-const WATCH_BUDGET: Duration = Duration::from_secs(12);
+/// Server-side watch lifetime. The API server sends a bookmark two seconds
+/// before it closes, so each renewal resumes from a fresh resourceVersion.
+const WATCH_TIMEOUT_SECS: u32 = 55;
+/// Client-side bound for one watch connection: a half-open link is detected and
+/// resumed at most this long after it stops delivering.
+const WATCH_BUDGET: Duration = Duration::from_secs(WATCH_TIMEOUT_SECS as u64 + 5);
+/// A close this late is the requested server timeout, not an early drop.
+const WATCH_RENEWAL: Duration = Duration::from_secs(WATCH_TIMEOUT_SECS as u64 - 5);
 type Events = Pin<Box<dyn Stream<Item = Result<WatchEvent<DynamicObject>, kube::Error>> + Send>>;
 
 #[derive(Clone, Debug)]
@@ -120,6 +130,10 @@ pub struct WatchFeed {
     stream_deadline: Instant,
     retry_at: Instant,
     failures: u32,
+    /// Interrupted stream reads since the last applied event or bookmark.
+    read_errors: u32,
+    /// Full LISTs performed, the initial one included.
+    relists: u32,
     retry_jitter: u64,
     terminal: Option<String>,
     context: String,
@@ -175,6 +189,8 @@ impl WatchFeed {
             stream_deadline: now,
             retry_at: now,
             failures: 0,
+            read_errors: 0,
+            relists: 0,
             retry_jitter: FEED_SERIAL.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % 251,
             terminal,
             context: String::new(),
@@ -215,6 +231,11 @@ impl WatchFeed {
             safety::safe_text(&self.kind.plural, 63)
         );
         crate::errors::render_code(&what, code, &cause, &scope)
+    }
+    /// Full LISTs this feed has made, the initial one included. Renewals and
+    /// reconnects that resume from a resourceVersion do not count.
+    pub fn relists(&self) -> u32 {
+        self.relists
     }
     fn snapshot(&self, stale: bool, message: &str) -> WatchSnapshot {
         WatchSnapshot {
@@ -266,10 +287,24 @@ impl WatchFeed {
                 self.fail_closed(&text)
             }
             kube::Error::SerdeError(_) => self.fail_closed("invalid watch response; cache cleared"),
-            kube::Error::ReadEvents(_) => self.retry(
-                "watch response interrupted or exceeded body limit; rebuilding cache",
-                true,
-            ),
+            // A dropped connection keeps the cache and resumes from the last
+            // applied resourceVersion. Only a second unreadable stream with no
+            // progress in between (for example one event above the body budget)
+            // falls back to a full LIST, so it cannot loop on the same event.
+            kube::Error::ReadEvents(_) if self.read_errors == 0 => {
+                self.read_errors = 1;
+                self.retry(
+                    "watch interrupted; resuming at retained resourceVersion",
+                    false,
+                )
+            }
+            kube::Error::ReadEvents(_) => {
+                self.read_errors = 0;
+                self.retry(
+                    "watch response repeatedly unreadable or above body limit; rebuilding cache",
+                    true,
+                )
+            }
             _ => {
                 let text = self.explained(&error, "watch", "reconnecting with backoff");
                 self.retry(&text, false)
@@ -290,6 +325,7 @@ impl WatchFeed {
         Ok(())
     }
     async fn relist(&mut self) -> Result<(), String> {
+        self.relists = self.relists.saturating_add(1);
         let deadline = Instant::now() + LIST_BUDGET;
         let mut cache = Cache::default();
         let mut rv = None;
@@ -370,7 +406,7 @@ impl WatchFeed {
             let params = WatchParams {
                 label_selector: (!self.selector.is_empty()).then(|| self.selector.clone()),
                 field_selector: (!self.fields.is_empty()).then(|| self.fields.clone()),
-                timeout: Some(8),
+                timeout: Some(WATCH_TIMEOUT_SECS),
                 bookmarks: true,
                 ..Default::default()
             };
@@ -405,8 +441,8 @@ impl WatchFeed {
             let event = match timeout_at(batch_deadline, stream.next()).await {
                 Ok(Some(Ok(event))) => event,
                 Ok(Some(Err(error))) => return self.api_failure(error),
-                Ok(None) if self.stream_started.elapsed() >= Duration::from_secs(7) => {
-                    // The server normally closes the requested eight-second watch.
+                Ok(None) if self.stream_started.elapsed() >= WATCH_RENEWAL => {
+                    // The server normally closes the requested 55-second watch.
                     // This is renewal, not a transport failure or stale LIST.
                     self.stream = None;
                     self.failures = 0;
@@ -464,6 +500,7 @@ impl WatchFeed {
                 WatchEvent::Error(status) => return self.api_failure(kube::Error::Api(status)),
             }
             self.failures = 0;
+            self.read_errors = 0;
             if index == 0 {
                 batch_deadline = self
                     .stream_deadline
@@ -489,7 +526,7 @@ mod tests {
             assert_eq!(requests.lock().unwrap_or_else(|e| panic!("{e}")).len(), 2);
             feed.stream = Some(Box::pin(futures_util::stream::empty()));
             feed.retry_at = Instant::now();
-            feed.stream_started = Instant::now() - Duration::from_secs(8);
+            feed.stream_started = Instant::now() - WATCH_RENEWAL;
             let renewed = feed.next().await;
             assert!(!renewed.stale);
             assert!(!renewed.terminal);
@@ -524,30 +561,74 @@ mod tests {
     fn event(event: &str, name: &str, uid: &str, rv: &str) -> String {
         format!("{}\n", json!({"type":event,"object":object(name, uid, rv)}))
     }
+    /// Fixture marker: the connection drops (I/O error) at this point of a body.
+    const RESET: &str = "<<RESET>>";
+    /// Fixture prefix: the rest of the body is sent gzip-encoded.
+    const GZIP: &str = "<<GZIP>>";
+    /// Fixture suffix: the connection stays open after the body, like a live watch.
+    const HOLD: &str = "<<HOLD>>";
+    fn gzip(text: &str) -> bytes::Bytes {
+        use std::io::Write;
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        encoder
+            .write_all(text.as_bytes())
+            .unwrap_or_else(|e| panic!("{e}"));
+        bytes::Bytes::from(encoder.finish().unwrap_or_else(|e| panic!("{e}")))
+    }
+    /// Records each request URI, suffixed with `#gzip` when it accepts gzip.
     fn feed(replies: Vec<(u16, String)>) -> (WatchFeed, Arc<Mutex<Vec<String>>>) {
         let replies = Arc::new(Mutex::new(std::collections::VecDeque::from(replies)));
         let requests = Arc::new(Mutex::new(Vec::new()));
         let recorded = requests.clone();
         let service = tower::service_fn(move |request: http::Request<kube::client::Body>| {
+            let accepts = request
+                .headers()
+                .get(http::header::ACCEPT_ENCODING)
+                .is_some_and(|value| value == "gzip");
             recorded
                 .lock()
                 .unwrap_or_else(|e| panic!("{e}"))
-                .push(request.uri().to_string());
+                .push(format!(
+                    "{}{}",
+                    request.uri(),
+                    if accepts { "#gzip" } else { "" }
+                ));
             let (status, text) = replies
                 .lock()
                 .unwrap_or_else(|e| panic!("{e}"))
                 .pop_front()
                 .unwrap_or_else(|| panic!("unexpected request"));
             async move {
-                let body = http_body_util::Limited::new(
-                    http_body_util::Full::new(bytes::Bytes::from(text)),
-                    MAX_BYTES,
-                );
+                let (text, hold) = match text.strip_suffix(HOLD) {
+                    Some(text) => (text.to_owned(), true),
+                    None => (text, false),
+                };
+                let mut response = http::Response::builder().status(status);
+                let mut frames: Vec<Result<http_body::Frame<bytes::Bytes>, std::io::Error>> =
+                    Vec::new();
+                if let Some(text) = text.strip_prefix(GZIP) {
+                    response = response.header(http::header::CONTENT_ENCODING, "gzip");
+                    frames.push(Ok(http_body::Frame::data(gzip(text))));
+                } else if let Some((before, _)) = text.split_once(RESET) {
+                    frames.push(Ok(http_body::Frame::data(bytes::Bytes::from(
+                        before.to_owned(),
+                    ))));
+                    frames.push(Err(std::io::Error::new(
+                        std::io::ErrorKind::ConnectionReset,
+                        "connection reset by peer",
+                    )));
+                } else {
+                    frames.push(Ok(http_body::Frame::data(bytes::Bytes::from(text))));
+                }
+                let frames = futures_util::stream::iter(frames);
+                let frames: Pin<Box<dyn Stream<Item = _> + Send>> = if hold {
+                    Box::pin(frames.chain(futures_util::stream::pending()))
+                } else {
+                    Box::pin(frames)
+                };
+                let body = http_body_util::StreamBody::new(frames);
                 Ok::<_, std::convert::Infallible>(
-                    http::Response::builder()
-                        .status(status)
-                        .body(body)
-                        .unwrap_or_else(|e| panic!("{e}")),
+                    response.body(body).unwrap_or_else(|e| panic!("{e}")),
                 )
             }
         });
@@ -691,7 +772,8 @@ mod tests {
             feed.next().await;
             let requests = requests.lock().unwrap_or_else(|e| panic!("{e}"));
             assert!(requests[1].contains("resourceVersion=1"));
-            assert!(requests[1].contains("timeoutSeconds=8"));
+            assert!(requests[1].contains("timeoutSeconds=55"));
+            assert!(requests[1].contains("allowWatchBookmarks=true"));
             assert!(requests[2].contains("resourceVersion=7"));
         });
     }
@@ -718,11 +800,29 @@ mod tests {
             let (mut invalid, _) = feed(vec![(200, list("1")), (200, "invalid\n".into())]);
             invalid.next().await;
             assert!(invalid.next().await.terminal);
-            let (mut huge, _) = feed(vec![(200, list("1")), (200, "x".repeat(MAX_BYTES + 1))]);
+            let initial = json!({"apiVersion":"v1","kind":"PodList","metadata":{"resourceVersion":"1"},"items":[object("a","a","1")]}).to_string();
+            let (mut huge, requests) = feed(vec![
+                (200, initial),
+                (200, "x".repeat(MAX_BYTES + 1)),
+                (200, "x".repeat(MAX_BYTES + 1)),
+                (200, list("2")),
+            ]);
             huge.next().await;
+            // The first unreadable stream resumes with the cache intact.
             let failure = huge.next().await;
-            assert!(failure.stale);
-            assert!(failure.objects.is_empty());
+            assert!(failure.stale && !failure.terminal);
+            assert_eq!(failure.objects.len(), 1);
+            assert_eq!(huge.relists(), 1);
+            // A second one without progress rebuilds instead of looping.
+            huge.retry_at = Instant::now();
+            let failure = huge.next().await;
+            assert!(failure.stale && failure.objects.is_empty());
+            huge.retry_at = Instant::now();
+            assert_eq!(huge.next().await.resource_version, "2");
+            assert_eq!(huge.relists(), 2);
+            let paths = requests.lock().unwrap_or_else(|e| panic!("{e}"));
+            assert!(paths[2].contains("watch=true") && paths[2].contains("resourceVersion=1"), "{paths:?}");
+            assert!(!paths[3].contains("watch=true"), "{paths:?}");
         });
     }
     #[test]
@@ -843,6 +943,86 @@ mod tests {
                 assert!(feed.next().await.terminal);
                 assert_eq!(requests.lock().unwrap_or_else(|e| panic!("{e}")).len(), 3);
             }
+        });
+    }
+    #[test]
+    fn forced_disconnect_resumes_from_last_event_without_relist() {
+        runtime().block_on(async {
+            let initial = json!({"apiVersion":"v1","kind":"PodList","metadata":{"resourceVersion":"1"},"items":[object("a","a","1")]}).to_string();
+            let dropped = event("ADDED", "b", "b", "2") + &event("MODIFIED", "a", "a", "3") + RESET;
+            let (mut feed, requests) = feed(vec![
+                (200, initial),
+                (200, dropped),
+                (200, event("ADDED", "c", "c", "4") + HOLD),
+            ]);
+            assert!(!feed.next().await.stale);
+            // Both events apply, then the connection drops in the same batch.
+            let interrupted = feed.next().await;
+            assert!(interrupted.stale && !interrupted.terminal);
+            assert_eq!(interrupted.objects.len(), 2, "cache must survive a disconnect");
+            assert_eq!(interrupted.resource_version, "3");
+            feed.retry_at = Instant::now();
+            let resumed = feed.next().await;
+            assert!(!resumed.stale);
+            assert_eq!(resumed.objects.len(), 3);
+            assert_eq!(resumed.resource_version, "4");
+            assert_eq!(feed.relists(), 1);
+            let paths = requests.lock().unwrap_or_else(|e| panic!("{e}"));
+            assert_eq!(paths.len(), 3);
+            assert!(paths[2].contains("watch=true") && paths[2].contains("resourceVersion=3"), "{paths:?}");
+        });
+    }
+    #[test]
+    fn bookmark_advances_resume_point_and_expiry_is_the_only_relist() {
+        runtime().block_on(async {
+            let bookmark = |rv: &str| format!("{}\n", json!({"type":"BOOKMARK","object":{"apiVersion":"v1","kind":"Pod","metadata":{"resourceVersion":rv}}}));
+            let (mut feed, requests) = feed(vec![
+                (200, list("1")),
+                (200, bookmark("40") + RESET),
+                (200, bookmark("90")),
+                (200, String::new()),
+                (410, String::new()),
+                (200, list("120")),
+            ]);
+            feed.next().await;
+            let interrupted = feed.next().await;
+            assert!(interrupted.stale);
+            assert_eq!(interrupted.resource_version, "40");
+            feed.retry_at = Instant::now();
+            assert_eq!(feed.next().await.resource_version, "90");
+            // The server closes the interval; renewal resumes at the bookmark.
+            feed.stream = Some(Box::pin(futures_util::stream::empty()));
+            feed.stream_started = Instant::now() - WATCH_RENEWAL;
+            assert!(!feed.next().await.stale);
+            feed.retry_at = Instant::now();
+            assert!(!feed.next().await.stale);
+            assert_eq!(feed.relists(), 1);
+            feed.retry_at = Instant::now();
+            let expired = feed.next().await;
+            assert!(expired.stale && expired.objects.is_empty());
+            feed.retry_at = Instant::now();
+            assert_eq!(feed.next().await.resource_version, "120");
+            assert_eq!(feed.relists(), 2);
+            let paths = requests.lock().unwrap_or_else(|e| panic!("{e}"));
+            assert_eq!(paths.len(), 6, "{paths:?}");
+            assert!(paths[2].contains("resourceVersion=40"), "{paths:?}");
+            assert!(paths[3].contains("resourceVersion=90"), "{paths:?}");
+            assert!(paths[4].contains("resourceVersion=90"), "{paths:?}");
+            assert!(paths[1..5].iter().all(|p| p.contains("allowWatchBookmarks=true")));
+        });
+    }
+    #[test]
+    fn list_pages_negotiate_and_decode_gzip() {
+        runtime().block_on(async {
+            let items: Vec<_> = (0..50).map(|i| object(&format!("p-{i}"), &format!("u-{i}"), "1")).collect();
+            let page = json!({"apiVersion":"v1","kind":"PodList","metadata":{"resourceVersion":"7"},"items":items}).to_string();
+            let (mut feed, requests) = feed(vec![(200, format!("{GZIP}{page}"))]);
+            let snapshot = feed.next().await;
+            assert!(!snapshot.stale, "{}", snapshot.message);
+            assert_eq!(snapshot.objects.len(), 50);
+            assert_eq!(snapshot.resource_version, "7");
+            let paths = requests.lock().unwrap_or_else(|e| panic!("{e}"));
+            assert!(paths[0].ends_with("#gzip"), "{paths:?}");
         });
     }
 }
