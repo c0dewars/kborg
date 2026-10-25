@@ -4218,3 +4218,24 @@ fn ask_captures_the_screen_behind_the_prompt_and_previews_locally_without_opt_in
     assert!(app.ask_screen.is_none());
     Ok(())
 }
+#[test]
+fn long_actionable_status_keeps_its_next_step_visible() {
+    let (mut app, _, _) = harness();
+    app.status = crate::errors::render(
+        "Watch of pods (cache cleared)",
+        &crate::errors::Cause::Timeout,
+        &crate::errors::Scope {
+            context: "dev",
+            server: "https://api.example.test:6443",
+            namespace: "default",
+        },
+    );
+    for width in [100u16, 160] {
+        let rows = screen(&app, width, 24);
+        let status = rows
+            .iter()
+            .find(|row| row.contains("Watch of pods"))
+            .unwrap_or_else(|| panic!("status row missing at {width}"));
+        assert!(status.contains("Next: check VPN/proxy"), "{status}");
+    }
+}

@@ -1120,7 +1120,7 @@ pub(super) fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<
         &format!(
             " {}{}",
             if app.sticky_status { "! " } else { "" },
-            app.status
+            crate::errors::fit(&app.status, usize::from(w).saturating_sub(3))
         ),
         if app.stale || app.sticky_status {
             color("warning")
