@@ -280,6 +280,7 @@ impl App {
             "forward" => self.request_forward(),
             "delete" => self.prepare(Action::Delete),
             "kill" => self.kill(),
+            "scan" => self.scan(false),
             "aliases" => self.aliases(),
             "toggle.wide" => {
                 self.wide = !self.wide;

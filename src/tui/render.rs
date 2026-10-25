@@ -1166,6 +1166,8 @@ pub(super) fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<
                 }
                 Modal::AdviceLoading => "COPILOT / preparing local preview",
                 Modal::AdviceRunning => "COPILOT / advisory request in progress",
+                Modal::ScanConfirm(..) => "IMAGE SCAN / review scanner and images",
+                Modal::ScanRunning(..) => "IMAGE SCAN / trusted scanner running",
                 Modal::AdviceDocument(title, ..) => title.as_str(),
                 Modal::HelmReview(_) => "HELM REVIEW / approval required",
                 Modal::HelmRunning(..) => "HELM EXECUTION / asynchronous reviewed operation",
@@ -1242,6 +1244,8 @@ pub(super) fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<
                 Modal::Export(draft)=>wrap_text(&safety::review_display(&draft.review()).unwrap_or_else(|error| format!("REVIEW BLOCKED\n\n{error}\n\nEsc returns.")),usize::from(rect.width.saturating_sub(2))).lines().map(str::to_owned).collect(),
                 Modal::AdviceReview(review)=>review.lines(usize::from(rect.width.saturating_sub(2)),height),
                 Modal::AdviceLoading=>vec!["Reading selected status and preparing the minimized preview...".into(),"No inference request is sent until you review and approve.".into()],
+                Modal::ScanConfirm(plan,typed)=>{let width=usize::from(rect.width.saturating_sub(2));let mut lines:Vec<String>=wrap_text(&plan.summary(),width).lines().map(str::to_owned).collect();let keep=height.saturating_sub(3);if lines.len()>keep{lines.truncate(keep.saturating_sub(1));lines.push("… more images; enlarge the window to see every image".into());}lines.push(String::new());lines.push("Enter or type scan to start   Esc cancels".into());lines.push(format!("> {typed}_"));lines}
+                Modal::ScanRunning(started,total)=>{let done=app.scan_control.as_ref().map_or(0,|c|c.started());wrap_text(&format!("Scanning image {done} of {total} | elapsed {}s\n\nThe scanner runs locally under KBorg supervision; it may download its\nvulnerability database and pull image layers from registries.\nEsc or Ctrl-C cancels and stops the scanner process group.\nNothing in the cluster is changed.",started.elapsed().as_secs()),usize::from(rect.width.saturating_sub(2))).lines().map(str::to_owned).collect()}
                 Modal::AdviceRunning=>vec!["COPILOT ADVISORY / read-only".into(),String::new(),"Waiting for the bounded Copilot response...".into(),"Ctrl-C cancels; wait for process and connection cleanup.".into(),"No commands or Kubernetes changes are authorized.".into()],
                 Modal::AdviceDocument(_,text,offset)=>wrap_text(text,usize::from(rect.width.saturating_sub(2))).lines().skip(*offset).map(str::to_owned).collect(),
                 Modal::HelmForm(form)=>form.lines(usize::from(rect.width.saturating_sub(2)),height),
@@ -1503,6 +1507,10 @@ pub(super) fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<
                 } else {
                     " [Tab] next field   [Shift-Tab] previous   [Ctrl-U] clear   [Enter] prepare review   [Esc] back"
                 }
+            } else if matches!(modal, Modal::ScanRunning(..)) {
+                "Esc or Ctrl-C cancels the scan"
+            } else if matches!(modal, Modal::ScanConfirm(..)) {
+                "Enter or type scan to start | Esc cancel"
             } else if matches!(modal, Modal::HelmRunning(..)) {
                 "Ctrl-C request cancellation | wait for final outcome"
             } else if matches!(modal, Modal::HelmOutcome(..)) {

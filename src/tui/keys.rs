@@ -14,6 +14,14 @@ impl App {
             self.status = "Copilot request running; Ctrl-C cancels and waits for cleanup.".into();
             return Ok(false);
         }
+        if matches!(self.modal, Modal::ScanRunning(..)) {
+            if code == KeyCode::Esc {
+                self.cancel_scan();
+            } else {
+                self.status = "Image scan running; Esc or Ctrl-C cancels.".into();
+            }
+            return Ok(false);
+        }
         if matches!(self.modal, Modal::HelmRunning(..)) {
             self.status="Helm is running asynchronously. Ctrl-C requests cancellation; wait for the final outcome.".into();
             return Ok(false);
@@ -73,6 +81,31 @@ impl App {
                 }
             }
             Modal::WriteRunning => self.modal = Modal::WriteRunning,
+            Modal::ScanRunning(started, total) => self.modal = Modal::ScanRunning(started, total),
+            Modal::ScanConfirm(plan, mut typed) => match code {
+                KeyCode::Esc => {
+                    self.status = "Scan canceled; nothing was run.".into();
+                    self.close_subview();
+                }
+                KeyCode::Enter => {
+                    if typed.is_empty() || typed == crate::scan::CONFIRMATION {
+                        self.start_scan(plan, crate::scan::CONFIRMATION.into());
+                    } else {
+                        self.status =
+                            "Type scan (or clear the input) and press Enter; Esc cancels.".into();
+                        self.modal = Modal::ScanConfirm(plan, typed);
+                    }
+                }
+                KeyCode::Backspace => {
+                    typed.pop();
+                    self.modal = Modal::ScanConfirm(plan, typed);
+                }
+                KeyCode::Char(c) if typed.len() < 16 && c.is_ascii_graphic() => {
+                    typed.push(c);
+                    self.modal = Modal::ScanConfirm(plan, typed);
+                }
+                _ => self.modal = Modal::ScanConfirm(plan, typed),
+            },
             Modal::WriteReview(mut review) => match code {
                 KeyCode::Esc => self.close_subview(),
                 KeyCode::Enter => {
@@ -1535,6 +1568,13 @@ impl App {
             && code == KeyCode::Char('c')
         {
             self.cancel_helm();
+            return Ok(false);
+        }
+        if matches!(self.modal, Modal::ScanRunning(..))
+            && modifiers.contains(KeyModifiers::CONTROL)
+            && code == KeyCode::Char('c')
+        {
+            self.cancel_scan();
             return Ok(false);
         }
         if self.write_inflight {

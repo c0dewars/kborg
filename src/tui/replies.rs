@@ -16,7 +16,10 @@ impl App {
             changed = true;
             // Background replies never end a user request's busy/write state.
             let command_result = self.command_epoch == Some(epoch)
-                && !matches!(&reply, Reply::Metrics(..) | Reply::Overview(..));
+                && !matches!(
+                    &reply,
+                    Reply::Metrics(..) | Reply::Overview(..) | Reply::ScanOutcome(..)
+                );
             let write_result = command_result && self.write_inflight;
             if command_result {
                 self.busy = false;
@@ -28,7 +31,9 @@ impl App {
             if matches!(&reply, Reply::Connected(..)) && !connection_result {
                 continue;
             }
-            if epoch != self.epoch && !connection_result && !write_result {
+            // A detached scan outcome always lands: it ends the ScanRunning modal.
+            let scan_result = matches!(&reply, Reply::ScanOutcome(..));
+            if epoch != self.epoch && !connection_result && !write_result && !scan_result {
                 continue;
             }
             match reply {
@@ -184,6 +189,36 @@ impl App {
                             self.items.len()
                         )
                     };
+                }
+                Reply::ScanPrepared(result) => match result {
+                    Ok(plan) => {
+                        self.status =
+                            "Review the scanner and images; Enter or type scan to start.".into();
+                        self.modal = Modal::ScanConfirm(plan, String::new());
+                    }
+                    Err(error) => {
+                        self.modal = Modal::Detail(
+                            format!(
+                                "IMAGE SCAN NOT STARTED\n\n{}",
+                                safety::safe_lines(&error, 8192)
+                            ),
+                            0,
+                        );
+                    }
+                },
+                Reply::ScanStarted => {}
+                Reply::ScanOutcome(result) => {
+                    let canceled = self.scan_control.take().is_some_and(|c| c.canceled());
+                    let text = match result {
+                        Ok(report) => crate::scan::report_text(&report),
+                        Err(error) => format!("IMAGE SCAN STOPPED\n\n{error}"),
+                    };
+                    self.status = if canceled {
+                        "Scan canceled; partial results shown.".into()
+                    } else {
+                        "Scan finished. Read-only; nothing in the cluster was changed.".into()
+                    };
+                    self.modal = Modal::Detail(text, 0);
                 }
                 Reply::AdvicePrepared(result) => {
                     if !matches!(self.modal, Modal::AdviceLoading) {

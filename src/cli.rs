@@ -36,6 +36,10 @@ pub struct Options {
     pub json: bool,
     pub allow_tools: bool,
     pub allow_extensions: bool,
+    /// `--allow-scan`: run the trusted `--scanner` on cluster image references.
+    pub allow_scan: bool,
+    /// `--scanner ABS_PATH`: an explicitly trusted Trivy or Grype executable.
+    pub scanner: Option<PathBuf>,
     pub splash: bool,
     pub poll: bool,
     pub yaml: bool,
@@ -82,6 +86,8 @@ fn parse(args: Vec<String>) -> Result<Options> {
         json: false,
         allow_tools: false,
         allow_extensions: false,
+        allow_scan: false,
+        scanner: None,
         splash: std::env::var_os("KBORG_NO_SPLASH").is_none()
             && std::env::var_os("K8BORG_NO_SPLASH").is_none(),
         poll: false,
@@ -306,6 +312,19 @@ fn parse(args: Vec<String>) -> Result<Options> {
             "--recursive" => opts.recursive = true,
             "--allow-node-shell" => opts.connection.allow_node_shell = true,
             "--allow-debug" => opts.connection.allow_debug = true,
+            "--allow-scan" => opts.allow_scan = true,
+            "--scanner" => {
+                let path = PathBuf::from(
+                    args.next()
+                        .ok_or("--scanner needs an absolute Trivy or Grype executable path")?,
+                );
+                if !path.is_absolute() {
+                    return Err(
+                        "--scanner requires an absolute path; PATH lookup is disabled".into(),
+                    );
+                }
+                opts.scanner = Some(path);
+            }
             "--node-shell-image" => {
                 let image = args
                     .next()
@@ -403,6 +422,14 @@ fn parse(args: Vec<String>) -> Result<Options> {
     {
         return Err("Helm lifecycle, registry, hook and CRD options require ui or helm".into());
     }
+    if (opts.scanner.is_some() || opts.allow_scan)
+        && opts
+            .command
+            .first()
+            .is_some_and(|command| !matches!(command.as_str(), "ui" | "scan"))
+    {
+        return Err("--scanner and --allow-scan require ui or scan".into());
+    }
     if opts.copilot_policy.is_some()
         && opts
             .command
@@ -479,6 +506,7 @@ fn parse(args: Vec<String>) -> Result<Options> {
                     | "helm"
                     | "history"
                     | "lint"
+                    | "scan"
             )
         })
     {
@@ -656,7 +684,7 @@ pub fn run_args(args: Vec<String>) -> Result<()> {
         "helm" | "history" | "list" | "watch" | "metrics" | "get" | "view" | "logs"
         | "resources" | "doctor" | "scale" | "restart" | "delete" | "kill" | "set-image"
         | "trigger" | "suspend" | "resume" | "rollback" | "set-resources" | "exec" | "attach"
-        | "forward" | "cp-from" | "cp-to" | "apply" | "node-shell" | "debug" | "lint"
+        | "forward" | "cp-from" | "cp-to" | "apply" | "node-shell" | "debug" | "lint" | "scan"
         | "pulses" | "xray" | "workloads" | "can" | "yaml-template" | "yaml-edit" | "cordon"
         | "uncordon" | "drain" => {}
         _ => return Err("unknown command; see --help".into()),
@@ -710,6 +738,35 @@ pub fn run_args(args: Vec<String>) -> Result<()> {
                 let (found,notes)=tokio::time::timeout(Duration::from_secs(30),crate::lint::collect(&gateway,&ns)).await.map_err(|_|"lint timed out")??;
                 if opts.json {print_json(&serde_json::json!({"findings":found,"notes":notes}))?;}
                 else {output!("{}",crate::lint::report(&gateway.context,&ns,&found,&notes));}
+            },
+            "scan" => {
+                let usage="usage: scan RESOURCE NAME | scan ns [-n NAMESPACE] --scanner ABS_PATH --allow-scan [--json]";
+                let (Some(scanner),true)=(opts.scanner.clone(),opts.allow_scan) else {return Err("image scanning requires --scanner ABS_PATH (Trivy or Grype) and --allow-scan".into());};
+                if gateway.is_demo() {return Err("image scanning is disabled in demo mode".into());}
+                if !io::stdin().is_terminal() {return Err("scan requires interactive confirmation on a terminal".into());}
+                let target=match args {
+                    [scope] if matches!(scope.as_str(),"ns"|"namespace") => crate::scan::Target::Namespace(ns.clone()),
+                    [resource,name] => crate::scan::Target::Object{resource:resource.clone(),namespace:ns.clone(),name:name.clone()},
+                    _ => return Err(usage.into()),
+                };
+                let (scope,images)=tokio::time::timeout(Duration::from_secs(30),crate::scan::gather(&gateway,&target)).await.map_err(|_|"reading image references timed out")??;
+                let plan=tokio::task::spawn_blocking(move||crate::scan::prepare(&scanner,scope,images)).await.map_err(|_|"scanner detection failed")??;
+                // The review goes to stderr so --json output can be redirected.
+                let mut stderr=io::stderr().lock();
+                write_to(&mut stderr,format!("{}\nType scan or press Enter to start; anything else cancels.\n> ",plan.summary()).as_bytes())?;
+                stderr.flush().map_err(|_|"output failed")?;
+                drop(stderr);
+                let mut input=String::new();use std::io::BufRead;io::stdin().lock().take(64).read_line(&mut input).map_err(|_|"input failed")?;
+                let typed=match input.trim() {""=>crate::scan::CONFIRMATION.to_owned(),other=>other.to_owned()};
+                let control=std::sync::Arc::new(crate::scan::Control::default());
+                let worker_control=control.clone();
+                let mut job=tokio::task::spawn_blocking(move||crate::scan::run(plan,&typed,true,&worker_control));
+                let report=tokio::select! {
+                    result=&mut job=>result,
+                    _=tokio::signal::ctrl_c()=>{control.cancel();job.await},
+                }.map_err(|_|"scan worker failed")??;
+                if opts.json {print_json(&serde_json::to_value(&report).map_err(|_|"scan encoding failed")?)?;}
+                else {output!("{}",crate::scan::report_text(&report));}
             },
             "debug" => {
                 if args.is_empty() || args.len()>2 {return Err("usage: debug POD [TARGET_CONTAINER] --write --allow-debug [--node-shell-image IMAGE]".into());}
@@ -1742,6 +1799,29 @@ mod tests {
         );
         Ok(())
     }
+    #[test]
+    fn scan_flags_are_explicit_absolute_and_scoped() -> Result<()> {
+        let words = |s: &str| parse(s.split_whitespace().map(str::to_owned).collect());
+        let options = words("scan deploy web --scanner /opt/trivy --allow-scan --json")?;
+        assert_eq!(
+            options.scanner.as_deref(),
+            Some(std::path::Path::new("/opt/trivy"))
+        );
+        assert!(options.allow_scan && options.json);
+        assert!(words("ui --scanner /opt/grype --allow-scan").is_ok());
+        assert!(words("--scanner /opt/grype --allow-scan").is_ok());
+        assert!(words("scan ns --scanner trivy --allow-scan").is_err());
+        assert!(words("list pods --scanner /opt/trivy").is_err());
+        assert!(words("lint --allow-scan").is_err());
+        assert!(words("scan ns --scanner").is_err());
+        // Without the opt-in nothing connects or runs.
+        let error = run_args(vec!["--demo".into(), "scan".into(), "ns".into()])
+            .err()
+            .unwrap_or_default();
+        assert!(error.contains("--allow-scan"), "{error}");
+        Ok(())
+    }
+
     #[test]
     fn node_commands_route_to_terminal_approval_without_any_live_connection() {
         for command in ["cordon", "uncordon", "drain"] {

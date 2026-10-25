@@ -19,6 +19,14 @@ pub(super) enum Task {
     NodeShellPrepare(String, String, String, u16),
     Bench(crate::bench::Plan),
     Lint(String),
+    /// Read image references and detect the trusted scanner: scanner path, target.
+    ScanPrepare(std::path::PathBuf, crate::scan::Target),
+    /// Run a reviewed scan detached from the worker queue.
+    ScanRun(
+        Box<crate::scan::Plan>,
+        String,
+        std::sync::Arc<crate::scan::Control>,
+    ),
     NodeShellStart(Box<crate::node_shell::Prepared>, String),
     DebugPrepare(String, String, Option<String>, String, u16),
     DebugStart(Box<crate::debug_container::Prepared>, String),
@@ -91,6 +99,9 @@ pub(super) enum Reply {
     Connected(String, String, String, Vec<Kind>),
     Items(Value),
     Detail(String),
+    ScanPrepared(Result<Box<crate::scan::Plan>>),
+    ScanStarted,
+    ScanOutcome(Result<crate::scan::Report>),
     Object(Box<Value>),
     Export(crate::exports::Draft),
     YamlDraft(Box<crate::manifest_edit::Draft>),
@@ -595,6 +606,24 @@ pub(super) fn worker() -> Worker {
                         None=>Reply::Failure("Not connected; nothing was created.".into()),
                     },
                     Task::Bench(plan)=>Reply::Detail(crate::bench::run(&plan).await.text(&plan)),
+                    Task::ScanPrepare(scanner,target)=>{
+                        let result=async {
+                            let gateway=gateway.as_ref().ok_or("Not connected; select a context first.")?;
+                            let (scope,images)=tokio::time::timeout(Duration::from_secs(25),crate::scan::gather(gateway,&target)).await.map_err(|_|"Reading image references timed out.")??;
+                            tokio::task::spawn_blocking(move||crate::scan::prepare(&scanner,scope,images)).await.map_err(|_|"Scanner detection failed.".to_owned())?.map(Box::new)
+                        }.await;
+                        Reply::ScanPrepared(result)
+                    }
+                    Task::ScanRun(plan,typed,control)=>{
+                        // Detached so watches, metrics and other requests keep flowing
+                        // while the scanner runs for minutes; the outcome arrives later.
+                        let sender=results.clone();
+                        tokio::spawn(async move {
+                            let outcome=tokio::task::spawn_blocking(move||crate::scan::run(*plan,&typed,true,&control)).await.unwrap_or_else(|_|Err("Scan worker failed.".into()));
+                            let _=sender.send((epoch,Reply::ScanOutcome(outcome)));
+                        });
+                        Reply::ScanStarted
+                    }
                     Task::DebugPrepare(namespace,pod,target,image,seconds)=>match gateway.as_ref() {
                         Some(g)=>match crate::debug_container::prepare(g,&namespace,&pod,target.as_deref(),&image,seconds).await {
                             Ok(prepared)=>Reply::DebugPrepared(Box::new(prepared)),
@@ -815,7 +844,7 @@ pub(super) fn worker() -> Worker {
                                         Reply::Prepared(Box::new(prepared))
                                     },
                                     Task::Execute(p,a) => Reply::Notice(g.execute(*p,a).await?),
-                                    Task::YamlPrepare(..) | Task::YamlExecute(..) | Task::ApplyPrepare(..) | Task::ApplyExecute(..) | Task::NodeShellPrepare(..) | Task::NodeShellStart(..) | Task::DebugPrepare(..) | Task::DebugStart(..) | Task::Bench(..) | Task::NodeExecute(..) | Task::DashboardLogs(..) | Task::DashboardWorkloads(..) | Task::DashboardTail(..) | Task::Overview(..) | Task::Connect(_) | Task::Watch(..) | Task::Metrics(..) | Task::RunSession(..) | Task::RunForward(..) | Task::Directory(_) | Task::Manifest(_) | Task::Helm(..) | Task::HelmPrepare(..) | Task::HelmExecute(..) | Task::AdvicePrepare(..) | Task::AdviceExecute(..) => return Err("invalid worker task".into()),
+                                    Task::YamlPrepare(..) | Task::YamlExecute(..) | Task::ApplyPrepare(..) | Task::ApplyExecute(..) | Task::NodeShellPrepare(..) | Task::NodeShellStart(..) | Task::DebugPrepare(..) | Task::DebugStart(..) | Task::ScanPrepare(..) | Task::ScanRun(..) | Task::Bench(..) | Task::NodeExecute(..) | Task::DashboardLogs(..) | Task::DashboardWorkloads(..) | Task::DashboardTail(..) | Task::Overview(..) | Task::Connect(_) | Task::Watch(..) | Task::Metrics(..) | Task::RunSession(..) | Task::RunForward(..) | Task::Directory(_) | Task::Manifest(_) | Task::Helm(..) | Task::HelmPrepare(..) | Task::HelmExecute(..) | Task::AdvicePrepare(..) | Task::AdviceExecute(..) => return Err("invalid worker task".into()),
                                 })
                             };
                             match tokio::time::timeout(Duration::from_secs(25), future).await {

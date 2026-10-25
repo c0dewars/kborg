@@ -66,6 +66,8 @@ pub struct Config {
     pub allow_node_shell: bool,
     #[serde(default)]
     pub allow_debug: bool,
+    #[serde(default)]
+    pub allow_scan: bool,
 }
 impl Default for Config {
     fn default() -> Self {
@@ -97,6 +99,7 @@ impl Default for Config {
             allow_apply: false,
             allow_node_shell: false,
             allow_debug: false,
+            allow_scan: false,
         }
     }
 }
@@ -176,6 +179,11 @@ pub fn apply(config: Config, options: &mut Options) -> Result<()> {
     {
         return Err("configuration forbids the requested write capability".into());
     }
+    // Scanning is read-only for the cluster but runs a local tool with network
+    // access, so a read-only profile must name it too.
+    if options.allow_scan && !config.allow_scan {
+        return Err("configuration forbids image scanning".into());
+    }
     if options.external_editor && !config.allow_external_editor {
         return Err("configuration forbids the external editor".into());
     }
@@ -230,6 +238,8 @@ mod tests {
             json: false,
             allow_tools: false,
             allow_extensions: false,
+            allow_scan: false,
+            scanner: None,
             splash: true,
             poll: false,
             yaml: false,
@@ -412,6 +422,27 @@ mod tests {
             &mut reveal,
         )?;
         assert!(reveal.connection.allow_secret_reveal);
+        let mut scan = options();
+        scan.allow_scan = true;
+        assert!(apply(Config::default(), &mut scan).is_err());
+        assert!(!Config::default().allow_scan);
+        let mut scan = options();
+        scan.allow_scan = true;
+        apply(
+            Config {
+                allow_scan: true,
+                ..Config::default()
+            },
+            &mut scan,
+        )?;
+        assert!(scan.allow_scan);
+        assert!(
+            serde_json::from_str::<Config>(
+                r#"{"schema_version":1,"profile":"read-only","allow_scan":true}"#
+            )
+            .map_err(|_| "allow_scan must parse")?
+            .allow_scan
+        );
         Ok(())
     }
 }

@@ -18,7 +18,7 @@ use std::{
     io::Write,
     process::{Command, Stdio},
     sync::{
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc,
     },
     thread,
@@ -196,9 +196,19 @@ fn project(object: &Value, format: Format) -> Result<Vec<u8>> {
 }
 
 fn executable_metadata(path: &Path) -> Result<fs::Metadata> {
+    let metadata = trusted_metadata(path, MAX_EXECUTABLE)?;
+    Ok(metadata)
+}
+
+/// A nonempty, non-symlink regular executable that is not group/world
+/// writable. Shared by every explicitly trusted external tool.
+pub(crate) fn trusted_metadata(path: &Path, max_bytes: u64) -> Result<fs::Metadata> {
     let metadata = fs::symlink_metadata(path).map_err(|_| "cannot inspect tool executable")?;
-    if !metadata.is_file() || metadata.len() == 0 || metadata.len() > MAX_EXECUTABLE {
-        return Err("tool must be a nonempty regular executable of at most 128 MiB".into());
+    if !metadata.is_file() || metadata.len() == 0 || metadata.len() > max_bytes {
+        return Err(format!(
+            "tool must be a nonempty regular executable of at most {} MiB",
+            max_bytes / (1024 * 1024)
+        ));
     }
     #[cfg(unix)]
     {
@@ -211,7 +221,7 @@ fn executable_metadata(path: &Path) -> Result<fs::Metadata> {
     Ok(metadata)
 }
 
-fn same_metadata(a: &fs::Metadata, b: &fs::Metadata) -> bool {
+pub(crate) fn same_metadata(a: &fs::Metadata, b: &fs::Metadata) -> bool {
     let basic = a.len() == b.len() && a.modified().ok() == b.modified().ok();
     #[cfg(unix)]
     {
@@ -295,11 +305,15 @@ fn run_bounded(
     }
 }
 
+/// A private (0700) temporary directory removed on drop.
 #[cfg(unix)]
-struct PrivateDirectory(PathBuf);
+pub(crate) struct PrivateDirectory(PathBuf);
 #[cfg(unix)]
 impl PrivateDirectory {
-    fn create() -> Result<Self> {
+    pub(crate) fn path(&self) -> &Path {
+        &self.0
+    }
+    pub(crate) fn create() -> Result<Self> {
         static SEQUENCE: AtomicU64 = AtomicU64::new(0);
         let root = std::env::temp_dir()
             .canonicalize()
@@ -445,12 +459,6 @@ impl Drop for Process {
 
 #[cfg(unix)]
 fn supervise(prepared: Prepared, budget: Duration, limit: usize) -> Result<Outcome> {
-    use std::os::unix::process::CommandExt;
-    let killer = Path::new("/bin/kill")
-        .canonicalize()
-        .map_err(|_| "verified OS process-group cleanup is unavailable")?;
-    safety::checked_path(&killer)?;
-    executable_metadata(&killer)?;
     let directory = PrivateDirectory::create()?;
     let mut command = Command::new(&prepared.executable);
     command
@@ -461,14 +469,61 @@ fn supervise(prepared: Prepared, budget: Duration, limit: usize) -> Result<Outco
         .env("USERPROFILE", &directory.0)
         .env("TMPDIR", &directory.0)
         .env("LANG", "C")
-        .env("LC_ALL", "C")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .process_group(0);
+        .env("LC_ALL", "C");
     // Recheck immediately before spawn; handle-based execution race resistance
     // requires platform APIs and remains an explicit external hardening gate.
     revalidate(&prepared)?;
+    let captured = capture(command, Some(prepared.input), budget, limit, None)?;
+    Ok(Outcome {
+        stdout: safety::safe_lines(&String::from_utf8_lossy(&captured.stdout), MAX_OUTPUT),
+        stderr: safety::safe_lines(&String::from_utf8_lossy(&captured.stderr), MAX_OUTPUT),
+        success: captured.status.success(),
+        status: captured.status.code().map_or_else(
+            || "terminated by signal".into(),
+            |code| format!("exit {code}"),
+        ),
+    })
+}
+
+/// Raw, unsanitized output of one supervised process. Callers sanitize.
+#[cfg(unix)]
+pub(crate) struct Captured {
+    pub(crate) stdout: Vec<u8>,
+    pub(crate) stderr: Vec<u8>,
+    pub(crate) status: std::process::ExitStatus,
+}
+
+/// Runs a fully configured command (argv, environment and working directory
+/// already set by the caller) in its own process group with a time budget, a
+/// combined output limit and optional cancellation. The whole group is killed
+/// and reaped on every exit path, and output pipes held by escaped
+/// descendants fail the run instead of hanging it.
+#[cfg(unix)]
+pub(crate) fn capture(
+    mut command: Command,
+    input: Option<Vec<u8>>,
+    budget: Duration,
+    limit: usize,
+    cancel: Option<&AtomicBool>,
+) -> Result<Captured> {
+    use std::os::unix::process::CommandExt;
+    let killer = Path::new("/bin/kill")
+        .canonicalize()
+        .map_err(|_| "verified OS process-group cleanup is unavailable")?;
+    safety::checked_path(&killer)?;
+    executable_metadata(&killer)?;
+    if cancel.is_some_and(|flag| flag.load(Ordering::Acquire)) {
+        return Err("canceled before the tool started".into());
+    }
+    command
+        .stdin(if input.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .process_group(0);
     let child = command
         .spawn()
         .map_err(|_| "cannot start reviewed tool executable")?;
@@ -477,10 +532,15 @@ fn supervise(prepared: Prepared, budget: Duration, limit: usize) -> Result<Outco
         killer,
         cleaned: false,
     };
-    let mut stdin = process.child.stdin.take().ok_or("tool stdin unavailable")?;
-    let writer = thread::spawn(move || {
-        let _ = stdin.write_all(&prepared.input);
-    });
+    let writer = match input {
+        Some(input) => {
+            let mut stdin = process.child.stdin.take().ok_or("tool stdin unavailable")?;
+            thread::spawn(move || {
+                let _ = stdin.write_all(&input);
+            })
+        }
+        None => thread::spawn(|| {}),
+    };
     let (tx, rx) = mpsc::sync_channel(16);
     let stdout_reader = reader(
         process
@@ -508,13 +568,17 @@ fn supervise(prepared: Prepared, budget: Duration, limit: usize) -> Result<Outco
     let mut failure = None;
     while done < 2 || status.is_none() {
         if start.elapsed() >= budget {
-            failure = Some("tool view exceeded its time budget");
+            failure = Some("tool exceeded its time budget");
+            break;
+        }
+        if cancel.is_some_and(|flag| flag.load(Ordering::Acquire)) {
+            failure = Some("canceled; the tool process group was stopped");
             break;
         }
         match rx.recv_timeout(Duration::from_millis(10)) {
             Ok(Output::Bytes(is_stderr, bytes)) => {
                 if stdout.len() + stderr.len() + bytes.len() > limit {
-                    failure = Some("tool view exceeded its combined output limit");
+                    failure = Some("tool exceeded its combined output limit");
                     break;
                 }
                 if is_stderr {
@@ -577,14 +641,10 @@ fn supervise(prepared: Prepared, budget: Duration, limit: usize) -> Result<Outco
         return Err(error.into());
     }
     let status = status.ok_or("tool exit status unavailable")?;
-    Ok(Outcome {
-        stdout: safety::safe_lines(&String::from_utf8_lossy(&stdout), MAX_OUTPUT),
-        stderr: safety::safe_lines(&String::from_utf8_lossy(&stderr), MAX_OUTPUT),
-        success: status.success(),
-        status: status.code().map_or_else(
-            || "terminated by signal".into(),
-            |code| format!("exit {code}"),
-        ),
+    Ok(Captured {
+        stdout,
+        stderr,
+        status,
     })
 }
 
@@ -707,6 +767,48 @@ mod tests {
         let outcome = run(prepared, CONFIRMATION, true)?;
         assert!(outcome.success, "{}", outcome.stderr);
         assert_eq!(outcome.stdout.trim_end(), argument);
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn capture_cancellation_stops_the_process_group_promptly() -> Result<()> {
+        let executable = std::env::current_exe().map_err(|_| "fixture path unavailable")?;
+        let mut command = Command::new(executable);
+        command.args([
+            "--ignored",
+            "--exact",
+            "handoff::tests::process_fixture",
+            "--nocapture",
+        ]);
+        let cancel = std::sync::Arc::new(AtomicBool::new(false));
+        let flag = cancel.clone();
+        let canceller = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(150));
+            flag.store(true, Ordering::Release);
+        });
+        let started = Instant::now();
+        let result = capture(
+            command,
+            Some(b"{\"fixture\":\"sleep\"}".to_vec()),
+            Duration::from_secs(20),
+            MAX_OUTPUT,
+            Some(&cancel),
+        );
+        let _ = canceller.join();
+        assert!(result.is_err_and(|error| error.contains("canceled")));
+        assert!(started.elapsed() < Duration::from_secs(5));
+        // A flag set before spawn never starts the tool.
+        assert!(
+            capture(
+                Command::new("/bin/echo"),
+                None,
+                Duration::from_secs(1),
+                MAX_OUTPUT,
+                Some(&cancel)
+            )
+            .is_err()
+        );
         Ok(())
     }
 

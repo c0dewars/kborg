@@ -41,6 +41,8 @@ fn harness() -> Harness {
                 helm_timeout_seconds: 300,
                 allow_tools: false,
                 allow_extensions: false,
+                allow_scan: false,
+                scanner: None,
                 log_seconds: 3600,
                 interactive: false,
                 session_seconds: 900,
@@ -90,6 +92,7 @@ fn harness() -> Harness {
             helm_generation: 0,
             helm_cancel: None,
             advice_cancel: None,
+            scan_control: None,
             helm_return: None,
             helm_elapsed: 0,
             last_forward: forward.text(),
@@ -1844,6 +1847,44 @@ fn views_yaml_columns_custom_paths_and_sort_by_any_column() {
         app.sort_desc && app.sort_column.is_none(),
         "pressing N again reverses"
     );
+}
+#[test]
+fn scan_needs_a_trusted_scanner_and_targets_the_selection_or_namespace() {
+    let (mut app, _replies, mut commands) = harness();
+    app.items = vec![object("api")];
+    assert!(app.command("scan").is_ok());
+    assert!(app.status.contains("--allow-scan"));
+    // The scanner path alone is not an opt-in.
+    app.options.scanner = Some("/opt/scanners/trivy".into());
+    assert!(app.command("scan").is_ok());
+    assert!(app.status.contains("--allow-scan"));
+    app.options.allow_scan = true;
+    app.options.connection.demo = false;
+    while commands.try_recv().is_ok() {}
+    app.busy = false;
+    assert!(app.command("scan").is_ok());
+    match commands.try_recv() {
+        Ok((_, Task::ScanPrepare(path, crate::scan::Target::Object { name, .. }))) => {
+            assert_eq!(path, std::path::PathBuf::from("/opt/scanners/trivy"));
+            assert_eq!(name, "api");
+        }
+        _ => panic!(":scan did not request a scan review"),
+    }
+    app.busy = false;
+    assert!(app.command("scan ns").is_ok());
+    assert!(matches!(
+        commands.try_recv(),
+        Ok((_, Task::ScanPrepare(_, crate::scan::Target::Namespace(_))))
+    ));
+    app.busy = false;
+    assert!(app.command("scan everything").is_ok());
+    assert!(app.status.contains(":scan ns"));
+    assert!(commands.try_recv().is_err());
+    // Registered as a remappable action with no default key.
+    let index = crate::keymap::ACTIONS
+        .iter()
+        .position(|action| action.name == "scan");
+    assert!(index.is_some_and(|i| crate::keymap::ACTIONS[i].keys.is_empty()));
 }
 #[test]
 fn debug_needs_its_capability_and_reviews_the_selected_pod() {

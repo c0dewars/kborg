@@ -129,6 +129,10 @@ enum Modal {
     HelmReview(Box<helm_ui::Review>),
     HelmRunning(String, Instant, bool),
     HelmOutcome(String, String, usize),
+    /// Reviewed image scan: plan and typed confirmation (Enter or "scan").
+    ScanConfirm(Box<crate::scan::Plan>, String),
+    /// A running image scan: start time and image count.
+    ScanRunning(Instant, usize),
 }
 struct ContainerDraft {
     kind: String,
@@ -276,6 +280,7 @@ struct App {
     helm_generation: u64,
     helm_cancel: Option<tokio::sync::oneshot::Sender<()>>,
     advice_cancel: Option<tokio::sync::oneshot::Sender<()>>,
+    scan_control: Option<std::sync::Arc<crate::scan::Control>>,
     helm_return: Option<(String, crate::helm::Storage)>,
     helm_elapsed: u64,
     last_forward: String,
@@ -870,6 +875,7 @@ pub fn run(options: Options) -> Result<()> {
         helm_generation: 0,
         helm_cancel: None,
         advice_cancel: None,
+        scan_control: None,
         helm_return: None,
         helm_elapsed: 0,
         last_forward: worker.forward.text(),
@@ -1122,7 +1128,7 @@ pub fn run(options: Options) -> Result<()> {
             app.refresh_table_metrics();
             dirty = true;
         }
-        if let Modal::HelmRunning(_, started, _) = &app.modal {
+        if let Modal::HelmRunning(_, started, _) | Modal::ScanRunning(started, _) = &app.modal {
             let elapsed = started.elapsed().as_secs();
             if elapsed != app.helm_elapsed {
                 app.helm_elapsed = elapsed;
@@ -1144,6 +1150,10 @@ pub fn run(options: Options) -> Result<()> {
                     {
                         if matches!(app.modal, Modal::AdviceRunning) {
                             let _ = app.key_event(KeyCode::Char('c'), KeyModifiers::CONTROL);
+                            dirty = true;
+                            continue;
+                        } else if matches!(app.modal, Modal::ScanRunning(..)) {
+                            app.cancel_scan();
                             dirty = true;
                             continue;
                         } else if matches!(app.modal, Modal::HelmRunning(..)) {
