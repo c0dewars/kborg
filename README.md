@@ -21,9 +21,9 @@
   </p>
 </div>
 
-![KBorg feature tour in demo mode: k9s-style browsing, filters, the errors-only view, sorting, describe, logs, :lint, live metrics charts, a reviewed scale, masked Secret YAML, the multi-cluster dashboard and its trend charts, live theme preview, per-screen help and the remappable keymap](docs/screenshots/tour.gif)
+![KBorg feature tour in demo mode: k9s-style browsing, filters, the errors-only view, sorting, describe, logs, :lint, live metrics charts, a reviewed scale, masked Secret YAML, asking Copilot about the screen, the multi-cluster dashboard and its trend charts, live theme preview, per-screen help and the remappable keymap](docs/screenshots/tour.gif)
 
-<p align="center"><sub>50-second tour recorded in <code>kborg demo</code> (no cluster needed). Regenerate it with <code>scripts/make-demo-gif.py --tour</code>.</sub></p>
+<p align="center"><sub>65-second tour recorded in <code>kborg demo</code> (no cluster needed). Regenerate it with <code>scripts/make-demo-gif.py --tour</code>.</sub></p>
 
 ![KBorg dashboard on a live Docker Desktop cluster: Pod health, Node usage, degraded workloads and restart hotspots](docs/screenshots/dashboard-health.png)
 
@@ -280,6 +280,8 @@ Details: [SECURITY.md](SECURITY.md) and the [security review](docs/MAC_V1_SECURI
 | [Operations](docs/OPERATIONS.md) | Configuration, install, update, rollback, recovery |
 | [YAML editing](docs/YAML_EDITING.md) · [v1 operations](docs/MAC_V1_OPERATIONS.md) | Reviewed edits, node maintenance |
 | [Helm lifecycle](docs/HELM_LIFECYCLE.md) | Supported chart workflows |
+| [Saved selections](docs/SAVED_SELECTIONS.md) | Saved context groups, scopes and workload focus |
+| [WSL](docs/WSL.md) | Running on Windows through WSL2 with Docker Desktop Kubernetes |
 | [Copilot](docs/COPILOT_INTEGRATION.md) | Account setup, enterprise deployments, containment |
 | [Roadmap](docs/ROADMAP.md) | Planned performance, security, feature, UI and UX work with measurable targets |
 | [CLI help](docs/CLI_HELP.txt) · [CLI output](docs/CLI_OUTPUT.md) | Scripting with `--json` |
@@ -287,7 +289,7 @@ Details: [SECURITY.md](SECURITY.md) and the [security review](docs/MAC_V1_SECURI
 | [Performance comparison](docs/PERFORMANCE_COMPARISON.md) | Memory, CPU and API traffic vs k9s and k10s |
 | [Remaining work](docs/REMAINING_WORK.md) | What's done, partial and planned |
 
-**Release 0.4.0** (Homebrew), with **0.5.0-rc.3** in testing: see the [release notes](docs/RELEASE_NOTES.md) for apply, node shell, debug containers, file and directory copy, bulk actions, image scanning, `:lint`, live charts, masked Secret YAML and full keymap and UI customization. CI builds and tests Linux, macOS and Windows (x86_64 and ARM). Packages are unsigned; signing, an external security audit and an organizational pilot are open release gates.
+**Release 0.4.0** (Homebrew), with **0.5.0-rc.3** in testing: see the [release notes](docs/RELEASE_NOTES.md) for apply, node shell, debug containers, file and directory copy, bulk actions, image scanning, `:lint`, live charts, masked Secret YAML, Copilot `:ask` about the current screen and full keymap and UI customization. CI builds and tests Linux, macOS and Windows (x86_64 and ARM). Packages are unsigned; signing, an external security audit and an organizational pilot are open release gates.
 
 ## Credits
 
