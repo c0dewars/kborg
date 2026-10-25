@@ -55,13 +55,17 @@ fn hidden(c: char) -> bool {
         '\u{fff9}'..='\u{fffb}' | '\u{e0000}'..='\u{e007f}')
 }
 
+/// Plain text lines joined by `\n`. Trailing blank lines are dropped so the
+/// result is stable: `safe_lines(safe_lines(x)) == safe_lines(x)`.
 pub fn safe_lines(input: &str, max_chars: usize) -> String {
     let limited: String = input.chars().take(max_chars).collect();
-    limited
+    let mut joined = limited
         .lines()
         .map(|line| safe_text(line, 4096))
         .collect::<Vec<_>>()
-        .join("\n")
+        .join("\n");
+    joined.truncate(joined.trim_end_matches('\n').len());
+    joined
 }
 
 /// Approval text must be complete. Reject instead of silently sanitizing or
@@ -369,6 +373,16 @@ mod tests {
             value,
             serde_json::json!({"spec":{"evilkey[2J":"x","ok":"y"}})
         );
+    }
+    #[test]
+    fn safe_lines_is_idempotent_with_trailing_blank_lines() {
+        // Found by fuzzing: "\n\n" became "\n", which sanitized again to "".
+        for input in ["\n\n", "a\n\n", "a\n\n\n", "\r\n\r\n", "a\n \n"] {
+            let once = safe_lines(input, 64);
+            assert_eq!(safe_lines(&once, 64), once, "{input:?}");
+        }
+        assert_eq!(safe_lines("a\n\nb\n\n", 64), "a\n\nb");
+        assert_eq!(safe_lines("\nlead", 64), "\nlead");
     }
     #[test]
     fn approval_display_is_unambiguous_ascii_and_bounds_expansion() -> Result<()> {
