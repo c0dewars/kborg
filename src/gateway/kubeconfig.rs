@@ -63,15 +63,31 @@ pub(super) fn read_config_file(path: &std::path::Path) -> Result<Kubeconfig> {
     let bytes = safety::read_small(path, 1024 * 1024)?;
     let text = std::str::from_utf8(&bytes)
         .map_err(|_| "Kubeconfig must be UTF-8. Next: save the file as UTF-8")?;
-    let mut raw = Kubeconfig::from_yaml(text)
+    let parent = path
+        .parent()
+        .ok_or("Invalid kubeconfig path. Next: pass --kubeconfig with a file path")?;
+    parse_config_text(text, parent)
+}
+/// Kubeconfig text read from a file in `parent`: names validated, relative
+/// file references resolved against `parent`.
+pub(crate) fn parse_config_text(text: &str, parent: &std::path::Path) -> Result<Kubeconfig> {
+    // Same decoding as `Kubeconfig::from_yaml`, but names are checked across
+    // every YAML document before the first-wins merge could drop a duplicate.
+    let documents: Vec<Kubeconfig> = serde_saphyr::from_multiple(text)
         .map_err(|_| "Invalid kubeconfig YAML (details suppressed to protect credentials). Next: check it with `kubectl config view`")?;
     for names in [
-        raw.contexts
+        documents
             .iter()
-            .map(|v| v.name.as_str())
+            .flat_map(|doc| doc.contexts.iter().map(|v| v.name.as_str()))
             .collect::<Vec<_>>(),
-        raw.clusters.iter().map(|v| v.name.as_str()).collect(),
-        raw.auth_infos.iter().map(|v| v.name.as_str()).collect(),
+        documents
+            .iter()
+            .flat_map(|doc| doc.clusters.iter().map(|v| v.name.as_str()))
+            .collect(),
+        documents
+            .iter()
+            .flat_map(|doc| doc.auth_infos.iter().map(|v| v.name.as_str()))
+            .collect(),
     ] {
         let mut unique = std::collections::HashSet::new();
         for name in names {
@@ -85,9 +101,10 @@ pub(super) fn read_config_file(path: &std::path::Path) -> Result<Kubeconfig> {
             }
         }
     }
-    let parent = path
-        .parent()
-        .ok_or("Invalid kubeconfig path. Next: pass --kubeconfig with a file path")?;
+    let mut raw = documents
+        .into_iter()
+        .try_fold(Kubeconfig::default(), Kubeconfig::merge)
+        .map_err(|_| "Kubeconfig documents disagree on kind or apiVersion. Next: keep one apiVersion v1 Config per file")?;
     for cluster in &mut raw.clusters {
         if let Some(c) = &mut cluster.cluster
             && let Some(p) = &mut c.certificate_authority

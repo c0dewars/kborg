@@ -765,3 +765,14 @@ fn duplicate_kubeconfig_names_are_rejected_before_selection() {
     );
     std::fs::remove_file(path).unwrap_or_else(|e| panic!("{e}"));
 }
+#[test]
+fn duplicate_kubeconfig_names_across_yaml_documents_are_rejected() {
+    // kube merges a multi-document file first-wins, which would silently drop
+    // the second "ambiguous" context before the duplicate check could see it.
+    let text = "apiVersion: v1\nkind: Config\ncontexts:\n- name: ambiguous\n  context: {cluster: first}\n---\napiVersion: v1\nkind: Config\ncontexts:\n- name: ambiguous\n  context: {cluster: second}\n";
+    let parent = std::path::Path::new("/kube");
+    assert!(parse_config_text(text, parent).is_err());
+    let distinct = text.replacen("ambiguous", "other", 1);
+    let merged = parse_config_text(&distinct, parent).unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(merged.contexts.len(), 2);
+}

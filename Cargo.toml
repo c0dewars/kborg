@@ -45,6 +45,8 @@ debug = 0
 
 [lints.rust]
 unsafe_code = "forbid"
+# cargo-fuzz builds with --cfg fuzzing; src/fuzzing.rs is compiled only then and in tests.
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(fuzzing)"] }
 
 [lints.clippy]
 unwrap_used = "deny"
