@@ -96,6 +96,15 @@ tar -xzf kborg-0.4.0-aarch64-apple-darwin.tar.gz
 
 Packages are currently unsigned; see [Operations](docs/OPERATIONS.md) for verification, updates and rollback.
 
+### Debian/Ubuntu (.deb) and Fedora/RHEL (.rpm)
+
+```sh
+sudo apt install ./kborg_0.5.0~rc.1_amd64.deb      # Debian / Ubuntu
+sudo dnf install ./kborg-0.5.0~rc.1-1.x86_64.rpm   # Fedora / RHEL-compatible
+```
+
+Both install `/usr/bin/kborg` and bash, zsh and fish completions, and need glibc 2.39 or newer. CI builds the .deb; the .rpm is built from `packaging/rpm/kborg.spec`. See [Operations](docs/OPERATIONS.md#install-from-a-deb-or-rpm).
+
 ## Run
 
 Try it without a cluster:
