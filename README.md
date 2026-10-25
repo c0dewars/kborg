@@ -281,6 +281,7 @@ Details: [SECURITY.md](SECURITY.md) and the [security review](docs/MAC_V1_SECURI
 | [YAML editing](docs/YAML_EDITING.md) · [v1 operations](docs/MAC_V1_OPERATIONS.md) | Reviewed edits, node maintenance |
 | [Helm lifecycle](docs/HELM_LIFECYCLE.md) | Supported chart workflows |
 | [Copilot](docs/COPILOT_INTEGRATION.md) | Account setup, enterprise deployments, containment |
+| [Roadmap](docs/ROADMAP.md) | Planned performance, security, feature, UI and UX work with measurable targets |
 | [CLI help](docs/CLI_HELP.txt) · [CLI output](docs/CLI_OUTPUT.md) | Scripting with `--json` |
 | [Hardening acceptance](docs/MAC_V1_HARDENING_ACCEPTANCE.md) | Soak, terminal and security evidence |
 | [Performance comparison](docs/PERFORMANCE_COMPARISON.md) | Memory, CPU and API traffic vs k9s and k10s |
