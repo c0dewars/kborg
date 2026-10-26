@@ -247,6 +247,36 @@ Test layers:
 
 CI requires format, clippy with reviewed exceptions, tests, dependency vulnerability/license checks, lockfile consistency, secret scanning, and release-build checks. Evaluate tools such as cargo-audit and cargo-deny as development tools rather than runtime dependencies. Schedule dependency review and reevaluate advisories before each release. Fuzz continuously within a defined compute budget. Release gates fail for unresolved critical/high exploitable findings; accepted lower-risk findings require owner, justification and expiry.
 
+### Fuzzing
+
+`src/fuzzing.rs` holds one entry point per parser that reads untrusted input. Each takes arbitrary bytes and panics when an invariant breaks, not only on a crash:
+
+| Target | Parser | Invariants checked |
+|---|---|---|
+| `sanitizer` | `safety::safe_text`, `safe_lines`, `review_text`, `review_display` | no control/bidi/zero-width output, bounded, idempotent; review text is exact or refused; review display is ASCII and reversible |
+| `kubeconfig` | kubeconfig text (`gateway::parse_config_text`) | names bounded, plain, unique across YAML documents; file references resolved |
+| `manifest` | local manifest parse, `flatten`, `body` (apply) | no Secret survives; ≤16 objects; body keeps the file's namespace or the default only when unset; protected namespaces refused |
+| `archive` | strict tar extraction (file copy) | nothing written outside the new directory, no links or special files, private modes, counts match, failure leaves nothing |
+| `k9s_views`, `k9s_hotkeys`, `k9s_aliases`, `k9s_plugins` | k9s `views.yaml`, `hotkeys.yaml`, `aliases.yaml`, `plugins.yaml` import | bounded, plain text; shortcuts round-trip; aliases expand within limits; every suggested register line is one shell-quoted argv |
+| `keymap`, `ui_config` | `keymap.yaml`, `ui.yaml` | keys round-trip through their names; errors are plain text |
+| `secret_masked` | masked Secret YAML, PEM/DER walker, registry hosts, reveal | output depends on hidden values only through their length; notes have fixed shapes; registry userinfo never shown |
+| `helm_storage` | Helm release decoding (base64, gzip, JSON, manifest YAML) | decode budget held; projections bounded and plain |
+
+Every error message must also be plain text. The screen snapshot (`src/tui/snapshot.rs`) renders app state rather than parsing input, so it has no target.
+
+**Always on (stable):** `cargo test` runs every target over its seeds in `fuzz/seeds/TARGET/` plus a few hundred deterministic mutations (well under a second in total), and a generated hostile-tar test.
+
+**Coverage-guided (nightly):** `fuzz/` is a separate cargo-fuzz crate; its dependencies never reach the kborg crate. With the project-local toolchain:
+
+```sh
+rustup toolchain install nightly --profile minimal
+cargo +1.99.0 install cargo-fuzz --version 0.13.2 --locked
+cd fuzz
+cargo +nightly fuzz run -O archive corpus/archive seeds/archive -- -dict=yaml.dict -max_total_time=3600
+```
+
+`corpus/` (grown by libFuzzer) and `artifacts/` (crashes) are ignored by git; copy a small, interesting input into `seeds/TARGET/` when it is worth keeping. Reproduce a crash with `cargo +nightly fuzz run TARGET artifacts/TARGET/crash-…`, fix it, and add a regression test next to the parser. The manual **Fuzz** workflow (`.github/workflows/fuzz.yml`, workflow_dispatch) runs every target on its own runner for a chosen time, one CPU-hour by default, and uploads any crash.
+
 ## 11. Production rollout and maintenance
 
 Release artifacts include checksums, signatures with documented trust/bootstrap, SBOM, provenance, licenses, changelog, supported platform/API matrix and installation/uninstallation instructions. A checksum hosted beside a binary detects corruption but alone does not establish publisher authenticity. No automatic updates while operating a cluster. Protect release credentials; separate build permissions from publishing permissions and review signing-key recovery.
