@@ -257,6 +257,9 @@ fn help_lines(app: &App, view: &HelpView) -> Vec<String> {
             if view.scope == Scope::Table {
                 hotkeys(app, &mut out);
             }
+            if matches!(view.scope, Scope::Table | Scope::Containers | Scope::Helm) {
+                out.extend(app.plugin_help(Some(view.scope)));
+            }
         }
         Mode::All => {
             out.push("EVERY KEY (your current bindings)".into());
@@ -265,6 +268,7 @@ fn help_lines(app: &App, view: &HelpView) -> Vec<String> {
                 section(app, scope, None, &mut out);
             }
             hotkeys(app, &mut out);
+            out.extend(app.plugin_help(None));
             out.extend(COMMAND_HELP.lines().map(str::to_owned));
             out.push(String::new());
         }
@@ -302,6 +306,20 @@ fn help_lines(app: &App, view: &HelpView) -> Vec<String> {
                     "table",
                     hotkey.command,
                     hotkey.description
+                ));
+            }
+            for binding in &app.plugins.bindings {
+                let description = app
+                    .plugins
+                    .meta(&binding.id)
+                    .map(|meta| safety::safe_text(&meta.description, 120))
+                    .unwrap_or_default();
+                out.push(format!(
+                    "{:<22} {:<18} {:<10} :ext {} {description}",
+                    "plugin",
+                    binding.key.to_string(),
+                    binding.scope.name(),
+                    binding.id,
                 ));
             }
             out.push(String::new());

@@ -114,13 +114,22 @@ impl App {
                 Ok(entries) => {
                     let lines = entries
                         .iter()
-                        .map(|entry| format!("{:<24} {}", entry.id, entry.executable.display()))
+                        .map(|entry| match &entry.plugin {
+                            Some(meta) => format!(
+                                "{:<24} {}  [k9s plugin]",
+                                entry.id,
+                                safety::safe_text(&meta.description, crate::plugins::MAX_DESCRIPTION)
+                            ),
+                            None => format!("{:<24} {}", entry.id, entry.executable.display()),
+                        })
                         .collect();
                     self.modal = Modal::Picker("Extensions", lines, 0);
                 }
                 Err(error) => self.status = error,
             },
-            ("ext" | "extension", [name]) => self.run_extension(name),
+            ("ext" | "extension", [name]) => {
+                self.run_extension(name);
+            }
             ("bench" | "be" | "benchmark" | "benchmarks", []) => self.bench(200, 5, "/"),
             ("bench" | "be" | "benchmark" | "benchmarks", [requests, concurrency, rest @ ..]) if rest.len() <= 1 => {
                 match (requests.parse(), concurrency.parse()) {
@@ -653,43 +662,6 @@ impl App {
             return;
         }
         self.prepare(Action::Kill);
-    }
-    /// Review handing the selected object to a registered read-only extension.
-    pub(super) fn run_extension(&mut self, name: &str) {
-        if !self.options.allow_extensions || !self.options.allow_tools {
-            self.status = "Extensions require --allow-extensions --allow-tools.".into();
-            return;
-        }
-        let Some(object) = self
-            .visible()
-            .get(self.selected)
-            .map(|object| (*object).clone())
-        else {
-            self.status = "Select an object to hand to the extension.".into();
-            return;
-        };
-        let review = crate::extensions::load(name).and_then(|registered| {
-            let prepared = registered.prepare(&object, crate::handoff::Format::Json)?;
-            let text = format!(
-                "{}\n{}\nINPUT\n{}",
-                registered.summary(),
-                prepared.summary(),
-                prepared.input_preview()
-            );
-            Ok((prepared, text))
-        });
-        match review {
-            Ok((prepared, text)) => {
-                let view =
-                    review_ui::Review::new(text, crate::handoff::CONFIRMATION.into(), self.epoch);
-                self.modal = Modal::WriteReview(Box::new(WriteReview {
-                    plan: WritePlan::Tool(Box::new(prepared)),
-                    view,
-                }));
-                self.status = "Read the whole input, then type RUN TOOL.".into();
-            }
-            Err(error) => self.status = error,
-        }
     }
     /// Benchmark the selected listening port-forward over loopback.
     pub(super) fn bench(&mut self, requests: u32, concurrency: u32, path: &str) {

@@ -1,0 +1,102 @@
+# Common community k9s plugins, written from the structure of the
+# derailed/k9s plugins directory. Used by the import-k9s fixture tests.
+plugins:
+  # stern.yaml: multi-Pod logs with stern
+  stern:
+    shortCut: Ctrl-L
+    confirm: false
+    description: "Logs <Stern>"
+    scopes:
+      - pods
+    command: stern
+    background: false
+    args:
+      - --tail
+      - 50
+      - $FILTER
+      - -n
+      - $NAMESPACE
+      - --context
+      - $CONTEXT
+  # dive.yaml: inspect a container image layer by layer
+  dive:
+    shortCut: d
+    confirm: false
+    description: "Dive image"
+    scopes:
+      - containers
+    command: dive
+    background: false
+    args:
+      - $COL-IMAGE
+  # debug-container.yaml: ephemeral debug container through a bash script
+  debug:
+    shortCut: Shift-D
+    description: Add debug container
+    dangerous: true
+    scopes:
+      - containers
+    command: bash
+    background: false
+    confirm: true
+    args:
+      - -c
+      - "kubectl --kubeconfig=$KUBECONFIG debug -it --context $CONTEXT -n=$NAMESPACE $POD --target=$NAME --image=nicolaka/netshoot:v0.12 --share-processes -- bash"
+  # log-full.yaml: full logs of the selected Pod
+  log-full:
+    shortCut: Ctrl-G
+    description: Logs (full)
+    scopes:
+      - pods
+    command: kubectl
+    background: false
+    args:
+      - logs
+      - $NAME
+      - -n
+      - $NAMESPACE
+      - --context
+      - $CONTEXT
+      - --kubeconfig
+      - $KUBECONFIG
+  # watch-events.yaml: watch events of the selected resource
+  watch-events:
+    shortCut: Shift-E
+    confirm: false
+    description: Get Events
+    scopes:
+      - all
+    command: sh
+    background: false
+    args:
+      - -c
+      - "kubectl events --context $CONTEXT --namespace $NAMESPACE --for $RESOURCE_NAME.$RESOURCE_GROUP/$NAME --watch"
+  # blame.yaml: kubectl-blame through a shell pipe into less
+  blame:
+    shortCut: b
+    confirm: false
+    description: "Add changes to manifest"
+    scopes:
+      - all
+    command: sh
+    background: false
+    args:
+      - -c
+      - "kubectl-blame $RESOURCE_NAME $NAME -n $NAMESPACE --context $CONTEXT | less -KR"
+  # helm-values.yaml: values of the selected Helm release
+  helm-values:
+    shortCut: v
+    confirm: false
+    description: Values
+    scopes:
+      - helm
+    command: helm
+    background: false
+    args:
+      - get
+      - values
+      - $COL-NAME
+      - -n
+      - $NAMESPACE
+      - --kube-context
+      - $CONTEXT

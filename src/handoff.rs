@@ -47,9 +47,23 @@ pub struct Prepared {
     identifier: u64,
     input: Vec<u8>,
     prepared_at: Instant,
+    /// The exact phrase that approves this review (`RUN TOOL` by default).
+    confirmation: String,
 }
 
 impl Prepared {
+    pub fn confirmation(&self) -> &str {
+        &self.confirmation
+    }
+    /// Require a stronger phrase (dangerous plugins). Never weakens it.
+    pub(crate) fn require(mut self, phrase: String) -> Self {
+        self.confirmation = phrase;
+        self
+    }
+    /// The exact argv the tool receives, one element each.
+    pub fn argv(&self) -> &[String] {
+        &self.argv
+    }
     pub fn summary(&self) -> String {
         let argv = self
             .argv
@@ -58,11 +72,12 @@ impl Prepared {
             .collect::<Vec<_>>()
             .join(" ");
         format!(
-            "READ-ONLY TOOL VIEW\nExecutable: {}\nArguments: {argv}\nExecutable change identifier: {:016x} ({} bytes; not a publisher signature)\nTransfer: {} bytes of reviewed, redacted text on stdin\nLimits: 15 seconds; 256 KiB combined stdout/stderr\nEnvironment supplied by KBorg: private HOME/USERPROFILE/TMPDIR and C locale; private working directory\nOutput: captured and sanitized; never applied to Kubernetes\nThe trusted tool retains your OS user's filesystem/network permissions. Known-field redaction cannot identify every confidential CRD field. Inspect the complete input below before sharing it.\nApproval expires after 60 seconds. Type {CONFIRMATION} to run.\n",
+            "READ-ONLY TOOL VIEW\nExecutable: {}\nArguments: {argv}\nExecutable change identifier: {:016x} ({} bytes; not a publisher signature)\nTransfer: {} bytes of reviewed, redacted text on stdin\nLimits: 15 seconds; 256 KiB combined stdout/stderr\nEnvironment supplied by KBorg: private HOME/USERPROFILE/TMPDIR and C locale; private working directory\nOutput: captured and sanitized; never applied to Kubernetes\nThe trusted tool retains your OS user's filesystem/network permissions. Known-field redaction cannot identify every confidential CRD field. Inspect the complete input below before sharing it.\nApproval expires after 60 seconds. Type {} to run.\n",
             safety::safe_text(&self.executable.to_string_lossy(), 4096),
             self.identifier,
             self.executable_bytes.len(),
-            self.input.len()
+            self.input.len(),
+            self.confirmation
         )
     }
 
@@ -131,6 +146,7 @@ pub fn prepare(
         identifier: hasher.finish(),
         input,
         prepared_at: Instant::now(),
+        confirmation: CONFIRMATION.into(),
     })
 }
 
@@ -287,8 +303,11 @@ fn run_bounded(
     if !allowed {
         return Err("external tool views require explicit --allow-tools".into());
     }
-    if confirmation != CONFIRMATION {
-        return Err("tool view canceled; exact RUN TOOL approval required".into());
+    if confirmation != prepared.confirmation {
+        return Err(format!(
+            "tool view canceled; exact {} approval required",
+            prepared.confirmation
+        ));
     }
     if prepared.prepared_at.elapsed() > REVIEW_LIFETIME {
         return Err("tool review expired; prepare a new review".into());

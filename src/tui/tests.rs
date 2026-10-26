@@ -77,6 +77,7 @@ fn harness() -> Harness {
             saved: vec![],
             aliases: Default::default(),
             hotkeys: Default::default(),
+            plugins: Default::default(),
             keymap: Default::default(),
             faults_only: false,
             ask_screen: None,
@@ -4398,4 +4399,169 @@ fn unicode_detail_wraps_by_cells_and_review_screens_still_escape() {
         let joined = lines.concat();
         assert!(joined.contains("pr\\u{f6}d/\\u{430}pi \\u{6771}\\u{4eac}"));
     });
+}
+
+/// Private registry directory removed when the test ends.
+#[cfg(unix)]
+struct PluginRegistry(std::path::PathBuf);
+#[cfg(unix)]
+impl PluginRegistry {
+    fn new(tag: &str) -> Result<Self> {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|_| "clock unavailable")?
+            .as_nanos();
+        let root = std::env::temp_dir()
+            .canonicalize()
+            .map_err(|_| "temp root missing")?
+            .join(format!("kborg-tui-{tag}-{}-{stamp}", std::process::id()));
+        safety::ensure_private_dir(&root)?;
+        Ok(Self(root))
+    }
+    fn register(&self, id: &str, args: &[&str], meta: crate::plugins::Meta) -> Result<()> {
+        let echo = std::path::Path::new("/bin/echo")
+            .canonicalize()
+            .map_err(|_| "echo unavailable")?;
+        let args: Vec<String> = args.iter().map(|arg| (*arg).to_owned()).collect();
+        crate::extensions::prepare_plugin_registration(id, &echo, &args, meta)?
+            .save(&self.0, crate::extensions::CONFIRMATION)
+    }
+}
+#[cfg(unix)]
+impl Drop for PluginRegistry {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn k9s_plugin_shortcut_help_menu_and_review_show_the_exact_expanded_argv() -> Result<()> {
+    let registry = PluginRegistry::new("plugins")?;
+    let meta = crate::plugins::Meta {
+        description: "Logs <Stern>".into(),
+        short_cut: Some("Ctrl-L".into()),
+        scopes: vec!["pods".into()],
+        ..Default::default()
+    };
+    registry.register(
+        "stern",
+        &[
+            "--tail",
+            "50",
+            "-n",
+            "$NAMESPACE",
+            "$NAME",
+            "--context=$CONTEXT",
+            "$(id)",
+        ],
+        meta.clone(),
+    )?;
+    let (mut app, _replies, _commands) = harness();
+    app.plugins =
+        crate::plugins::Catalog::new(vec![("stern".into(), meta)], &app.keymap, &app.hotkeys);
+    app.plugins.directory = Some(registry.0.clone());
+    app.context = "docker-desktop".into();
+    let pod = |name: &str| serde_json::json!({"apiVersion":"v1","kind":"Pod","metadata":{"name":name,"namespace":"shop","uid":"u1"}});
+    app.items = vec![pod("api-7d9")];
+
+    app.key_event(KeyCode::Char('?'), KeyModifiers::NONE)?;
+    let help = screen(&app, 120, 200).join("\n");
+    assert!(help.contains("PLUGINS"), "{help}");
+    assert!(
+        help.contains("Ctrl-L") && help.contains(":ext stern"),
+        "{help}"
+    );
+    app.key(KeyCode::Esc)?;
+
+    app.key_event(KeyCode::Char('l'), KeyModifiers::CONTROL)?;
+    assert!(app.status.contains("--allow-extensions --allow-tools"));
+    assert!(matches!(app.modal, Modal::None));
+    app.command("actions")?;
+    assert!(matches!(&app.modal, Modal::Picker("Actions", rows, _)
+        if rows.iter().any(|row| row.contains("[OFF] Plugin stern (Ctrl-L): Logs <Stern>: requires --allow-extensions"))));
+    app.key(KeyCode::Esc)?;
+
+    app.options.allow_extensions = true;
+    app.options.allow_tools = true;
+    app.key_event(KeyCode::Char('l'), KeyModifiers::CONTROL)?;
+    assert!(matches!(app.modal, Modal::WriteReview(_)), "{}", app.status);
+    assert!(app.status.contains("type RUN TOOL"));
+    let review = screen(&app, 140, 70).join("\n");
+    for line in [
+        "EXACT ARGV (8 elements",
+        "[3] \"-n\"",
+        "[4] \"shop\"",
+        "[5] \"api-7d9\"",
+        "[6] \"--context=docker-desktop\"",
+        "[7] \"$(id)\"",
+    ] {
+        assert!(review.contains(line), "missing {line:?} in\n{review}");
+    }
+    app.key(KeyCode::Esc)?;
+
+    // A hostile Pod name is refused before any review opens.
+    app.modal = Modal::None;
+    app.items = vec![pod("--exec=/bin/sh")];
+    app.key_event(KeyCode::Char('l'), KeyModifiers::CONTROL)?;
+    assert!(matches!(app.modal, Modal::None));
+    assert!(
+        app.status.contains("refused") && app.status.contains("$NAME"),
+        "{}",
+        app.status
+    );
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn k9s_plugin_in_containers_binds_free_keys_and_respects_the_keymap() -> Result<()> {
+    let registry = PluginRegistry::new("containers")?;
+    let meta = crate::plugins::Meta {
+        description: "Dive image".into(),
+        short_cut: Some("d".into()),
+        scopes: vec!["containers".into()],
+        dangerous: true,
+        ..Default::default()
+    };
+    registry.register("dive", &["$COL-IMAGE", "$CONTAINER", "$POD"], meta.clone())?;
+    let (mut app, _replies, _commands) = harness();
+    // Default keymap: d is describe in the containers view, so dive stays unbound.
+    app.plugins = crate::plugins::Catalog::new(
+        vec![("dive".into(), meta.clone())],
+        &app.keymap,
+        &app.hotkeys,
+    );
+    assert!(app.plugins.bindings.is_empty());
+    assert!(app.plugins.notices[0].contains("containers.describe"));
+    // keymap.yaml moves describe to D; d is now free for the plugin.
+    app.keymap = crate::keymap::parse("keys:\n  containers.describe: D\n")?;
+    app.plugins =
+        crate::plugins::Catalog::new(vec![("dive".into(), meta)], &app.keymap, &app.hotkeys);
+    app.plugins.directory = Some(registry.0.clone());
+    app.options.allow_extensions = true;
+    app.options.allow_tools = true;
+    let pod = serde_json::json!({"apiVersion":"v1","kind":"Pod","metadata":{"name":"web-1","namespace":"shop"},
+        "spec":{"containers":[{"name":"nginx","image":"nginx:1.27"}]}});
+    app.items = vec![pod.clone()];
+    app.modal = Modal::PodContainers(Box::new(pod), 1);
+    app.key_event(KeyCode::Char('?'), KeyModifiers::NONE)?;
+    let help = screen(&app, 120, 200).join("\n");
+    assert!(
+        help.contains("Dive image") && help.contains(":ext dive"),
+        "{help}"
+    );
+    app.key(KeyCode::Esc)?;
+    assert!(matches!(app.modal, Modal::PodContainers(..)));
+    app.key_event(KeyCode::Char('d'), KeyModifiers::NONE)?;
+    assert!(matches!(app.modal, Modal::WriteReview(_)), "{}", app.status);
+    assert!(app.status.contains("RUN DANGEROUS dive"));
+    let review = screen(&app, 140, 70).join("\n");
+    assert!(review.contains("[1] \"nginx:1.27\""), "{review}");
+    assert!(review.contains("[2] \"nginx\"") && review.contains("[3] \"web-1\""));
+    assert!(review.contains("DANGEROUS: the plugin is marked dangerous"));
+    // Esc returns to the container list, not the table.
+    app.key(KeyCode::Esc)?;
+    assert!(matches!(app.modal, Modal::PodContainers(..)));
+    Ok(())
 }

@@ -120,6 +120,40 @@ pub(super) fn resolve_file(parent: &std::path::Path, input: &str) -> Result<Stri
     };
     Ok(path.to_string_lossy().into())
 }
+/// Context, cluster and user names plus the kubeconfig path list, for k9s
+/// plugin variables (`$CONTEXT`, `$CLUSTER`, `$USER`, `$KUBECONFIG`). Names
+/// only; no credential is read into the result.
+pub fn plugin_identity(
+    options: &Connection,
+    context: Option<&str>,
+) -> Result<(String, String, String, String)> {
+    if options.demo {
+        return Ok(("demo".into(), "demo".into(), "demo".into(), String::new()));
+    }
+    let paths = config_paths(options)?;
+    let raw = merge_config_files(paths.clone())?;
+    let name = context
+        .map(str::to_owned)
+        .or_else(|| options.context.clone())
+        .or(raw.current_context.clone())
+        .ok_or("no kubeconfig context selected")?;
+    let entry = raw
+        .contexts
+        .iter()
+        .find(|entry| entry.name == name)
+        .and_then(|entry| entry.context.as_ref())
+        .ok_or("context not found")?;
+    let kubeconfig = std::env::join_paths(&paths)
+        .map_err(|_| "kubeconfig paths cannot be joined")?
+        .to_string_lossy()
+        .into_owned();
+    Ok((
+        name.clone(),
+        entry.cluster.clone(),
+        entry.user.clone().unwrap_or_default(),
+        kubeconfig,
+    ))
+}
 pub fn contexts(options: &Connection) -> Result<Vec<String>> {
     if options.demo {
         return Ok(vec!["demo".into()]);

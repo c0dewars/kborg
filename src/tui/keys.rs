@@ -1340,6 +1340,16 @@ impl App {
                                 8 => return self.image(),
                                 9 => self.prepare(Action::Restart),
                                 10 => self.prepare(Action::Delete),
+                                index if index >= plugin_run::ACTION_ROWS => {
+                                    if let Some((id, _)) = self
+                                        .plugins
+                                        .entries
+                                        .get(index - plugin_run::ACTION_ROWS)
+                                        .cloned()
+                                    {
+                                        self.run_extension(&id);
+                                    }
+                                }
                                 _ => {
                                     let key = match index {
                                         0 => 'd',
@@ -1602,6 +1612,12 @@ impl App {
         }
         if self.write_inflight {
             return self.key(code);
+        }
+        // Plugin keys are bound only where no action's effective key, hotkey
+        // or reserved key uses them, so they are checked before remapping
+        // (a key keymap.yaml moved away is free for a plugin).
+        if self.plugin_key(code, modifiers) {
+            return Ok(false);
         }
         let Some((code, modifiers)) = self.translate_key(code, modifiers) else {
             return Ok(false);
