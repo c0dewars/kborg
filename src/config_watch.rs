@@ -325,6 +325,8 @@ fn theme_path(dir: &Path, theme_id: &str) -> PathBuf {
     }
 }
 
+// `dir` is only read by the Unix owner check.
+#[cfg_attr(not(unix), allow(unused_variables))]
 fn trusted(file: ConfigFile, path: &Path, dir: Option<&Path>) -> Result<()> {
     let name = file.name();
     if safety::checked_path(path).is_err() {
