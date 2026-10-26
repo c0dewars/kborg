@@ -33,6 +33,11 @@ unicode-width = { version = "0.2", default-features = false }
 # Buf access for gzip response decoding (already transitive via http/hyper).
 bytes = "1"
 
+[target.'cfg(unix)'.dependencies]
+# Already used by crossterm. Full-TTY sessions poll and read raw stdin bytes
+# with a timeout, so no keystroke is consumed after the session ends.
+rustix = { version = "1", default-features = false, features = ["std", "event"] }
+
 [profile.release]
 lto = "thin"
 strip = true

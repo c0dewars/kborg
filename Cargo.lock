@@ -733,6 +733,7 @@ dependencies = [
  "kube",
  "regex",
  "ring",
+ "rustix",
  "serde",
  "serde-saphyr 2.0.0",
  "serde_json",

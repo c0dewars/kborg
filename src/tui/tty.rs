@@ -32,6 +32,8 @@ impl Terminal {
         }
         std::panic::set_hook(Box::new(|_| {
             let _ = terminal::disable_raw_mode();
+            // A panic during a full-TTY session must also undo remote modes.
+            let _ = io::stdout().write_all(crate::session::RESET.as_bytes());
             let _ = execute!(
                 io::stdout(),
                 EndSynchronizedUpdate,
