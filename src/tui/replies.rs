@@ -1387,6 +1387,7 @@ impl App {
                 .map(|reason| format!("[OFF] {title}: {reason}"))
                 .unwrap_or_else(|| format!("      {title}"))
         })
+        .chain(self.plugin_menu())
         .collect()
     }
     fn action_allowed(&self, action: &Action) -> bool {

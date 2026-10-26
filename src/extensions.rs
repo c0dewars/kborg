@@ -1,7 +1,7 @@
 //! Data-only registration for explicitly reviewed local read-only views.
 //! Registration does not execute a program or grant a KBorg capability. Every
 //! invocation still requires the complete handoff input preview and RUN TOOL.
-use crate::{Result, handoff, safety};
+use crate::{Result, handoff, plugins, safety};
 #[cfg(unix)]
 use ring::digest::{Context as Digest, SHA256};
 use serde::{Deserialize, Serialize};
@@ -39,6 +39,9 @@ struct Manifest {
     executable: PathBuf,
     arguments: Vec<String>,
     identity: Identity,
+    /// Schema 2: k9s plugin fields; arguments may reference `$VARIABLES`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    plugin: Option<plugins::Meta>,
 }
 
 /// Private fields make an approval apply to this exact executable and argv.
@@ -49,6 +52,9 @@ pub struct Registration {
 impl Registration {
     pub fn summary(&self) -> String {
         let entry = &self.manifest;
+        if let Some(meta) = &entry.plugin {
+            return plugin_summary(entry, meta);
+        }
         format!(
             "REGISTER LOCAL READ-ONLY VIEW\nName: {}\nNative executable: {}\nExact argv: {:?}\nExecutable SHA-256: {}\nSize: {} bytes\nRegistration runs nothing and grants no cluster, write, exec or network capability in KBorg.\nArguments remain literal on every invocation; object metadata never substitutes into argv.\nEvery invocation requires --allow-extensions, --allow-tools and a new whole-input RUN TOOL approval.\nExecution uses the existing supervised handoff: 15 seconds, 256 KiB captured output, minimized environment, no output applied to Kubernetes. The trusted program retains OS filesystem/network permissions; this is not an OS sandbox.\nExecutable changes invalidate registration. Approval expires in 60 seconds.\nType {CONFIRMATION} to save this private local registration.\n",
             entry.id,
@@ -102,10 +108,72 @@ pub fn prepare_registration(
             executable: executable.into(),
             arguments: arguments.to_vec(),
             identity,
+            plugin: None,
         },
         prepared_at: Instant::now(),
     })
 }
+
+/// Schema 2: a k9s plugin whose arguments may reference `$VARIABLES`. The
+/// executable is still an explicit absolute native file pinned by SHA-256.
+pub fn prepare_plugin_registration(
+    id: &str,
+    executable: &Path,
+    arguments: &[String],
+    meta: plugins::Meta,
+) -> Result<Registration> {
+    let mut registration = prepare_registration(id, executable, arguments)?;
+    registration.manifest.schema = 2;
+    registration.manifest.plugin = Some(meta);
+    validate_manifest(&registration.manifest)?;
+    Ok(registration)
+}
+
+fn plugin_summary(entry: &Manifest, meta: &plugins::Meta) -> String {
+    let variables = plugins::referenced(&entry.arguments)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|name| format!("${name}"))
+        .collect::<Vec<_>>();
+    let confirmation = if meta.dangerous || plugins::is_shell(&entry.executable) {
+        format!("{} {}", DANGEROUS, entry.id)
+    } else {
+        format!(
+            "{} (or {} {} when the expanded arguments look like a cluster write)",
+            handoff::CONFIRMATION,
+            DANGEROUS,
+            entry.id
+        )
+    };
+    let shell = if plugins::is_shell(&entry.executable) {
+        "\nSHELL: this plugin runs a shell script. Substituted values are limited to letters, digits and ._:/@=+,- and may not start with '-'; review the script itself before registering.\n"
+    } else {
+        ""
+    };
+    format!(
+        "REGISTER K9S PLUGIN\nName: {}\nDescription: {}\nNative executable: {}\nArgument template: {:?}\nVariables: {}\nScopes: {}\nShortcut: {} (bound only where the key is free; see ? help)\nConfirmation on every run: {confirmation}\nk9s background/confirm/overwriteOutput are accepted: KBorg always shows the full review, runs in the foreground and captures the output.\n{shell}Variables expand inside each argument only: never through a shell, never split into more arguments, never globbed. Values from the cluster are refused when they contain control characters, or start with '-' where an option could begin.\nExecutable SHA-256: {}\nSize: {} bytes\nRegistration runs nothing. Every run requires --allow-extensions, --allow-tools and a fresh review of the exact expanded argv and stdin.\nExecution: 15 seconds, 256 KiB captured output, minimized environment, output never applied to Kubernetes. The trusted program keeps your OS user's filesystem/network permissions; this is not an OS sandbox.\nExecutable changes invalidate registration. Approval expires in 60 seconds.\nType {CONFIRMATION} to save this private local registration.\n",
+        entry.id,
+        safety::safe_text(&meta.description, plugins::MAX_DESCRIPTION),
+        entry.executable.display(),
+        entry.arguments,
+        if variables.is_empty() {
+            "none".into()
+        } else {
+            variables.join(" ")
+        },
+        if meta.scopes.is_empty() {
+            "all".into()
+        } else {
+            meta.scopes.join(", ")
+        },
+        meta.short_cut.as_deref().unwrap_or("none"),
+        entry.identity.sha256,
+        entry.identity.length,
+    )
+}
+
+/// Stronger phrase for dangerous or likely-writing plugin runs.
+pub const DANGEROUS: &str = "RUN DANGEROUS";
 pub fn registry_dir() -> Result<PathBuf> {
     Ok(safety::config_dir()?.join("extensions"))
 }
@@ -116,6 +184,8 @@ pub struct EntrySummary {
     pub arguments: Vec<String>,
     /// Registered fingerprint; current contents are checked on load/invocation.
     pub sha256: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub plugin: Option<plugins::Meta>,
 }
 pub fn list() -> Result<Vec<EntrySummary>> {
     list_in(&registry_dir()?)
@@ -136,6 +206,7 @@ pub fn list_in(directory: &Path) -> Result<Vec<EntrySummary>> {
             executable: manifest.executable,
             arguments: manifest.arguments,
             sha256: manifest.identity.sha256,
+            plugin: manifest.plugin,
         });
     }
     entries.sort_by(|a, b| a.id.cmp(&b.id));
@@ -148,6 +219,16 @@ pub struct Registered {
 }
 impl Registered {
     pub fn summary(&self) -> String {
+        if let Some(meta) = &self.manifest.plugin {
+            return format!(
+                "Registered k9s plugin: {} ({})\nNative executable: {}\nArgument template: {:?}\nRegistered SHA-256: {}\n",
+                self.manifest.id,
+                safety::safe_text(&meta.description, plugins::MAX_DESCRIPTION),
+                self.manifest.executable.display(),
+                self.manifest.arguments,
+                self.manifest.identity.sha256
+            );
+        }
         format!(
             "Registered view: {}\nNative executable: {}\nExact argv: {:?}\nRegistered SHA-256: {}\n",
             self.manifest.id,
@@ -157,17 +238,71 @@ impl Registered {
         )
     }
     pub fn prepare(&self, object: &Value, format: handoff::Format) -> Result<handoff::Prepared> {
+        self.prepare_with(object, format, &plugins::Variables::default())
+    }
+    pub fn plugin(&self) -> Option<&plugins::Meta> {
+        self.manifest.plugin.as_ref()
+    }
+    /// Variables the argument template references (none for schema 1).
+    pub fn variables(&self) -> std::collections::BTreeSet<String> {
+        if self.manifest.plugin.is_none() {
+            return Default::default();
+        }
+        plugins::referenced(&self.manifest.arguments).unwrap_or_default()
+    }
+    /// Schema 1 arguments stay literal. Schema 2 arguments expand `values`
+    /// element by element; dangerous or likely-writing runs need the
+    /// stronger `RUN DANGEROUS NAME` phrase.
+    pub fn prepare_with(
+        &self,
+        object: &Value,
+        format: handoff::Format,
+        values: &plugins::Variables,
+    ) -> Result<handoff::Prepared> {
         revalidate(&self.manifest)?;
-        let prepared = handoff::prepare(
-            &self.manifest.executable,
-            &self.manifest.arguments,
-            object,
-            format,
-        )?;
+        let (argv, danger) = match &self.manifest.plugin {
+            None => (self.manifest.arguments.clone(), None),
+            Some(meta) => {
+                let argv =
+                    plugins::expand(&self.manifest.executable, &self.manifest.arguments, values)?;
+                let danger = plugins::danger(meta, &self.manifest.executable, &argv);
+                (argv, danger)
+            }
+        };
+        let mut prepared = handoff::prepare(&self.manifest.executable, &argv, object, format)?;
+        if danger.is_some() {
+            prepared = prepared.require(format!("{DANGEROUS} {}", self.manifest.id));
+        }
         // Check again after handoff captured its immutable executable/input.
         revalidate(&self.manifest)?;
         Ok(prepared)
     }
+    /// Why this run needs the stronger phrase, for the review text.
+    pub fn danger(&self, argv: &[String]) -> Option<&'static str> {
+        self.manifest
+            .plugin
+            .as_ref()
+            .and_then(|meta| plugins::danger(meta, &self.manifest.executable, argv))
+    }
+}
+
+/// The exact expanded argv, one numbered element per line, for reviews.
+pub fn argv_review(registered: &Registered, prepared: &handoff::Prepared) -> String {
+    let mut out = format!(
+        "EXACT ARGV ({} elements; each line is one argument, passed without a shell)\n  [0] {}\n",
+        prepared.argv().len() + 1,
+        safety::safe_text(&registered.manifest.executable.to_string_lossy(), 4096)
+    );
+    for (index, argument) in prepared.argv().iter().enumerate() {
+        out.push_str(&format!("  [{}] {argument:?}\n", index + 1));
+    }
+    if let Some(reason) = registered.danger(prepared.argv()) {
+        out.push_str(&format!(
+            "DANGEROUS: {reason}. Type {} to run.\n",
+            prepared.confirmation()
+        ));
+    }
+    out
 }
 pub fn load(id: &str) -> Result<Registered> {
     load_from(&registry_dir()?, id)
@@ -335,8 +470,13 @@ fn validate_command(executable: &Path, arguments: &[String]) -> Result<()> {
     safety::checked_path(executable)
 }
 fn validate_manifest(manifest: &Manifest) -> Result<()> {
-    if manifest.schema != 1 {
-        return Err("unsupported extension registry schema".into());
+    match (manifest.schema, &manifest.plugin) {
+        (1, None) => {}
+        (2, Some(meta)) => {
+            meta.validate()?;
+            plugins::referenced(&manifest.arguments)?;
+        }
+        _ => return Err("unsupported extension registry schema".into()),
     }
     validate_id(&manifest.id)?;
     validate_command(&manifest.executable, &manifest.arguments)?;
@@ -445,11 +585,19 @@ fn native_magic(magic: &[u8]) -> bool {
     )
 }
 
-/// Explain how each entry of a k9s `plugins.yaml` maps to KBorg. Nothing is
-/// registered or run: registration needs its own per-entry review, and k9s
-/// plugins that rely on variable substitution, PATH lookup or background
-/// shells do not fit the literal, reviewed handoff model.
-pub fn import_k9s(text: &str) -> Result<String> {
+/// One k9s plugin entry, parsed but not trusted: `command` is only a name
+/// until the user registers an explicit absolute executable for it.
+#[derive(Clone, Debug)]
+pub struct K9sPlugin {
+    pub name: String,
+    pub id: String,
+    pub command: String,
+    pub args: Vec<String>,
+    pub meta: plugins::Meta,
+    pipes: bool,
+}
+
+fn parse_k9s(text: &str) -> Result<Vec<K9sPlugin>> {
     #[derive(Deserialize)]
     struct PluginFile {
         plugins: std::collections::BTreeMap<String, Value>,
@@ -469,83 +617,247 @@ pub fn import_k9s(text: &str) -> Result<String> {
     };
     let file: PluginFile = serde_saphyr::from_str_with_options(text, options)
         .map_err(|_| "invalid plugins.yaml; expected a k9s plugins: mapping")?;
+    let text = |value: &Value, limit: usize| {
+        match value {
+            Value::String(text) => text.clone(),
+            Value::Null => String::new(),
+            other => other.to_string(),
+        }
+        .chars()
+        .take(limit)
+        .collect::<String>()
+    };
+    Ok(file
+        .plugins
+        .iter()
+        .take(256)
+        .map(|(name, plugin)| {
+            let name = safety::safe_text(name, 63);
+            K9sPlugin {
+                id: name.to_ascii_lowercase().replace([' ', '_'], "-"),
+                command: text(&plugin["command"], 4096),
+                args: plugin["args"]
+                    .as_array()
+                    .map(|args| args.iter().map(|arg| text(arg, 4097)).collect())
+                    .unwrap_or_default(),
+                meta: plugins::Meta {
+                    description: safety::safe_text(
+                        &text(&plugin["description"], 512),
+                        plugins::MAX_DESCRIPTION,
+                    ),
+                    short_cut: plugin["shortCut"]
+                        .as_str()
+                        .map(|key| key.trim().chars().take(17).collect()),
+                    scopes: plugin["scopes"]
+                        .as_array()
+                        .map(|scopes| {
+                            scopes
+                                .iter()
+                                .take(17)
+                                .map(|scope| text(scope, 64).trim().to_ascii_lowercase())
+                                .collect()
+                        })
+                        .unwrap_or_default(),
+                    background: plugin["background"] == true,
+                    confirm: plugin["confirm"] == true,
+                    dangerous: plugin["dangerous"] == true,
+                    overwrite_output: plugin["overwriteOutput"] == true,
+                },
+                pipes: plugin.get("pipes").is_some(),
+                name,
+            }
+        })
+        .collect())
+}
+
+/// The named k9s plugin from `plugins.yaml`, validated for `register-k9s`.
+pub fn k9s_plugin(text: &str, name: &str) -> Result<K9sPlugin> {
+    let plugin = parse_k9s(text)?
+        .into_iter()
+        .find(|plugin| plugin.name == name || plugin.id == name)
+        .ok_or("plugins.yaml has no plugin with that name")?;
+    if let Some(reason) = blocking(&plugin).into_iter().next() {
+        return Err(format!("plugin {}: {reason}", plugin.id));
+    }
+    Ok(plugin)
+}
+
+/// Problems that stop registration, whatever executable is chosen.
+fn blocking(plugin: &K9sPlugin) -> Vec<String> {
+    let mut reasons = Vec::new();
+    if plugin.pipes {
+        reasons.push("uses pipes; KBorg runs one executable with its own argv".into());
+    }
+    if plugin.command.is_empty() || plugin.command.contains('$') {
+        reasons.push("command must name a program, not a variable".into());
+    }
+    if let Err(error) = plugins::referenced(&plugin.args) {
+        reasons.push(error);
+    }
+    if let Err(error) = plugin.meta.validate() {
+        reasons.push(error);
+    }
+    if plugin.args.len() > 64 || plugin.args.iter().any(|arg| arg.len() > 4096) {
+        reasons.push("more than 64 arguments or an argument over 4096 bytes".into());
+    }
+    if !safety::valid_id(&plugin.id) {
+        reasons
+            .push("name cannot be a KBorg extension id (lowercase letters, digits and -)".into());
+    }
+    reasons
+}
+
+/// A built-in KBorg feature that covers what a common plugin does.
+fn equivalent(plugin: &K9sPlugin) -> Option<&'static str> {
+    let id = plugin.id.as_str();
+    Some(if id.contains("debug") {
+        ":debug (reviewed ephemeral debug container)"
+    } else if id.contains("event") {
+        ":events, or Enter/d on the object"
+    } else if id.contains("value") {
+        "Helm history v (stored values, redacted)"
+    } else if id.contains("log") {
+        "l / :logs (built-in bounded logs)"
+    } else {
+        return None;
+    })
+}
+
+/// Finds a command on PATH for the import report only. Registration still
+/// needs the absolute path named explicitly and pins its SHA-256.
+pub fn resolve_on_path(command: &str) -> Option<PathBuf> {
+    if command.contains('/') {
+        return Path::new(command)
+            .is_absolute()
+            .then(|| PathBuf::from(command));
+    }
+    std::env::split_paths(&std::env::var_os("PATH")?).find_map(|directory| {
+        let candidate = directory.join(command);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let metadata = fs::metadata(&candidate).ok()?;
+            (metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
+                .then(|| candidate.canonicalize().ok())
+                .flatten()
+        }
+        #[cfg(not(unix))]
+        {
+            candidate.is_file().then_some(candidate)
+        }
+    })
+}
+
+/// Explain how each entry of a k9s `plugins.yaml` maps to KBorg. Nothing is
+/// registered or run. Plugins that run one program get a `register-k9s`
+/// command with the program's absolute path (found on PATH by `resolve`);
+/// shell scripts and pipes are flagged for review.
+pub fn import_k9s(
+    text: &str,
+    file: &str,
+    resolve: &dyn Fn(&str) -> Option<PathBuf>,
+) -> Result<String> {
+    let entries = parse_k9s(text)?;
+    let keymap = crate::keymap::Keymap::default();
     let mut ready = Vec::new();
-    let mut hotkeys = Vec::new();
     let mut skipped = Vec::new();
-    for (name, plugin) in file.plugins.iter().take(256) {
-        let name = safety::safe_text(name, 63);
-        let id = name.to_ascii_lowercase().replace([' ', '_'], "-");
-        let command = plugin["command"].as_str().unwrap_or("");
-        let args = plugin["args"]
-            .as_array()
-            .map(|args| {
-                args.iter()
-                    .map(|arg| match arg {
-                        Value::String(text) => text.clone(),
-                        other => other.to_string(),
-                    })
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
-        let mut reasons = Vec::new();
-        if ["sh", "bash", "zsh", "/bin/sh", "/bin/bash", "/bin/zsh"].contains(&command) {
-            reasons.push("wraps a shell script; register a dedicated executable instead");
-        } else if !Path::new(command).is_absolute() {
-            reasons.push("command is looked up on PATH; KBorg needs an absolute executable path");
-        }
-        if args.iter().any(|arg| arg.contains('$')) || command.contains('$') {
-            reasons.push("uses $VARIABLES; KBorg sends the redacted object as JSON on stdin instead of substituting names");
-        }
-        if plugin["background"] == true {
-            reasons.push(
-                "runs in the background; KBorg tools run in the foreground with a 15-second limit",
+    for plugin in &entries {
+        let mut reasons = blocking(plugin);
+        let program = Path::new(&plugin.command);
+        if plugins::is_shell(program) {
+            reasons.insert(
+                0,
+                "wraps a shell script; needs review (register a dedicated executable, or see docs for pinned shells)".into(),
             );
         }
-        if plugin.get("pipes").is_some() {
-            reasons.push("uses pipes; KBorg runs one executable with literal arguments");
-        }
-        if !safety::valid_id(&id) {
-            reasons.push("name cannot be a KBorg extension id (lowercase letters, digits and -)");
-        }
         if !reasons.is_empty() {
-            skipped.push(format!("  {name}: {}", reasons.join("; ")));
+            let hint = equivalent(plugin)
+                .map(|feature| format!("; built-in: {feature}"))
+                .unwrap_or_default();
+            skipped.push(format!("  {}: {}{hint}", plugin.id, reasons.join("; ")));
             continue;
         }
-        let mut line = format!(
-            "kborg extensions register {id} --tool {}",
-            safety::safe_text(command, 4096)
+        let tool = resolve(&plugin.command);
+        let mut notes = Vec::new();
+        let command = safety::safe_text(
+            program
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or(&plugin.command),
+            255,
         );
-        for arg in &args {
-            line.push_str(&format!(" --tool-arg {:?}", safety::safe_text(arg, 4096)));
-        }
-        ready.push(line);
-        if let Some(shortcut) = plugin["shortCut"]
-            .as_str()
-            .and_then(crate::hotkeys::Shortcut::parse)
-        {
-            hotkeys.push(format!(
-                "  {id}:\n    shortCut: {shortcut}\n    description: {:?}\n    command: ext {id}",
-                safety::safe_text(plugin["description"].as_str().unwrap_or(&name), 120)
+        if tool.is_none() {
+            notes.push(format!(
+                "{command} was not found on PATH; install it or pass its absolute path"
             ));
         }
+        let catalog = plugins::Catalog::new(
+            vec![(plugin.id.clone(), plugin.meta.clone())],
+            &keymap,
+            &Vec::new(),
+        );
+        notes.extend(catalog.notices.iter().map(|notice| {
+            notice
+                .split_once(": ")
+                .map_or(notice.clone(), |(_, rest)| rest.to_owned())
+        }));
+        if plugin.meta.background {
+            notes.push("background: KBorg runs it in the foreground and shows the output".into());
+        }
+        if plugin.meta.dangerous {
+            notes.push(format!(
+                "dangerous: every run needs {DANGEROUS} {}",
+                plugin.id
+            ));
+        }
+        let variables = plugins::referenced(&plugin.args)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|name| format!("${name}"))
+            .collect::<Vec<_>>();
+        let mut line = format!(
+            "  {} [{}{}]{}\n    kborg extensions register-k9s {} {} --tool {}\n",
+            plugin.id,
+            if plugin.meta.scopes.is_empty() {
+                "all".into()
+            } else {
+                plugin.meta.scopes.join(",")
+            },
+            catalog
+                .bindings
+                .first()
+                .map(|binding| format!("; {}", binding.key))
+                .unwrap_or_default(),
+            if plugin.meta.description.is_empty() {
+                String::new()
+            } else {
+                format!(" {}", plugin.meta.description)
+            },
+            safety::safe_text(file, 4096),
+            plugin.id,
+            tool.map_or_else(
+                || format!("/ABSOLUTE/PATH/TO/{command}"),
+                |path| safety::safe_text(&path.to_string_lossy(), 4096)
+            ),
+        );
+        if !variables.is_empty() {
+            line.push_str(&format!("    variables: {}\n", variables.join(" ")));
+        }
+        for note in notes {
+            line.push_str(&format!("    note: {note}\n"));
+        }
+        ready.push(line);
     }
     let mut out = format!(
-        "k9s plugins: {} total, {} can be registered, {} need changes\n",
+        "k9s plugins: {} total, {} can be registered, {} need changes or review\n",
         ready.len() + skipped.len(),
         ready.len(),
         skipped.len()
     );
     if !ready.is_empty() {
-        out.push_str("\nRegister each (every registration shows its own review):\n");
+        out.push_str("\nRegister each (every registration shows its own review and pins the executable's SHA-256):\n");
         for line in &ready {
-            out.push_str(&format!("  {line}\n"));
-        }
-    }
-    if !hotkeys.is_empty() {
-        out.push_str("\nAdd to hotkeys.yaml to keep the k9s shortcuts:\nhotKeys:\n");
-        for entry in &hotkeys {
-            out.push_str(entry);
-            out.push('\n');
+            out.push_str(line);
         }
     }
     if !skipped.is_empty() {
@@ -555,31 +867,180 @@ pub fn import_k9s(text: &str) -> Result<String> {
             out.push('\n');
         }
     }
-    out.push_str("\nExtensions are read-only views: they receive the selected object as redacted JSON on stdin, and their output is shown, never applied. Run them with :ext NAME and --allow-extensions --allow-tools.\n");
+    out.push_str("\nRegistered plugins run with :ext NAME or their shortCut (shown in ? help) and need --allow-extensions --allow-tools. Variables expand inside each argument, never through a shell; every run shows the exact argv and the redacted object sent on stdin, and its output is shown, never applied.\n");
     Ok(out)
 }
 
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+    const COMMUNITY: &str = include_str!("../tests/fixtures/k9s/community-plugins.yaml");
+    fn fake_path(command: &str) -> Option<PathBuf> {
+        (command != "dive").then(|| PathBuf::from(format!("/opt/tools/bin/{command}")))
+    }
+
     #[test]
-    fn k9s_plugins_are_classified_without_registering_anything() -> Result<()> {
-        let report = import_k9s(
-            "plugins:\n  jq-view:\n    shortCut: Shift-J\n    description: Pretty JSON\n    scopes: [all]\n    command: /usr/bin/jq\n    args: [\".\"]\n  stern:\n    shortCut: Ctrl-L\n    command: stern\n    args: [\"--namespace\", \"$NAMESPACE\", \"$NAME\"]\n  bg:\n    command: /bin/bash\n    background: true\n    args: [-c, 'echo hi']\n",
-        )?;
-        assert!(report.starts_with("k9s plugins: 3 total, 1 can be registered, 2 need changes"));
+    fn k9s_community_plugins_are_classified_without_registering_anything() -> Result<()> {
+        let report = import_k9s(COMMUNITY, "plugins.yaml", &fake_path)?;
         assert!(
             report
-                .contains("kborg extensions register jq-view --tool /usr/bin/jq --tool-arg \".\"")
+                .starts_with("k9s plugins: 7 total, 4 can be registered, 3 need changes or review"),
+            "{report}"
         );
-        assert!(report.contains("stern: command is looked up on PATH"));
-        assert!(report.contains("$VARIABLES"));
-        assert!(report.contains("bg: wraps a shell script"));
+        for line in [
+            "kborg extensions register-k9s plugins.yaml stern --tool /opt/tools/bin/stern",
+            "kborg extensions register-k9s plugins.yaml log-full --tool /opt/tools/bin/kubectl",
+            "kborg extensions register-k9s plugins.yaml helm-values --tool /opt/tools/bin/helm",
+            "kborg extensions register-k9s plugins.yaml dive --tool /ABSOLUTE/PATH/TO/dive",
+            "stern [pods; Ctrl-L] Logs <Stern>",
+            "variables: $CONTEXT $FILTER $NAMESPACE",
+            "dive was not found on PATH",
+            "d is taken by containers.describe in the containers view; use :ext dive",
+            "v is taken by helm.values in the helm view; use :ext helm-values",
+            "debug: wraps a shell script; needs review",
+            "built-in: :debug",
+            "watch-events: wraps a shell script",
+            "blame: wraps a shell script",
+        ] {
+            assert!(report.contains(line), "missing {line:?} in\n{report}");
+        }
         assert!(
-            !report.contains("shortCut: Shift-J"),
-            "Shift-letter is not a KBorg hotkey"
+            import_k9s(
+                "plugins:\n  a: &x {command: /x}\n  b: *x\n",
+                "p",
+                &fake_path
+            )
+            .is_err()
         );
-        assert!(import_k9s("plugins:\n  a: &x {command: /x}\n  b: *x\n").is_err());
+        let blocked = "plugins:\n  env:\n    command: /usr/bin/env\n    args: [$HOME]\n  piped:\n    command: /usr/bin/jq\n    pipes: [x]\n";
+        let unknown = import_k9s(blocked, "p", &fake_path)?;
+        assert!(unknown.contains("unknown plugin variable $HOME"));
+        assert!(unknown.contains("uses pipes"));
+        // register-k9s refuses what the importer flags as blocked.
+        assert!(k9s_plugin(COMMUNITY, "stern").is_ok());
+        assert!(k9s_plugin(blocked, "env").is_err());
+        assert!(k9s_plugin(blocked, "piped").is_err());
+        assert!(k9s_plugin(COMMUNITY, "missing").is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn registered_community_plugins_expand_exact_argv_and_refuse_injection() -> Result<()> {
+        let directory = Temporary::new()?;
+        let executable = native()?;
+        let mut values = plugins::Variables::for_object(
+            &json!({"apiVersion":"v1","kind":"Pod","metadata":{"name":"api-7d9","namespace":"shop"}}),
+            "pods",
+            "docker-desktop",
+        );
+        values.set("FILTER", "api");
+        values.set("KUBECONFIG", "/Users/me/.kube/config");
+        for (name, expected) in [
+            (
+                "stern",
+                vec![
+                    "--tail",
+                    "50",
+                    "api",
+                    "-n",
+                    "shop",
+                    "--context",
+                    "docker-desktop",
+                ],
+            ),
+            (
+                "log-full",
+                vec![
+                    "logs",
+                    "api-7d9",
+                    "-n",
+                    "shop",
+                    "--context",
+                    "docker-desktop",
+                    "--kubeconfig",
+                    "/Users/me/.kube/config",
+                ],
+            ),
+        ] {
+            let plugin = k9s_plugin(COMMUNITY, name)?;
+            let registration =
+                prepare_plugin_registration(&plugin.id, &executable, &plugin.args, plugin.meta)?;
+            assert!(registration.summary().contains("REGISTER K9S PLUGIN"));
+            assert!(registration.summary().contains("never through a shell"));
+            registration.save(&directory.0, CONFIRMATION)?;
+            let entry = load_from(&directory.0, name)?;
+            let prepared = entry.prepare_with(
+                &json!({"metadata":{"name":"api-7d9"}}),
+                handoff::Format::Json,
+                &values,
+            )?;
+            assert_eq!(prepared.argv(), expected.as_slice());
+            assert_eq!(prepared.confirmation(), handoff::CONFIRMATION);
+            let review = argv_review(&entry, &prepared);
+            assert!(review.contains("[1] \"--tail\"") || review.contains("[1] \"logs\""));
+            assert!(review.contains("passed without a shell"));
+        }
+        assert_eq!(list_in(&directory.0)?.len(), 2);
+        assert!(
+            list_in(&directory.0)?
+                .iter()
+                .all(|entry| entry.plugin.is_some())
+        );
+        let stern = load_from(&directory.0, "stern")?;
+        // A hostile name or filter never reaches argv as an option or a control.
+        for hostile in ["--exec=/bin/sh", "-n", "a\nb", "x\u{1b}]52;c;AAAA\u{7}"] {
+            let mut bad = values.clone();
+            bad.set("FILTER", hostile);
+            assert!(
+                stern
+                    .prepare_with(&json!({}), handoff::Format::Json, &bad)
+                    .is_err(),
+                "{hostile:?}"
+            );
+        }
+        // `$(...)` stays literal text inside one argument.
+        let mut literal = values.clone();
+        literal.set("FILTER", "$(touch SHOULD_NOT_EXIST)");
+        let prepared = stern.prepare_with(&json!({}), handoff::Format::Json, &literal)?;
+        assert_eq!(prepared.argv()[2], "$(touch SHOULD_NOT_EXIST)");
+        let outcome = handoff::run(prepared, handoff::CONFIRMATION, true)?;
+        assert!(outcome.stdout.contains("$(touch SHOULD_NOT_EXIST)"));
+        assert!(!directory.0.join("SHOULD_NOT_EXIST").exists());
+
+        // dangerous: true needs RUN DANGEROUS NAME, and RUN TOOL is refused.
+        let mut meta = k9s_plugin(COMMUNITY, "dive")?.meta;
+        meta.dangerous = true;
+        prepare_plugin_registration("risky", &executable, &["$COL-IMAGE".into()], meta)?
+            .save(&directory.0, CONFIRMATION)?;
+        let risky = load_from(&directory.0, "risky")?;
+        let mut image = values.clone();
+        image.column("IMAGE", "nginx:1.27");
+        let prepared = risky.prepare_with(&json!({}), handoff::Format::Json, &image)?;
+        assert_eq!(prepared.confirmation(), "RUN DANGEROUS risky");
+        assert!(
+            argv_review(&risky, &prepared).contains("DANGEROUS: the plugin is marked dangerous")
+        );
+        assert!(
+            prepared
+                .summary()
+                .contains("Type RUN DANGEROUS risky to run")
+        );
+        assert!(handoff::run(prepared, handoff::CONFIRMATION, true).is_err());
+        let prepared = risky.prepare_with(&json!({}), handoff::Format::Json, &image)?;
+        assert!(handoff::run(prepared, "RUN DANGEROUS risky", true)?.success);
+        // Unknown variables never register; schema 2 without plugin is invalid.
+        assert!(
+            prepare_plugin_registration(
+                "bad",
+                &executable,
+                &["$HOME".into()],
+                plugins::Meta::default()
+            )
+            .is_err()
+        );
+        let mut manifest = prepare_registration("plain", &executable, &[])?.manifest;
+        manifest.schema = 2;
+        assert!(validate_manifest(&manifest).is_err());
         Ok(())
     }
     use serde_json::json;

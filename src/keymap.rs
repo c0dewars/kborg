@@ -1383,7 +1383,7 @@ impl Key {
     /// Keys that keep their meaning everywhere: closing, approving, the
     /// terminal interrupt and session escape, and Ctrl keys terminals fold
     /// into Enter, Tab, Backspace or Esc.
-    fn reserved(self) -> bool {
+    pub(crate) fn reserved(self) -> bool {
         matches!(
             self,
             Key::Esc | Key::Enter | Key::Ctrl('c' | 'm' | 'i' | 'h' | 'j' | '[' | ']')

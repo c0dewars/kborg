@@ -34,7 +34,7 @@ use kube::{
     config::{KubeConfigOptions, Kubeconfig},
 };
 use kubeconfig::*;
-pub use kubeconfig::{contexts, review_auth_helper};
+pub use kubeconfig::{contexts, plugin_identity, review_auth_helper};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{

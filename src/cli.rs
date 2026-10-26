@@ -1624,8 +1624,19 @@ fn extensions_command(opts: &Options) -> Result<()> {
         Some("import-k9s") if args.len()==2 && !opts.json => {
             let path=std::path::Path::new(&args[1]);
             let bytes=safety::read_small(path,256*1024)?;
-            output!("{}",crate::extensions::import_k9s(std::str::from_utf8(&bytes).map_err(|_|"plugins.yaml must be UTF-8")?)?);
+            output!("{}",crate::extensions::import_k9s(std::str::from_utf8(&bytes).map_err(|_|"plugins.yaml must be UTF-8")?,&args[1],&crate::extensions::resolve_on_path)?);
             Ok(())
+        },
+        Some("register-k9s") if args.len()==5 && args[3]=="--tool" && !opts.json => {
+            if !io::stdin().is_terminal() || !io::stdout().is_terminal() {return Err("extension registration requires an interactive review".into());}
+            let bytes=safety::read_small(std::path::Path::new(&args[1]),256*1024)?;
+            let plugin=crate::extensions::k9s_plugin(std::str::from_utf8(&bytes).map_err(|_|"plugins.yaml must be UTF-8")?,&args[2])?;
+            let review=crate::extensions::prepare_plugin_registration(&plugin.id,std::path::Path::new(&args[4]),&plugin.args,plugin.meta)?;
+            outputln!("k9s command: {}\n{}",safety::safe_text(&plugin.command,4096),review.summary());output!("> ");io::stdout().flush().map_err(|_|"output failed")?;
+            let mut typed=String::new();use std::io::BufRead;
+            io::stdin().lock().take(256).read_line(&mut typed).map_err(|_|"input failed")?;
+            review.save(&crate::extensions::registry_dir()?,typed.trim_end())?;
+            outputln!("k9s plugin registered; every run still requires explicit capability and a review of the exact argv."); Ok(())
         },
         Some("remove") if args.len()==2 && !opts.json => {
             crate::extensions::remove(&args[1])?; outputln!("Local extension registration removed."); Ok(())
@@ -1649,13 +1660,17 @@ fn extensions_command(opts: &Options) -> Result<()> {
                 return Err("extensions run requires --allow-extensions --allow-tools and interactive whole-input review".into());
             }
             let registered=crate::extensions::load(&args[1])?;
-            let object=runtime()?.block_on(async {
+            let (object,context,resource)=runtime()?.block_on(async {
                 let mut gateway=tokio::time::timeout(Duration::from_secs(20),Gateway::connect(opts.connection.clone())).await.map_err(|_|"connection timed out")??;
                 discover_if_needed(&mut gateway,&args[2]).await?;
-                tokio::time::timeout(Duration::from_secs(15),gateway.get(&args[2],&gateway.namespace,&args[3])).await.map_err(|_|"API timed out")?
+                let resource=args[2].clone();
+                let object=tokio::time::timeout(Duration::from_secs(15),gateway.get(&args[2],&gateway.namespace,&args[3])).await.map_err(|_|"API timed out")??;
+                Ok::<_,String>((object,gateway.context.clone(),resource))
             })?;
-            let review=registered.prepare(&object,crate::handoff::Format::Json)?;
-            outputln!("{}\n{}\n{}",registered.summary(),review.summary(),review.input_preview());output!("> ");io::stdout().flush().map_err(|_|"output failed")?;
+            let mut values=crate::plugins::Variables::for_object(&object,&resource,&context);
+            values.add_identity(&opts.connection,Some(&context),&registered.variables())?;
+            let review=registered.prepare_with(&object,crate::handoff::Format::Json,&values)?;
+            outputln!("{}\n{}\n{}\n{}",registered.summary(),crate::extensions::argv_review(&registered,&review),review.summary(),review.input_preview());output!("> ");io::stdout().flush().map_err(|_|"output failed")?;
             let mut typed=String::new();use std::io::BufRead;
             io::stdin().lock().take(256).read_line(&mut typed).map_err(|_|"input failed")?;
             let outcome=crate::handoff::run(review,typed.trim_end(),opts.allow_tools && opts.allow_extensions)?;

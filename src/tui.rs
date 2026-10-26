@@ -34,6 +34,7 @@ mod keyhelp;
 mod keys;
 #[path = "ui_navigation.rs"]
 mod nav;
+mod plugin_run;
 mod render;
 mod replies;
 #[path = "ui_review.rs"]
@@ -263,6 +264,8 @@ struct App {
     saved: Vec<crate::screendump::Record>,
     aliases: crate::aliases::Aliases,
     hotkeys: crate::hotkeys::Hotkeys,
+    /// Registered k9s plugins and their shortcut bindings.
+    plugins: crate::plugins::Catalog,
     /// keymap.yaml: effective keys of every registered action.
     keymap: crate::keymap::Keymap,
     /// Ctrl-Z: show only objects that need attention (k9s faults view).
@@ -837,6 +840,7 @@ pub fn run(options: Options) -> Result<()> {
         Ok(keymap) => (keymap, None),
         Err(error) => (Default::default(), Some(error)),
     };
+    let plugins = crate::plugins::Catalog::load(&keymap, &hotkeys);
     let (views, view_error) = match crate::views::load() {
         Ok(views) => (views, None),
         Err(error) => (Default::default(), Some(error)),
@@ -872,6 +876,7 @@ pub fn run(options: Options) -> Result<()> {
         saved: vec![],
         aliases,
         hotkeys,
+        plugins,
         keymap,
         faults_only: false,
         ask_screen: None,

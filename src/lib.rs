@@ -66,6 +66,7 @@ pub mod manifest_apply;
 pub mod navigation_views;
 pub mod node_shell;
 pub mod pager;
+pub mod plugins;
 pub mod scan;
 pub mod screendump;
 pub mod secrets;
