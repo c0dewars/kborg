@@ -31,6 +31,27 @@ A namespace with 5,001 ConfigMaps while one of them is updated every second, so 
 | CPU, average | **2.8 %** | 6.8 % |
 | Network in | 101 KiB/min | 56 KiB/min |
 
+### Watch traffic diet (re-measured 2026-10-25)
+
+Same scenario in a fresh `kborg-p1` namespace (5,000 ConfigMaps plus `kube-root-ca.crt`, `cm-00000` patched once per second with `kubectl patch`), `:cm kborg-p1`, then 60 s idle; KBorg 0.5.0-rc.3 release build and k9s 0.51.0, median of 3 runs with `scripts/bench-tui.py compare --repeat 3 --seconds 60`. The table above is the older 0.3.0 run; current `main` before this change already measured 41.6 KiB/min (k9s 36.5) in a single run.
+
+| Metric | KBorg | k9s |
+|---|---|---|
+| Switch to 5,000 ConfigMaps | **0.19 s** | 0.39 s |
+| Memory, median | **53 MiB** | 142 MiB |
+| CPU, average | **0.5 %** | 2.8 % |
+| Network in | **36.4 KiB/min** | 36.7 KiB/min |
+| Network out | **0.0 KiB/min** | 0.7 KiB/min |
+
+What changed:
+
+- Watches ask the server to close after 55 s instead of 8 s and request bookmarks. The API server sends a bookmark 2 s before it closes (and about every 60 s otherwise), so each renewal resumes from a fresh resourceVersion. Renewals fell from about 7.5 to about 1 per minute, which removed the request overhead (network out 1.7 → 0.0 KiB/min).
+- A dropped connection or API outage keeps the cache (marked stale) and resumes at the last applied event or bookmark. Only 410 Gone, or a second unreadable stream with no progress in between, relists. Through a TCP proxy that cut the API for 30 s, a 5,001-object watch reconnected 1.7 s after the API returned with **0 relists** (the previous build cleared the table and relisted all 5,001 objects).
+- GET reads send `Accept-Encoding: gzip`. A 5,001-ConfigMap LIST (11 pages) took **195 KiB instead of 1.8 MiB** on the wire. The API server does not compress watch streams, so steady churn traffic is the change events themselves: both tools now receive the same events, and the remaining gap is noise. Going lower needs smaller events (server-side tables, P2).
+- Decoding is bounded like raw bodies: compressed and decoded bytes both count against the 8 MiB budget, input is decoded in 4 KiB slices, and truncated, corrupt, padded or unrequested encodings are errors.
+
+Measured through the same proxy (raw TLS bytes, `kborg watch configmaps`, 60 s after a 10 s warm-up), the CLI watch went from 82.6 to 78.5 KiB/min; this counts TLS records differently from `nettop`, so compare it only with itself.
+
 Demo mode can generate thousands of synthetic Pods (`KBORG_DEMO_SCALE=N`): 5,000 Pods load in 0.13 s, filter in 0.17 s and sort in 0.07 s; 20,000 Pods load in 0.38 s.
 
 ## Multi-cluster dashboard: KBorg vs k10s
