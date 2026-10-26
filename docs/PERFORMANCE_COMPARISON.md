@@ -126,15 +126,9 @@ Other findings: k10s does not accept a multi-file `KUBECONFIG` (it treats the li
 
 `scripts/bench-tui.py` is the harness behind these numbers (Python standard library only; Pillow just for `--screenshots`). It starts each tool in a 130×40 pseudo-terminal with its own controlling tty and a throwaway HOME, `KBORG_CONFIG_DIR`, `K9S_CONFIG_DIR` and `XDG_*` directories, so your settings are never read or changed. It answers terminal queries (OSC 10/11 colors, cursor position, device attributes) the way a real emulator does, waits for regex markers on the emulated screen, then samples memory and CPU (`ps` on macOS, `/proc` on Linux) and, on macOS only, network (`nettop`) over an idle window.
 
-`gate` runs three demo-mode scenarios that need no cluster and fails (exit 1) when a median exceeds its budget in `scripts/bench-budgets.json`:
+`gate` runs demo-mode scenarios that need no cluster (`demo-startup`, `scale-5k`, `scale-20k`, `demo-dashboard`) and fails (exit 1) when a metric regresses more than 15 % against `scripts/bench-baseline.json` or exceeds its hard ceiling in `scripts/bench-budgets.json`. Scenarios, metrics (including key-to-frame latency) and how to update the baseline are in [PERFORMANCE.md](PERFORMANCE.md#performance-gate-ci).
 
-| Scenario | What it does |
-|---|---|
-| `demo-startup` | `kborg --demo --no-splash`, waits for Pod `api-7d4f9`, 10 s idle |
-| `demo-scale` | the same with `KBORG_DEMO_SCALE=5000` (5,000 extra Pods); SKIPPED if the binary ignores the variable |
-| `demo-dashboard` | demo, then `D` until `CONTEXT OVERVIEW` |
-
-Budgets are about 3× the baseline measured on an Apple M2 Pro (stored next to each budget), with floors of 1 s and 1 % CPU, because CI runners are slower and noisier. The `bench` CI job runs the gate after `checks` on `ubuntu-24.04` and uploads the JSON results.
+Budgets are about 3× an Apple M2 Pro measurement (stored next to each budget), with floors of 1 s and 1 % CPU, because CI runners are slower and noisier. The `bench` CI job runs the gate after `checks` on `ubuntu-24.04`, writes the delta table to the job summary and uploads the JSON results.
 
 ```sh
 cargo build --release --locked
@@ -145,7 +139,7 @@ python3 scripts/bench-tui.py compare --context docker-desktop -n kube-system --f
   --step ':cm kborg-perf\r' 'kborg-perf' --k9s k9s --k10s ~/go/bin/k10s   # live cluster; prints a Markdown table
 ```
 
-If a change raises a metric on purpose, re-measure with `gate --repeat 3` and update both `baseline` and `budget` in `scripts/bench-budgets.json` in the same commit.
+If a change raises a metric on purpose, run `gate --repeat 3 --update-baseline` and commit `scripts/bench-baseline.json` with the change; raise `scripts/bench-budgets.json` only when a hard ceiling is hit.
 
 ## Reproduce
 

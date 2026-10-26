@@ -2,6 +2,52 @@
 
 Measurements use the release executable. They are observations of one development host, not guarantees for arbitrary clusters. CLI measurements have warm filesystem caches; they exclude Rust compilation and the optional startup animation. The TUI baseline includes initial rendering and connection, automatic refresh and terminal output over a 120 × 35 pseudo-terminal (PTY). The synthetic demo contains only a few objects, so its memory usage does not establish worst-case cache behavior.
 
+## Performance gate (CI)
+
+`scripts/bench-tui.py gate` runs fixed demo-mode scenarios (no cluster) in a 130×40 pseudo-terminal and fails when any metric is more than **15 %** worse than the committed baseline for this OS and CPU architecture, or over its absolute budget. The `bench` job in `.github/workflows/ci.yml` (manual dispatch, like every workflow here) runs it on `ubuntu-24.04`.
+
+| Scenario | Measures |
+|---|---|
+| `demo-startup` | time to first data, RSS, idle CPU, key-to-frame latency |
+| `scale-5k`, `scale-20k` | `KBORG_DEMO_SCALE=5000` / `20000` Pods: load, filter to one Pod (`/scale-…`), clear it (Esc), reverse name sort (`N`), RSS, idle CPU, key-to-frame latency |
+| `demo-dashboard` | `D` until the dashboard shows |
+| `binary` | release binary size |
+
+- **Key-to-frame latency**: 100 alternating `j`/`k` keys are written to the PTY; each is timed until the emulated screen (text or colors, after a synchronized update completes) differs from the frame before the key. Reported as p50/p95/p99 in ms. It includes the PTY round trip and the Python emulator, so it is an upper bound on the app's own time.
+- **Memory**: `rss_mib_median` over the 10 s idle window and `rss_mib_max`, the whole-run high-water mark from `getrusage`.
+- **Idle CPU**: `cpu_percent_avg` over the idle window.
+- **Repeats**: with `--repeat 3` (CI), timings take the best run, because a busy runner only adds time while a real slowdown raises every run; memory and CPU take the median.
+- **Floors**: a regression must also exceed an absolute floor (0.05 s, 3 ms latency, 4 MiB, 1 % CPU, 0.5 MiB binary) so tiny numbers do not flap. Tolerance and floors live in `scripts/bench-baseline.json`; `--tolerance` overrides for one run.
+- **Output**: a Markdown delta table (baseline, value, delta %, budget, status) on stdout, in `bench-results/summary.md`, and in the GitHub job summary (`$GITHUB_STEP_SUMMARY`). `bench-results/gate.json` holds every run and is uploaded as the `bench-results` artifact.
+
+```sh
+cargo build --release --locked
+python3 scripts/bench-tui.py gate --repeat 3 --out bench-results    # compare with the baseline
+python3 scripts/bench-tui.py gate --repeat 3 --only scale-20k       # one scenario
+```
+
+Run it on a quiet machine: parallel builds on the same host show up as regressions (that is the gate working).
+
+### Updating the baseline
+
+After an intentional change (a new feature that costs memory, a faster code path), re-measure and commit the new baseline with the change, and say why in the commit message:
+
+```sh
+python3 scripts/bench-tui.py gate --repeat 3 --update-baseline     # rewrites only this OS/arch entry
+```
+
+`--update-baseline` stores the run for the current platform, keeps the other platforms, exits 0 and refuses if a scenario failed to measure. Raise `scripts/bench-budgets.json` only if a hard ceiling is hit.
+
+The committed baseline covers **Darwin-arm64** (Apple M2 Pro). A platform without a baseline (Linux on the first CI run) is checked only against budgets and every row shows `new (no baseline)`. To add it, download the `bench-results` artifact from that run and import it:
+
+```sh
+gh run download RUN_ID -n bench-results -D bench-results
+python3 scripts/bench-tui.py check --results bench-results/gate.json --update-baseline
+git add scripts/bench-baseline.json
+```
+
+`check --results gate.json` without `--update-baseline` re-evaluates a saved run against the current baseline, which is also how to inspect a CI result locally.
+
 ## Reproduce
 
 ```powershell
