@@ -145,6 +145,8 @@ views:
 
 Keys can be `v1/pods`, `apps/v1/deployments`, `deployments.apps` or `deployments`. Built-in columns: `NAMESPACE`, `NAME`, `READY`, `STATUS`, `RSTS`, `AGE`, `NODE`, `IP`, `CPU`, `MEM`, `LABELS`, `IMAGES`. A custom column is `TITLE:.json.path`: dotted fields, `[N]` indexes, `[*]` for every element and `['key.with.dots']`. Attributes after `|`: `W` shows the column only in wide mode (Ctrl-W), `H` hides it, `N` sorts it numerically, `T` shows a timestamp as an age. Paths are only read, never evaluated as code; bounds are 64 KiB, 128 views and 24 columns per view. Columns that don't fit are dropped from the right; NAME always stays.
 
+For ConfigMaps, ServiceAccounts, RBAC objects and other kinds whose built-in columns need only metadata, KBorg downloads only object metadata. A custom column whose path reads anything other than `.metadata.name`, `.namespace`, `.uid`, `.resourceVersion`, `.creationTimestamp`, `.deletionTimestamp` or `.labels` (or the built-in `IMAGES` column) makes that resource use full objects again, so every k9s path keeps working.
+
 Sorting: `N` `A` `S` `R` `C` `M` sort by name, age, status, readiness, CPU and memory, and pressing the same key again reverses the order. `:sort COLUMN [asc|desc]` sorts by any column in the header, including custom ones. The header marks the sorted column with `^` (ascending) or `v` (descending). A view's `sortColumn` applies when you open that resource.
 
 Other k9s table keys: Ctrl-W wide columns, Ctrl-Z (or `:faults`) only objects that need attention, `0` all namespaces and `1`–`9` your nine most recently used namespaces in this context. `:ctx` lists recently used contexts first.
