@@ -1,0 +1,140 @@
+    Checking kborg v0.5.0-rc.3 (/mnt/c/Users/Garcia/Desktop/projects/k8borg)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 4.09s
+   Compiling kborg v0.5.0-rc.3 (/mnt/c/Users/Garcia/Desktop/projects/k8borg)
+    Finished `test` profile [unoptimized] target(s) in 12.05s
+     Running unittests src/lib.rs (/home/garcia/.cache/k8borg-target/debug/deps/kborg-70587d7855c9c009)
+
+running 2 tests
+test config::tests::auth_helper_denial_preserves_reviewed_mode_and_cannot_be_reenabled ... ok
+test gateway::tests::operator_auth_helper_denial_prevents_native_and_reviewed_execution ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 654 filtered out; finished in 0.06s
+
+     Running unittests src/main.rs (/home/garcia/.cache/k8borg-target/debug/deps/kborg-4da1558869342060)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/auth_helper_live.rs (/home/garcia/.cache/k8borg-target/debug/deps/auth_helper_live-354b18ddad72d3d3)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+     Running tests/cli_output.rs (/home/garcia/.cache/k8borg-target/debug/deps/cli_output-c494ae258ce9232c)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+     Running tests/copilot_live.rs (/home/garcia/.cache/k8borg-target/debug/deps/copilot_live-4df4e97d5dfa0e96)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/docker_desktop.rs (/home/garcia/.cache/k8borg-target/debug/deps/docker_desktop-01664ca9a1170732)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.00s
+
+     Running tests/manifest_edit_live.rs (/home/garcia/.cache/k8borg-target/debug/deps/manifest_edit_live-d0b22aacbfd90578)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+     Running tests/native_operations.rs (/home/garcia/.cache/k8borg-target/debug/deps/native_operations-bc0720472e435c6c)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+     Running tests/watch_metrics_acceptance.rs (/home/garcia/.cache/k8borg-target/debug/deps/watch_metrics_acceptance-3477ad64bd4990e1)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.00s
+
+    Finished `test` profile [unoptimized] target(s) in 0.19s
+     Running unittests src/lib.rs (/home/garcia/.cache/k8borg-target/debug/deps/kborg-70587d7855c9c009)
+
+running 5 tests
+test copilot_setup::tests::unsupported_platform_has_actionable_visible_status ... ok
+test copilot_setup::tests::account_discovery_never_returns_tokens_and_stays_host_bound ... ok
+test copilot_setup::tests::company_login_rejects_unknown_hosts_and_injection ... ok
+test copilot_setup::tests::enterprise_managed_accounts_are_accepted_without_weakening_argument_bounds ... ok
+test copilot_setup::tests::policy_replacement_keeps_backup_and_refuses_concurrent_changes ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 651 filtered out; finished in 0.00s
+
+     Running unittests src/main.rs (/home/garcia/.cache/k8borg-target/debug/deps/kborg-4da1558869342060)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/auth_helper_live.rs (/home/garcia/.cache/k8borg-target/debug/deps/auth_helper_live-354b18ddad72d3d3)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+     Running tests/cli_output.rs (/home/garcia/.cache/k8borg-target/debug/deps/cli_output-c494ae258ce9232c)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+     Running tests/copilot_live.rs (/home/garcia/.cache/k8borg-target/debug/deps/copilot_live-4df4e97d5dfa0e96)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/docker_desktop.rs (/home/garcia/.cache/k8borg-target/debug/deps/docker_desktop-01664ca9a1170732)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.00s
+
+     Running tests/manifest_edit_live.rs (/home/garcia/.cache/k8borg-target/debug/deps/manifest_edit_live-d0b22aacbfd90578)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+     Running tests/native_operations.rs (/home/garcia/.cache/k8borg-target/debug/deps/native_operations-bc0720472e435c6c)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+     Running tests/watch_metrics_acceptance.rs (/home/garcia/.cache/k8borg-target/debug/deps/watch_metrics_acceptance-3477ad64bd4990e1)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.00s
+
+   Compiling kborg v0.5.0-rc.3 (/mnt/c/Users/Garcia/Desktop/projects/k8borg)
+    Finished `release` profile [optimized] target(s) in 31.28s
+f9209d9aa038cb051f0b6abc513d459eb2b9f750f2de86820e3f4d8ceaa54793  /home/garcia/.cache/k8borg-target/release/kborg
+gate: running demo-startup (3x, 10.0s idle)...
+gate: running demo-scale (3x, 10.0s idle)...
+gate: running demo-dashboard (3x, 10.0s idle)...
+| scenario       | metric                             | value | budget | status |
+|----------------|------------------------------------|-------|--------|--------|
+| demo-startup   | first_data_seconds                 | 0.053 | 1.0    | ok     |
+| demo-startup   | rss_mib_median                     | 12.1  | 30     | ok     |
+| demo-startup   | cpu_percent_avg                    | 0.0   | 1.0    | ok     |
+| demo-scale     | first_data_seconds                 | 0.181 | 1.5    | ok     |
+| demo-scale     | rss_mib_median                     | 121.5 | 320    | ok     |
+| demo-scale     | cpu_percent_avg                    | 1.8   | 10.0   | ok     |
+| demo-dashboard | first_data_seconds                 | 0.053 | 1.0    | ok     |
+| demo-dashboard | rss_mib_median                     | 13.4  | 30     | ok     |
+| demo-dashboard | cpu_percent_avg                    | 0.0   | 1.0    | ok     |
+| demo-dashboard | wait /METRICS [0-9]+ measured/ (s) | 0.061 | -      | info   |
+| demo-dashboard | step 'D' -> /CONTEXT OVERVIEW/ (s) | 0.059 | -      | info   |
+gate: passed
