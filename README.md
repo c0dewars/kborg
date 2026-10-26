@@ -32,7 +32,8 @@
 - **You already know the keys.** `:pods`, `:deploy`, `/filter`, `l` logs, `s` shell, Ctrl-D delete — k9s navigation, commands, aliases and `hotkeys.yaml` work the way you expect.
 - **See all your clusters at once.** Up to nine clusters side by side: Pod health, restarts, OOM kills, Node readiness and CPU/memory, degraded Deployments and StatefulSets, and recent warnings, each updating independently.
 - **Follow one workload across every cluster.** Pick Deployments from any cluster and tail them together in one pane, merged in timestamp order and tagged by cluster.
-- **Change things without fear.** Read-only by default. Every change, from a scale to a multi-object `kborg apply`, gets a server dry run, a readable diff, identity checks and typed confirmation. Nothing is applied by surprise.
+- **Works out of the box, like k9s.** No flags to learn: shell, logs, edits, apply, port forwards, node shell, Helm, Secrets and scans are all on. Your kubeconfig works as it does in kubectl, including aws/gcloud/kubelogin exec helpers, impersonation and proxies.
+- **Change things without fear.** Every change, from a scale to a multi-object `kborg apply`, gets a server dry run and a readable review first; `y` or Enter applies it, `n` or Esc cancels. Nothing is applied by surprise. `--read-only` when you only want to look.
 - **Ask Copilot, safely.** Ask GitHub Copilot about the screen you are looking at (`:ask`) or get advice on a resource (`:copilot`), on GitHub.com, GHE.com or GitHub Enterprise Server. You review the exact text first, and it runs in a sandboxed runtime.
 - **Fast, and light on your laptop and your API server.** In side-by-side tests KBorg showed data in 0.06 s (k9s 0.69 s), used about a quarter of k9s's memory and half its CPU at 5,000 live objects, and a fraction of k10s's network traffic ([numbers](docs/PERFORMANCE_COMPARISON.md)).
 - **Looks good in any terminal.** 20 hand-tuned themes that meet WCAG AA contrast everywhere they're drawn (plus your terminal's own palette), 24-bit color with graceful fallback, and a quiet layout with contextual key hints.
@@ -46,11 +47,11 @@
 | **Browse** | 35 built-in resource types, CRDs via discovery, context/namespace switching, regex/fuzzy/label filters, sorting, redacted describe/YAML/JSON, live watches |
 | **Dashboard** | 1–9 clusters, full-screen focus, Pod health, restart hotspots, OOM evidence, Node readiness + CPU/memory, degraded workloads, Pod and non-Pod warning events, warning → exact Pod Events drilldown |
 | **Logs** | Container, workload and selector logs; merged multi-container streams; live rollout following (`:logs-live`); cross-cluster workload tail; time ranges, search, error/warning filters, export |
-| **Operate** | Scale, restart, rollback, delete, force kill, reviewed batches on marked rows (up to 50), CronJob trigger and suspend/resume, YAML spec editing (in-app or `$EDITOR`), server-side apply of local manifests, image/resource forms, cordon/uncordon/drain, node shell, ephemeral debug containers, port forwards, shell/attach, file and directory copy — each behind its own opt-in and review |
+| **Operate** | Scale, restart, rollback, delete, force kill, reviewed batches on marked rows (up to 50), CronJob trigger and suspend/resume, YAML spec editing (in-app or `$EDITOR`), server-side apply of local manifests, image/resource forms, cordon/uncordon/drain, node shell, ephemeral debug containers, port forwards, shell/attach, file and directory copy — each reviewed first, confirmed with one key |
 | **Errors** | Every Kubernetes, network and kubeconfig error says what failed, why (RBAC verb/resource/namespace, TLS, DNS, timeout, conflict, admission, quota) and the next step, such as the exact `kubectl auth can-i` command |
 | **Check** | `:lint` misconfiguration report, `:scan` image vulnerability scan through your Trivy or Grype, Ctrl-Z errors-only view, `:pulses` health, `:xray` relationships, busiest Nodes on dashboard cards, port-forward benchmark |
 | **Helm** | Release browsing and history; reviewed install, upgrade, rollback, uninstall and tests for packaged and OCI charts with optional OpenPGP/Sigstore verification |
-| **Secrets** | Opt-in key listing and masked YAML/describe (`y`/`d`: values shown as sizes, TLS subject/expiry, registry hostnames); reveal one value for 30 seconds; never exported or copied |
+| **Secrets** | Key listing and masked YAML/describe (`y`/`d`: values shown as sizes, TLS subject/expiry, registry hostnames); reveal one value for 30 seconds; never exported or copied |
 | **Metrics & charts** | Pod/Node CPU and memory tables with exact values and request/limit comparisons; live charts (`g` in `:metrics`) with units and % of request, limit or allocatable; dashboard trend charts (`G`) and 15-minute sparklines; braille, block or ASCII rendering |
 | **Copilot** | Minimized diagnostic preview, `:ask` about the current screen, exact account approval, contained native runtime (macOS ARM64) |
 | **Workspace** | Saved context groups and scopes, remembered dashboard (`kborg dashboard`), k9s-format `views.yaml` columns, sort by any column, recent namespaces on `1`–`9`, custom aliases and k9s-format hotkeys, every key remappable on every screen (`keymap.yaml`, `?` help per screen, `:keymap`), Ctrl-P command palette, UI styling (`ui.yaml`), reviewed extensions and k9s plugins with `$VARIABLES` and shortcuts (`:ext`, `kborg extensions import-k9s`), 20 themes plus custom palettes, shell completions |
@@ -137,38 +138,27 @@ Try it without a cluster:
 kborg demo
 ```
 
-Browse your current cluster, read-only:
+Open your current cluster (or pick one with `--context`):
 
 ```sh
-kborg --context docker-desktop --allow-logs
+kborg
+kborg --context prod-eu
 ```
+
+Everything works without flags: `l` logs, `s` shell, `e` edit, `s` scale, Ctrl-D delete, `F` port forward, `:apply FILE`, `:cp-from`, `s` on a Node for a node shell, `:debug`, `:helm`, `:secrets` and `:scan` (with Trivy or Grype on your PATH). Every change shows a review; `y`/Enter applies, `n`/Esc cancels.
 
 Open the multi-cluster dashboard. KBorg remembers it, so next time `kborg dashboard` brings it straight back:
 
 ```sh
-kborg --contexts prod-eu,prod-us,staging --allow-logs
+kborg --contexts prod-eu,prod-us,staging
 kborg dashboard
 ```
 
-Enable operator workflows only when you need them. Each still asks for review and confirmation:
+Just looking? `kborg --read-only` turns every change off. Something not working? `kborg doctor` checks your terminal, tools, kubeconfig authentication and cluster access, and says what to fix.
 
-```sh
-kborg --context docker-desktop --allow-logs \
-  --write --allow-yaml-edit --allow-node-maintenance --allow-forward --allow-exec
-```
+**For companies:** an operator `--config` file can switch any capability off (`"allow_node_shell": false`), force read-only (`"profile": "read-only"`) or require typed confirmations (`"strict_confirmations": true`). See [Operations](docs/OPERATIONS.md).
 
-More opt-ins, each reviewed:
-
-| Flag | Adds |
-|---|---|
-| `--allow-apply` | `kborg apply FILE` / `:apply FILE`: dry run, field-level diff, server-side apply that never forces ownership |
-| `--allow-file-copy` | `:cp-from` / `:cp-to` (`-r` for directories); neither side ever overwrites |
-| `--allow-node-shell` | `s` on a Node: a reviewed privileged Pod and a root shell, deleted afterwards |
-| `--allow-debug` | `:debug [CONTAINER]`: a reviewed ephemeral debug container and a shell in it |
-| `--scanner ABS_PATH --allow-scan` | `:scan` / `:scan ns` / `kborg scan`: image vulnerability scan with your installed Trivy or Grype (network: database and image pulls) |
-| `--allow-extensions --allow-tools` | `:ext NAME` or a plugin shortCut: run a registered tool or k9s plugin on the selection |
-
-KBorg uses your kubeconfig directly: the current context unless you pass `--context`, and every file in `$KUBECONFIG` merged the way kubectl does (first definition wins). kubectl, Helm, Python and an AI account are not needed for browsing. Server-side RBAC and admission always have the final say.
+KBorg uses your kubeconfig directly, exactly as kubectl does: the current context unless you pass `--context`, every file in `$KUBECONFIG` merged (first definition wins), exec helpers such as `aws eks get-token`, `gke-gcloud-auth-plugin` and `kubelogin`, impersonation, `proxy-url` and `insecure-skip-tls-verify`. kubectl, Helm, Python and an AI account are not needed for browsing. Server-side RBAC and admission always have the final say.
 
 ## Keys for k9s users
 
@@ -181,7 +171,7 @@ KBorg uses your kubeconfig directly: the current context unless you pass `--cont
 | `l` `p` | Logs, previous logs |
 | `s` `a` `F` `f` | Shell, attach, new port forward, forward list |
 | `s` `r` on workloads | Scale, restart |
-| `e` | Edit YAML spec (Ctrl-E opens `$EDITOR` with `--allow-external-editor`) |
+| `e` | Edit YAML spec (Ctrl-E opens `$EDITOR`) |
 | Ctrl-D, Ctrl-K | Reviewed delete, reviewed force kill |
 | `Space` then Ctrl-D / `r` / `s` | Mark rows, then one reviewed batch delete, restart or CronJob suspend/resume (max 50; type e.g. `delete 7 objects`) |
 | `c` `u` `r` on Nodes | Cordon, uncordon, drain |
@@ -200,7 +190,7 @@ KBorg uses your kubeconfig directly: the current context unless you pass `--cont
 | Dashboard `1`–`9`, `w`, `L`, `t`, `G` | Focus (again = full screen), select warning, Pod logs, cross-cluster tail, trend charts |
 | `:metrics` then `g` | Live CPU and memory chart for the selected Pod or Node |
 | `?`, `:keymap` | Keys for the screen you're on (Tab: every screen); every action and its key |
-| Ctrl-P | Command palette (KBorg extension): fuzzy search the current screen's actions with their keys, `:` commands, resource kinds, recent contexts, namespaces and objects; Enter runs it like the key, with the same opt-ins and reviews |
+| Ctrl-P | Command palette (KBorg extension): fuzzy search the current screen's actions with their keys, `:` commands, resource kinds, recent contexts, namespaces and objects; Enter runs it like the key, with the same reviews |
 
 The bottom row always shows the keys that work for what's selected and the flags you started with. The [k9s compatibility map](docs/K9S_COMPATIBILITY.md) documents every command and the few deliberate differences.
 
@@ -238,7 +228,7 @@ Everything below lives in KBorg's configuration directory (macOS `~/Library/Appl
 | File | Controls |
 |---|---|
 | `ui.yaml` | Borders, header and hint rows, compact mode, table density, zebra rows, separators, markers, age format, color overrides, chart style, dashboard layout (`kborg ui init`, `:ui reload`) — [reference](docs/themes.md#uiyaml) |
-| `keymap.yaml` | Any key on any screen; Enter, Esc and typed confirmations stay fixed — [format](docs/K9S_COMPATIBILITY.md#custom-keymap) |
+| `keymap.yaml` | Any key on any screen; Enter, Esc and review confirmations stay fixed — [format](docs/K9S_COMPATIBILITY.md#custom-keymap) |
 | `views.yaml` | Columns and default sort per resource, including `TITLE:.json.path` columns (k9s format) — [format](docs/K9S_COMPATIBILITY.md#custom-views-columns-and-sort) |
 | `hotkeys.yaml`, `aliases.yaml` | Keys and names that run commands (k9s format) |
 | Themes | 20 built-ins, live preview in `:themes`, `kborg theme new` for your own |
@@ -258,7 +248,7 @@ KBorg detects color support from the environment and works without terminfo.
 **Ghostty:** run `kborg` from any Ghostty window, or open a dedicated one:
 
 ```sh
-open -na Ghostty.app --args -e "$HOME/.local/bin/kborg" --context docker-desktop --allow-logs
+open -na Ghostty.app --args -e "$HOME/.local/bin/kborg" --context docker-desktop
 ```
 
 Ghostty's shortcuts use Cmd on macOS, so Ctrl-D/K/S/R reach KBorg, and `c` copies names through OSC 52. Over SSH KBorg still recognizes `TERM=xterm-ghostty` as 24-bit. Match your Ghostty theme with the same KBorg theme (for example `--theme catppuccin-mocha`), or use `--theme terminal` for Ghostty's own palette.
@@ -267,18 +257,18 @@ Ghostty's shortcuts use Cmd on macOS, so Ctrl-D/K/S/R reach KBorg, and `c` copie
 
 `:copilot` previews a minimized status bundle for the selected resource: no names, messages, manifests or logs. With an explicit policy file, KBorg sends that exact bundle to Copilot after you approve the host and account, through a sandboxed native runtime whose network is limited to the deployment's Copilot endpoints. Works with GitHub.com, GHE.com tenants and GitHub Enterprise Server 3.22+ (the enterprise targets follow GitHub's documented endpoints but have not yet been verified against a live tenant). Advice is never executed. See [Copilot](docs/COPILOT_INTEGRATION.md).
 
-`:ask QUESTION` asks Copilot about what you are looking at. KBorg captures the view behind the `:` prompt as plain text (table, describe, logs, dashboard), shows you exactly what will be sent, and sends it only after you type `SEND SCREEN TO HOST AS ACCOUNT`. It needs `--allow-copilot-screen` on top of the policy, because screen text includes names and log lines; without it `:ask` shows a local preview.
+`:ask QUESTION` asks Copilot about what you are looking at. KBorg captures the view behind the `:` prompt as plain text (table, describe, logs, dashboard), shows you exactly what will be sent, and sends it when you press `y`. Copilot needs a policy file once: save it as `copilot-policy.json` in the KBorg config folder (or pass `--copilot-policy`); see [Copilot](docs/COPILOT_INTEGRATION.md).
 
 ```sh
-kborg --copilot-policy "$PWD/copilot-policy.json" --allow-copilot-screen
+kborg
 # then, on any screen:  :ask why is this pod restarting?
 ```
 
 ## Security model
 
-- Read-only until you pass `--write`; every risky capability (exec, attach, port forward, file copy, apply, node shell, debug containers, image scanning, node maintenance, YAML edit, force kill, Secret reveal, Helm writes, external editor, extensions) has its own opt-in, and a `--config` profile can forbid any of them.
-- Every mutation: server dry run, UID/resourceVersion preconditions, full review that must be displayed, exact typed confirmation, local intent record.
-- Known sensitive fields are masked; Secrets are excluded unless you opt in. No telemetry.
+- Everything is on by default, as in k9s; `--read-only` turns changes off, and an operator `--config` can switch off any capability (exec, attach, port forward, file copy, apply, node shell, debug containers, scanning, node maintenance, YAML edit, force kill, Secret reveal, Helm writes, external editor, extensions, Copilot screen questions) or require typed confirmations.
+- Every mutation: server dry run, UID/resourceVersion preconditions, a review of exactly what changes, one-key confirmation (typed in strict mode), local intent record.
+- Known sensitive fields are masked; Secret values stay hidden until you reveal one key for 30 seconds. No telemetry.
 - Dashboard and log-pane connections strip all write and interactive capabilities.
 - Dependencies are checked against RustSec on every release review (currently zero known advisories).
 
