@@ -27,7 +27,9 @@ class BenchmarkHarnessTests(unittest.TestCase):
 
     def test_missing_scale_marker_fails_the_gate(self):
         args = SimpleNamespace(budgets=str(Path(__file__).with_name("bench-budgets.json")),
-                               binary=sys.executable, only=["demo-scale"], repeat=1,
+                               baseline=str(Path(__file__).with_name("bench-baseline.json")),
+                               tolerance=None, update_baseline=False, latency_samples=0,
+                               binary=sys.executable, only=["scale-5k"], repeat=1,
                                seconds=1, timeout=1, out=None)
         with mock.patch.object(bench, "measure_repeated", side_effect=bench.MarkerMissing("scale", "absent")), \
                 contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
