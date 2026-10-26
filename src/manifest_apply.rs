@@ -362,7 +362,8 @@ mod tests {
                 "shop"
             ));
         }
-        let doc = json!({"apiVersion":"v1","kind":"ConfigMap","metadata":{"name":"x","namespace":null}});
+        let doc =
+            json!({"apiVersion":"v1","kind":"ConfigMap","metadata":{"name":"x","namespace":null}});
         let (ns, _, _) = body(&doc, kind_for(&kinds, &doc)?, "shop")?;
         assert_eq!(ns, "shop");
         Ok(())
