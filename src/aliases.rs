@@ -24,9 +24,12 @@ pub(crate) fn parse(text: &str) -> Result<Aliases> {
         merge_keys: serde_saphyr::MergeKeyPolicy::Error,
         with_snippet: false,
     };
-    let file: File = serde_saphyr::from_str_with_options(text, options).map_err(
-        |_| "invalid aliases.yaml; expected aliases: mapping without duplicates/anchors",
-    )?;
+    let file: File = serde_saphyr::from_str_with_options(text, options).map_err(|error| {
+        format!(
+            "invalid aliases.yaml{}; expected aliases: mapping without duplicates/anchors",
+            safety::yaml_location(&error)
+        )
+    })?;
     if file.aliases.len() > 256 {
         return Err("aliases.yaml exceeds 256 aliases".into());
     }
@@ -72,12 +75,16 @@ pub(crate) fn parse(text: &str) -> Result<Aliases> {
     Ok(file.aliases)
 }
 pub fn load() -> Result<Aliases> {
-    let path = safety::config_dir()?.join("aliases.yaml");
-    safety::checked_path(&path)?;
+    load_from(&safety::config_dir()?.join("aliases.yaml"))
+}
+
+/// Load from an explicit path (live reload watches the config folder).
+pub fn load_from(path: &std::path::Path) -> Result<Aliases> {
+    safety::checked_path(path)?;
     if !path.exists() {
         return Ok(Aliases::new());
     }
-    let bytes = safety::read_small(&path, 64 * 1024)?;
+    let bytes = safety::read_small(path, 64 * 1024)?;
     parse(std::str::from_utf8(&bytes).map_err(|_| "aliases.yaml must be UTF-8")?)
 }
 pub fn expand(command: &str, aliases: &Aliases) -> Result<String> {

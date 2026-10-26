@@ -194,9 +194,12 @@ pub fn parse(text: &str) -> Result<Views> {
         merge_keys: serde_saphyr::MergeKeyPolicy::Error,
         with_snippet: false,
     };
-    let file: File = serde_saphyr::from_str_with_options(text, options).map_err(
-        |_| "invalid views.yaml; expected views: RESOURCE: {columns: [...], sortColumn: NAME:asc}",
-    )?;
+    let file: File = serde_saphyr::from_str_with_options(text, options).map_err(|error| {
+        format!(
+            "invalid views.yaml{}; expected views: RESOURCE: {{columns: [...], sortColumn: NAME:asc}}",
+            safety::yaml_location(&error)
+        )
+    })?;
     if file.views.len() > MAX_VIEWS {
         return Err(format!("views.yaml exceeds {MAX_VIEWS} views"));
     }
@@ -219,12 +222,16 @@ pub fn parse(text: &str) -> Result<Views> {
 }
 
 pub fn load() -> Result<Views> {
-    let path = safety::config_dir()?.join("views.yaml");
-    safety::checked_path(&path)?;
+    load_from(&safety::config_dir()?.join("views.yaml"))
+}
+
+/// Load from an explicit path (live reload watches the config folder).
+pub fn load_from(path: &std::path::Path) -> Result<Views> {
+    safety::checked_path(path)?;
     if !path.exists() {
         return Ok(Views::new());
     }
-    let bytes = safety::read_small(&path, 64 * 1024)?;
+    let bytes = safety::read_small(path, 64 * 1024)?;
     parse(std::str::from_utf8(&bytes).map_err(|_| "views.yaml must be UTF-8")?)
 }
 

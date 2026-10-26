@@ -305,6 +305,8 @@ pub struct UiConfig {
     pub dashboard: Dashboard,
     pub charts: Charts,
     pub text: TextMode,
+    /// Apply saved config files live (about 1 s after a save).
+    pub reload: bool,
 }
 impl Default for UiConfig {
     fn default() -> Self {
@@ -322,6 +324,7 @@ impl Default for UiConfig {
             dashboard: Dashboard::default(),
             charts: Charts::default(),
             text: TextMode::Auto,
+            reload: true,
         }
     }
 }
@@ -499,8 +502,11 @@ pub fn parse(text: &str) -> Result<UiConfig> {
     {
         return Ok(UiConfig::default());
     }
-    let config: UiConfig = serde_saphyr::from_str_with_options(text, options).map_err(|_| {
-        "invalid ui.yaml; unknown keys or wrong value types are rejected (kborg ui init writes a documented example)"
+    let config: UiConfig = serde_saphyr::from_str_with_options(text, options).map_err(|error| {
+        format!(
+            "invalid ui.yaml{}; unknown keys or wrong value types are rejected (kborg ui init writes a documented example)",
+            safety::yaml_location(&error)
+        )
     })?;
     config.validate()?;
     Ok(config)
@@ -511,12 +517,16 @@ fn path() -> Result<PathBuf> {
 }
 
 pub fn load() -> Result<UiConfig> {
-    let path = path()?;
-    safety::checked_path(&path)?;
+    load_from(&path()?)
+}
+
+/// Load ui.yaml from an explicit path (live reload watches the config folder).
+pub fn load_from(path: &std::path::Path) -> Result<UiConfig> {
+    safety::checked_path(path)?;
     if !path.exists() {
         return Ok(UiConfig::default());
     }
-    let bytes = safety::read_small(&path, MAX_BYTES as u64)?;
+    let bytes = safety::read_small(path, MAX_BYTES as u64)?;
     parse(std::str::from_utf8(&bytes).map_err(|_| "ui.yaml must be UTF-8")?)
 }
 
@@ -592,9 +602,13 @@ pub fn localize_timestamp(line: &str, zone: &k8s_openapi::jiff::tz::TimeZone) ->
 
 pub const EXAMPLE: &str = r##"# KBorg ui.yaml: layout and style, data only. Every value below is the
 # built-in default; delete what you do not change. Unknown keys are rejected
-# and an invalid file falls back to defaults with a notice. Reload while
-# running with :ui reload. Documentation: docs/themes.md, "ui.yaml".
+# and an invalid file falls back to defaults with a notice. A running KBorg
+# applies a saved change within about a second (:ui reload also works).
+# Documentation: docs/themes.md, "ui.yaml".
 version: 1
+
+# Apply saved config files live. false: only :ui reload or a restart.
+reload: true
 
 # Theme id (kborg theme list). When set it wins over the picker's saved
 # choice; --theme still wins over this. Unset keeps the saved choice.

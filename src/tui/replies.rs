@@ -843,6 +843,8 @@ impl App {
         };
         let (theme, error) = super::ui_theme(&ui, self.options.theme.as_deref())?;
         crate::text::set_unicode(ui.text.unicode());
+        self.config_watch.set_enabled(ui.reload);
+        self.config_watch.watch_theme(&theme.id);
         self.ui = ui;
         self.theme = theme;
         match error {

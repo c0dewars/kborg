@@ -127,8 +127,11 @@ pub(crate) fn parse(text: &str) -> Result<Hotkeys> {
         merge_keys: serde_saphyr::MergeKeyPolicy::Error,
         with_snippet: false,
     };
-    let file: File = serde_saphyr::from_str_with_options(text, options).map_err(|_| {
-        "invalid hotkeys.yaml; expected hotKeys: entries with shortCut, description and command"
+    let file: File = serde_saphyr::from_str_with_options(text, options).map_err(|error| {
+        format!(
+            "invalid hotkeys.yaml{}; expected hotKeys: entries with shortCut, description and command",
+            safety::yaml_location(&error)
+        )
     })?;
     if file.hot_keys.len() > 64 {
         return Err("hotkeys.yaml exceeds 64 hotkeys".into());
@@ -174,12 +177,16 @@ pub(crate) fn parse(text: &str) -> Result<Hotkeys> {
 }
 
 pub fn load() -> Result<Hotkeys> {
-    let path = safety::config_dir()?.join("hotkeys.yaml");
-    safety::checked_path(&path)?;
+    load_from(&safety::config_dir()?.join("hotkeys.yaml"))
+}
+
+/// Load from an explicit path (live reload watches the config folder).
+pub fn load_from(path: &std::path::Path) -> Result<Hotkeys> {
+    safety::checked_path(path)?;
     if !path.exists() {
         return Ok(Hotkeys::new());
     }
-    let bytes = safety::read_small(&path, 64 * 1024)?;
+    let bytes = safety::read_small(path, 64 * 1024)?;
     parse(std::str::from_utf8(&bytes).map_err(|_| "hotkeys.yaml must be UTF-8")?)
 }
 

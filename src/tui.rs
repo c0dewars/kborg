@@ -33,6 +33,8 @@ mod format;
 mod helm_ui;
 mod keyhelp;
 mod keys;
+#[path = "ui_live_reload.rs"]
+mod live_reload;
 #[path = "ui_navigation.rs"]
 mod nav;
 mod palette;
@@ -346,6 +348,8 @@ struct App {
     palette: Option<Box<palette::Palette>>,
     /// Recently opened objects (in memory only) for the palette.
     visited: std::collections::VecDeque<palette::Visited>,
+    /// Live config reload: polls the config folder on the loop tick.
+    config_watch: crate::config_watch::Watcher,
     worker: Worker,
 }
 impl App {
@@ -869,6 +873,7 @@ pub fn run(mut options: Options) -> Result<()> {
         Err(error) => (Default::default(), Some(error)),
     };
     let initial_selector = options.selector.clone();
+    let config_watch = crate::config_watch::Watcher::from_env(&theme.id, ui.reload);
     let worker = worker();
     let mut app = App {
         namespace: options.connection.namespace.clone(),
@@ -958,6 +963,7 @@ pub fn run(mut options: Options) -> Result<()> {
         pending_tool: None,
         palette: None,
         visited: Default::default(),
+        config_watch,
         worker,
     };
     if first_run {
@@ -1181,6 +1187,9 @@ pub fn run(mut options: Options) -> Result<()> {
                 .is_none_or(|last| last.elapsed() >= Duration::from_secs(15))
         {
             app.refresh_table_metrics();
+            dirty = true;
+        }
+        if app.poll_config(Instant::now()) {
             dirty = true;
         }
         if let Modal::HelmRunning(_, started, _) | Modal::ScanRunning(started, _) = &app.modal {

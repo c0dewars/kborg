@@ -423,6 +423,7 @@ const USER_FACING: &[&str] = &[
     "src/gateway.rs",
     "src/gateway/errors.rs",
     "src/gateway/kubeconfig.rs",
+    "src/config_watch.rs",
 ];
 
 #[test]

@@ -526,7 +526,22 @@ impl Catalog {
     }
     /// Registered plugins from the private registry (no executable is read).
     pub fn load(keymap: &Keymap, hotkeys: &crate::hotkeys::Hotkeys) -> Self {
-        match crate::extensions::list() {
+        Self::from_listing(crate::extensions::list(), keymap, hotkeys)
+    }
+    /// The same from an explicit registry directory (live reload).
+    pub fn load_in(
+        directory: &std::path::Path,
+        keymap: &Keymap,
+        hotkeys: &crate::hotkeys::Hotkeys,
+    ) -> Self {
+        Self::from_listing(crate::extensions::list_in(directory), keymap, hotkeys)
+    }
+    fn from_listing(
+        listing: Result<Vec<crate::extensions::EntrySummary>>,
+        keymap: &Keymap,
+        hotkeys: &crate::hotkeys::Hotkeys,
+    ) -> Self {
+        match listing {
             Ok(entries) => Self::new(
                 entries
                     .into_iter()

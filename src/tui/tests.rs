@@ -140,6 +140,7 @@ fn harness() -> Harness {
             pending_tool: None,
             palette: None,
             visited: Default::default(),
+            config_watch: Default::default(),
             worker: Worker {
                 tx,
                 rx,
@@ -5065,4 +5066,223 @@ fn header_names_the_screen_in_front() {
         .push(Modal::Picker("Namespace", vec!["default".into()], 0));
     app.modal = Modal::Input("Command", String::new());
     assert!(title(&app).contains("Namespaces"), "{}", title(&app));
+}
+/// Live reload: a watcher on a private temp folder, polled with simulated time.
+#[cfg(unix)]
+struct LiveConfig {
+    dir: crate::config_watch::tests::Folder,
+    start: Instant,
+    step: u64,
+}
+#[cfg(unix)]
+impl LiveConfig {
+    fn new(app: &mut App) -> Result<Self> {
+        let dir = crate::config_watch::tests::folder()?;
+        app.config_watch = crate::config_watch::Watcher::new(&dir.0, &app.theme.id, true);
+        let start = Instant::now();
+        app.poll_config(start);
+        Ok(Self {
+            dir,
+            start,
+            step: 0,
+        })
+    }
+    fn write(&self, name: &str, text: &str, mode: u32) -> Result<()> {
+        use std::os::unix::fs::PermissionsExt;
+        let path = self.dir.0.join(name);
+        std::fs::write(&path, text).map_err(|_| "write")?;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode))
+            .map_err(|_| "chmod".into())
+    }
+    /// Advance simulated time past the next poll; true when the screen changed.
+    fn tick(&mut self, app: &mut App) -> bool {
+        self.step += 1;
+        app.poll_config(self.start + Duration::from_millis(600 * self.step))
+    }
+    /// Two polls: first sighting, then stable for longer than the settle time.
+    fn settle(&mut self, app: &mut App) -> bool {
+        self.tick(app);
+        self.tick(app)
+    }
+}
+#[cfg(unix)]
+#[test]
+fn live_reload_applies_a_saved_ui_yaml_and_views_yaml_without_ui_reload() -> Result<()> {
+    let (mut app, _replies, _commands) = harness();
+    app.items = ui_pods();
+    let mut live = LiveConfig::new(&mut app)?;
+    assert!(!screen(&app, 80, 24)[3].starts_with('┌'));
+    live.write("ui.yaml", "version: 1\nborders: square\n", 0o600)?;
+    assert!(
+        !live.tick(&mut app),
+        "first sighting waits for a stable file"
+    );
+    assert!(live.tick(&mut app));
+    assert_eq!(app.status, "Applied ui.yaml.");
+    assert!(
+        screen(&app, 80, 24)[3].starts_with('┌'),
+        "borders changed live"
+    );
+    // views.yaml re-renders the table with the new columns.
+    live.write(
+        "views.yaml",
+        "views:\n  v1/pods:\n    columns:\n      - NAME\n      - OWNERTEAM:.metadata.namespace\n",
+        0o600,
+    )?;
+    assert!(live.settle(&mut app));
+    assert!(screen(&app, 100, 24).join("\n").contains("OWNERTEAM"));
+    // reload: false turns live reload off until :ui reload.
+    live.write("ui.yaml", "version: 1\nreload: false\n", 0o600)?;
+    assert!(live.settle(&mut app));
+    assert!(
+        app.status.contains("live reload is now off"),
+        "{}",
+        app.status
+    );
+    live.write("ui.yaml", "version: 1\nborders: ascii\n", 0o600)?;
+    assert!(!live.settle(&mut app) && !app.config_watch.enabled());
+    Ok(())
+}
+#[cfg(unix)]
+#[test]
+fn live_reload_keeps_the_last_good_config_and_names_the_line_and_next_step() -> Result<()> {
+    let (mut app, _replies, _commands) = harness();
+    let mut live = LiveConfig::new(&mut app)?;
+    live.write("ui.yaml", "version: 1\nborders: ascii\n", 0o600)?;
+    assert!(live.settle(&mut app));
+    let good = app.ui.clone();
+    live.write(
+        "ui.yaml",
+        "version: 1\nborders: ascii\nbordrs: none\n",
+        0o600,
+    )?;
+    assert!(live.settle(&mut app));
+    assert_eq!(app.ui, good, "the last good ui.yaml stays");
+    assert!(
+        app.status
+            .starts_with("ui.yaml not applied: invalid ui.yaml at line 3")
+            && app.status.contains("The last good settings stay. Next:")
+            && app.sticky_status,
+        "{}",
+        app.status
+    );
+    // A field-level failure names the field.
+    live.write(
+        "views.yaml",
+        "views:\n  v1/pods:\n    sortColumn: NAME:sideways\n",
+        0o600,
+    )?;
+    assert!(live.settle(&mut app));
+    assert!(
+        app.status.starts_with("views.yaml not applied") && app.status.contains("Next:"),
+        "{}",
+        app.status
+    );
+    Ok(())
+}
+#[cfg(unix)]
+#[test]
+fn live_reload_refuses_files_that_fail_the_trust_checks() -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let (mut app, _replies, _commands) = harness();
+    let mut live = LiveConfig::new(&mut app)?;
+    live.write("keymap.yaml", "keys:\n  logs: Alt-l\n", 0o666)?;
+    assert!(live.settle(&mut app));
+    assert_eq!(app.keymap.keys("logs"), [crate::keymap::Key::Char('l')]);
+    assert!(
+        app.status
+            .starts_with("keymap.yaml refused: other users can write it")
+            && app.status.contains("Next: run chmod 600"),
+        "{}",
+        app.status
+    );
+    // Fixing the mode is a change too, and the file then applies.
+    std::fs::set_permissions(
+        live.dir.0.join("keymap.yaml"),
+        std::fs::Permissions::from_mode(0o600),
+    )
+    .map_err(|_| "chmod")?;
+    assert!(live.settle(&mut app));
+    assert_eq!(
+        app.keymap.keys("logs"),
+        [crate::keymap::Key::Alt('l')],
+        "{}",
+        app.status
+    );
+    // A symlink swapped in for the file is refused.
+    std::fs::remove_file(live.dir.0.join("keymap.yaml")).map_err(|_| "rm")?;
+    live.write("other.yaml", "keys:\n  logs: K\n", 0o600)?;
+    std::os::unix::fs::symlink(
+        live.dir.0.join("other.yaml"),
+        live.dir.0.join("keymap.yaml"),
+    )
+    .map_err(|_| "symlink")?;
+    assert!(live.settle(&mut app));
+    assert!(
+        app.status.contains("refused: the path contains a symlink"),
+        "{}",
+        app.status
+    );
+    assert_eq!(app.keymap.keys("logs"), [crate::keymap::Key::Alt('l')]);
+    Ok(())
+}
+#[cfg(unix)]
+#[test]
+fn live_keymap_changes_wait_until_a_typed_approval_closes() -> Result<()> {
+    let (mut app, replies, _commands) = harness();
+    app.options.connection.writable = true;
+    let mut live = LiveConfig::new(&mut app)?;
+    let rt = runtime()?;
+    let gateway = rt.block_on(Gateway::connect(Connection {
+        demo: true,
+        writable: true,
+        ..Default::default()
+    }))?;
+    let prepared = rt.block_on(gateway.prepare_batch(crate::gateway::BatchRequest {
+        context: gateway.context.clone(),
+        resource: "deployments.apps".into(),
+        action: Action::Delete,
+        targets: vec![crate::gateway::BatchTarget {
+            namespace: "demo".into(),
+            name: "api".into(),
+            uid: "demo-Deployment-api".into(),
+        }],
+    }))?;
+    replies
+        .send((app.epoch, Reply::BatchPrepared(Box::new(prepared))))
+        .map_err(|_| "reply")?;
+    app.receive();
+    assert!(matches!(app.modal, Modal::WriteReview(_)));
+    for ch in "delete".chars() {
+        app.key_event(KeyCode::Char(ch), KeyModifiers::NONE)?;
+    }
+    // Remap a key while the confirmation phrase is being typed.
+    live.write("keymap.yaml", "keys:\n  logs: Alt-l\n", 0o600)?;
+    live.settle(&mut app);
+    assert!(
+        app.status
+            .contains("keymap.yaml changed; applies when this dialog closes"),
+        "{}",
+        app.status
+    );
+    assert_eq!(app.keymap.keys("logs"), [crate::keymap::Key::Char('l')]);
+    for ch in " 1 object".chars() {
+        app.key_event(KeyCode::Char(ch), KeyModifiers::NONE)?;
+    }
+    match &app.modal {
+        Modal::WriteReview(review) => assert_eq!(review.view.typed, "delete 1 object"),
+        _ => return Err("review closed while typing".into()),
+    }
+    live.tick(&mut app);
+    assert_eq!(
+        app.keymap.keys("logs"),
+        [crate::keymap::Key::Char('l')],
+        "still deferred"
+    );
+    app.key_event(KeyCode::Esc, KeyModifiers::NONE)?;
+    assert!(matches!(app.modal, Modal::None));
+    assert!(live.tick(&mut app));
+    assert_eq!(app.keymap.keys("logs"), [crate::keymap::Key::Alt('l')]);
+    assert_eq!(app.status, "Applied keymap.yaml.");
+    Ok(())
 }
