@@ -136,15 +136,17 @@ pub fn plugin_identity(
         .map(str::to_owned)
         .or_else(|| options.context.clone())
         .or(raw.current_context.clone())
-        .ok_or("no kubeconfig context selected")?;
+        .ok_or(
+            "No kubeconfig context selected for the plugin. Next: pick one with :ctx or --context.",
+        )?;
     let entry = raw
         .contexts
         .iter()
         .find(|entry| entry.name == name)
         .and_then(|entry| entry.context.as_ref())
-        .ok_or("context not found")?;
+        .ok_or("Plugin context not found in kubeconfig. Next: check the name with :ctx or kubectl config get-contexts.")?;
     let kubeconfig = std::env::join_paths(&paths)
-        .map_err(|_| "kubeconfig paths cannot be joined")?
+        .map_err(|_| "KUBECONFIG paths cannot be joined for the plugin. Next: remove separators or unusual characters from the KUBECONFIG paths.")?
         .to_string_lossy()
         .into_owned();
     Ok((
