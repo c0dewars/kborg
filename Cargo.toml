@@ -38,6 +38,11 @@ bytes = "1"
 # with a timeout, so no keystroke is consumed after the session ends.
 rustix = { version = "1", default-features = false, features = ["std", "event"] }
 
+[dev-dependencies]
+# Virtual time keeps timeout tests independent of host filesystem/CI speed.
+# This enables a test-only feature on the existing Tokio dependency.
+tokio = { version = "1", features = ["test-util"] }
+
 [profile.release]
 lto = "thin"
 strip = true
