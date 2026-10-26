@@ -121,6 +121,19 @@ and `RUN TOOL` approval, 15 seconds and 256 KiB of captured output, run outside
 the TUI screen. They keep your OS user's file and network access; they are
 not sandboxed.
 
+k9s plugins (`register-k9s`) add variables to that contract. Trust model: you
+trust the executable you register (absolute path, SHA-256 pinned, re-checked
+on every run); you do not trust cluster data. Variables expand inside a single
+argv element, never through a shell, and never split or glob. A value with
+control or formatting characters is refused, and a value starting with `-` is
+refused where it would begin an argument (before a literal `--`), so object
+names cannot inject options. Environment variables are never expanded. A
+registered shell (`sh -c` scripts) is allowed only by explicit registration;
+its values are limited to letters, digits and `._:/@=+,-`, and every run needs
+`RUN DANGEROUS NAME`, as do plugins marked `dangerous` and arguments with a
+kubectl/helm write verb. The review shows the exact expanded argv. These checks
+add friction; they do not make a tool read-only.
+
 Copilot advice can target GitHub.com, a GHE.com tenant or GitHub Enterprise
 Server. Each deployment has its own exact egress allowlist, and credentials are
 bound to the policy host. Two GHES-only policy options widen trust and should be

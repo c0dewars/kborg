@@ -1679,7 +1679,7 @@ fn extensions_command(opts: &Options) -> Result<()> {
             if !outcome.success {return Err("extension tool exited unsuccessfully".into());}
             Ok(())
         },
-        _=>Err("usage: extensions list [--json] | register NAME --tool ABS [--tool-arg ARG] | remove NAME | run NAME RESOURCE OBJECT --allow-extensions --allow-tools | import-k9s PLUGINS.yaml".into()),
+        _=>Err("usage: extensions list [--json] | register NAME --tool ABS [--tool-arg ARG] | remove NAME | run NAME RESOURCE OBJECT --allow-extensions --allow-tools | import-k9s PLUGINS.yaml | register-k9s PLUGINS.yaml NAME --tool ABS".into()),
     }
 }
 
