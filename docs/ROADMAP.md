@@ -16,7 +16,7 @@ This plan follows 0.5.0-rc.3. Each item has a measurable bar ("done when") so we
 
 | # | Change | Done when |
 |---|---|---|
-| P1 | **Watch traffic diet**: request `allowWatchBookmarks`, resume from the last bookmark on reconnect instead of relisting, and negotiate gzip on LIST pages | 5,000-object churn test uses less network than k9s (target ≤ 50 KiB/min); relist count after a 30 s API outage is 0 |
+| P1 | **Watch traffic diet**: request `allowWatchBookmarks`, resume from the last bookmark on reconnect instead of relisting, and negotiate gzip on LIST pages | **Done.** Watches renew every 55 s (was 8 s) with bookmarks and keep their cache across disconnects, resuming at the last resourceVersion; only 410 Gone relists. GET reads negotiate gzip, bounded like raw bodies. 5,000-ConfigMap churn: 36.4 KiB/min vs k9s 36.7 (was 101 vs 56); 0 relists after a 30 s outage; a 5,000-object LIST is 195 KiB instead of 1.8 MiB |
 | P2 | **Server-side tables** (`Accept: application/json;as=Table`) for resources without custom columns, so the client stops downloading full objects it only shows five columns of | Memory at 5,000 ConfigMaps ≤ 40 MiB (from 71); first page ≤ 0.1 s |
 | P3 | **Virtual table above the cap**: page through >10,000 objects with continue tokens on demand instead of showing only the first 10,000 | 50,000 Pods browsable, sort and filter by server label/field selectors; banner explains what is client- vs server-side |
 | P4 | **Frame budget**: diff-render only changed cells, coalesce watch bursts to one frame per 16 ms, measure p50/p95/p99 key-to-frame latency | p99 key-to-frame < 16 ms at 5,000 rows; idle CPU < 0.3 % |

@@ -16,7 +16,7 @@ animations and ANSI styling never enter machine output.
 | `resources --json` | Array of discovered kind records: `plural`, `kind`, `group`, `version`, `namespaced`, `short_names`; Secrets and subresources excluded |
 | `list RESOURCE --json` | Object containing `items` (redacted Kubernetes objects), `truncated` (boolean), and `source` (`cluster` or `demo`) |
 | `get RESOURCE NAME --json` | One redacted Kubernetes object; `kind` and `apiVersion` supplied by the selected catalog |
-| `watch RESOURCE --json` | JSONL snapshots: `items`, `resourceVersion`, `stale`, `truncated`, `terminal`, `status`; one complete JSON object per line |
+| `watch RESOURCE --json` | JSONL snapshots: `items`, `resourceVersion`, `stale`, `truncated`, `terminal`, `status`, `relists` (full LISTs so far, initial included); one complete JSON object per line |
 | `metrics pods\|nodes --json` | `api_version`, `scope`, `namespace`, `source`, `items`, `truncated`; exact quantity details described below |
 | `lint --json` | `findings` (each `severity` error\|warning\|info, `object`, `message`, errors first) and `notes` (unavailable or truncated reads) |
 | `scan RESOURCE NAME --json` or `scan ns --json` | `scanner` (kind and version), `executable`, `scope`, `images` (each `image`, `status` ok\|failed\|skipped, optional `error`, optional `summary` with `counts` {`critical`,`high`,`medium`,`low`,`unknown`}, `total` and up to ten `findings` {`severity` CRITICAL\|HIGH\|MEDIUM\|LOW\|UNKNOWN, `id`, `package`, `installed`, `fixed` or null}, most severe first), `rejected` (invalid references, not scanned), `omitted` (images beyond the 50-image limit), `notes`, `canceled`. The review and prompt go to stderr; confirmation needs a terminal on stdin |
