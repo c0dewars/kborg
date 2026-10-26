@@ -3025,6 +3025,25 @@ fn write_outcome_survives_epoch_and_watch_updates_until_acknowledged() {
     assert!(!app.sticky_status);
 }
 #[test]
+fn shell_session_summary_survives_the_watch_restart_after_returning() {
+    let (mut app, replies, _commands) = harness();
+    let summary =
+        "Interactive session ended: local Ctrl-] or cancellation. 9 bytes sent,99 bytes received.";
+    assert!(
+        replies
+            .send((app.epoch, Reply::Notice(summary.into())))
+            .is_ok()
+    );
+    assert!(replies.send((app.epoch, Reply::Watching)).is_ok());
+    app.receive();
+    assert!(app.watching && app.sticky_status && app.status == summary);
+    assert!(
+        screen(&app, 140, 30)
+            .join("\n")
+            .contains("local Ctrl-] or cancellation")
+    );
+}
+#[test]
 fn namespace_changed_during_connect_is_not_overwritten_and_old_session_is_rejected() {
     let (mut app, replies, _commands) = harness();
     app.connected = false;
