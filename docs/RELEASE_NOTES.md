@@ -1,6 +1,6 @@
 # KBorg 0.5.0 — unreleased
 
-**Every k9s workflow, reviewed.** This release closes the remaining k9s gaps, each behind its own opt-in and review.
+**Every k9s workflow, reviewed.** This release closes the remaining k9s gaps and works out of the box: everything is on, and every change is reviewed.
 
 ## Highlights
 
