@@ -43,7 +43,9 @@ impl App {
         }
     }
     pub(super) fn table_action(&mut self, action: &str, index: usize) -> Result<bool> {
+        self.remember_visit(action);
         match action {
+            "palette" => self.open_palette(),
             "help" => self.open_help(Scope::Table, keyhelp::Mode::Context),
             "command" | "prompt" => {
                 self.capture_ask_screen();
