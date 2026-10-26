@@ -2,8 +2,8 @@
 //!
 //! In a real terminal a session is a full TTY passthrough, like
 //! `kubectl exec -it`: raw bytes flow both ways unfiltered, so vim, top and
-//! less work. The user opted in with `--write --allow-exec` (or attach, node
-//! shell, debug) and approved an exact review. The local escape key (Ctrl-] by
+//! less work. The user approved an exact review (sessions are off with
+//! `--read-only` or an operator config without `allow_exec`/attach/node shell/debug). The local escape key (Ctrl-] by
 //! default) disconnects, and [`RESET`] restores terminal modes the remote
 //! program may have changed. [`pump`] drives the same stream for controlled
 //! (non-terminal) callers and filters output to text and safe colors.
