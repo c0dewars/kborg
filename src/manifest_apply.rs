@@ -176,7 +176,10 @@ pub fn body(
     if !safety::valid_id(namespace)
         || ["kube-system", "kube-public", "kube-node-lease"].contains(&namespace)
     {
-        return Err(format!("namespace {namespace} is invalid or protected"));
+        return Err(format!(
+            "namespace {} is invalid or protected",
+            safety::safe_text(namespace, 63)
+        ));
     }
     crate::edit::check_gitops(document)?;
     let mut body = document.clone();
@@ -366,6 +369,14 @@ mod tests {
             json!({"apiVersion":"v1","kind":"ConfigMap","metadata":{"name":"x","namespace":null}});
         let (ns, _, _) = body(&doc, kind_for(&kinds, &doc)?, "shop")?;
         assert_eq!(ns, "shop");
+        Ok(())
+    }
+    #[test]
+    fn invalid_namespace_error_does_not_echo_terminal_controls() -> Result<()> {
+        let kinds = kinds();
+        let hostile = json!({"apiVersion":"v1","kind":"ConfigMap","metadata":{"name":"x","namespace":"a\u{1b}]52;c;x\u{7}"}});
+        let error = body(&hostile, kind_for(&kinds, &hostile)?, "shop").err();
+        assert!(error.is_some_and(|error| !error.contains(['\u{1b}', '\u{7}'])));
         Ok(())
     }
     fn body_err(kinds: &[Kind], doc: Value, ns: &str) -> bool {
