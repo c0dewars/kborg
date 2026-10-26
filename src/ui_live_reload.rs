@@ -36,8 +36,10 @@ impl App {
             return false;
         }
         // Key changes never land under a typed confirmation or any other
-        // dialog; theme changes wait while the theme picker previews.
-        let quiet = matches!(self.modal, Modal::None | Modal::LiveOverview(..));
+        // dialog or the Ctrl-P palette; theme changes wait while the theme
+        // picker previews.
+        let quiet =
+            matches!(self.modal, Modal::None | Modal::LiveOverview(..)) && self.palette.is_none();
         let keys_ready = quiet && !self.write_inflight;
         let picking = matches!(self.modal, Modal::Themes(..) | Modal::NewTheme(..));
         let files = self.config_watch.take(|file| {
