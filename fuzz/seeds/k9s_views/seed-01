@@ -1,0 +1,3 @@
+views:
+  pods:
+    columns: ['ESC:.a\\.b["c"]']

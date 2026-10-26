@@ -84,6 +84,11 @@ pub mod workload_actions;
 
 pub mod helm;
 
+/// Fuzz entry points; built only for tests and cargo-fuzz (`--cfg fuzzing`).
+#[cfg(any(test, fuzzing))]
+#[doc(hidden)]
+pub mod fuzzing;
+
 pub mod helm_crds;
 pub mod helm_extensions;
 pub mod helm_lifecycle;

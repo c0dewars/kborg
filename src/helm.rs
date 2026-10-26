@@ -1096,6 +1096,49 @@ fn demo_selected(selected: &Release) -> Result<Release> {
         .ok_or("selected demo Helm release identity is unavailable".into())
 }
 
+/// Storage payload decoding and projections without a cluster, for `crate::fuzzing`.
+#[cfg(any(test, fuzzing))]
+pub(crate) mod fuzz {
+    use super::*;
+    pub(crate) const MAX_DECODED: usize = super::MAX_DECODED;
+    pub(crate) const MAX_RESOURCES: usize = super::MAX_RESOURCES;
+    pub(crate) fn decode(encoded: &[u8]) -> Result<Vec<u8>> {
+        super::decode(encoded, &mut DecodeBudget::default())
+    }
+    /// Projects against the identity the payload claims when the storage
+    /// labels could carry it, else a fixed one, so both paths are reachable.
+    pub(crate) fn project(bytes: &[u8]) -> Result<Release> {
+        let claimed: Value = serde_json::from_slice(bytes).unwrap_or_default();
+        let text = |key: &str, fallback: &str| -> String {
+            claimed[key].as_str().unwrap_or(fallback).to_owned()
+        };
+        let name = Some(text("name", "web")).filter(|name| valid_name(name));
+        let namespace = Some(text("namespace", "default")).filter(|ns| safety::valid_id(ns));
+        let status = Some(claimed["info"]["status"].as_str().unwrap_or("deployed"))
+            .filter(|status| valid_status(status));
+        let revision = claimed["version"]
+            .as_u64()
+            .and_then(|version| u32::try_from(version).ok())
+            .filter(|version| *version > 0);
+        let identity = Identity {
+            name: name.unwrap_or_else(|| "web".into()),
+            namespace: namespace.unwrap_or_else(|| "default".into()),
+            revision: revision.unwrap_or(1),
+            status: status.unwrap_or("deployed").into(),
+            storage: Storage::Secret,
+            uid: "uid".into(),
+            resource_version: "1".into(),
+        };
+        super::project(bytes, &identity)
+    }
+    pub(crate) fn hooks(bytes: &[u8]) -> Result<Value> {
+        hook_projection(bytes)
+    }
+    pub(crate) fn references(manifest: &str) -> (Vec<ResourceRef>, bool, Vec<String>) {
+        resource_references(manifest)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

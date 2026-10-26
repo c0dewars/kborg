@@ -10,7 +10,7 @@ struct File {
 }
 pub type Aliases = BTreeMap<String, String>;
 
-fn parse(text: &str) -> Result<Aliases> {
+pub(crate) fn parse(text: &str) -> Result<Aliases> {
     if text.len() > 64 * 1024 {
         return Err("aliases.yaml exceeds 64 KiB".into());
     }

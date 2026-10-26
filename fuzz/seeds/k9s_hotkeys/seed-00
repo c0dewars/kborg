@@ -1,0 +1,16 @@
+hotKeys:
+  shift-0:
+    shortCut: Shift-0
+    description: Viewing pods
+    command: pods
+  f2:
+    shortCut: F2
+    description: Deployments
+    command: ':dp'
+    keepHistory: true
+  alt-x:
+    shortCut: Alt-X
+    command: ns kube-system
+  ctrl-g:
+    shortCut: Ctrl-G
+    command: helm
