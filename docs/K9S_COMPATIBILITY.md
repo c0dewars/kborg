@@ -105,7 +105,7 @@ k9s's node shell creates a privileged Pod on the Node. KBorg does the same behin
 
 KBorg runs k9s plugins as registered extensions: an absolute executable pinned by SHA-256 that receives the selected object as redacted JSON on stdin after a full review, with a 15-second limit and captured output that is never applied. Run them with `:ext NAME`, their `shortCut`, or `:actions` (`--allow-extensions --allow-tools`).
 
-`kborg extensions import-k9s ~/.config/k9s/plugins.yaml` classifies every plugin and prints a `kborg extensions register-k9s plugins.yaml NAME --tool /ABS/PATH` command for each one that runs a single program (the path is looked up on PATH for the report only). The common community plugins stern, dive, log-full and helm-values import unchanged; plugins that wrap `sh -c`/`bash -c` scripts (debug-container, watch-events, blame) or use pipes are flagged for review, with the built-in equivalent where one exists (`:debug`, `:events`, `l`, Helm `v`).
+`kborg extensions import-k9s ~/.config/k9s/plugins.yaml` classifies every plugin and prints a `kborg extensions register-k9s plugins.yaml NAME --tool /ABS/PATH` command for each one that runs a single program (the path is looked up on PATH for the report only; every printed word is shell-quoted, so a hostile plugins.yaml cannot inject shell code into a pasted command). The common community plugins stern, dive, log-full and helm-values import unchanged; plugins that wrap `sh -c`/`bash -c` scripts (debug-container, watch-events, blame) or use pipes are flagged for review, with the built-in equivalent where one exists (`:debug`, `:events`, `l`, Helm `v`).
 
 | k9s field | KBorg behavior |
 |---|---|
