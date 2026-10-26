@@ -34,6 +34,7 @@ mod keyhelp;
 mod keys;
 #[path = "ui_navigation.rs"]
 mod nav;
+mod palette;
 mod plugin_run;
 mod render;
 mod replies;
@@ -338,6 +339,10 @@ struct App {
     /// Ctrl-E in the YAML editor: hand the draft to $EDITOR on the next loop.
     pending_editor: bool,
     pending_tool: Option<(Box<crate::handoff::Prepared>, String)>,
+    /// Ctrl-P command palette, drawn over the current view while open.
+    palette: Option<Box<palette::Palette>>,
+    /// Recently opened objects (in memory only) for the palette.
+    visited: std::collections::VecDeque<palette::Visited>,
     worker: Worker,
 }
 impl App {
@@ -931,6 +936,8 @@ pub fn run(options: Options) -> Result<()> {
         pending_session: None,
         pending_editor: false,
         pending_tool: None,
+        palette: None,
+        visited: Default::default(),
         worker,
     };
     if first_run {

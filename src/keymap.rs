@@ -315,6 +315,12 @@ pub const ACTIONS: &[Action] = &[
         &[":"],
         "Command prompt (:pods, :ns, :keymap, ...)",
     ),
+    act(
+        "palette",
+        Global,
+        &["Ctrl-P"],
+        "Command palette: fuzzy search every action, command and recent object",
+    ),
     // Resource table: actions, most kind-specific first.
     act(
         "filter",

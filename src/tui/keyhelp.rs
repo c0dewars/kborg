@@ -377,7 +377,14 @@ pub(super) fn modal_hint(app: &App, modal: &Modal) -> Option<String> {
     Some(match modal {
         Modal::Detail(..) => {
             let mut parts = vec![scroll];
-            parts.extend(pairs(app, &[("command", "command"), ("help", "keys")]));
+            parts.extend(pairs(
+                app,
+                &[
+                    ("command", "command"),
+                    ("palette", "palette"),
+                    ("help", "keys"),
+                ],
+            ));
             parts.push("Esc close".into());
             parts.join(" | ")
         }

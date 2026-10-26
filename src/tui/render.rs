@@ -138,6 +138,7 @@ pub(super) fn table_hints(app: &App) -> Vec<(String, &'static str)> {
         }
     };
     push(&mut hints, "help", "all keys");
+    push(&mut hints, "palette", "palette");
     let drill = match kind.as_str() {
         "pods" => Some("containers"),
         "nodes" | "namespaces" => Some("pods"),
@@ -374,6 +375,15 @@ pub(super) fn render_write_footer(
 }
 pub(super) fn draw(app: &mut App) -> Result<()> {
     let (w, h) = terminal::size().map_err(|_| "cannot read terminal size")?;
+    if app
+        .palette
+        .as_ref()
+        .is_some_and(|palette| palette::palette_scope(&app.modal) != Some(palette.scope))
+    {
+        // A review or another view replaced the one under the palette: close
+        // it so nothing is drawn over review lines.
+        app.palette = None;
+    }
     let mut frame = Vec::new();
     // Keep complete frames atomic on supporting terminals. Older terminals ignore
     // this standard private mode; no feature or input behavior depends on it.
@@ -609,6 +619,41 @@ pub(super) fn render_log_modal(
     out.flush().map_err(|_| "draw failed".into())
 }
 pub(super) fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
+    render_frame(app, w, h, out)?;
+    let Some(palette) = app.palette.as_deref() else {
+        return Ok(());
+    };
+    // The palette only covers the view it opened over, never a review.
+    if w < 28 || h < 10 || palette::palette_scope(&app.modal) != Some(palette.scope) {
+        return Ok(());
+    }
+    let t = &app.theme;
+    let color = |role: &str| {
+        if app.options.color && !t.terminal {
+            t.get(role).color()
+        } else {
+            Color::Reset
+        }
+    };
+    palette::render_palette(
+        app,
+        palette,
+        w,
+        h,
+        out,
+        [
+            color("text"),
+            color("background"),
+            color("muted"),
+            color("selection_text"),
+            color("selection_background"),
+        ],
+    )
+    .and_then(|_| queue!(out, cursor::Hide))
+    .and_then(|_| out.flush())
+    .map_err(|_| "draw failed".into())
+}
+fn render_frame(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
     let t = &app.theme;
     let color = |role: &str| {
         if app.options.color && !t.terminal {

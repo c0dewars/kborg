@@ -132,6 +132,8 @@ fn harness() -> Harness {
             pending_session: None,
             pending_editor: false,
             pending_tool: None,
+            palette: None,
+            visited: Default::default(),
             worker: Worker {
                 tx,
                 rx,
@@ -4563,5 +4565,367 @@ fn k9s_plugin_in_containers_binds_free_keys_and_respects_the_keymap() -> Result<
     // Esc returns to the container list, not the table.
     app.key(KeyCode::Esc)?;
     assert!(matches!(app.modal, Modal::PodContainers(..)));
+    Ok(())
+}
+
+fn ctrl(app: &mut App, c: char) -> Result<bool> {
+    app.key_event(KeyCode::Char(c), KeyModifiers::CONTROL)
+}
+fn type_text(app: &mut App, text: &str) -> Result<()> {
+    for c in text.chars() {
+        app.key_event(KeyCode::Char(c), KeyModifiers::NONE)?;
+    }
+    Ok(())
+}
+fn palette_first(app: &App) -> Option<String> {
+    let palette = app.palette.as_ref()?;
+    palette
+        .results()
+        .get(palette.selected)
+        .map(|entry| entry.name.clone())
+}
+
+/// Scopes where the palette does not open: typed input and approvals.
+const NO_PALETTE: [crate::keymap::Scope; 6] = [
+    crate::keymap::Scope::Editor,
+    crate::keymap::Scope::ForwardForm,
+    crate::keymap::Scope::HelmForm,
+    crate::keymap::Scope::Review,
+    crate::keymap::Scope::Prompt,
+    crate::keymap::Scope::Filter,
+];
+
+#[test]
+fn every_keymap_action_is_listed_and_found_by_name_in_the_palette() {
+    let (app, _replies, _commands) = harness();
+    for scope in crate::keymap::Scope::ALL {
+        let opens = scope.layers().contains(&crate::keymap::Scope::Global);
+        assert_eq!(opens, !NO_PALETTE.contains(&scope), "{}", scope.name());
+    }
+    for action in crate::keymap::ACTIONS {
+        if action.name == "palette" || NO_PALETTE.contains(&action.scope) {
+            continue;
+        }
+        let scope = if action.scope == crate::keymap::Scope::Global {
+            crate::keymap::Scope::Table
+        } else {
+            action.scope
+        };
+        let entries = app.palette_entries(scope);
+        let results = palette::rank(action.name, &entries);
+        assert_eq!(
+            results.first().map(|entry| entry.name.as_str()),
+            Some(action.name),
+            "{} in {}",
+            action.name,
+            scope.name()
+        );
+        let entry = results[0];
+        assert_eq!(
+            entry.key,
+            crate::keymap::label(app.keymap.keys(action.name))
+        );
+    }
+}
+
+#[test]
+fn palette_shows_remapped_keys_and_opens_from_its_remapped_key() -> Result<()> {
+    let (mut app, _replies, _commands) = harness();
+    app.keymap = crate::keymap::parse("keys:\n  palette: F2\n  describe: Alt-d\n")?;
+    ctrl(&mut app, 'p')?;
+    assert!(app.palette.is_none(), "Ctrl-P moved away");
+    app.key_event(KeyCode::F(2), KeyModifiers::NONE)?;
+    let palette = app.palette.as_ref().ok_or("F2 opens the palette")?;
+    let describe = palette
+        .entries
+        .iter()
+        .find(|entry| entry.name == "describe")
+        .ok_or("describe listed")?;
+    assert_eq!(describe.key, "Alt-d");
+    // The palette key closes it again.
+    app.key_event(KeyCode::F(2), KeyModifiers::NONE)?;
+    assert!(app.palette.is_none());
+    Ok(())
+}
+
+#[test]
+fn palette_refuses_disabled_actions_with_their_reason() -> Result<()> {
+    let (mut app, _replies, _commands) = harness();
+    app.desired_resource = Some("deployments.apps".into());
+    app.items = marked_deployments();
+    ctrl(&mut app, 'p')?;
+    type_text(&mut app, "scale")?;
+    assert_eq!(palette_first(&app).as_deref(), Some("scale"));
+    app.key_event(KeyCode::Enter, KeyModifiers::NONE)?;
+    assert!(
+        app.palette.is_some(),
+        "a disabled entry keeps the palette open"
+    );
+    assert!(matches!(app.modal, Modal::None));
+    assert!(
+        app.status.contains("[OFF]") && app.status.contains("READ ONLY"),
+        "{}",
+        app.status
+    );
+    // Kind-specific actions for other kinds are listed as OFF too.
+    app.key_event(KeyCode::Esc, KeyModifiers::NONE)?;
+    app.options.connection.writable = true;
+    ctrl(&mut app, 'p')?;
+    type_text(&mut app, "cordon")?;
+    let palette = app.palette.as_ref().ok_or("open")?;
+    let cordon = palette.results()[0].clone();
+    assert_eq!(cordon.name, "cordon");
+    assert!(
+        cordon
+            .off
+            .as_deref()
+            .is_some_and(|off| off.contains("Node"))
+    );
+    app.key_event(KeyCode::Enter, KeyModifiers::NONE)?;
+    assert!(matches!(app.modal, Modal::None) && app.status.contains("[OFF]"));
+    Ok(())
+}
+
+#[test]
+fn palette_scale_opens_the_same_review_as_the_scale_key() -> Result<()> {
+    let setup = || {
+        let (mut app, replies, commands) = harness();
+        app.options.connection.writable = true;
+        app.desired_resource = Some("deployments.apps".into());
+        app.items = marked_deployments();
+        app.selected = 1;
+        (app, replies, commands)
+    };
+    let (mut by_key, _r1, _c1) = setup();
+    by_key.key_event(KeyCode::Char('s'), KeyModifiers::NONE)?;
+    let (mut by_palette, _r2, _c2) = setup();
+    ctrl(&mut by_palette, 'p')?;
+    type_text(&mut by_palette, "scale")?;
+    by_palette.key_event(KeyCode::Enter, KeyModifiers::NONE)?;
+    assert!(by_palette.palette.is_none());
+    match (&by_key.modal, &by_palette.modal) {
+        (Modal::Scale(k1, n1, name1, uid1, t1), Modal::Scale(k2, n2, name2, uid2, t2)) => {
+            assert_eq!((k1, n1, name1, uid1, t1), (k2, n2, name2, uid2, t2));
+            assert_eq!(name2, "jobs");
+        }
+        _ => return Err("both paths open the scale review".into()),
+    }
+    Ok(())
+}
+
+#[test]
+fn palette_moves_with_arrows_and_ctrl_keys_runs_commands_and_esc_returns() -> Result<()> {
+    let (mut app, _replies, _commands) = harness();
+    app.modal = Modal::Detail("describe text".into(), 0);
+    ctrl(&mut app, 'p')?;
+    assert_eq!(
+        app.palette.as_ref().map(|palette| palette.scope),
+        Some(crate::keymap::Scope::Detail)
+    );
+    let first = palette_first(&app);
+    ctrl(&mut app, 'n')?;
+    app.key_event(KeyCode::Down, KeyModifiers::NONE)?;
+    assert_eq!(
+        app.palette.as_ref().map(|palette| palette.selected),
+        Some(2)
+    );
+    ctrl(&mut app, 'p')?;
+    app.key_event(KeyCode::Up, KeyModifiers::NONE)?;
+    assert_eq!(palette_first(&app), first);
+    app.key_event(KeyCode::Esc, KeyModifiers::NONE)?;
+    assert!(app.palette.is_none() && matches!(app.modal, Modal::Detail(..)));
+    // A command runs through the prompt, exactly as typed.
+    ctrl(&mut app, 'p')?;
+    type_text(&mut app, ":keymap")?;
+    assert_eq!(palette_first(&app).as_deref(), Some(":keymap"));
+    app.key_event(KeyCode::Enter, KeyModifiers::NONE)?;
+    assert!(matches!(&app.modal, Modal::Help(view) if view.mode == keyhelp::Mode::Keymap));
+    assert_eq!(app.history.last().map(String::as_str), Some("keymap"));
+    // Commands that need an argument pre-fill the prompt instead.
+    app.modal = Modal::None;
+    ctrl(&mut app, 'p')?;
+    type_text(&mut app, ":sort")?;
+    app.key_event(KeyCode::Enter, KeyModifiers::NONE)?;
+    assert!(matches!(&app.modal, Modal::Input("Command", text) if text == "sort "));
+    Ok(())
+}
+
+#[test]
+fn palette_opens_over_every_major_view_and_returns_to_it() -> Result<()> {
+    let (mut app, _replies, _commands) = harness();
+    let views: Vec<(Modal, crate::keymap::Scope, &str)> = vec![
+        (Modal::None, crate::keymap::Scope::Table, "describe"),
+        (
+            Modal::Detail("text".into(), 0),
+            crate::keymap::Scope::Detail,
+            "detail.close",
+        ),
+        (
+            Modal::Follow(Box::new(crate::ui_logs::LogView::new(
+                "line".into(),
+                crate::logs::ReadOptions::default(),
+            ))),
+            crate::keymap::Scope::Log,
+            "log.wrap",
+        ),
+        (
+            Modal::LiveOverview(dashboard_ui::Dashboard::new(&["demo".into()], true)),
+            crate::keymap::Scope::Dashboard,
+            "dashboard.chart",
+        ),
+        (
+            Modal::Metrics("CPU".into(), 0),
+            crate::keymap::Scope::Metrics,
+            "metrics.chart",
+        ),
+        (helm_table(None), crate::keymap::Scope::Helm, "helm.values"),
+        (
+            helm_table(Some(helm_release("web", 2))),
+            crate::keymap::Scope::HelmHistory,
+            "helm.history.rollback",
+        ),
+        (
+            Modal::Picker("Namespace", vec!["a".into(), "b".into()], 0),
+            crate::keymap::Scope::Picker,
+            "picker.down",
+        ),
+    ];
+    for (modal, scope, own) in views {
+        app.modal = modal;
+        ctrl(&mut app, 'p')?;
+        let palette = app.palette.as_ref().ok_or(scope.name())?;
+        assert_eq!(palette.scope, scope);
+        // The view's own actions come first with an empty query.
+        assert_eq!(
+            palette.results().first().map(|entry| entry.category),
+            Some(scope.name())
+        );
+        assert!(palette.entries.iter().any(|entry| entry.name == own));
+        for (w, h) in [(80, 24), (120, 32)] {
+            let frame = screen(&app, w, h).join("\n");
+            assert!(
+                frame.contains("COMMAND PALETTE"),
+                "{}\n{frame}",
+                scope.name()
+            );
+        }
+        app.key_event(KeyCode::Esc, KeyModifiers::NONE)?;
+        assert!(app.palette.is_none());
+        assert_eq!(palette::palette_scope(&app.modal), Some(scope));
+    }
+    // Not over typed input or reviews.
+    app.modal = Modal::Input("Command", String::new());
+    ctrl(&mut app, 'p')?;
+    assert!(app.palette.is_none());
+    Ok(())
+}
+
+#[test]
+fn palette_action_in_a_view_runs_its_key_and_picker_choice_works() -> Result<()> {
+    let (mut app, _replies, _commands) = harness();
+    app.modal = Modal::Picker("Namespace", vec!["a".into(), "b".into()], 0);
+    ctrl(&mut app, 'p')?;
+    type_text(&mut app, "picker.down")?;
+    app.key_event(KeyCode::Enter, KeyModifiers::NONE)?;
+    assert!(matches!(app.modal, Modal::Picker(_, _, 1)));
+    // A remapped view key still runs: the palette sends the built-in key past
+    // translation, where the moved-away key would otherwise be swallowed.
+    app.keymap = crate::keymap::parse("scopes:\n  picker:\n    up: Alt-k\n")?;
+    ctrl(&mut app, 'p')?;
+    type_text(&mut app, "picker.up")?;
+    let up = app
+        .palette
+        .as_ref()
+        .and_then(|palette| palette.results().first().map(|entry| entry.key.clone()));
+    assert_eq!(up.as_deref(), Some("Alt-k"));
+    app.key_event(KeyCode::Enter, KeyModifiers::NONE)?;
+    assert!(matches!(app.modal, Modal::Picker(_, _, 0)));
+    Ok(())
+}
+
+#[test]
+fn palette_remembers_opened_objects_and_jumps_back_to_them() -> Result<()> {
+    let (mut app, _replies, mut commands) = harness();
+    app.desired_resource = Some("deployments.apps".into());
+    app.items = marked_deployments();
+    app.selected = 2;
+    app.key_event(KeyCode::Char('d'), KeyModifiers::NONE)?;
+    let _ = commands.try_recv();
+    app.busy = false;
+    for index in 0..60 {
+        app.items = vec![object(&format!("obj-{index}"))];
+        app.selected = 0;
+        app.remember_visit("yaml");
+    }
+    assert_eq!(app.visited.len(), palette::MAX_VISITED);
+    assert_eq!(app.visited.front().map(|v| v.name.as_str()), Some("obj-59"));
+    app.items = marked_deployments();
+    app.selected = 2;
+    app.remember_visit("describe");
+    assert_eq!(app.visited.len(), palette::MAX_VISITED);
+    ctrl(&mut app, 'p')?;
+    assert!(app.palette.is_some(), "{}", app.status);
+    type_text(&mut app, "deployments/web")?;
+    let first = app.palette.as_ref().and_then(|palette| {
+        palette
+            .results()
+            .first()
+            .map(|entry| (entry.name.clone(), entry.category))
+    });
+    assert_eq!(first, Some(("deployments/web".into(), "recent")));
+    app.key_event(KeyCode::Enter, KeyModifiers::NONE)?;
+    assert_eq!(app.filter, "\\sweb\\s");
+    assert_eq!(app.restoring_uid.as_deref(), Some("uid-web"));
+    Ok(())
+}
+
+#[test]
+fn palette_closes_when_a_review_replaces_its_view() -> Result<()> {
+    let (mut app, _replies, _commands) = harness();
+    app.options.connection.writable = true;
+    app.desired_resource = Some("deployments.apps".into());
+    app.items = marked_deployments();
+    ctrl(&mut app, 'p')?;
+    app.modal = Modal::Scale(
+        "deployments.apps".into(),
+        "test".into(),
+        "api".into(),
+        None,
+        String::new(),
+    );
+    let frame = screen(&app, 80, 24).join("\n");
+    assert!(!frame.contains("COMMAND PALETTE"), "{frame}");
+    app.key_event(KeyCode::Char('3'), KeyModifiers::NONE)?;
+    assert!(app.palette.is_none());
+    Ok(())
+}
+
+#[test]
+fn palette_renders_key_name_category_and_description_at_80x24_and_120x32() -> Result<()> {
+    let (mut app, _replies, _commands) = harness();
+    app.desired_resource = Some("deployments.apps".into());
+    app.items = marked_deployments();
+    assert!(screen(&app, 80, 24)[23].contains("Ctrl-P palette"));
+    ctrl(&mut app, 'p')?;
+    let small = screen(&app, 80, 24);
+    let text = small.join("\n");
+    assert!(
+        small[0].contains("KBORG"),
+        "the view stays behind the palette"
+    );
+    assert!(text.contains("COMMAND PALETTE") && text.contains("Enter run"));
+    assert!(text.contains(">/") && text.contains("filter"), "{text}");
+    assert!(text.contains("[OFF] READ ONLY; requires --write"), "{text}");
+    type_text(&mut app, "scale")?;
+    let large = screen(&app, 120, 32).join("\n");
+    let row = large
+        .lines()
+        .find(|line| line.contains(">s "))
+        .ok_or("selected scale row")?;
+    assert!(
+        row.contains("scale") && row.contains("table") && row.contains("[OFF]"),
+        "{large}"
+    );
+    assert!(large.contains("Up/Down Ctrl-N/Ctrl-P move"));
     Ok(())
 }

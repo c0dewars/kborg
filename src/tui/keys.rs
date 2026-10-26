@@ -10,6 +10,9 @@ impl App {
         code: KeyCode,
         approval_size: impl FnOnce() -> io::Result<(u16, u16)>,
     ) -> Result<bool> {
+        if self.palette.is_some() && !self.write_inflight {
+            return self.palette_key(code, KeyModifiers::NONE);
+        }
         if matches!(self.modal, Modal::AdviceRunning) {
             self.status = "Copilot request running; Ctrl-C cancels and waits for cleanup.".into();
             return Ok(false);
@@ -32,23 +35,8 @@ impl App {
             return Ok(false);
         }
         if code == KeyCode::Char(':')
-            && match &self.modal {
-                Modal::Detail(..)
-                | Modal::Overview(..)
-                | Modal::PodContainers(..)
-                | Modal::Metrics(..)
-                | Modal::LiveOverview(..)
-                | Modal::Directory(..)
-                | Modal::ForwardView
-                | Modal::HelmDocument(..)
-                | Modal::Picker(..)
-                | Modal::AdviceDocument(..) => true,
-                Modal::Help(view) => !view.typing,
-                Modal::Subjects(view) => !view.is_typing(),
-                Modal::Follow(view) => !view.is_filtering(),
-                Modal::Helm(table) => !table.is_filtering(),
-                _ => false,
-            }
+            && !matches!(self.modal, Modal::None)
+            && palette::command_prompt_allowed(&self.modal)
         {
             self.capture_ask_screen();
             let modal = std::mem::replace(&mut self.modal, Modal::None);
@@ -1613,6 +1601,16 @@ impl App {
         if self.write_inflight {
             return self.key(code);
         }
+        if self.palette.is_some() {
+            return self.palette_key(code, modifiers);
+        }
+        if palette::palette_scope(&self.modal).is_some()
+            && crate::keymap::Key::from_event(code, modifiers)
+                .is_some_and(|key| self.keymap.matches("palette", key))
+        {
+            self.open_palette();
+            return Ok(false);
+        }
         // Plugin keys are bound only where no action's effective key, hotkey
         // or reserved key uses them, so they are checked before remapping
         // (a key keymap.yaml moved away is free for a plugin).
@@ -1622,6 +1620,14 @@ impl App {
         let Some((code, modifiers)) = self.translate_key(code, modifiers) else {
             return Ok(false);
         };
+        self.translated_key_event(code, modifiers)
+    }
+    /// A key after keymap translation: the view's built-in key.
+    pub(super) fn translated_key_event(
+        &mut self,
+        code: KeyCode,
+        modifiers: KeyModifiers,
+    ) -> Result<bool> {
         if matches!(self.modal, Modal::YamlEditor(..)) {
             if let Modal::YamlEditor(mut editor) = std::mem::replace(&mut self.modal, Modal::None) {
                 match editor.key(crossterm::event::KeyEvent::new(code, modifiers)) {
