@@ -102,7 +102,18 @@ try {
     & $binary config validate $smokeConfig
     if ($LASTEXITCODE -ne 0) { throw 'Default configuration validation smoke failed' }
     $profile = Get-Content -LiteralPath $smokeConfig -Raw | ConvertFrom-Json
-    if ($profile.schema_version -ne 1 -or $profile.profile -ne 'read-only' -or $profile.allow_exec -or $profile.allow_attach -or $profile.allow_forward) { throw 'Default configuration must remain read-only with capabilities disabled' }
+    if ($profile.schema_version -ne 1 -or $profile.profile -cne 'operator' -or $profile.strict_confirmations -cne $false) { throw 'Default configuration does not match the operator profile contract' }
+    $capabilities = @($profile.PSObject.Properties | Where-Object Name -Like 'allow_*')
+    if ($capabilities.Count -eq 0 -or @($capabilities | Where-Object { $_.Value -cne $true }).Count) { throw 'Default operator capabilities must be enabled' }
+    # Check explicit policy constraints as well as the new operator default.
+    # --demo keeps these checks offline; --write must not override the profile.
+    $profile.profile = 'read-only'
+    $profile.strict_confirmations = $true
+    $profile | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $smokeConfig -Encoding utf8NoBOM
+    & $binary config validate $smokeConfig
+    if ($LASTEXITCODE -ne 0) { throw 'Read-only configuration validation smoke failed' }
+    $readOnlyDoctor = @(& $binary --demo --config $smokeConfig --write doctor)
+    if ($LASTEXITCODE -ne 0 -or !($readOnlyDoctor -ccontains 'mode: read only, strict typed confirmations')) { throw 'Configured read-only mode and strict confirmations must override CLI write mode' }
     Remove-Item -LiteralPath $smokeConfig
     Copy-Item -LiteralPath $binary -Destination (Join-Path $stage $binaryName)
     if ((Get-FileHash -LiteralPath (Join-Path $stage $binaryName) -Algorithm SHA256).Hash.ToLowerInvariant() -cne $binarySha256) { throw 'Built binary changed during packaging smoke checks' }
@@ -199,7 +210,7 @@ try {
     }
     $sbom = [ordered]@{bomFormat='CycloneDX';specVersion='1.6';version=1;metadata=@{timestamp=[DateTime]::UtcNow.ToString('o');component=@{type='application';name='kborg';version=$package.version;'bom-ref'=$referenceMap[$package.id]}};components=$components;dependencies=$edges}
     $sbom | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath (Join-Path $stage 'SBOM.cdx.json') -Encoding utf8NoBOM
-    $build = [ordered]@{schema=2;version=$package.version;target=$Target;sourceCommit=$SourceCommit;sourceTree=((& git rev-parse 'HEAD^{tree}' | Out-String).Trim());cleanCheckoutVerified=$true;freshNativeBuild=$true;rust=$rustDetails;buildStartedAtUtc=$buildStarted;buildFinishedAtUtc=$buildFinished;packagedAtUtc=[DateTime]::UtcNow.ToString('o');binarySha256=$binarySha256;tests=@{packagingSmoke=@('exact-version','demo-pods-json','theme-inventory','demo-metrics','four-shell-completions','default-read-only-config');nativeUnitTests='not run by this packager; consult source-specific acceptance evidence'};signed=$codesigned;signature=$(if($codesigned){'macOS Developer ID codesign, hardened runtime; notarization and Sigstore signatures are added by the release workflow'}else{'none'});productionCertified=$false}
+    $build = [ordered]@{schema=2;version=$package.version;target=$Target;sourceCommit=$SourceCommit;sourceTree=((& git rev-parse 'HEAD^{tree}' | Out-String).Trim());cleanCheckoutVerified=$true;freshNativeBuild=$true;rust=$rustDetails;buildStartedAtUtc=$buildStarted;buildFinishedAtUtc=$buildFinished;packagedAtUtc=[DateTime]::UtcNow.ToString('o');binarySha256=$binarySha256;tests=@{packagingSmoke=@('exact-version','demo-pods-json','theme-inventory','demo-metrics','four-shell-completions','default-operator-config','explicit-read-only-strict-config');nativeUnitTests='not run by this packager; consult source-specific acceptance evidence'};signed=$codesigned;signature=$(if($codesigned){'macOS Developer ID codesign, hardened runtime; notarization and Sigstore signatures are added by the release workflow'}else{'none'});productionCertified=$false}
     $build | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $stage 'BUILD.json') -Encoding utf8NoBOM
     Assert-CleanSource
     if ($Target -like '*windows*') {
