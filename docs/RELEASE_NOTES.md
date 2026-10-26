@@ -1,5 +1,7 @@
 # KBorg 0.5.0 — unreleased
 
+Pre-release **0.5.0-rc.4** (2026-10-26) contains everything below.
+
 **Existing kubeconfig, visible connection consent, reviewed workflows.** This branch expands the k9s-style workspace and makes first connection and Copilot discovery easier. Platform/tool prerequisites and production acceptance gates remain explicit.
 
 ## Release-next onboarding and build validation (2026-10-26)
@@ -15,26 +17,26 @@
 - **Kubeconfig works as in kubectl.** Exec credential helpers (`aws eks get-token`, `gke-gcloud-auth-plugin`, `kubelogin`, ...), auth providers, impersonation, `proxy-url` and `insecure-skip-tls-verify` are honored; the reviewed helper mode is still available with `--allow-auth-helper --auth-helper-policy`. helm, Trivy/Grype and a saved `copilot-policy.json` are found automatically.
 - **`kborg doctor`** checks terminal, tools, kubeconfig authentication (is the exec helper on PATH?) and cluster access, and gives a next step for each problem.
 - **The header names the screen you're on**: Nodes, Deployments, Namespaces, Contexts, Logs, `Pod / details`, Review change. `READ ONLY` appears only in read-only mode.
-- **Server-side apply** (`--write --allow-apply`): `kborg apply FILE`, `:apply FILE` or `a` in `:dir`. Up to 16 namespaced objects, every one dry-run first; the review shows the fields a create sets and every changed path of an update. Updates are locked to the reviewed resourceVersion, nothing is written if any object changed since review, and field-manager conflicts are never forced.
-- **Node shell** (`--write --allow-node-shell`): `s` on a Node or `kborg node-shell NODE`. Review the complete privileged Pod, get an `nsenter` root shell, and the Pod is deleted afterwards (and self-expires if KBorg is killed).
-- **Pod file and directory copy** (`--write --allow-file-copy`): `:cp-from`, `:cp-to`, `-r` for directories. Never overwrites on either side; sizes and file counts verified; directory archives extracted strictly.
+- **Server-side apply**: `kborg apply FILE`, `:apply FILE` or `a` in `:dir`. Up to 16 namespaced objects, every one dry-run first; the review shows the fields a create sets and every changed path of an update. Updates are locked to the reviewed resourceVersion, nothing is written if any object changed since review, and field-manager conflicts are never forced.
+- **Node shell**: `s` on a Node or `kborg node-shell NODE`. Review the complete privileged Pod, get an `nsenter` root shell, and the Pod is deleted afterwards (and self-expires if KBorg is killed).
+- **Pod file and directory copy**: `:cp-from`, `:cp-to`, `-r` for directories. Never overwrites on either side; sizes and file counts verified; directory archives extracted strictly.
 - **`:lint`** (also `:popeye`, `kborg lint --json`): read-only misconfiguration report — requests/limits/probes, unpinned images, privileged Pods, degraded or single-replica Deployments, crash loops, Services without Pods.
 - **Extensions in the TUI**: `:ext NAME` hands the selected object to a registered read-only tool after the whole-input review. `kborg extensions import-k9s plugins.yaml` shows which k9s plugins fit and prints the commands.
 - **k9s plugins with variables**: `kborg extensions register-k9s plugins.yaml NAME --tool ABS` registers a k9s plugin with its `shortCut`, `description`, `scopes` and `dangerous` flag. `$NAMESPACE`, `$NAME`, `$CONTEXT`, `$COL-IMAGE` and the other k9s variables expand inside one argument, never through a shell; cluster values with control characters, or starting with `-` where an option could begin, are refused. Shortcuts bind only on free keys and show in `?` help and `:actions`; the review lists the exact argv, and dangerous runs need `RUN DANGEROUS NAME`. `import-k9s` now accepts stern, dive, log-full and helm-values unchanged.
 - **k9s-format `hotkeys.yaml`**: `Shift-0`…`9`, `Alt-<key>`, `F1`…`F12` and free `Ctrl-<letter>` run KBorg commands through the same parser and review gates.
 - **Columns and sorting like k9s**: `views.yaml` (k9s format) sets per-resource columns, including custom `TITLE:.json.path` columns; sort by any column with `:sort COLUMN [asc|desc]`, and pressing a sort key again reverses it. Ctrl-W wide columns, `1`–`9` recent namespaces, recent contexts first in `:ctx`.
 - **CronJobs and rollbacks**: `t` triggers a CronJob now, `s` suspends or resumes it; `:rollback [REVISION]` restores a Deployment, StatefulSet or DaemonSet revision with the image change in the review.
-- **Ephemeral debug containers** (`--write --allow-debug`): `:debug [CONTAINER]` or `kborg debug POD`, reviewed and sharing the target's process namespace.
+- **Ephemeral debug containers**: `:debug [CONTAINER]` or `kborg debug POD`, reviewed and sharing the target's process namespace.
 - **Keys and looks you control**: `keymap.yaml` remaps any key (confirmation keys stay fixed), `?` opens help for the current view with your real keys, `:keymap` lists every action; `ui.yaml` sets borders, header and hint rows, table style, color overrides and dashboard layout (`:ui reload`, `kborg ui init`).
 - **Live config reload**: saving `ui.yaml`, the theme, `keymap.yaml`, `hotkeys.yaml`, `aliases.yaml`, `views.yaml` or a plugin registration updates the running screen within about a second, no `:ui reload` needed. Invalid or untrusted files keep the last good settings and the status line names the file, line and next step; key changes wait until an open approval closes. YAML errors in these files now give the line and column. Off with `reload: false` in `ui.yaml` or `KBORG_CONFIG_RELOAD=off`.
-- **Masked Secret YAML** in `:secrets` (`y`/`d`, `--allow-secret-reveal`): the whole Secret with every value hidden, TLS certificate subject and expiry, registry hostnames for pull secrets; `x` reveals one key for 30 s. Generic views still refuse Secrets and point to `:secrets`.
+- **Masked Secret YAML** in `:secrets` (`y`/`d`): the whole Secret with every value hidden, TLS certificate subject and expiry, registry hostnames for pull secrets; `x` reveals one key for 30 s. Generic views still refuse Secrets and point to `:secrets`.
 - **Live charts**: `g` in `:metrics` charts CPU and memory over time for the selected Pod or Node (with % of request, limit or allocatable); `G` on the dashboard shows four trend charts for the focused cluster. Braille, block or ASCII rendering, set with `ui.yaml` `charts:`.
 - **Command palette** (Ctrl-P): fuzzy search over the current screen's actions with their keys (remapped keys included), every `:` command, resource kinds and aliases, recent contexts and namespaces, and the last 50 opened objects. Enter runs the entry exactly like its key or command, so every company-policy restriction, review and confirmation still applies; unavailable actions show why. Remap it as `palette` in `keymap.yaml`.
 - **Every screen remappable**: Helm, pickers, themes, saved selections, RBAC subjects, the tail picker, forms and the Secrets view are in the keymap, with their own `?` help.
-- **Ask Copilot about the screen** (`--copilot-policy ABS --allow-copilot-screen`): `:ask QUESTION` sends your question and the exact text of the view behind the prompt (table, describe, logs, dashboard) after transfer review and confirmation (strict mode uses `SEND SCREEN TO HOST AS ACCOUNT`). Same sandbox and egress allowlist as `:copilot`; answers are advice only.
+- **Ask Copilot about the screen** (uses the saved Copilot setup): `:ask QUESTION` sends your question and the exact text of the view behind the prompt (table, describe, logs, dashboard) after transfer review and confirmation (strict mode uses `SEND SCREEN TO HOST AS ACCOUNT`). Same sandbox and egress allowlist as `:copilot`; answers are advice only.
 - **Copilot payload fix**: the reviewed payload now reaches the model. The pinned Copilot CLI ignores stdin when `-p` is given, so earlier `:copilot` answers were produced without the bundle; instruction and data now go together on stdin, never in the argument list.
 - **Bulk actions on marked rows**: Ctrl-D, `r` and CronJob `s` act on every marked object (up to 50) through one combined, dry-run review; type e.g. `delete 7 objects`; stops at the first failure and reports what ran.
-- **Image vulnerability scanning** with your own Trivy or Grype (`--scanner ABS_PATH --allow-scan`): `:scan`, `:scan ns`, `kborg scan … [--json]`; severity counts and top findings per image.
+- **Image vulnerability scanning** with your own Trivy or Grype (found on PATH, or `--scanner ABS`): `:scan`, `:scan ns`, `kborg scan … [--json]`; severity counts and top findings per image.
 - **Linux packages** (`.deb`, `.rpm` spec) and a README demo GIF; Homebrew tap live (`brew install c0dewars/tap/kborg`).
 - **Fixes**: Windows test suite (and demo Helm forms on Windows), PgUp/PgDown with custom layouts, an intermittent snapshot-lock failure; serde-saphyr 2.0.
 - **Ctrl-Z errors-only view** and **15-minute trend sparklines** on dashboard cards.
@@ -52,7 +54,9 @@
 
 ## Upgrade notes
 
-- A `--config` file now also constrains `--allow-secret-reveal`, `--allow-force-kill`, `--allow-yaml-edit`, `--allow-node-maintenance`, `--allow-external-editor`, `--allow-file-copy`, `--allow-apply`, `--allow-node-shell`, `--allow-debug` and `--allow-scan`. If you use those flags with a configuration file, add the matching `allow_*` field set to `true`. Without a configuration file nothing changes.
+- Every capability is now on by default. The `--write` and `--allow-*` flags from 0.4 are still accepted but change nothing, so existing scripts keep working; remove them when convenient.
+- To restrict KBorg, use `--read-only`, or an operator `--config` with `allow_*: false` or `profile: read-only`. A configuration file can only take capabilities away; `strict_confirmations: true` brings back typed confirmations.
+- Startup asks Yes/No before connecting to the kubeconfig's current context.
 
 # KBorg 0.4.0 — 2026-10-24
 
