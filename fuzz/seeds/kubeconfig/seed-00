@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: Config
+current-context: dev
+clusters:
+- name: dev
+  cluster:
+    server: https://127.0.0.1:6443
+    certificate-authority: ca.crt
+users:
+- name: dev
+  user:
+    client-certificate: certs/client.crt
+    client-key: /abs/client.key
+    tokenFile: token
+contexts:
+- name: dev
+  context: {cluster: dev, user: dev, namespace: default}

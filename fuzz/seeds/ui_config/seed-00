@@ -1,0 +1,16 @@
+theme: nord
+header:
+  show: true
+  identity: true
+table:
+  selection_marker: ">"
+  mark_marker: "*"
+  column_separator: "|"
+  sort_ascending: "^"
+  sort_descending: "v"
+colors:
+  accent: "#88c0d0"
+dashboard:
+  columns: 2
+  min_card_width: 40
+  min_card_height: 8

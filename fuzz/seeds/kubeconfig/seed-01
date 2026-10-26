@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: Config
+contexts:
+- name: a
+  context: {cluster: c}
+---
+apiVersion: v1
+kind: Config
+contexts:
+- name: b
+  context: {cluster: c}

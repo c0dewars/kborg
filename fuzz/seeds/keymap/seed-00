@@ -1,0 +1,6 @@
+keys:
+  table.logs: L
+  table.describe: [d, F3]
+scopes:
+  logs:
+    wrap: Ctrl-W

@@ -1,0 +1,104 @@
+# cargo-fuzz targets; see "Fuzzing" in docs/DEVELOPMENT_GUIDE.md.
+# A separate workspace, so fuzz-only dependencies never reach the kborg crate.
+[package]
+name = "kborg-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+kborg = { path = ".." }
+
+[workspace]
+members = ["."]
+
+[profile.release]
+debug = 1
+
+[[bin]]
+name = "sanitizer"
+path = "fuzz_targets/sanitizer.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "kubeconfig"
+path = "fuzz_targets/kubeconfig.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "manifest"
+path = "fuzz_targets/manifest.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "archive"
+path = "fuzz_targets/archive.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "k9s_views"
+path = "fuzz_targets/k9s_views.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "k9s_hotkeys"
+path = "fuzz_targets/k9s_hotkeys.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "k9s_aliases"
+path = "fuzz_targets/k9s_aliases.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "k9s_plugins"
+path = "fuzz_targets/k9s_plugins.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "keymap"
+path = "fuzz_targets/keymap.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ui_config"
+path = "fuzz_targets/ui_config.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "secret_masked"
+path = "fuzz_targets/secret_masked.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "helm_storage"
+path = "fuzz_targets/helm_storage.rs"
+test = false
+doc = false
+bench = false

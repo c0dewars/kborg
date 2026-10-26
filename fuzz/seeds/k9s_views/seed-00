@@ -1,0 +1,12 @@
+views:
+  v1/pods:
+    columns:
+      - NAME
+      - IMAGE:.spec.containers[*].image|W
+      - PHASE:.status.phase
+      - APP:.metadata.labels['app.kubernetes.io/name']|H
+      - RESTARTS:.status.containerStatuses[0].restartCount|N
+    sortColumn: NAME:asc
+  deployments.apps:
+    columns: [NAME, READY]
+    sortColumn: READY:desc

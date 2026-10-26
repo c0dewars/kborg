@@ -113,7 +113,7 @@ pub struct Hotkey {
 }
 pub type Hotkeys = Vec<Hotkey>;
 
-fn parse(text: &str) -> Result<Hotkeys> {
+pub(crate) fn parse(text: &str) -> Result<Hotkeys> {
     if text.len() > 64 * 1024 {
         return Err("hotkeys.yaml exceeds 64 KiB".into());
     }

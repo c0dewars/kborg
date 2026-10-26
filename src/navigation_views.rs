@@ -400,6 +400,11 @@ pub fn manifest_documents(path: &Path) -> Result<(PathBuf, Vec<Value>)> {
     }
     let bytes = safety::read_small(&path, MAX_MANIFEST as u64)?;
     let text = std::str::from_utf8(&bytes).map_err(|_| "manifest is not UTF-8")?;
+    Ok((path, parse_manifest_text(text)?))
+}
+
+/// Parse bounded manifest text; Secret documents become `OmittedSecret`.
+pub(crate) fn parse_manifest_text(text: &str) -> Result<Vec<Value>> {
     let options = serde_saphyr::options! {
         budget: serde_saphyr::budget! {
             max_reader_input_bytes: Some(MAX_MANIFEST), max_events: 100_000,
@@ -418,7 +423,7 @@ pub fn manifest_documents(path: &Path) -> Result<(PathBuf, Vec<Value>)> {
     for document in &mut documents {
         validate_manifest(document, 0)?;
     }
-    Ok((path, documents))
+    Ok(documents)
 }
 
 /// Parse a bounded local manifest stream and redact every document before display.

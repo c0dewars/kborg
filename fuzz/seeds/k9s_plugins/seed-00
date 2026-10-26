@@ -1,0 +1,24 @@
+plugins:
+  jq-view:
+    shortCut: Shift-J
+    description: Pretty JSON
+    scopes: [all]
+    command: /usr/bin/jq
+    args: ["."]
+  dive:
+    shortCut: Ctrl-D
+    command: /usr/local/bin/dive
+    args: [$COL-IMAGE]
+  stern:
+    shortCut: Ctrl-L
+    command: stern
+    args: [--namespace, $NAMESPACE, $NAME]
+  bg:
+    command: /bin/bash
+    background: true
+    args: [-c, 'echo hi']
+  quoted:
+    shortCut: Alt-Q
+    description: "it's"
+    command: "/opt/my tool"
+    args: ["a b", "it's", "`id`", 7, true]
