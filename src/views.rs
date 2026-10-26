@@ -316,4 +316,27 @@ mod tests {
         }
         Ok(())
     }
+    #[test]
+    fn metadata_paths_are_only_fields_metadata_rows_keep() -> Result<()> {
+        for path in [
+            ".metadata.name",
+            ".metadata.labels.team",
+            ".metadata.labels['app.kubernetes.io/name']",
+            ".metadata.creationTimestamp",
+            ".kind",
+        ] {
+            assert!(metadata_path(&parse_path(path)?), "{path}");
+        }
+        for path in [
+            ".data.key",
+            ".spec.containers[0].image",
+            ".metadata.annotations.owner",
+            ".metadata.ownerReferences[0].name",
+            ".metadata",
+            ".kind.extra",
+        ] {
+            assert!(!metadata_path(&parse_path(path)?), "{path}");
+        }
+        Ok(())
+    }
 }

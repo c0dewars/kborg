@@ -817,13 +817,19 @@ mod tests {
                 .headers()
                 .get(http::header::ACCEPT_ENCODING)
                 .is_some_and(|value| value == "gzip");
+            let metadata = request
+                .headers()
+                .get(http::header::ACCEPT)
+                .and_then(|value| value.to_str().ok())
+                .is_some_and(|value| value.contains("as=PartialObjectMetadata"));
             recorded
                 .lock()
                 .unwrap_or_else(|e| panic!("{e}"))
                 .push(format!(
-                    "{}{}",
+                    "{}{}{}",
                     request.uri(),
-                    if accepts { "#gzip" } else { "" }
+                    if accepts { "#gzip" } else { "" },
+                    if metadata { "#meta" } else { "" }
                 ));
             let (status, text) = replies
                 .lock()
@@ -1256,5 +1262,154 @@ mod tests {
             let paths = requests.lock().unwrap_or_else(|e| panic!("{e}"));
             assert!(paths[0].ends_with("#gzip"), "{paths:?}");
         });
+    }
+    fn config_map_kind() -> Kind {
+        Kind {
+            plural: "configmaps".into(),
+            kind: "ConfigMap".into(),
+            group: String::new(),
+            version: "v1".into(),
+            namespaced: true,
+            short_names: vec!["cm".into()],
+        }
+    }
+    fn partial(name: &str, uid: &str, rv: &str) -> Value {
+        json!({"apiVersion":"meta.k8s.io/v1","kind":"PartialObjectMetadata","metadata":{
+            "name":name,"namespace":"default","uid":uid,"resourceVersion":rv,
+            "creationTimestamp":"2026-01-01T00:00:00Z",
+            "labels":{"app":"api\u{1b}[31m"},
+            "annotations":{"kubectl.kubernetes.io/last-applied-configuration":"{\"data\":{\"password\":\"hunter2\"}}"},
+            "ownerReferences":[{"apiVersion":"v1","kind":"Pod","name":"owner","uid":"o1"}],
+            "managedFields":[{"manager":"kubectl","operation":"Update","fieldsType":"FieldsV1","fieldsV1":{"f:data":{"f:password":{}}}}]
+        }})
+    }
+    fn partial_list(rv: &str, items: Vec<Value>, next: &str) -> String {
+        json!({"apiVersion":"meta.k8s.io/v1","kind":"PartialObjectMetadataList",
+            "metadata":{"resourceVersion":rv,"continue":next},"items":items})
+        .to_string()
+    }
+    fn metadata_feed(replies: Vec<(u16, String)>) -> (WatchFeed, Arc<Mutex<Vec<String>>>) {
+        let (feed, requests) = feed(replies);
+        let mut feed = feed.with_projection(Projection::Metadata);
+        feed.kind = config_map_kind();
+        (feed, requests)
+    }
+    #[test]
+    fn metadata_projection_requests_partial_objects_and_keeps_only_identity() {
+        runtime().block_on(async {
+            let modified = format!(
+                "{}\n",
+                json!({"type":"MODIFIED","object":partial("settings","u-1","9")})
+            );
+            let (mut feed, requests) = metadata_feed(vec![
+                (
+                    200,
+                    partial_list("7", vec![partial("settings", "u-1", "7")], ""),
+                ),
+                (200, format!("{modified}{HOLD}")),
+            ]);
+            let first = feed.next().await;
+            assert!(!first.stale, "{}", first.message);
+            let row = &first.objects[0];
+            assert_eq!(row["kind"], "ConfigMap");
+            assert_eq!(row["apiVersion"], "v1");
+            assert_eq!(row["metadata"]["uid"], "u-1");
+            assert_eq!(row["metadata"]["creationTimestamp"], "2026-01-01T00:00:00Z");
+            // Labels are kept but sanitized; everything else stays on the server.
+            let label = row["metadata"]["labels"]["app"].as_str().unwrap_or("");
+            assert!(
+                label.starts_with("api") && !label.contains('\u{1b}'),
+                "{label}"
+            );
+            let text = row.to_string();
+            for absent in [
+                "managedFields",
+                "annotations",
+                "ownerReferences",
+                "hunter2",
+                "\"data\"",
+            ] {
+                assert!(!text.contains(absent), "{absent} in {text}");
+            }
+            let live = feed.next().await;
+            assert!(!live.stale, "{}", live.message);
+            assert_eq!(live.resource_version, "9");
+            assert_eq!(live.objects[0]["metadata"]["resourceVersion"], "9");
+            let paths = requests.lock().unwrap_or_else(|e| panic!("{e}"));
+            assert_eq!(paths.len(), 2);
+            assert!(paths.iter().all(|p| p.ends_with("#meta")), "{paths:?}");
+            assert!(paths[1].contains("watch=true"), "{paths:?}");
+        });
+    }
+    #[test]
+    fn metadata_response_of_another_kind_fails_closed() {
+        runtime().block_on(async {
+            let mut secret = partial("token", "u-1", "7");
+            secret["kind"] = json!("Secret");
+            let (mut feed, _) = metadata_feed(vec![(200, partial_list("7", vec![secret], ""))]);
+            let snapshot = feed.next().await;
+            assert!(snapshot.terminal && snapshot.objects.is_empty(), "{snapshot:?}");
+            assert!(snapshot.message.contains("unexpected kind"), "{}", snapshot.message);
+            let event = format!(
+                "{}\n",
+                json!({"type":"ADDED","object":{"apiVersion":"v1","kind":"ConfigMap","metadata":{"name":"x","namespace":"default","uid":"u-2","resourceVersion":"8"},"data":{"k":"v"}}})
+            );
+            let (mut feed, _) = metadata_feed(vec![
+                (200, partial_list("7", Vec::new(), "")),
+                (200, event),
+            ]);
+            assert!(!feed.next().await.stale);
+            let snapshot = feed.next().await;
+            assert!(snapshot.terminal && snapshot.objects.is_empty(), "{snapshot:?}");
+        });
+    }
+    #[test]
+    fn progressive_feed_publishes_each_page_and_only_then_goes_live() {
+        runtime().block_on(async {
+            let (feed, requests) = metadata_feed(vec![
+                (
+                    200,
+                    partial_list("7", vec![partial("a", "u-a", "6")], "next-1"),
+                ),
+                (200, partial_list("7", vec![partial("b", "u-b", "7")], "")),
+            ]);
+            let mut feed = feed.progressive();
+            let first = feed.next().await;
+            assert!(first.partial && first.stale && !first.terminal);
+            assert_eq!(first.objects.len(), 1);
+            assert!(first.message.contains("loading"), "{}", first.message);
+            let done = feed.next().await;
+            assert!(!done.partial && !done.stale, "{}", done.message);
+            assert_eq!(done.objects.len(), 2);
+            assert_eq!(done.resource_version, "7");
+            assert_eq!(feed.relists(), 1);
+            let paths = requests.lock().unwrap_or_else(|e| panic!("{e}"));
+            assert!(paths[1].contains("continue=next-1"), "{paths:?}");
+        });
+    }
+    #[test]
+    fn progressive_feed_discards_pages_when_the_list_is_inconsistent() {
+        runtime().block_on(async {
+            let (feed, _) = metadata_feed(vec![
+                (
+                    200,
+                    partial_list("7", vec![partial("a", "u-a", "6")], "next-1"),
+                ),
+                (200, partial_list("8", vec![partial("b", "u-b", "8")], "")),
+            ]);
+            let mut feed = feed.progressive();
+            assert!(feed.next().await.partial);
+            let failed = feed.next().await;
+            assert!(failed.terminal && failed.objects.is_empty() && !failed.partial);
+            assert!(feed.listing.is_none());
+        });
+    }
+    #[test]
+    fn only_metadata_only_kinds_qualify_for_projection() {
+        assert!(metadata_kind(&config_map_kind()));
+        assert!(!metadata_kind(&kind()));
+        let mut lookalike = config_map_kind();
+        lookalike.group = "example.com".into();
+        assert!(!metadata_kind(&lookalike));
     }
 }
