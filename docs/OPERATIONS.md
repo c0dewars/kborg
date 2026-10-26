@@ -45,11 +45,29 @@ ls ~/rpmbuild/RPMS/x86_64/
 
 ## Configuration
 
-`kborg config init settings.json` creates a new strict JSON file. Pass it explicitly with `--config`; no project-local executable configuration is auto-loaded. `config validate` validates without connecting. CLI context/namespace/theme values override file defaults. Files can constrain capabilities but never enable writes or log/subresource access without their CLI flags. Profile `read-only` refuses `--write`; profile `operator` still requires `--write`, separate capability opt-ins, and target confirmation. These are local client controls, not a substitute for RBAC/admission or a policy against a user running another binary.
+Everything is on by default, like k9s; every change is reviewed and confirmed with `y`/Enter. `--read-only` turns changes off for one session. For a team or company policy, write an operator configuration and pass it with `--config FILE` (for example from a shell alias or wrapper):
 
-Supported fields: `schema_version` (1), `profile` (`read-only` or `operator`), optional `context`, `namespace`, `theme`, and booleans `no_splash`, `poll`, `allow_logs`, `allow_helm`, `allow_helm_write`, `allow_helm_hooks`, `allow_helm_crds`, `allow_exec`, `allow_attach`, `allow_forward`, `allow_file_copy`, `allow_tools`, `allow_extensions`, `allow_auth_helper`, `allow_secret_reveal`, `allow_force_kill`, `allow_yaml_edit`, `allow_node_maintenance`, `allow_external_editor`, `allow_apply`, `allow_node_shell`, `allow_debug`, `allow_scan`. A configuration file only narrows: every `--allow-*` flag, including `--allow-secret-reveal` (which needs no `--write`), fails unless the file permits it. Unknown/duplicate fields fail. Default generated config prohibits sensitive capabilities. Config never stores credentials. Helm lifecycle requires an `operator` profile permitting both Helm capabilities when a config file is supplied, plus all three explicit CLI flags.
+```json
+{
+  "schema_version": 1,
+  "profile": "operator",
+  "strict_confirmations": true,
+  "allow_node_shell": false,
+  "allow_force_kill": false,
+  "allow_secret_reveal": false
+}
+```
 
-YAML editing and node maintenance currently use CLI-only capability flags (`--allow-yaml-edit` and `--allow-node-maintenance`) together with `--write`. Schema 1 does not define corresponding per-capability configuration fields. A read-only profile still rejects `--write`; an operator profile does not separately constrain these two flags. Each operation requires its complete review and exact confirmation, and Kubernetes RBAC/admission remains authoritative.
+`kborg config init settings.json` writes a template with every field (all capabilities allowed); `config validate` checks a file without connecting. CLI context/namespace/theme values override file defaults.
+
+A configuration file only takes capabilities away; command-line flags cannot turn back on what it switched off.
+
+- `profile`: `operator` (default) or `read-only` (no changes at all).
+- `strict_confirmations`: `true` brings back typed confirmation phrases and reviews that must be read to the end.
+- Capability switches, all `true` when omitted: `allow_logs`, `allow_helm`, `allow_helm_write`, `allow_helm_hooks`, `allow_helm_crds`, `allow_exec`, `allow_attach`, `allow_forward`, `allow_file_copy`, `allow_tools`, `allow_extensions`, `allow_secret_reveal`, `allow_force_kill`, `allow_yaml_edit`, `allow_node_maintenance`, `allow_external_editor`, `allow_apply`, `allow_node_shell`, `allow_debug`, `allow_scan`, `allow_copilot_screen`. `allow_auth_helper: false` forbids the reviewed helper mode.
+- Defaults: `context`, `namespace`, `theme`, `no_splash`, `poll`.
+
+Unknown or duplicate fields fail. Config never stores credentials. These are local client controls, not a substitute for RBAC/admission or a policy against a user running another binary.
 
 `kborg completions bash|zsh|fish|powershell` emits a static script; review and load it through your shell's normal configuration. It makes no cluster calls.
 
@@ -69,7 +87,7 @@ GitHub Actions is manual-only at the owner's request; pushes and pull requests d
 
 ## Reviewed external views
 
-`--allow-tools view RESOURCE NAME --tool ABSOLUTE_PATH [--tool-arg ARG]` previews
+`kborg view RESOURCE NAME --tool ABSOLUTE_PATH [--tool-arg ARG]` previews
 the exact redacted JSON input and immutable argument vector before `RUN TOOL`
 approval. Use `--yaml` for quoted YAML. Every literal argument uses its own
 `--tool-arg`, including arguments that resemble KBorg capability flags. The
@@ -109,8 +127,9 @@ emulator, screen reader or OS.
 reviews the selected kubeconfig's exact ExecCredential argv and environment,
 selected user/context, endpoint, CA and native executable SHA-256. Type
 `TRUST AUTH HELPER` to create a private policy without executing the helper.
-Enable with `--allow-auth-helper --auth-helper-policy FILE`; profile files can
-forbid this capability. Approved provider configuration paths/profile values may
+This reviewed mode is optional: by default KBorg runs kubeconfig exec helpers
+the way kubectl does. Select it with `--allow-auth-helper --auth-helper-policy FILE`;
+profile files can forbid it. Approved provider configuration paths/profile values may
 be supplied explicitly. PATH, generic interpreters and raw secret environment
 variables are rejected, so chained provider CLIs may require a native adapter.
 
@@ -160,20 +179,20 @@ for the current soak and terminal evidence and its limits.
 
 ## Helm lifecycle, workload logs and Desktop metrics
 
-Launch `./scripts/start-local.sh --context docker-desktop --allow-helm --allow-logs --no-splash`.
+Launch `./scripts/start-local.sh --context docker-desktop --no-splash`.
 `:helm` lists Helm release storage in the current namespace; Enter/r opens history,
 and Enter on a revision shows redacted stored overrides. `d` shows metadata,
 `m` lists rendered resource identities, and `y` shows the safe YAML projection.
 `--helm-storage secret|configmap` disambiguates duplicate driver names. This reads
 Helm v3/v4 Kubernetes storage directly; no Helm executable is needed for browsing.
-`--allow-helm` is separate from logs and general resource access. Kubernetes RBAC
+Helm reads can be switched off separately (`allow_helm: false`). Kubernetes RBAC
 must allow the requested Secret/ConfigMap reads; Kubernetes cannot enforce a
 label selector as a Secret permission boundary. Use a dedicated namespace and
 least-privilege identity. Generic Secret browsing remains disabled. Known-key
 redaction cannot identify every confidential custom chart value.
 
 Helm install, upgrade, rollback and uninstall are separately available on Unix
-with `--write --allow-helm --allow-helm-write --helm-tool ABSOLUTE_PATH`.
+with helm found on PATH (or `--helm-tool ABSOLUTE_PATH`).
 The trusted executable must be exactly Helm 4.3.1. Install/upgrade accept local
 deterministic `.tgz` charts or OCI tag/digest sources, with bundled dependencies and an optional explicit values file. They do not fetch chart repositories/dependencies or create namespaces.
 `:helm` uses `i` to install, `u` to upgrade and Ctrl-D to uninstall; history `r`
@@ -183,7 +202,7 @@ Review the complete context/endpoint, exact arguments and hashes, current and
 desired resources, and release history. Type the exact `namespace/release`.
 Reviews expire after 15 minutes and final checks reject changed input, history,
 UID or resourceVersion. Lifecycle commands require a terminal and reject JSON or
-piped approval. Hooks and create-only CRD bootstrap require separate explicit opt-ins. Other cluster/system/cross-namespace resources, recognized GitOps targets and foreign-resource adoption are refused. The allowlisted chart
+piped approval. Hooks and create-only CRD bootstrap have their own reviews. Other cluster/system/cross-namespace resources, recognized GitOps targets and foreign-resource adoption are refused. The allowlisted chart
 subset, private static credential transfer and remaining post-check race are
 documented in [HELM_LIFECYCLE.md](HELM_LIFECYCLE.md). Trusted Helm retains OS-user
 permissions; it is not sandboxed. Timeouts, cancellation or partial failure

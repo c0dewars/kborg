@@ -4,6 +4,10 @@
 
 ## Highlights
 
+- **Works out of the box, like k9s.** No flags needed: shell, logs, edits, apply, port forwards, file copy, node shell, debug containers, Helm, Secrets, scans, extensions and Copilot are all on. Every change still shows its review; `y`/Enter applies and `n`/Esc cancels. `--read-only` turns changes off, and an operator `--config` can switch any capability off or require typed confirmations (`strict_confirmations`). The old `--write`/`--allow-*` flags are accepted and change nothing.
+- **Kubeconfig works as in kubectl.** Exec credential helpers (`aws eks get-token`, `gke-gcloud-auth-plugin`, `kubelogin`, ...), auth providers, impersonation, `proxy-url` and `insecure-skip-tls-verify` are honored; the reviewed helper mode is still available with `--allow-auth-helper --auth-helper-policy`. helm, Trivy/Grype and a saved `copilot-policy.json` are found automatically.
+- **`kborg doctor`** checks terminal, tools, kubeconfig authentication (is the exec helper on PATH?) and cluster access, and gives a next step for each problem.
+- **The header names the screen you're on**: Nodes, Deployments, Namespaces, Contexts, Logs, `Pod / details`, Review change. `READ ONLY` appears only in read-only mode.
 - **Server-side apply** (`--write --allow-apply`): `kborg apply FILE`, `:apply FILE` or `a` in `:dir`. Up to 16 namespaced objects, every one dry-run first; the review shows the fields a create sets and every changed path of an update. Updates are locked to the reviewed resourceVersion, nothing is written if any object changed since review, and field-manager conflicts are never forced.
 - **Node shell** (`--write --allow-node-shell`): `s` on a Node or `kborg node-shell NODE`. Review the complete privileged Pod, get an `nsenter` root shell, and the Pod is deleted afterwards (and self-expires if KBorg is killed).
 - **Pod file and directory copy** (`--write --allow-file-copy`): `:cp-from`, `:cp-to`, `-r` for directories. Never overwrites on either side; sizes and file counts verified; directory archives extracted strictly.

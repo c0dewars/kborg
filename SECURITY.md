@@ -8,7 +8,33 @@ Please report vulnerabilities privately through [GitHub private vulnerability re
 
 KBorg has had internal security reviews but no independent audit; do not describe it as audited. The audit scope and known limitations are in [docs/SECURITY_AUDIT_PACK.md](docs/SECURITY_AUDIT_PACK.md).
 
-Use dedicated least-privilege identities. Never use CI production credentials. Do not assume read-only access protects confidentiality. Never publish `.local/`, kubeconfigs, logs, audit metadata or crash dumps containing private data. TLS verification cannot be disabled through application flags. Kubernetes reads accept gzip; the decoder is the maintained pure-Rust `flate2`, and both compressed and decoded bytes count against the same body budget, so a compressed response cannot expand past it. Truncated, corrupt or unrequested encodings are errors.
+Use dedicated least-privilege identities. Never use CI production credentials. Do not assume read-only access protects confidentiality. Never publish `.local/`, kubeconfigs, logs, audit metadata or crash dumps containing private data. TLS verification cannot be disabled through KBorg flags; like kubectl, a kubeconfig cluster that sets `insecure-skip-tls-verify` is honored (refused in reviewed helper mode). Kubernetes reads accept gzip; the decoder is the maintained pure-Rust `flate2`, and both compressed and decoded bytes count against the same body budget, so a compressed response cannot expand past it. Truncated, corrupt or unrequested encodings are errors.
+
+## Default capability model
+
+Like k9s, everything is available by default: changes, exec/attach, port
+forwards, file copy, apply, node shell, debug containers, node maintenance,
+YAML editing, force kill, Secret reveal, Helm reads and writes, scans,
+extensions and Copilot screen questions. What protects you is the review, not a
+flag: every change is dry-run where the API allows it, shown in full, bound to
+the object's UID/resourceVersion and confirmed with `y`/Enter (or cancelled with
+`n`/Esc). The executor still checks the exact target, confirmation phrase and
+expiry, so a stale or swapped review cannot run.
+
+- `--read-only` turns every change off for a session.
+- An operator `--config` file only takes capabilities away: any `allow_*` field
+  set to `false`, `"profile": "read-only"`, and `"strict_confirmations": true`
+  (typed confirmation phrases and read-every-line reviews, as in earlier
+  releases). Command-line flags cannot loosen it.
+- Kubeconfig is trusted as kubectl trusts it: exec credential helpers run from
+  PATH with your environment, and auth providers, impersonation, `proxy-url`
+  and `insecure-skip-tls-verify` are honored. `--allow-auth-helper
+  --auth-helper-policy FILE` selects the reviewed helper mode instead: a
+  SHA-256-pinned helper, a cleared environment, and refusal of providers,
+  impersonation, proxies and insecure TLS.
+- Helm, Trivy/Grype and a `copilot-policy.json` in the config folder are found
+  automatically; pass `--helm-tool`, `--scanner` or `--copilot-policy` to pin a
+  specific file.
 
 Before production: independent sensitive-code review, dependency advisories/licenses, cloud-auth trust, protected audit, OS file-permission/race hardening, denial-of-service/fuzz tests, revocation/uncertain-result drills, supported platform matrix, release authenticity and deployment-specific RBAC/admission evidence.
 
@@ -26,7 +52,7 @@ namespace tokens; the user name in the server message is never shown. Other
 server messages and raw transport errors are classified, not echoed, and the
 server URL is reduced to its host.
 
-Secret inspection is off by default. `--allow-secret-reveal` enables `:secrets`,
+Secret inspection is on by default (an operator config can set `allow_secret_reveal: false`): `:secrets` lists keys,
 which lists names, types, key names and sizes for one namespace and decodes a
 single key only on an explicit `x`, for 30 seconds; values are never exported,
 copied, logged, audited or written to disk. `y`/`d` there show a masked YAML of
@@ -42,7 +68,7 @@ process memory; KBorg overwrites the payload bytes it holds as soon as the
 index or masked view is built and when a revealed value is hidden, but copies
 inside the HTTP client are outside its control, so grant `get`/`list secrets`
 only where that is acceptable. Ctrl-K
-force kill is separately opt-in with `--write --allow-force-kill`.
+force kill is on by default (an operator config can set `allow_force_kill: false`).
 
 Marked rows never widen an approval on their own. With marks, delete,
 workload restart and CronJob suspend/resume prepare one batch of at most 50
@@ -56,7 +82,7 @@ target's UID and resourceVersion are rechecked before its write, the batch
 stops at the first failure without rolling back earlier writes, and one audit
 record is written per object.
 
-Pod file copy is opt-in with `--write --allow-file-copy` (`kborg cp-from`,
+Pod file copy is on by default (an operator config can set `allow_file_copy: false`) (`kborg cp-from`,
 `kborg cp-to`, `:cp-from`, `:cp-to`). Each copy moves one regular file of at
 most 64 MiB after a typed `namespace/pod` approval, with the target UID and
 resourceVersion rechecked and an audit record written. The container runs a
@@ -71,29 +97,29 @@ that is removed on failure; links, devices, absolute paths and `..` are
 refused, and uploads create a new container directory and verify the file
 count.
 
-Server-side apply is opt-in with `--write --allow-apply`. Every object is
+Server-side apply is on by default (an operator config can set `allow_apply: false`). Every object is
 dry-run before review, updates are locked to the reviewed resourceVersion,
 nothing is written if any object changed after review, and field-manager
 conflicts are never forced. Secrets, cluster-scoped kinds, system namespaces
 and GitOps-managed objects are refused. A multi-object apply is not atomic: a
 failure part-way leaves earlier objects applied, and the result says which.
 
-Node shell is opt-in with `--write --allow-node-shell` and is root on the
+Node shell is on by default (an operator config can set `allow_node_shell: false`) and is root on the
 Node. The review shows the complete privileged Pod (host PID, network and IPC
 namespaces). The session only targets KBorg's own node-shell Pod on the
 reviewed Node; the Pod is deleted afterwards and has `activeDeadlineSeconds` as
 a backstop. Grant `create pods` in a namespace that permits privileged Pods
 only to people who may administer Nodes.
 
-Ephemeral debug containers are opt-in with `--write --allow-debug`. The
+Ephemeral debug containers are on by default (an operator config can set `allow_debug: false`). The
 review shows the exact container after a dry run; it is unprivileged and gets
 no host access, though with a target container it shares that container's
 process namespace. Kubernetes cannot remove ephemeral containers: the
 container exits after its sleep but stays listed in the Pod. CronJob trigger,
-suspend/resume and workload rollback need `--write` and go through the same
+suspend/resume and workload rollback go through the same
 dry run, review, UID/resourceVersion lock and audit as other writes.
 
-Image scanning is opt-in with `--scanner ABS_PATH --allow-scan` (and `allow_scan`
+Image scanning uses Trivy or Grype found on PATH or `--scanner ABS_PATH` (and `allow_scan`
 in a `--config` profile). KBorg ships no scanner or vulnerability database: it
 runs the Trivy or Grype executable you name, by absolute path without PATH
 lookup, after checking it is a regular, non-symlinked, non-group/world-writable
@@ -144,7 +170,7 @@ trust the supplied internal CA. In GHES offline mode the instance forwards the
 reviewed bundle to its administrator-configured model provider, which KBorg
 cannot see or verify.
 
-`:ask` (separately opt-in with `--allow-copilot-screen`, and refusable in the
+`:ask` (on by default, and refusable in the
 operator configuration with `allow_copilot_screen: false`) sends the visible
 screen text, which is not minimized: it can include context, namespace and
 object names, statuses, events and log lines. Display redaction (masked
@@ -153,7 +179,7 @@ bytes. Screen text is passed to the model as data on stdin under a fixed
 instruction; a hostile log line can still try to steer the answer, which is
 why answers are advice only and never executed.
 
-Helm storage access is separately opt-in with `--allow-helm`. Generic Secret
+Helm storage access is on by default (an operator config can set `allow_helm: false`). Generic Secret
 YAML/describe views remain unavailable, but Helm metadata/history and selected values are
 read from Kubernetes Secret or ConfigMap storage. Kubernetes RBAC cannot restrict
 Secret list permission by label selector; the API identity must be scoped
@@ -162,7 +188,7 @@ rendered manifest bodies. Lifecycle review separately shows redacted affected
 objects. Known-key and private-key redaction cannot classify every
 confidential custom value. Logs and explicitly requested values remain sensitive.
 
-Helm lifecycle requires `--write --allow-helm --allow-helm-write` and an explicitly
+Helm lifecycle is on by default (refusable with `allow_helm_write: false`) and uses an explicitly
 trusted native Helm executable at exactly version 4.3.1 on Unix. It accepts deterministic packaged charts from local files or OCI tags/digests resolved before review. Hooks/tests and explicit CRD operations require separate explicit capabilities and full review. Ordinary resources and custom resources are namespaced; cluster/system targets beyond the reviewed CRD workflows, recognized GitOps resources and foreign adoption are refused. The complete
 15-minute review includes redacted current/desired resource bodies, exact
 arguments and input hashes. Fresh plan, history and UID/resourceVersion checks
