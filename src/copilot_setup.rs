@@ -523,14 +523,19 @@ mod tests {
     }
     #[test]
     fn policy_replacement_keeps_backup_and_refuses_concurrent_changes() {
-        let root = std::env::temp_dir().join(format!(
-            "kborg-setup-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_else(|error| panic!("setup fixture failed: {error:?}"))
-                .as_nanos()
-        ));
+        // macOS exposes its temporary directory through /var -> /private/var.
+        // Resolve the existing test parent without relaxing production path checks.
+        let root = std::env::temp_dir()
+            .canonicalize()
+            .unwrap_or_else(|error| panic!("setup fixture failed: {error:?}"))
+            .join(format!(
+                "kborg-setup-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_else(|error| panic!("setup fixture failed: {error:?}"))
+                    .as_nanos()
+            ));
         safety::ensure_private_dir(&root)
             .unwrap_or_else(|error| panic!("setup fixture failed: {error:?}"));
         let path = root.join("copilot-policy.json");
