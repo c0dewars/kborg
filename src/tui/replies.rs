@@ -623,7 +623,11 @@ impl App {
                 }
                 Reply::Watching => {
                     self.watching = true;
-                    self.status = "WATCH: synchronizing bounded snapshot...".into();
+                    // Keep an operation outcome (e.g. a shell session summary)
+                    // visible until the user acknowledges it.
+                    if !self.sticky_status {
+                        self.status = "WATCH: synchronizing bounded snapshot...".into();
+                    }
                 }
                 Reply::Metrics(scope, namespace, result) => {
                     let now = Instant::now();
