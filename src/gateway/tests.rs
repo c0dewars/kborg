@@ -401,11 +401,22 @@ fn malicious_auth_and_insecure_tls_are_rejected_before_network() {
         let path = dir.join(format!("{i}.json"));
         let config = json!({"apiVersion":"v1","kind":"Config","current-context":"test","clusters":[{"name":"test","cluster":cluster}],"users":[{"name":"test","user":user}],"contexts":[{"name":"test","context":{"cluster":"test","user":"test","namespace":"default"}}]});
         std::fs::write(&path, config.to_string()).unwrap_or_else(|e| panic!("{e}"));
+        // Exec helpers, insecure TLS and impersonation work by default (as
+        // in kubectl); the reviewed helper mode refuses them before network.
+        let strict = i <= 2;
         let result = rt.block_on(Gateway::connect(Connection {
             kubeconfig: Some(path.clone()),
+            allow_auth_helper: strict,
             ..Default::default()
         }));
-        assert!(result.is_err());
+        assert!(result.is_err(), "case {i}");
+        if (1..=2).contains(&i) {
+            let relaxed = rt.block_on(Gateway::connect(Connection {
+                kubeconfig: Some(path.clone()),
+                ..Default::default()
+            }));
+            assert!(relaxed.is_ok(), "case {i}: {:?}", relaxed.err());
+        }
         std::fs::remove_file(path).unwrap_or_else(|e| panic!("{e}"));
     }
     std::fs::remove_dir(dir).unwrap_or_else(|e| panic!("{e}"));

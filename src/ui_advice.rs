@@ -68,6 +68,13 @@ impl Review {
                 .as_ref()
                 .is_some_and(|prepared| self.typed == prepared.confirmation())
     }
+    /// One-key approval outside strict mode; see `ui_review::Review::accept`.
+    pub fn accept(&mut self) {
+        if let Some(prepared) = &self.prepared {
+            self.typed = prepared.confirmation();
+        }
+        self.viewed = (0..self.wrapped(self.width).len()).collect();
+    }
     pub fn confirmation(&self) -> String {
         self.prepared
             .as_ref()

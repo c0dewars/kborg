@@ -309,10 +309,10 @@ impl Form {
     pub fn draft(&self, executable: std::path::PathBuf, seconds: u16) -> Result<WriteDraft> {
         use crate::helm_lifecycle::{Options, Request};
         if self.intent.is_crd() && !self.allow_crds {
-            return Err("Chart CRD actions require explicit --allow-helm-crds.".into());
+            return Err("Chart CRD actions require explicit permission (off in --read-only mode or by operator config).".into());
         }
         if matches!(self.intent, Intent::Test(_)) && !self.allow_hooks {
-            return Err("Helm tests require explicit --allow-helm-hooks.".into());
+            return Err("Helm tests require explicit permission (off in --read-only mode or by operator config).".into());
         }
         let path = |value: &str, optional: bool| -> Result<Option<std::path::PathBuf>> {
             if value.is_empty() {
@@ -738,6 +738,11 @@ impl Review {
             _ => {}
         }
         self.offset = self.offset.min(count.saturating_sub(1));
+    }
+    /// One-key approval outside strict mode; see `ui_review::Review::accept`.
+    pub fn accept(&mut self) {
+        self.typed = self.prepared.confirmation();
+        self.viewed = (0..self.wrapped(self.width).len()).collect();
     }
     pub fn can_execute(&self, width: u16, height: u16, epoch: u64) -> bool {
         width >= 28

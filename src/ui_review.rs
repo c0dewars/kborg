@@ -1,6 +1,27 @@
 //! Mutation review: every wrapped line must be painted before approval.
 use crossterm::event::KeyCode;
 use std::collections::BTreeSet;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+/// Strict mode: reviews need their typed confirmation phrase. Off by default,
+/// where `y`/Enter approves; an operator config can turn it on.
+static STRICT: AtomicBool = AtomicBool::new(false);
+pub fn set_strict(strict: bool) {
+    STRICT.store(strict, Ordering::Relaxed);
+}
+thread_local! {
+    /// Per-thread override, so tests of both modes can run in parallel.
+    static OVERRIDE: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
+}
+pub fn strict() -> bool {
+    OVERRIDE
+        .with(std::cell::Cell::get)
+        .unwrap_or_else(|| STRICT.load(Ordering::Relaxed))
+}
+#[cfg(test)]
+pub fn set_thread_strict(strict: Option<bool>) {
+    OVERRIDE.with(|cell| cell.set(strict));
+}
 pub struct Review {
     pub typed: String,
     pub epoch: u64,
@@ -80,6 +101,12 @@ impl Review {
             && self.epoch == epoch
             && self.remaining(usize::from(width - 2)) == 0
             && self.typed == self.confirmation
+    }
+    /// One-key approval (the default outside strict mode): the review was on
+    /// screen, so take it as read and fill in the exact confirmation.
+    pub fn accept(&mut self) {
+        self.typed = self.confirmation.clone();
+        self.viewed = (0..self.wrapped(self.width).len()).collect();
     }
     pub fn key(&mut self, key: KeyCode, width: usize, height: usize) {
         let count = self.wrapped(width).len();

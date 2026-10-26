@@ -686,7 +686,7 @@ pub(super) fn worker() -> Worker {
                     Task::AskPrepare(question,screen,policy)=>{
                         let result=async {
                             if epoch!=watch_results.epoch.load(std::sync::atomic::Ordering::SeqCst){return Err("Copilot question canceled: context/scope changed.".into());}
-                            let policy=policy.ok_or("Setup required: --copilot-policy ABS --allow-copilot-screen")?;
+                            let policy=policy.ok_or("Setup required: --copilot-policy ABS permission (off in --read-only mode or by operator config)")?;
                             let options=crate::advice::load_options(&policy)?;
                             let prepared=crate::advice::prepare_screen(&question,&screen,options).await?;
                             let text=format!("01 REVIEW SCREEN TRANSFER    /    02 Ask Copilot    /    03 Read answer\n\n{}\n\nEXACT TEXT SENT\n{}",prepared.summary(),prepared.preview()?);

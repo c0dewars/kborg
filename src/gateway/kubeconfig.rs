@@ -254,3 +254,94 @@ pub(super) fn validate_helper_user(user: &kube::config::AuthInfo) -> Result<()> 
     }
     Ok(())
 }
+
+/// One line per check of the selected context, for `kborg doctor`. Reads the
+/// kubeconfig only: nothing is executed and no credential is printed.
+pub fn audit(options: &Connection) -> Result<Vec<String>> {
+    let raw = read_config(options)?;
+    let mut lines = Vec::new();
+    let name = options
+        .context
+        .clone()
+        .or_else(|| raw.current_context.clone())
+        .ok_or("No context selected: kubeconfig has no current-context. Next: pass --context NAME or run `kubectl config use-context NAME`")?;
+    lines.push(format!(
+        "contexts: {} in kubeconfig; selected: {}",
+        raw.contexts.len(),
+        safety::safe_text(&name, 253)
+    ));
+    let context = raw
+        .contexts
+        .iter()
+        .find(|c| c.name == name)
+        .and_then(|c| c.context.as_ref())
+        .ok_or("Context not found in kubeconfig. Next: list contexts with `kubectl config get-contexts` and pass --context NAME")?;
+    if let Some(cluster) = raw
+        .clusters
+        .iter()
+        .find(|c| c.name == context.cluster)
+        .and_then(|c| c.cluster.as_ref())
+    {
+        let server = cluster.server.as_deref().unwrap_or("-");
+        let host = server
+            .split("://")
+            .nth(1)
+            .unwrap_or(server)
+            .split(['/', '?'])
+            .next()
+            .unwrap_or_default();
+        lines.push(format!("server: {}", safety::safe_text(host, 200)));
+        if cluster.insecure_skip_tls_verify == Some(true) {
+            lines.push("tls: insecure-skip-tls-verify is set (certificate not verified, as kubectl does with this setting)".into());
+        }
+        if let Some(proxy) = &cluster.proxy_url {
+            let proxy = proxy.rsplit('@').next().unwrap_or_default();
+            lines.push(format!("proxy: {}", safety::safe_text(proxy, 200)));
+        }
+    }
+    let user = context
+        .user
+        .as_ref()
+        .and_then(|user| raw.auth_infos.iter().find(|u| &u.name == user))
+        .and_then(|u| u.auth_info.as_ref());
+    let auth = match user {
+        None => "none (anonymous)".to_owned(),
+        Some(user) if user.exec.is_some() => {
+            let command = user
+                .exec
+                .as_ref()
+                .and_then(|exec| exec.command.clone())
+                .unwrap_or_default();
+            let found = crate::extensions::resolve_on_path(&command);
+            format!(
+                "exec helper `{}` ({}); KBorg runs it like kubectl",
+                safety::safe_text(&command, 200),
+                match found {
+                    Some(path) => format!(
+                        "found at {}",
+                        safety::safe_text(&path.to_string_lossy(), 300)
+                    ),
+                    None => "NOT FOUND on PATH. Next: install it or add it to PATH".into(),
+                }
+            )
+        }
+        Some(user) if user.auth_provider.is_some() => {
+            "legacy auth-provider (kubectl's provider; may need the provider plugin)".into()
+        }
+        Some(user) if user.token.is_some() || user.token_file.is_some() => "bearer token".into(),
+        Some(user)
+            if user.client_certificate.is_some() || user.client_certificate_data.is_some() =>
+        {
+            "client certificate".into()
+        }
+        Some(user) if user.username.is_some() => "basic auth".into(),
+        Some(_) => "none (anonymous)".into(),
+    };
+    lines.push(format!("auth: {auth}"));
+    if user.is_some_and(|user| user.impersonate.is_some() || user.impersonate_groups.is_some()) {
+        lines.push(
+            "impersonation: set in kubeconfig (requests run as the impersonated user)".into(),
+        );
+    }
+    Ok(lines)
+}

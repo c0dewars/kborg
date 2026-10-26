@@ -1,4 +1,4 @@
-//! Explicit data-only configuration. Capability opt-ins remain command-line actions.
+//! Operator configuration: defaults, and capabilities a company turns off.
 use crate::{Result, cli::Options, safety};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -6,16 +6,24 @@ use std::path::Path;
 #[derive(Deserialize, Serialize, Default, PartialEq, Debug)]
 #[serde(rename_all = "kebab-case")]
 pub enum Profile {
-    #[default]
     ReadOnly,
+    #[default]
     Operator,
+}
+fn yes() -> bool {
+    true
 }
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
     pub schema_version: u32,
+    #[serde(default)]
     pub profile: Profile,
+    /// Company strict mode: every change needs its typed confirmation phrase
+    /// instead of one key.
+    #[serde(default)]
+    pub strict_confirmations: bool,
     #[serde(default)]
     pub context: Option<String>,
     #[serde(default)]
@@ -26,83 +34,84 @@ pub struct Config {
     pub no_splash: bool,
     #[serde(default)]
     pub poll: bool,
-    #[serde(default)]
+    #[serde(default = "yes")]
     pub allow_logs: bool,
-    #[serde(default)]
+    #[serde(default = "yes")]
     pub allow_helm: bool,
-    #[serde(default)]
+    #[serde(default = "yes")]
     pub allow_helm_write: bool,
-    #[serde(default)]
+    #[serde(default = "yes")]
     pub allow_helm_hooks: bool,
-    #[serde(default)]
+    #[serde(default = "yes")]
     pub allow_helm_crds: bool,
-    #[serde(default)]
+    #[serde(default = "yes")]
     pub allow_exec: bool,
-    #[serde(default)]
+    #[serde(default = "yes")]
     pub allow_attach: bool,
-    #[serde(default)]
+    #[serde(default = "yes")]
     pub allow_forward: bool,
-    #[serde(default)]
+    #[serde(default = "yes")]
     pub allow_file_copy: bool,
-    #[serde(default)]
+    #[serde(default = "yes")]
     pub allow_tools: bool,
-    #[serde(default)]
+    #[serde(default = "yes")]
     pub allow_extensions: bool,
-    #[serde(default)]
+    #[serde(default = "yes")]
     pub allow_auth_helper: bool,
-    #[serde(default)]
+    #[serde(default = "yes")]
     pub allow_secret_reveal: bool,
-    #[serde(default)]
+    #[serde(default = "yes")]
     pub allow_force_kill: bool,
-    #[serde(default)]
+    #[serde(default = "yes")]
     pub allow_yaml_edit: bool,
-    #[serde(default)]
+    #[serde(default = "yes")]
     pub allow_node_maintenance: bool,
-    #[serde(default)]
+    #[serde(default = "yes")]
     pub allow_external_editor: bool,
-    #[serde(default)]
+    #[serde(default = "yes")]
     pub allow_apply: bool,
-    #[serde(default)]
+    #[serde(default = "yes")]
     pub allow_node_shell: bool,
-    #[serde(default)]
+    #[serde(default = "yes")]
     pub allow_copilot_screen: bool,
-    #[serde(default)]
+    #[serde(default = "yes")]
     pub allow_debug: bool,
-    #[serde(default)]
+    #[serde(default = "yes")]
     pub allow_scan: bool,
 }
 impl Default for Config {
     fn default() -> Self {
         Self {
             schema_version: 1,
-            profile: Profile::ReadOnly,
+            profile: Profile::Operator,
+            strict_confirmations: false,
             context: None,
             namespace: None,
             theme: Some(crate::themes::DEFAULT_THEME.into()),
             no_splash: false,
             poll: false,
-            allow_logs: false,
-            allow_helm: false,
-            allow_helm_write: false,
-            allow_helm_hooks: false,
-            allow_helm_crds: false,
-            allow_exec: false,
-            allow_attach: false,
-            allow_forward: false,
-            allow_file_copy: false,
-            allow_tools: false,
-            allow_extensions: false,
-            allow_auth_helper: false,
-            allow_secret_reveal: false,
-            allow_force_kill: false,
-            allow_yaml_edit: false,
-            allow_node_maintenance: false,
-            allow_external_editor: false,
-            allow_apply: false,
-            allow_node_shell: false,
-            allow_copilot_screen: false,
-            allow_debug: false,
-            allow_scan: false,
+            allow_logs: true,
+            allow_helm: true,
+            allow_helm_write: true,
+            allow_helm_hooks: true,
+            allow_helm_crds: true,
+            allow_exec: true,
+            allow_attach: true,
+            allow_forward: true,
+            allow_file_copy: true,
+            allow_tools: true,
+            allow_extensions: true,
+            allow_auth_helper: true,
+            allow_secret_reveal: true,
+            allow_force_kill: true,
+            allow_yaml_edit: true,
+            allow_node_maintenance: true,
+            allow_external_editor: true,
+            allow_apply: true,
+            allow_node_shell: true,
+            allow_copilot_screen: true,
+            allow_debug: true,
+            allow_scan: true,
         }
     }
 }
@@ -131,68 +140,36 @@ pub fn load(path: &Path) -> Result<Config> {
     Ok(config)
 }
 pub fn apply(config: Config, options: &mut Options) -> Result<()> {
-    if config.profile == Profile::ReadOnly && options.connection.writable {
-        return Err(
-            "read-only profile forbids --write; use a reviewed operator configuration".into(),
-        );
+    // An operator configuration only takes capabilities away: everything is
+    // on by default, and a field set to false (or the read-only profile)
+    // turns that capability off whatever the command line says.
+    let c = &mut options.connection;
+    if config.profile == Profile::ReadOnly {
+        c.writable = false;
     }
-    // Validate every constraint before changing the caller's options. Files may
-    // constrain capabilities, but they never enable them without explicit flags.
-    if options.connection.allow_helm && !config.allow_helm {
-        return Err("configuration forbids Helm release storage access".into());
-    }
-    if options.connection.allow_helm_write && !config.allow_helm_write {
-        return Err("configuration forbids Helm lifecycle actions".into());
-    }
-    if options.connection.allow_helm_hooks && !config.allow_helm_hooks {
-        return Err("configuration forbids Helm hooks".into());
-    }
-    if options.connection.allow_helm_crds && !config.allow_helm_crds {
-        return Err("configuration forbids Helm CRD actions".into());
-    }
-    if options.connection.logs && !config.allow_logs {
-        return Err("configuration forbids log access".into());
-    }
-    if (options.connection.allow_exec && !config.allow_exec)
-        || (options.connection.allow_attach && !config.allow_attach)
-        || (options.connection.allow_port_forward && !config.allow_forward)
-        || (options.connection.allow_file_copy && !config.allow_file_copy)
-    {
-        return Err("configuration forbids requested subresource capability".into());
-    }
-    if options.allow_tools && !config.allow_tools {
-        return Err("configuration forbids external tool views".into());
-    }
-    if options.connection.allow_auth_helper && !config.allow_auth_helper {
-        return Err("configuration forbids authentication helpers".into());
-    }
-    if options.allow_extensions && !config.allow_extensions {
-        return Err("configuration forbids registered extensions".into());
-    }
-    // Secret reveal needs no --write, so a read-only profile must name it too.
-    if options.connection.allow_secret_reveal && !config.allow_secret_reveal {
-        return Err("configuration forbids Secret reveal".into());
-    }
-    if (options.connection.allow_force_kill && !config.allow_force_kill)
-        || (options.connection.allow_yaml_edit && !config.allow_yaml_edit)
-        || (options.connection.allow_node_maintenance && !config.allow_node_maintenance)
-        || (options.connection.allow_apply && !config.allow_apply)
-        || (options.connection.allow_node_shell && !config.allow_node_shell)
-        || (options.connection.allow_debug && !config.allow_debug)
-    {
-        return Err("configuration forbids the requested write capability".into());
-    }
-    // Scanning is read-only for the cluster but runs a local tool with network
-    // access, so a read-only profile must name it too.
-    if options.allow_scan && !config.allow_scan {
-        return Err("configuration forbids image scanning".into());
-    }
-    if options.allow_copilot_screen && !config.allow_copilot_screen {
-        return Err("configuration forbids sending screen text to Copilot".into());
-    }
-    if options.external_editor && !config.allow_external_editor {
-        return Err("configuration forbids the external editor".into());
-    }
+    c.allow_helm &= config.allow_helm;
+    c.allow_helm_write &= config.allow_helm_write;
+    c.allow_helm_hooks &= config.allow_helm_hooks;
+    c.allow_helm_crds &= config.allow_helm_crds;
+    c.logs &= config.allow_logs;
+    c.allow_exec &= config.allow_exec;
+    c.allow_attach &= config.allow_attach;
+    c.allow_port_forward &= config.allow_forward;
+    c.allow_file_copy &= config.allow_file_copy;
+    c.allow_auth_helper &= config.allow_auth_helper;
+    c.allow_secret_reveal &= config.allow_secret_reveal;
+    c.allow_force_kill &= config.allow_force_kill;
+    c.allow_yaml_edit &= config.allow_yaml_edit;
+    c.allow_node_maintenance &= config.allow_node_maintenance;
+    c.allow_apply &= config.allow_apply;
+    c.allow_node_shell &= config.allow_node_shell;
+    c.allow_debug &= config.allow_debug;
+    options.allow_tools &= config.allow_tools;
+    options.allow_extensions &= config.allow_extensions;
+    options.allow_scan &= config.allow_scan;
+    options.allow_copilot_screen &= config.allow_copilot_screen;
+    options.external_editor &= config.allow_external_editor;
+    options.strict_confirm |= config.strict_confirmations;
     if options.connection.context.is_none() {
         options.connection.context = config.context;
     }
@@ -235,8 +212,9 @@ mod tests {
         }
     }
 
+    /// Options as the CLI builds them: everything on.
     fn options() -> Options {
-        Options {
+        let mut options = Options {
             connection: crate::gateway::Connection::default(),
             theme: None,
             color: true,
@@ -265,6 +243,7 @@ mod tests {
             helm_sigstore_policy: None,
             copilot_policy: None,
             allow_copilot_screen: false,
+            strict_confirm: false,
             helm_timeout_seconds: 300,
             log_seconds: crate::logs::DEFAULT_FOLLOW_SECONDS,
             log_read: crate::logs::ReadOptions::default(),
@@ -275,182 +254,128 @@ mod tests {
             node_shell_image: String::new(),
             recursive: false,
             command: vec![],
-        }
+        };
+        crate::cli::enable_everything(&mut options);
+        options
+    }
+    fn all_on(o: &Options) -> bool {
+        let c = &o.connection;
+        c.writable
+            && c.logs
+            && c.allow_helm
+            && c.allow_helm_write
+            && c.allow_helm_hooks
+            && c.allow_helm_crds
+            && c.allow_exec
+            && c.allow_attach
+            && c.allow_port_forward
+            && c.allow_file_copy
+            && c.allow_node_shell
+            && c.allow_debug
+            && c.allow_node_maintenance
+            && c.allow_yaml_edit
+            && c.allow_apply
+            && c.allow_force_kill
+            && c.allow_secret_reveal
+            && o.allow_tools
+            && o.allow_extensions
+            && o.allow_scan
+            && o.external_editor
+            && o.allow_copilot_screen
     }
 
     #[test]
-    fn helm_extension_configuration_constrains_but_never_enables_capabilities() -> Result<()> {
-        let allowed = || Config {
-            profile: Profile::Operator,
-            allow_helm: true,
-            allow_helm_write: true,
-            allow_helm_hooks: true,
-            allow_helm_crds: true,
-            ..Config::default()
-        };
-        let mut disabled = options();
-        apply(allowed(), &mut disabled)?;
-        assert!(!disabled.connection.allow_helm_hooks);
-        assert!(!disabled.connection.allow_helm_crds);
-        for (hooks, crds) in [(true, false), (false, true)] {
-            let mut selected = options();
-            selected.connection.allow_helm_hooks = hooks;
-            selected.connection.allow_helm_crds = crds;
-            let mut denied = allowed();
-            denied.allow_helm_hooks = false;
-            denied.allow_helm_crds = false;
-            assert!(apply(denied, &mut selected).is_err());
-            assert!(selected.connection.context.is_none());
-            apply(allowed(), &mut selected)?;
-            assert_eq!(selected.connection.allow_helm_hooks, hooks);
-            assert_eq!(selected.connection.allow_helm_crds, crds);
+    fn default_and_minimal_configs_keep_everything_on() -> Result<()> {
+        let mut opts = options();
+        assert!(all_on(&opts));
+        apply(Config::default(), &mut opts)?;
+        assert!(all_on(&opts) && !opts.strict_confirm);
+        let minimal: Config =
+            serde_json::from_str(r#"{"schema_version":1}"#).map_err(|_| "minimal config")?;
+        assert_eq!(minimal.profile, Profile::Operator);
+        let mut opts = options();
+        apply(minimal, &mut opts)?;
+        assert!(all_on(&opts));
+        Ok(())
+    }
+
+    #[test]
+    fn each_false_field_turns_its_capability_off() -> Result<()> {
+        type Check = (&'static str, fn(&Options) -> bool);
+        let off: [Check; 22] = [
+            ("allow_logs", |o| o.connection.logs),
+            ("allow_helm", |o| o.connection.allow_helm),
+            ("allow_helm_write", |o| o.connection.allow_helm_write),
+            ("allow_helm_hooks", |o| o.connection.allow_helm_hooks),
+            ("allow_helm_crds", |o| o.connection.allow_helm_crds),
+            ("allow_exec", |o| o.connection.allow_exec),
+            ("allow_attach", |o| o.connection.allow_attach),
+            ("allow_forward", |o| o.connection.allow_port_forward),
+            ("allow_file_copy", |o| o.connection.allow_file_copy),
+            ("allow_tools", |o| o.allow_tools),
+            ("allow_extensions", |o| o.allow_extensions),
+            ("allow_secret_reveal", |o| o.connection.allow_secret_reveal),
+            ("allow_force_kill", |o| o.connection.allow_force_kill),
+            ("allow_yaml_edit", |o| o.connection.allow_yaml_edit),
+            ("allow_node_maintenance", |o| {
+                o.connection.allow_node_maintenance
+            }),
+            ("allow_external_editor", |o| o.external_editor),
+            ("allow_apply", |o| o.connection.allow_apply),
+            ("allow_node_shell", |o| o.connection.allow_node_shell),
+            ("allow_copilot_screen", |o| o.allow_copilot_screen),
+            ("allow_debug", |o| o.connection.allow_debug),
+            ("allow_scan", |o| o.allow_scan),
+            ("allow_auth_helper", |o| !o.connection.allow_auth_helper),
+        ];
+        for (field, enabled) in off {
+            let config: Config =
+                serde_json::from_str(&format!(r#"{{"schema_version":1,"{field}":false}}"#))
+                    .map_err(|_| format!("{field} must parse"))?;
+            let mut opts = options();
+            apply(config, &mut opts)?;
+            if field == "allow_auth_helper" {
+                assert!(enabled(&opts), "{field}");
+            } else {
+                assert!(!enabled(&opts), "{field} stayed on");
+            }
+            assert!(opts.connection.writable, "{field} must not touch writes");
         }
         Ok(())
     }
+
     #[test]
-    fn helm_write_permission_requires_both_cli_opt_in_and_operator_config() -> Result<()> {
-        let mut selected = options();
-        selected.connection.allow_helm_write = true;
-        assert!(apply(Config::default(), &mut selected).is_err());
-        let mut selected = options();
-        selected.connection.allow_helm_write = true;
-        selected.connection.writable = true;
-        assert!(
-            apply(
-                Config {
-                    allow_helm_write: true,
-                    ..Config::default()
-                },
-                &mut selected
-            )
-            .is_err()
-        );
-        apply(
-            Config {
-                profile: Profile::Operator,
-                allow_helm_write: true,
-                ..Config::default()
-            },
-            &mut selected,
-        )?;
-        let mut disabled = options();
-        apply(
-            Config {
-                profile: Profile::Operator,
-                allow_helm_write: true,
-                ..Config::default()
-            },
-            &mut disabled,
-        )?;
-        assert!(!disabled.connection.allow_helm_write);
-        assert!(!disabled.connection.writable);
+    fn read_only_profile_and_strict_confirmations() -> Result<()> {
+        let config: Config = serde_json::from_str(
+            r#"{"schema_version":1,"profile":"read-only","strict_confirmations":true}"#,
+        )
+        .map_err(|_| "profile must parse")?;
+        let mut opts = options();
+        apply(config, &mut opts)?;
+        assert!(!opts.connection.writable && opts.strict_confirm);
+        assert!(opts.connection.logs && opts.allow_scan);
         Ok(())
     }
+
     #[test]
-    fn files_constrain_capabilities_and_cli_scope_wins() -> Result<()> {
-        let config = Config {
+    fn files_fill_scope_and_cli_scope_wins() -> Result<()> {
+        let config = || Config {
             context: Some("file-context".into()),
             namespace: Some("file-ns".into()),
-            allow_logs: true,
-            allow_exec: true,
-            allow_attach: true,
-            allow_forward: true,
-            allow_tools: true,
             ..Config::default()
         };
         let mut opts = options();
         opts.connection.context = Some("cli-context".into());
         opts.connection.namespace = "cli-ns".into();
         opts.theme = Some("k8borg-dark".into());
-        apply(config, &mut opts)?;
+        apply(config(), &mut opts)?;
         assert_eq!(opts.connection.context.as_deref(), Some("cli-context"));
         assert_eq!(opts.connection.namespace, "cli-ns");
         assert_eq!(opts.theme.as_deref(), Some("k8borg-dark"));
-        assert!(
-            !opts.connection.logs
-                && !opts.connection.allow_exec
-                && !opts.connection.allow_attach
-                && !opts.connection.allow_port_forward
-                && !opts.allow_tools
-        );
-
-        let mut denied = options();
-        denied.allow_tools = true;
-        assert!(
-            apply(
-                Config {
-                    context: Some("must-not-apply".into()),
-                    ..Config::default()
-                },
-                &mut denied
-            )
-            .is_err()
-        );
-        assert!(denied.connection.context.is_none());
-        let mut helm = options();
-        helm.connection.allow_helm = true;
-        assert!(apply(Config::default(), &mut helm).is_err());
-        let mut allowed_helm = options();
-        allowed_helm.connection.allow_helm = true;
-        apply(
-            Config {
-                allow_helm: true,
-                ..Config::default()
-            },
-            &mut allowed_helm,
-        )?;
-        assert!(allowed_helm.connection.allow_helm);
-        let mut writable = options();
-        writable.connection.writable = true;
-        assert!(apply(Config::default(), &mut writable).is_err());
-        let newer: [fn(&mut Options); 10] = [
-            |o| o.connection.allow_secret_reveal = true,
-            |o| o.connection.allow_force_kill = true,
-            |o| o.connection.allow_yaml_edit = true,
-            |o| o.connection.allow_node_maintenance = true,
-            |o| o.connection.allow_file_copy = true,
-            |o| o.connection.allow_apply = true,
-            |o| o.connection.allow_node_shell = true,
-            |o| o.connection.allow_debug = true,
-            |o| o.external_editor = true,
-            |o| o.allow_copilot_screen = true,
-        ];
-        for enable in newer {
-            let mut opts = options();
-            enable(&mut opts);
-            assert!(apply(Config::default(), &mut opts).is_err());
-        }
-        let mut reveal = options();
-        reveal.connection.allow_secret_reveal = true;
-        apply(
-            Config {
-                allow_secret_reveal: true,
-                ..Config::default()
-            },
-            &mut reveal,
-        )?;
-        assert!(reveal.connection.allow_secret_reveal);
-        let mut scan = options();
-        scan.allow_scan = true;
-        assert!(apply(Config::default(), &mut scan).is_err());
-        assert!(!Config::default().allow_scan);
-        let mut scan = options();
-        scan.allow_scan = true;
-        apply(
-            Config {
-                allow_scan: true,
-                ..Config::default()
-            },
-            &mut scan,
-        )?;
-        assert!(scan.allow_scan);
-        assert!(
-            serde_json::from_str::<Config>(
-                r#"{"schema_version":1,"profile":"read-only","allow_scan":true}"#
-            )
-            .map_err(|_| "allow_scan must parse")?
-            .allow_scan
-        );
+        let mut opts = options();
+        apply(config(), &mut opts)?;
+        assert_eq!(opts.connection.context.as_deref(), Some("file-context"));
+        assert_eq!(opts.connection.namespace, "file-ns");
         Ok(())
     }
 }

@@ -223,7 +223,9 @@ impl App {
     /// whether the review opened.
     fn run_extension_on(&mut self, name: &str, target: Target) -> bool {
         if !self.options.allow_extensions || !self.options.allow_tools {
-            self.status = "Extensions require --allow-extensions --allow-tools.".into();
+            self.status =
+                "Extensions require permission (off in --read-only mode or by operator config)."
+                    .into();
             return false;
         }
         let review = match &self.plugins.directory {
@@ -291,7 +293,7 @@ impl App {
                     }
                 );
                 if !self.options.allow_extensions || !self.options.allow_tools {
-                    format!("[OFF] {title}: requires --allow-extensions --allow-tools")
+                    format!("[OFF] {title}: off (read-only or operator config)")
                 } else if !plugins::applies(&meta.scopes, &names) {
                     format!("[OFF] {title}: applies to {}", meta.scopes.join(", "))
                 } else {

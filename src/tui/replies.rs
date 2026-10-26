@@ -911,9 +911,9 @@ impl App {
             })
         {
             self.status = if attach {
-                "Pod attach requires --write and --allow-attach."
+                "Pod attach requires permission (off in --read-only mode or by operator config)."
             } else {
-                "Pod shell requires --write and --allow-exec."
+                "Pod shell requires permission (off in --read-only mode or by operator config)."
             }
             .into();
             return;
@@ -955,7 +955,9 @@ impl App {
             return;
         }
         if !self.options.connection.writable || !self.options.connection.allow_port_forward {
-            self.status = "Port-forward requires --write and --allow-forward.".into();
+            self.status =
+                "Port-forward requires permission (off in --read-only mode or by operator config)."
+                    .into();
             return;
         }
         if self.options.connection.demo || self.kind() != "pods" {
@@ -989,7 +991,7 @@ impl App {
             return;
         }
         if !self.options.connection.logs {
-            self.status = "Multi-Pod logs require --allow-logs.".into();
+            self.status = "Multi-Pod logs require permission (off in --read-only mode or by operator config).".into();
             return;
         }
         if !safety::valid_id(&namespace) {
@@ -1093,7 +1095,7 @@ impl App {
             return;
         }
         if !self.options.connection.logs {
-            self.status = "Logs may contain sensitive data; opt in with --allow-logs.".into();
+            self.status = "Logs may contain sensitive data; opt in with permission (off in --read-only mode or by operator config).".into();
             return;
         }
         let Some(object) = self
@@ -1137,7 +1139,8 @@ impl App {
             return;
         }
         if !self.options.connection.logs {
-            self.status = "Logs require --allow-logs.".into();
+            self.status =
+                "Logs require permission (off in --read-only mode or by operator config).".into();
             return;
         }
         if let Some((kind, namespace, pod)) = self.selected_target() {
@@ -1232,7 +1235,7 @@ impl App {
             return;
         }
         if !self.options.connection.demo && !self.options.connection.allow_helm {
-            self.status="Helm reads require --allow-helm. Stored release metadata and explicit values may contain confidential data.".into();
+            self.status="Helm reads require permission (off in --read-only mode or by operator config). Stored release metadata and explicit values may contain confidential data.".into();
             return;
         }
         if preserve_current {
@@ -1254,7 +1257,7 @@ impl App {
             || !self.options.connection.allow_helm
             || !self.options.connection.allow_helm_write
         {
-            self.status="Helm lifecycle requires --write --allow-helm --allow-helm-write and explicit --helm-tool for live execution.".into();
+            self.status="Helm lifecycle requires permission (off in --read-only mode or by operator config).".into();
             return;
         }
         if self.options.helm_tool.is_none() && !self.options.connection.demo {
@@ -1280,12 +1283,12 @@ impl App {
             })
             .unwrap_or_else(|| (self.namespace.clone(), self.options.helm_storage));
         if intent.is_crd() && !self.options.connection.allow_helm_crds {
-            self.status="Chart CRD actions require explicit --allow-helm-crds and a separate complete review.".into();
+            self.status="Chart CRD actions require explicit permission (off in --read-only mode or by operator config) and a separate complete review.".into();
             return;
         }
         if matches!(intent, helm_ui::Intent::Test(_)) && !self.options.connection.allow_helm_hooks {
             self.status =
-                "Helm tests require explicit --allow-helm-hooks and a complete operation review."
+                "Helm tests require explicit permission (off in --read-only mode or by operator config) and a complete operation review."
                     .into();
             return;
         }
@@ -1351,13 +1354,13 @@ impl App {
             } else if !has_selection {
                 Some("select an object")
             } else if (2..=4).contains(&index) && !self.options.connection.logs {
-                Some("requires --allow-logs")
+                Some("off (read-only or operator config)")
             } else if (2..=4).contains(&index) && kind != "pods" && !supports_group_logs(&kind) {
                 Some("Pods and supported workloads/services only")
             } else if ((7..=10).contains(&index) || index == 12 || index == 14)
                 && !self.options.connection.writable
             {
-                Some("READ ONLY; requires --write")
+                Some("read-only mode")
             } else if index == 7
                 && !["deployments.apps", "statefulsets.apps"].contains(&kind.as_str())
             {
@@ -1377,7 +1380,7 @@ impl App {
             {
                 Some("unsupported resource")
             } else if index == 12 && !self.options.connection.allow_exec {
-                Some("requires --allow-exec")
+                Some("off (read-only or operator config)")
             } else if index == 12 && (kind != "pods" || self.options.connection.demo) {
                 Some("live Pods only")
             } else {
@@ -1418,7 +1421,9 @@ impl App {
     }
     pub(super) fn prepare(&mut self, action: Action) {
         if !self.options.connection.writable {
-            self.status = "READ ONLY: enable --write before requesting a mutation.".into();
+            self.status =
+                "enable write permission (off in --read-only mode) before requesting a mutation."
+                    .into();
             return;
         }
         if !self.action_allowed(&action) {
@@ -1433,7 +1438,9 @@ impl App {
     /// the current table instead of the selected row.
     pub(super) fn prepare_batch(&mut self, action: Action) {
         if !self.options.connection.writable {
-            self.status = "READ ONLY: enable --write before requesting a mutation.".into();
+            self.status =
+                "enable write permission (off in --read-only mode) before requesting a mutation."
+                    .into();
             return;
         }
         let resource = self.kind();
@@ -1529,7 +1536,7 @@ impl App {
         let clear = key("marks.clear").unwrap_or_else(|| "Ctrl-\\".into());
         if actions.is_empty() {
             format!(
-                "{count} marked | no bulk action here (--write; delete, restart, CronJob suspend) | {clear} clears"
+                "{count} marked | no bulk action here (write permission (off in --read-only mode); delete, restart, CronJob suspend) | {clear} clears"
             )
         } else {
             format!(

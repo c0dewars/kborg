@@ -7,6 +7,9 @@ type Harness = (
     tokio::sync::mpsc::Receiver<(u64, Task)>,
 );
 fn harness() -> Harness {
+    // Existing tests exercise strict mode (typed confirmations); one-key
+    // tests switch their own thread to quick mode.
+    review_ui::set_thread_strict(Some(true));
     let (tx, commands) = tokio::sync::mpsc::channel(4);
     let (replies, rx) = mpsc::sync_channel(4);
     let watch = std::sync::Arc::new(WatchSlot::default());
@@ -39,6 +42,7 @@ fn harness() -> Harness {
                 helm_sigstore_policy: None,
                 copilot_policy: None,
                 allow_copilot_screen: false,
+                strict_confirm: false,
                 helm_timeout_seconds: 300,
                 allow_tools: false,
                 allow_extensions: false,
@@ -246,7 +250,7 @@ fn chart_crd_command_requires_explicit_flag_and_propagates_registry_policy() -> 
     app.options.connection.allow_helm_write = true;
     app.command("helm-crds")?;
     assert!(matches!(app.modal, Modal::None));
-    assert!(app.status.contains("--allow-helm-crds"));
+    assert!(app.status.contains("operator config"));
     app.options.connection.allow_helm_crds = true;
     app.options.connection.allow_helm_hooks = true;
     app.options.helm_registry_ca = Some("/private/registry-ca.pem".into());
@@ -314,7 +318,7 @@ fn schema_commands_require_capabilities_and_keep_visible_helm_scope() -> Result<
     app.options.connection.allow_helm_write = true;
     app.command("helm-crds-delete")?;
     assert!(matches!(app.modal, Modal::None));
-    assert!(app.status.contains("--allow-helm-crds"));
+    assert!(app.status.contains("operator config"));
     app.options.connection.allow_helm_crds = true;
     app.options.helm_keyring = Some("/private/trusted.gpg".into());
     app.subviews.push(Modal::Helm(Box::new(helm_ui::Table::new(
@@ -398,7 +402,7 @@ fn helm_lifecycle_gates_cancel_review_stale_scope_and_unknown_outcome() -> Resul
     let (mut app, replies, mut commands) = harness();
     app.begin_helm_form(helm_ui::Intent::Install);
     assert!(matches!(app.modal, Modal::None));
-    assert!(app.status.contains("--allow-helm-write"));
+    assert!(app.status.contains("operator config"));
     assert!(commands.try_recv().is_err());
     app.options.connection.demo = true;
     app.options.connection.writable = true;
@@ -715,7 +719,7 @@ fn helm_reads_require_capability_and_late_results_do_not_reopen_views() -> Resul
     let (mut app, replies, mut commands) = harness();
     app.command("helm")?;
     assert!(commands.try_recv().is_err());
-    assert!(app.status.contains("--allow-helm"));
+    assert!(app.status.contains("operator config"));
     app.options.connection.allow_helm = true;
     app.command("helm")?;
     let generation = match commands.try_recv() {
@@ -1343,7 +1347,7 @@ fn explicit_core_gvr_is_unambiguous_and_discovered_aliases_are_usable() {
     assert_eq!(app.resolve_resource("v1/pods"), Ok(0));
     assert_eq!(app.resolve_resource("custompo"), Ok(app.kinds.len() - 1));
     assert!(app.command("secret").is_ok());
-    assert!(app.status.contains("excluded"));
+    assert!(app.status.contains("Secret reveal is off"));
     app.items = vec![object("api"), object("web"), object("worker")];
     app.filter = "api|web".into();
     assert_eq!(app.visible().len(), 2);
@@ -1433,7 +1437,7 @@ fn responsive_frames_preserve_identity_mode_and_bounds() {
         for height in [10, 12, 24] {
             {
                 let frame = screen(&app, width, height);
-                assert!(frame[..2].join(" ").contains("PRODUCTION READ ONLY"));
+                assert!(frame[..2].join(" ").contains("READ ONLY"));
                 assert!(frame[1].contains("CTX test | NS test"));
                 assert!(frame[3].starts_with(['+', '╭']));
             }
@@ -1445,7 +1449,7 @@ fn responsive_frames_preserve_identity_mode_and_bounds() {
     }
     assert!(frame.contains("1/1") && frame.contains("Running"));
     app.options.connection.writable = true;
-    assert!(screen(&app, 28, 10)[0].contains("PRODUCTION WRITE"));
+    assert!(!screen(&app, 28, 10)[0].contains("READ ONLY"));
     app.options.connection.demo = true;
     assert!(screen(&app, 28, 10)[0].contains("DEMO SAMPLE DATA"));
 }
@@ -1718,8 +1722,8 @@ fn long_context_does_not_hide_namespace_identity_and_actions_explain_capabilitie
     }
     app.items = vec![object("selected")];
     let actions = app.action_menu();
-    assert!(actions[2].contains("[OFF]") && actions[2].contains("--allow-logs"));
-    assert!(actions[7].contains("READ ONLY"));
+    assert!(actions[2].contains("[OFF]") && actions[2].contains("operator config"));
+    assert!(actions[7].contains("read-only mode"));
     app.options.connection.writable = true;
     assert!(app.action_menu()[7].contains("Deployments"));
     app.kind_index = 1;
@@ -1807,7 +1811,7 @@ fn extensions_need_both_flags_and_unknown_names_do_not_open_a_review() {
     let (mut app, _replies, _commands) = harness();
     app.items = vec![object("api")];
     assert!(app.command("ext viewer").is_ok());
-    assert!(app.status.contains("--allow-extensions --allow-tools"));
+    assert!(app.status.contains("operator config"));
     app.options.allow_extensions = true;
     app.options.allow_tools = true;
     assert!(app.command("ext Not_Valid").is_ok());
@@ -1819,7 +1823,7 @@ fn node_shell_needs_its_capability_and_reviews_the_selected_node() {
     app.command("nodes").unwrap_or(false);
     app.items = vec![serde_json::json!({"kind":"Node","metadata":{"name":"worker-1","uid":"n1"}})];
     assert!(app.key(KeyCode::Char('s')).is_ok());
-    assert!(app.status.contains("--allow-node-shell"));
+    assert!(app.status.contains("operator config"));
     while commands.try_recv().is_ok() {}
     app.busy = false;
     app.options.connection.writable = true;
@@ -1886,11 +1890,11 @@ fn scan_needs_a_trusted_scanner_and_targets_the_selection_or_namespace() {
     let (mut app, _replies, mut commands) = harness();
     app.items = vec![object("api")];
     assert!(app.command("scan").is_ok());
-    assert!(app.status.contains("--allow-scan"));
+    assert!(app.status.contains("trivy or grype"));
     // The scanner path alone is not an opt-in.
     app.options.scanner = Some("/opt/scanners/trivy".into());
     assert!(app.command("scan").is_ok());
-    assert!(app.status.contains("--allow-scan"));
+    assert!(app.status.contains("trivy or grype"));
     app.options.allow_scan = true;
     app.options.connection.demo = false;
     while commands.try_recv().is_ok() {}
@@ -1924,7 +1928,7 @@ fn debug_needs_its_capability_and_reviews_the_selected_pod() {
     let (mut app, _replies, mut commands) = harness();
     app.items = vec![object("api")];
     assert!(app.command("debug").is_ok());
-    assert!(app.status.contains("--allow-debug"));
+    assert!(app.status.contains("operator config"));
     app.options.connection.writable = true;
     app.options.connection.allow_debug = true;
     while commands.try_recv().is_ok() {}
@@ -1986,7 +1990,7 @@ fn cronjob_keys_and_errors_only_toggle() {
 fn apply_requires_its_capability_and_queues_a_dry_run_review() {
     let (mut app, _replies, mut commands) = harness();
     assert!(app.command("apply deploy.yaml").is_ok());
-    assert!(app.status.contains("--allow-apply"));
+    assert!(app.status.contains("operator config"));
     assert!(commands.try_recv().is_err());
     app.options.connection.writable = true;
     app.options.connection.allow_apply = true;
@@ -2009,7 +2013,7 @@ fn file_copy_commands_review_the_selected_pod_default_container() {
         serde_json::json!({"kind":"Pod","metadata":{"name":"api","namespace":"shop","uid":"api-uid","annotations":{"kubectl.kubernetes.io/default-container":"app"}},"spec":{"containers":[{"name":"sidecar"},{"name":"app"}]}}),
     ];
     assert!(app.command("cp-from /etc/hosts").is_ok());
-    assert!(app.status.contains("--allow-file-copy"));
+    assert!(app.status.contains("operator config"));
     assert!(commands.try_recv().is_err());
     app.options.connection.writable = true;
     app.options.connection.allow_file_copy = true;
@@ -2534,7 +2538,7 @@ fn secrets_are_opt_in_hidden_by_default_and_reveal_one_key() -> Result<()> {
     let (mut app, replies, mut commands) = harness();
     app.namespace = "demo".into();
     app.command("secrets")?;
-    assert!(app.status.contains("--allow-secret-reveal"));
+    assert!(app.status.contains("Secret reveal is off"));
     assert!(commands.try_recv().is_err());
     app.options.connection.allow_secret_reveal = true;
     app.command("secrets")?;
@@ -3378,7 +3382,7 @@ fn ui_yaml_compact_chrome_and_table_style() -> Result<()> {
     app.marks.insert("uid-web".into());
     let frame = screen(&app, 120, 24);
     assert!(frame[0].contains("KBORG") && frame[0].contains("CTX test | NS test"));
-    assert!(frame[0].contains("PRODUCTION READ ONLY"));
+    assert!(frame[0].contains("READ ONLY"));
     assert!(frame[1].contains("healthy"));
     assert!(frame[2].starts_with(['+', '╭']));
     assert!(frame[3].contains("NAME<") && frame[3].contains('|'));
@@ -3400,7 +3404,7 @@ fn ui_yaml_compact_chrome_and_table_style() -> Result<()> {
     assert_eq!(age_styled(&day, 3725, true), "1h2m");
     app.ui = crate::ui_config::parse("header:\n  show: false\n  summary: false\n")?;
     let frame = screen(&app, 80, 24);
-    assert!(frame[0].contains("CTX test | NS test") && frame[0].contains("PRODUCTION READ ONLY"));
+    assert!(frame[0].contains("CTX test | NS test") && frame[0].contains("READ ONLY"));
     assert!(frame[1].starts_with(['+', '╭']));
     assert!(!frame.join("\n").contains("KBORG"));
     Ok(())
@@ -4242,7 +4246,7 @@ fn ask_captures_the_screen_behind_the_prompt_and_previews_locally_without_opt_in
     app.command("ask is api healthy?")?;
     assert!(!app.busy);
     assert!(matches!(&app.modal, Modal::AdviceDocument(title, body, _)
-        if title.contains("nothing sent") && body.contains("QUESTION:\nis api healthy?") && body.contains("--allow-copilot-screen")));
+        if title.contains("nothing sent") && body.contains("QUESTION:\nis api healthy?") && body.contains("not set up")));
     // The capture is used once; asking again needs a fresh one.
     assert!(app.ask_screen.is_none());
     Ok(())
@@ -4477,11 +4481,11 @@ fn k9s_plugin_shortcut_help_menu_and_review_show_the_exact_expanded_argv() -> Re
     app.key(KeyCode::Esc)?;
 
     app.key_event(KeyCode::Char('l'), KeyModifiers::CONTROL)?;
-    assert!(app.status.contains("--allow-extensions --allow-tools"));
+    assert!(app.status.contains("operator config"));
     assert!(matches!(app.modal, Modal::None));
     app.command("actions")?;
     assert!(matches!(&app.modal, Modal::Picker("Actions", rows, _)
-        if rows.iter().any(|row| row.contains("[OFF] Plugin stern (Ctrl-L): Logs <Stern>: requires --allow-extensions"))));
+        if rows.iter().any(|row| row.contains("[OFF] Plugin stern (Ctrl-L): Logs <Stern>: off (read-only or operator config)"))));
     app.key(KeyCode::Esc)?;
 
     app.options.allow_extensions = true;
@@ -4663,7 +4667,7 @@ fn palette_refuses_disabled_actions_with_their_reason() -> Result<()> {
     );
     assert!(matches!(app.modal, Modal::None));
     assert!(
-        app.status.contains("[OFF]") && app.status.contains("READ ONLY"),
+        app.status.contains("[OFF]") && app.status.contains("read-only mode"),
         "{}",
         app.status
     );
@@ -4915,7 +4919,7 @@ fn palette_renders_key_name_category_and_description_at_80x24_and_120x32() -> Re
     );
     assert!(text.contains("COMMAND PALETTE") && text.contains("Enter run"));
     assert!(text.contains(">/") && text.contains("filter"), "{text}");
-    assert!(text.contains("[OFF] READ ONLY; requires --write"), "{text}");
+    assert!(text.contains("[OFF] read-only mode"), "{text}");
     type_text(&mut app, "scale")?;
     let large = screen(&app, 120, 32).join("\n");
     let row = large
@@ -4928,4 +4932,75 @@ fn palette_renders_key_name_category_and_description_at_80x24_and_120x32() -> Re
     );
     assert!(large.contains("Up/Down Ctrl-N/Ctrl-P move"));
     Ok(())
+}
+#[test]
+fn one_key_approval_runs_reviews_with_the_exact_confirmation_and_n_cancels() -> Result<()> {
+    let (mut app, replies, mut commands) = harness();
+    review_ui::set_thread_strict(Some(false));
+    app.options.connection.demo = true;
+    app.options.connection.writable = true;
+    app.options.connection.allow_helm = true;
+    app.options.connection.allow_helm_write = true;
+    let open_review = |app: &mut App| -> Result<()> {
+        app.begin_helm_form(helm_ui::Intent::Install);
+        let Modal::HelmForm(form) = &mut app.modal else {
+            return Err("missing Helm draft".into());
+        };
+        form.fields[0].1 = "demo".into();
+        form.fields[1].1 = "demo-new".into();
+        app.key_with_approval_size(KeyCode::Enter, || Ok((80, 24)))?;
+        replies
+            .send((
+                app.epoch,
+                Reply::HelmPrepared(app.helm_generation, Ok(demo_helm_prepared()?)),
+            ))
+            .map_err(|_| "reply closed")?;
+        app.receive();
+        let Modal::HelmReview(review) = &mut app.modal else {
+            return Err("missing Helm review".into());
+        };
+        // Only the first screen was drawn; one key still approves.
+        review.mark_drawn(78, 8);
+        Ok(())
+    };
+    open_review(&mut app)?;
+    let frame = screen(&app, 80, 24).join("\n");
+    assert!(frame.contains("y/Enter run | n/Esc cancel"), "{frame}");
+    app.key_with_approval_size(KeyCode::Char('n'), || Ok((80, 24)))?;
+    assert!(!matches!(app.modal, Modal::HelmReview(_)));
+    assert!(!app.write_inflight);
+    while commands.try_recv().is_ok() {}
+    open_review(&mut app)?;
+    let expected = match &app.modal {
+        Modal::HelmReview(review) => review.prepared.confirmation(),
+        _ => return Err("missing Helm review".into()),
+    };
+    app.key_with_approval_size(KeyCode::Char('y'), || Ok((80, 24)))?;
+    assert!(app.write_inflight, "{}", app.status);
+    let mut sent = None;
+    while let Ok((_, task)) = commands.try_recv() {
+        if let Task::HelmExecute(_, typed, ..) = task {
+            sent = Some(typed);
+        }
+    }
+    assert_eq!(sent.as_deref(), Some(expected.as_str()));
+    review_ui::set_thread_strict(Some(true));
+    Ok(())
+}
+#[test]
+fn header_names_the_screen_in_front() {
+    let (mut app, _replies, _commands) = harness();
+    let title = |app: &App| screen(app, 120, 30)[0].clone();
+    assert!(title(&app).contains("Pods"));
+    app.modal = Modal::Picker("Namespace", vec!["default".into()], 0);
+    assert!(title(&app).contains("Namespaces"), "{}", title(&app));
+    app.modal = Modal::Picker("Context (Pod view)", vec!["dev".into()], 0);
+    assert!(title(&app).contains("Contexts"));
+    app.modal = Modal::Detail("kind: Pod".into(), 0);
+    assert!(title(&app).contains("Pod / details"), "{}", title(&app));
+    // The command prompt keeps the name of the screen underneath.
+    app.subviews
+        .push(Modal::Picker("Namespace", vec!["default".into()], 0));
+    app.modal = Modal::Input("Command", String::new());
+    assert!(title(&app).contains("Namespaces"), "{}", title(&app));
 }
