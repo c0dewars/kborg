@@ -316,8 +316,9 @@ fn mutation_lock(directory: &Path) -> Result<File> {
     if private_metadata(&path, false)?.is_none_or(|metadata| metadata.len() != 0) {
         return Err("invalid saved selection lock".into());
     }
-    file.try_lock()
-        .map_err(|_| "another saved selection update is in progress; retry shortly")?;
+    if !safety::try_lock_briefly(&file) {
+        return Err("another saved selection update is in progress; retry shortly".into());
+    }
     Ok(file)
 }
 

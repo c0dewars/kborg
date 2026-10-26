@@ -10,6 +10,21 @@ pub const MAX_FILE: u64 = 64 * 1024;
 /// The one kept format character is a zero-width joiner between two emoji,
 /// which only forms an emoji ZWJ sequence (a family, a profession) and cannot
 /// reorder or hide text.
+/// Take an exclusive file lock, retrying for up to two seconds. A lock can
+/// outlive its holder briefly: a process spawned elsewhere in this program
+/// shares the descriptor until its exec, which takes longer on a busy machine.
+pub fn try_lock_briefly(file: &std::fs::File) -> bool {
+    for attempt in 0..80 {
+        if file.try_lock().is_ok() {
+            return true;
+        }
+        if attempt < 79 {
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+    }
+    false
+}
+
 pub fn safe_text(input: &str, max_chars: usize) -> String {
     let mut output = String::new();
     let mut kept = 0usize;
