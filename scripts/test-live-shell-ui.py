@@ -374,7 +374,7 @@ def main():
                 fcntl.ioctl(0, termios.TIOCSCTTY, 0)
 
             process = subprocess.Popen([str(binary), "--kubeconfig", str(scoped), "--context", args.context, "--namespace", NAMESPACE,
-                "--write", "--allow-exec", "--session-seconds", "600", "--theme", "rose-pine", "--no-splash", "--no-mouse", "--color=always"],
+                "--session-seconds", "600", "--theme", "rose-pine", "--no-splash", "--no-mouse", "--color=always"],
                 stdin=slave, stdout=slave, stderr=slave, env=environment, preexec_fn=setup)
 
             def drain(seconds=.1):
@@ -432,9 +432,10 @@ def main():
                             raise RuntimeError("Session review is missing " + part + "\n" + text)
                     capture("f1-review")
                     checks.append("review shows exact Pod, container, UID, argv, passthrough trust note and limits")
-                keys(f"{NAMESPACE}/{POD}".encode())
+                if "y/Enter start" not in screen.text():
+                    raise RuntimeError("Session review does not offer y/Enter")
                 mark = len(stream_log)
-                keys(b"\r", f"KBorg session: {NAMESPACE}/{POD} ({CONTAINER}). Ctrl-] returns to KBorg.")
+                keys(b"y", f"KBorg session: {NAMESPACE}/{POD} ({CONTAINER}). Ctrl-] returns to KBorg.")
                 wait(lambda _: prompt_ready())
                 return mark
 
