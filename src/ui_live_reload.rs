@@ -10,18 +10,22 @@ fn same_theme(a: &Theme, b: &Theme) -> bool {
     a.id == b.id && a.name == b.name && a.terminal == b.terminal && a.colors == b.colors
 }
 
-/// "Kept the last good settings" in every refusal, then its next step.
+/// File and "last good kept" first, then why (line/field) and the next step,
+/// so a status line shortened in the middle keeps both ends.
 fn refused(file: &str, error: &str, next: &str) -> String {
-    format!("{file} not applied: {error}. The last good settings stay. {NEXT} {next}")
+    let error = error
+        .strip_prefix(&format!("invalid {file}"))
+        .map_or_else(|| error.to_owned(), |rest| format!("invalid{rest}"));
+    format!("{file} not applied, last good kept: {error}. {NEXT} {next}")
 }
 
 fn next_step(file: ConfigFile) -> &'static str {
     match file {
-        ConfigFile::Ui => "fix it and save again; kborg ui validate shows the problem.",
-        ConfigFile::Keymap => "fix it and save again; :keymap lists action names and keys.",
-        ConfigFile::Hotkeys => "fix it and save again, or pick a key no action uses.",
-        ConfigFile::Plugins => "check the registry with kborg extensions list.",
-        _ => "fix it and save again.",
+        ConfigFile::Ui => "fix and save; kborg ui validate explains.",
+        ConfigFile::Keymap => "fix and save; :keymap lists actions.",
+        ConfigFile::Hotkeys => "fix and save, or pick a free key.",
+        ConfigFile::Plugins => "check kborg extensions list.",
+        _ => "fix and save again.",
     }
 }
 

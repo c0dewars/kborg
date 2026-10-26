@@ -241,6 +241,8 @@ To style and lay out the UI to your taste, run `kborg ui init` and edit the gene
 
 Everything below lives in KBorg's configuration directory (macOS `~/Library/Application Support/KBorg`, Linux `~/.config/kborg`, or `KBORG_CONFIG_DIR`). All files are data only, strictly validated and bounded; a broken file shows a notice and KBorg falls back to its defaults.
 
+Saved changes apply live, within about a second, without `:ui reload`: `ui.yaml`, the theme choice and your custom theme file, `keymap.yaml`, `hotkeys.yaml`, `aliases.yaml`, `views.yaml` and plugin registrations. A file that fails validation or the trust checks (symlink, size, writable by other users) is refused: the last good settings stay and the status line names the file, the line or field and the next step. Key changes wait until an open dialog, such as a typed approval, closes. Turn it off with `reload: false` in `ui.yaml` or `KBORG_CONFIG_RELOAD=off`.
+
 | File | Controls |
 |---|---|
 | `ui.yaml` | Borders, header and hint rows, compact mode, table density, zebra rows, separators, markers, age format, color overrides, chart style, dashboard layout (`kborg ui init`, `:ui reload`) — [reference](docs/themes.md#uiyaml) |
