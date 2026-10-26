@@ -5334,3 +5334,73 @@ fn summary_counts_marked_rows_and_identity_keeps_its_labels() {
         frame[1]
     );
 }
+#[test]
+fn list_views_watch_metadata_unless_a_column_needs_more() {
+    let (mut app, _replies, _commands) = harness();
+    app.command("configmaps").unwrap_or(false);
+    assert_eq!(app.watch_projection(), crate::watch::Projection::Metadata);
+    // Metadata paths keep the projection.
+    app.views = crate::views::parse(
+        "views:\n  configmaps:\n    columns:\n      - NAME\n      - TEAM:.metadata.labels.team\n      - AGE\n",
+    )
+    .unwrap_or_default();
+    assert_eq!(app.watch_projection(), crate::watch::Projection::Metadata);
+    // A custom column that reads more than metadata (or the spec-based IMAGES
+    // column) falls back to full objects for that resource.
+    for columns in [
+        "      - KEY:.data.key\n",
+        "      - OWNER:.metadata.ownerReferences[0].name\n",
+        "      - IMAGES\n",
+    ] {
+        app.views = crate::views::parse(&format!(
+            "views:\n  configmaps:\n    columns:\n      - NAME\n{columns}"
+        ))
+        .unwrap_or_default();
+        assert_eq!(
+            app.watch_projection(),
+            crate::watch::Projection::Full,
+            "{columns}"
+        );
+    }
+    // Another resource's view does not affect this one.
+    app.views = crate::views::parse(
+        "views:\n  v1/pods:\n    columns:\n      - IMAGE:.spec.containers[0].image\n",
+    )
+    .unwrap_or_default();
+    assert_eq!(app.watch_projection(), crate::watch::Projection::Metadata);
+}
+#[test]
+fn metadata_rows_render_and_describe_fetches_the_full_object() {
+    let (mut app, _replies, mut commands) = harness();
+    app.command("configmaps").unwrap_or(false);
+    while commands.try_recv().is_ok() {}
+    let row = serde_json::json!({"kind":"ConfigMap","apiVersion":"v1","metadata":{"name":"settings","namespace":"test","uid":"cm-1","resourceVersion":"5","creationTimestamp":"2026-01-01T00:00:00Z","labels":{"app":"api"}}});
+    app.connected = true;
+    app.worker.watch.publish(
+        app.epoch,
+        crate::watch::WatchSnapshot {
+            objects: vec![std::sync::Arc::new(row)],
+            resource_version: String::new(),
+            stale: true,
+            message: "initial list: 1 objects so far, loading the rest".into(),
+            terminal: false,
+            truncated: false,
+            partial: true,
+        },
+    );
+    app.receive();
+    let text = screen(&app, 120, 14).join("\n");
+    assert!(
+        text.contains("LOADING") && text.contains("settings"),
+        "{text}"
+    );
+    assert!(text.contains("Data redacted"), "{text}");
+    assert!(app.key(KeyCode::Char('d')).is_ok());
+    match commands.try_recv() {
+        Ok((_, Task::Inspect(kind, ns, name))) => assert_eq!(
+            (kind.as_str(), ns.as_str(), name.as_str()),
+            ("configmaps", "test", "settings")
+        ),
+        _ => panic!("describe must fetch the full object by name"),
+    }
+}
