@@ -251,7 +251,8 @@ struct App {
     namespace: String,
     kinds: Vec<Kind>,
     kind_index: usize,
-    items: Vec<Value>,
+    /// Shared with the watch cache (`Arc`): a new snapshot copies pointers.
+    items: Vec<std::sync::Arc<Value>>,
     selected: usize,
     filter: String,
     selector: String,
@@ -306,6 +307,9 @@ struct App {
     status: String,
     stale: bool,
     truncated: bool,
+    /// The watch's initial LIST is still arriving; rows shown so far are real
+    /// but incomplete.
+    list_loading: bool,
     modal: Modal,
     epoch: u64,
     busy: bool,
@@ -416,7 +420,7 @@ impl App {
     fn visible(&self) -> Vec<&Value> {
         self.visible_order()
             .iter()
-            .filter_map(|&index| self.items.get(index))
+            .filter_map(|&index| self.items.get(index).map(|object| &**object))
             .collect()
     }
     /// Filtered, sorted indices into `items`. Recomputing compiles the filter
@@ -503,6 +507,23 @@ impl App {
             *self.visible_cache.borrow_mut() = Some((fingerprint, order.clone()));
         }
         order
+    }
+    /// Metadata rows unless a views.yaml column for this resource reads more
+    /// than metadata (or the built-in IMAGES column, which reads the spec).
+    /// The gateway still keeps full objects for kinds not known to need only
+    /// metadata.
+    fn watch_projection(&self) -> crate::watch::Projection {
+        let needs_more = self.current_view().is_some_and(|view| {
+            view.columns.iter().any(|spec| match &spec.path {
+                Some(path) => !crate::views::metadata_path(path),
+                None => spec.title == "IMAGES",
+            })
+        });
+        if needs_more {
+            crate::watch::Projection::Full
+        } else {
+            crate::watch::Projection::Metadata
+        }
     }
     /// The configured view for the current resource, if any.
     fn current_view(&self) -> Option<&crate::views::View> {
@@ -931,6 +952,7 @@ pub fn run(mut options: Options) -> Result<()> {
         status: "Starting...".into(),
         stale: true,
         truncated: false,
+        list_loading: false,
         modal: Modal::None,
         epoch: 0,
         busy: false,
@@ -1168,6 +1190,7 @@ pub fn run(mut options: Options) -> Result<()> {
                         app.namespace.clone(),
                         app.selector.clone(),
                         app.field_selector.clone(),
+                        app.watch_projection(),
                     )
                 },
             );

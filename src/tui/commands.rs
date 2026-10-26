@@ -1098,7 +1098,7 @@ impl App {
             self.status = "Export from a resource table, Helm table or log view.".into();
         }
     }
-    pub(super) fn replace_items(&mut self, items: Vec<Value>) {
+    pub(super) fn replace_items(&mut self, items: Vec<std::sync::Arc<Value>>) {
         let identity = self.visible().get(self.selected).map(|v| {
             (
                 v["metadata"]["namespace"].clone(),
@@ -1170,6 +1170,7 @@ impl App {
         self.items_generation += 1;
         self.selected = 0;
         self.stale = true;
+        self.list_loading = false;
         self.refresh = true;
         self.watching = false;
         self.watch_blocked = false;

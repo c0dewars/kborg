@@ -6,12 +6,14 @@ use crate::{gateway::Kind, safety};
 use futures_util::{Stream, StreamExt};
 use kube::{
     Api,
-    api::{DynamicObject, ListParams, WatchEvent, WatchParams},
+    api::{DynamicObject, ListParams, ObjectMeta, PartialObjectMeta, WatchEvent, WatchParams},
+    core::ListMeta,
 };
 use serde_json::{Value, json};
 use std::{
     collections::{BTreeMap, HashSet},
     pin::Pin,
+    sync::Arc,
     time::Duration,
 };
 use tokio::time::{Instant, timeout_at};
@@ -34,19 +36,124 @@ const WATCH_BUDGET: Duration = Duration::from_secs(WATCH_TIMEOUT_SECS as u64 + 5
 const WATCH_RENEWAL: Duration = Duration::from_secs(WATCH_TIMEOUT_SECS as u64 - 5);
 type Events = Pin<Box<dyn Stream<Item = Result<WatchEvent<DynamicObject>, kube::Error>> + Send>>;
 
+/// What a feed asks the API server for and keeps per object.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Projection {
+    /// Whole objects (redacted before they are measured and held).
+    #[default]
+    Full,
+    /// `PartialObjectMetadata`: the server leaves spec, status and data off the
+    /// wire, and the cache keeps only identity, timestamps and labels. For list
+    /// views whose columns need nothing else; describe, YAML and every write
+    /// fetch the full object by name and UID when the user opens them.
+    Metadata,
+}
+
+/// Kinds whose built-in table columns (status text, readiness, faults filter,
+/// sort keys) read only metadata. Everything else keeps full objects.
+pub fn metadata_kind(kind: &Kind) -> bool {
+    const KINDS: &[(&str, &str)] = &[
+        ("", "ConfigMap"),
+        ("", "ServiceAccount"),
+        ("", "Endpoints"),
+        ("", "PodTemplate"),
+        ("", "LimitRange"),
+        ("discovery.k8s.io", "EndpointSlice"),
+        ("rbac.authorization.k8s.io", "Role"),
+        ("rbac.authorization.k8s.io", "ClusterRole"),
+        ("rbac.authorization.k8s.io", "RoleBinding"),
+        ("rbac.authorization.k8s.io", "ClusterRoleBinding"),
+        ("apps", "ControllerRevision"),
+        ("coordination.k8s.io", "Lease"),
+        ("scheduling.k8s.io", "PriorityClass"),
+        ("node.k8s.io", "RuntimeClass"),
+        ("storage.k8s.io", "CSIDriver"),
+        (
+            "admissionregistration.k8s.io",
+            "ValidatingWebhookConfiguration",
+        ),
+        (
+            "admissionregistration.k8s.io",
+            "MutatingWebhookConfiguration",
+        ),
+    ];
+    KINDS
+        .iter()
+        .any(|(group, name)| kind.group == *group && kind.kind == *name)
+}
+
+/// Keeps only what metadata-projected rows show. Managed fields, annotations
+/// and owner references stay on the server; the server-reported type must be
+/// `PartialObjectMetadata` (the caller's kind is stamped on afterwards).
+fn from_partial(object: PartialObjectMeta<DynamicObject>) -> Result<DynamicObject, &'static str> {
+    if object
+        .types
+        .as_ref()
+        .is_some_and(|t| t.kind != "PartialObjectMetadata")
+    {
+        return Err("watch response has unexpected kind");
+    }
+    let m = object.metadata;
+    Ok(DynamicObject {
+        types: None,
+        metadata: ObjectMeta {
+            name: m.name,
+            namespace: m.namespace,
+            uid: m.uid,
+            resource_version: m.resource_version,
+            creation_timestamp: m.creation_timestamp,
+            deletion_timestamp: m.deletion_timestamp,
+            labels: m.labels,
+            ..ObjectMeta::default()
+        },
+        data: Value::Object(serde_json::Map::new()),
+    })
+}
+fn partial_event(
+    event: WatchEvent<PartialObjectMeta<DynamicObject>>,
+) -> Result<WatchEvent<DynamicObject>, kube::Error> {
+    let convert = |object| {
+        from_partial(object)
+            .map_err(|message| kube::Error::SerdeError(serde::de::Error::custom(message)))
+    };
+    Ok(match event {
+        WatchEvent::Added(object) => WatchEvent::Added(convert(object)?),
+        WatchEvent::Modified(object) => WatchEvent::Modified(convert(object)?),
+        WatchEvent::Deleted(object) => WatchEvent::Deleted(convert(object)?),
+        WatchEvent::Bookmark(bookmark) => WatchEvent::Bookmark(bookmark),
+        WatchEvent::Error(status) => WatchEvent::Error(status),
+    })
+}
+
 #[derive(Clone, Debug)]
 pub struct WatchSnapshot {
-    pub objects: Vec<Value>,
+    /// Shared with the feed's cache: publishing a snapshot copies pointers,
+    /// not objects.
+    pub objects: Vec<Arc<Value>>,
     pub resource_version: String,
     pub stale: bool,
     pub message: String,
     pub terminal: bool,
     pub truncated: bool,
+    /// Pages of an initial LIST that is still running (progressive feeds
+    /// only); always also `stale`.
+    pub partial: bool,
+}
+
+/// An initial LIST in progress. Pages accumulate here and replace the cache
+/// only when the last page arrives.
+struct Listing {
+    cache: Cache,
+    rv: Option<String>,
+    continuation: Option<String>,
+    seen: HashSet<String>,
+    deadline: Instant,
+    pages: usize,
 }
 
 #[derive(Default)]
 struct Cache {
-    objects: BTreeMap<(String, String), (String, Value, usize)>,
+    objects: BTreeMap<(String, String), (String, Arc<Value>, usize)>,
     bytes: usize,
 }
 impl Cache {
@@ -112,7 +219,7 @@ impl Cache {
             return Err("watch cache limit exceeded; narrow namespace scope");
         }
         self.bytes = self.bytes - old_bytes + bytes;
-        self.objects.insert(key, (uid, value, bytes));
+        self.objects.insert(key, (uid, Arc::new(value), bytes));
         Ok(rv)
     }
 }
@@ -120,11 +227,15 @@ impl Cache {
 pub struct WatchFeed {
     api: Api<DynamicObject>,
     kind: Kind,
+    projection: Projection,
     selector: String,
     fields: String,
     cache: Cache,
     rv: String,
     initialized: bool,
+    listing: Option<Listing>,
+    /// Publish each initial-list page as a partial snapshot.
+    progressive: bool,
     stream: Option<Events>,
     stream_started: Instant,
     stream_deadline: Instant,
@@ -179,11 +290,14 @@ impl WatchFeed {
         Self {
             api,
             kind,
+            projection: Projection::Full,
             selector,
             fields,
             cache: Cache::default(),
             rv: String::new(),
             initialized: false,
+            listing: None,
+            progressive: false,
             stream: None,
             stream_started: now,
             stream_deadline: now,
@@ -196,6 +310,20 @@ impl WatchFeed {
             context: String::new(),
             server: String::new(),
         }
+    }
+    /// Selects what the feed downloads and keeps; set before the first `next`.
+    pub(crate) fn with_projection(mut self, projection: Projection) -> Self {
+        self.projection = projection;
+        self
+    }
+    pub fn projection(&self) -> Projection {
+        self.projection
+    }
+    /// Publishes each initial-list page (marked `partial` and `stale`) so the
+    /// first rows show before a large LIST completes.
+    pub(crate) fn progressive(mut self) -> Self {
+        self.progressive = true;
+        self
     }
     /// Names the context and server in failure text (host only, no path).
     pub(crate) fn with_origin(mut self, context: &str, server: &str) -> Self {
@@ -239,7 +367,12 @@ impl WatchFeed {
     }
     fn snapshot(&self, stale: bool, message: &str) -> WatchSnapshot {
         WatchSnapshot {
-            objects: self.cache.objects.values().map(|v| v.1.clone()).collect(),
+            objects: self
+                .cache
+                .objects
+                .values()
+                .map(|v| Arc::clone(&v.1))
+                .collect(),
             resource_version: self.rv.clone(),
             stale,
             message: message.into(),
@@ -248,11 +381,39 @@ impl WatchFeed {
                 .terminal
                 .as_ref()
                 .is_some_and(|m| m.contains("limit exceeded")),
+            partial: false,
+        }
+    }
+    fn partial_snapshot(&self) -> WatchSnapshot {
+        let objects: Vec<Arc<Value>> = self
+            .listing
+            .as_ref()
+            .map(|listing| {
+                listing
+                    .cache
+                    .objects
+                    .values()
+                    .map(|v| Arc::clone(&v.1))
+                    .collect()
+            })
+            .unwrap_or_default();
+        WatchSnapshot {
+            message: format!(
+                "initial list: {} objects so far, loading the rest",
+                objects.len()
+            ),
+            objects,
+            resource_version: String::new(),
+            stale: true,
+            terminal: false,
+            truncated: false,
+            partial: true,
         }
     }
     fn fail_closed(&mut self, message: &str) -> WatchSnapshot {
         let message = &with_next(message);
         self.cache = Cache::default();
+        self.listing = None;
         self.rv.clear();
         self.stream = None;
         self.terminal = Some(message.into());
@@ -263,6 +424,7 @@ impl WatchFeed {
         self.stream = None;
         if relist {
             self.cache = Cache::default();
+            self.listing = None;
             self.rv.clear();
             self.initialized = false;
         }
@@ -324,63 +486,125 @@ impl WatchFeed {
         }
         Ok(())
     }
-    async fn relist(&mut self) -> Result<(), String> {
-        self.relists = self.relists.saturating_add(1);
-        let deadline = Instant::now() + LIST_BUDGET;
-        let mut cache = Cache::default();
-        let mut rv = None;
-        let mut continuation = None;
-        let mut seen = HashSet::new();
-        for _ in 0..MAX_OBJECTS.div_ceil(PAGE_SIZE as usize) {
+    /// One LIST page in the feed's projection. Metadata items that fail
+    /// validation are returned as errors so the caller fails closed.
+    #[allow(clippy::type_complexity)]
+    /// Takes the Api, not the feed: the feed's stream field is not Sync.
+    async fn list_page(
+        api: &Api<DynamicObject>,
+        projection: Projection,
+        params: &ListParams,
+    ) -> Result<(ListMeta, Vec<Result<DynamicObject, &'static str>>), kube::Error> {
+        Ok(match projection {
+            Projection::Full => {
+                let list = api.list(params).await?;
+                (list.metadata, list.items.into_iter().map(Ok).collect())
+            }
+            Projection::Metadata => {
+                let list = api.list_metadata(params).await?;
+                (
+                    list.metadata,
+                    list.items.into_iter().map(from_partial).collect(),
+                )
+            }
+        })
+    }
+    /// Runs the initial LIST. `Ok(true)` once the cache holds every page;
+    /// `Ok(false)` after each page of a progressive feed. Any error discards
+    /// the pages read so far.
+    async fn relist(&mut self) -> Result<bool, String> {
+        loop {
+            match self.list_step().await {
+                Ok(false) if !self.progressive => {}
+                Err(message) => {
+                    self.listing = None;
+                    return Err(message);
+                }
+                done => return done,
+            }
+        }
+    }
+    /// Reads one page. State changes only after the page has arrived, so a
+    /// cancelled call leaves the listing where it was.
+    async fn list_step(&mut self) -> Result<bool, String> {
+        if self.listing.is_none() {
+            self.relists = self.relists.saturating_add(1);
+            self.listing = Some(Listing {
+                cache: Cache::default(),
+                rv: None,
+                continuation: None,
+                seen: HashSet::new(),
+                deadline: Instant::now() + LIST_BUDGET,
+                pages: 0,
+            });
+        }
+        let (deadline, continuation) = match &self.listing {
+            Some(listing) if listing.pages < MAX_OBJECTS.div_ceil(PAGE_SIZE as usize) => {
+                (listing.deadline, listing.continuation.clone())
+            }
+            _ => return Err("watch list page limit exceeded; narrow namespace scope".into()),
+        };
+        {
             let params = ListParams {
                 label_selector: (!self.selector.is_empty()).then(|| self.selector.clone()),
                 field_selector: (!self.fields.is_empty()).then(|| self.fields.clone()),
                 limit: Some(PAGE_SIZE),
-                continue_token: continuation.take(),
+                continue_token: continuation,
                 ..Default::default()
             };
-            let list = timeout_at(deadline, self.api.list(&params))
-                .await
-                .map_err(|_| "watch initial list budget exceeded".to_string())?
-                .map_err(|e| match e {
-                    kube::Error::Api(s) if s.code == 401 || s.code == 403 => {
-                        self.explained(&kube::Error::Api(s), "list", "initial list stopped")
-                    }
-                    kube::Error::Api(s) if s.code == 404 => {
-                        "watch resource unavailable; refresh resource catalog".to_owned()
-                    }
-                    kube::Error::Api(s) if s.code == 405 || s.code == 501 => {
-                        "watch unsupported; use polling".to_owned()
-                    }
-                    _ => "watch initial list failed".to_owned(),
-                })?;
-            let page_rv = list
-                .metadata
+            let list = timeout_at(
+                deadline,
+                Self::list_page(&self.api, self.projection, &params),
+            )
+            .await
+            .map_err(|_| "watch initial list budget exceeded".to_string())?
+            .map_err(|e| match e {
+                kube::Error::Api(s) if s.code == 401 || s.code == 403 => {
+                    self.explained(&kube::Error::Api(s), "list", "initial list stopped")
+                }
+                kube::Error::Api(s) if s.code == 404 => {
+                    "watch resource unavailable; refresh resource catalog".to_owned()
+                }
+                kube::Error::Api(s) if s.code == 405 || s.code == 501 => {
+                    "watch unsupported; use polling".to_owned()
+                }
+                _ => "watch initial list failed".to_owned(),
+            })?;
+            let (metadata, items) = list;
+            let page_rv = metadata
                 .resource_version
                 .filter(|v| !v.is_empty() && v.len() <= 253 && safety::safe_text(v, 253) == *v)
                 .ok_or("list has invalid resourceVersion")?;
-            if rv.as_ref().is_some_and(|old| old != &page_rv) {
+            let mut objects = Vec::with_capacity(items.len());
+            for object in items {
+                let object = object?;
+                self.validate_scope(&object)?;
+                objects.push(object);
+            }
+            let kind = &self.kind;
+            let listing = self.listing.as_mut().ok_or("watch initial list failed")?;
+            if listing.rv.as_ref().is_some_and(|old| old != &page_rv) {
                 return Err("list resourceVersion changed between pages".into());
             }
-            rv = Some(page_rv);
-            for object in list.items {
-                self.validate_scope(&object)?;
-                cache.apply(object, false, &self.kind)?;
+            listing.rv = Some(page_rv);
+            listing.pages += 1;
+            for object in objects {
+                listing.cache.apply(object, false, kind)?;
             }
-            continuation = list.metadata.continue_.filter(|v| !v.is_empty());
-            if let Some(token) = &continuation {
-                if token.len() > 16384 || !seen.insert(token.clone()) {
+            listing.continuation = metadata.continue_.filter(|v| !v.is_empty());
+            if let Some(token) = &listing.continuation {
+                if token.len() > 16384 || !listing.seen.insert(token.clone()) {
                     return Err("invalid repeated list continuation".into());
                 }
-            } else {
-                self.cache = cache;
-                self.rv = rv.unwrap_or_default();
-                self.initialized = true;
-                self.failures = 0;
-                return Ok(());
+                return Ok(false);
             }
         }
-        Err("watch list page limit exceeded; narrow namespace scope".into())
+        let listing = self.listing.take().ok_or("watch initial list failed")?;
+        self.cache = listing.cache;
+        self.rv = listing.rv.unwrap_or_default();
+        self.initialized = true;
+        self.failures = 0;
+        Ok(true)
     }
     /// Pull one coalesced snapshot. Dropping this future cancels pending I/O; dropping
     /// the feed cancels its stream. Scope changes must create a fresh feed.
@@ -391,7 +615,8 @@ impl WatchFeed {
         tokio::time::sleep_until(self.retry_at).await;
         if !self.initialized {
             return match self.relist().await {
-                Ok(()) => self.snapshot(false, "watch cache initialized"),
+                Ok(true) => self.snapshot(false, "watch cache initialized"),
+                Ok(false) => self.partial_snapshot(),
                 Err(message)
                     if message == "watch initial list failed"
                         || message == "watch initial list budget exceeded" =>
@@ -412,14 +637,21 @@ impl WatchFeed {
             };
             let started = Instant::now();
             recovering = self.failures > 0;
-            match timeout_at(
-                Instant::now() + Duration::from_secs(10),
-                self.api.watch(&params, &self.rv),
-            )
-            .await
-            {
+            // Borrow only the Api: the feed's stream field is not Sync.
+            let (api, rv, projection) = (&self.api, self.rv.as_str(), self.projection);
+            let connect = async {
+                Ok::<Events, kube::Error>(match projection {
+                    Projection::Full => Box::pin(api.watch(&params, rv).await?),
+                    Projection::Metadata => Box::pin(
+                        api.watch_metadata(&params, rv)
+                            .await?
+                            .map(|event| event.and_then(partial_event)),
+                    ),
+                })
+            };
+            match timeout_at(Instant::now() + Duration::from_secs(10), connect).await {
                 Ok(Ok(stream)) => {
-                    self.stream = Some(Box::pin(stream));
+                    self.stream = Some(stream);
                     self.stream_started = started;
                     self.stream_deadline = Instant::now() + WATCH_BUDGET;
                 }

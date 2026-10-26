@@ -85,11 +85,17 @@ impl TableMetrics {
         self.received = None;
         self.notice = format!("unavailable: {}", crate::safety::safe_text(error, 120));
     }
-    pub fn record(&mut self, snapshot: &MetricsSnapshot, objects: &[Value], now: Instant) {
+    pub fn record<T: std::borrow::Borrow<Value>>(
+        &mut self,
+        snapshot: &MetricsSnapshot,
+        objects: &[T],
+        now: Instant,
+    ) {
         self.rows.clear();
         self.received = Some(now);
         let mut unverified = false;
         for object in objects.iter().take(1000) {
+            let object: &Value = object.borrow();
             let Some(uid) = object["metadata"]["uid"]
                 .as_str()
                 .filter(|uid| !uid.is_empty())

@@ -493,8 +493,8 @@ mod tests {
         row.unhealthy = Some(0);
         row.observed_unix_seconds = Some(123);
         row.set_health(
-            &PodHealth::from_objects(&[]),
-            &EventEvidence::from_objects(&[], false),
+            &PodHealth::from_objects::<serde_json::Value>(&[]),
+            &EventEvidence::from_objects::<serde_json::Value>(&[], false),
         );
         row.fail("watch authorization denied; cache cleared");
         assert_eq!(row.state, EvidenceState::Denied);

@@ -106,6 +106,32 @@ fn parse_path(text: &str) -> Result<Vec<Segment>> {
     Ok(segments)
 }
 
+/// True when `path` reads only what metadata-projected list rows keep
+/// (kind, apiVersion and metadata name, namespace, uid, resourceVersion,
+/// creation/deletion timestamps and labels).
+pub fn metadata_path(path: &[Segment]) -> bool {
+    let field = |index: usize| match path.get(index) {
+        Some(Segment::Field(name)) => Some(name.as_str()),
+        _ => None,
+    };
+    match field(0) {
+        Some("kind" | "apiVersion") => path.len() == 1,
+        Some("metadata") => matches!(
+            field(1),
+            Some(
+                "name"
+                    | "namespace"
+                    | "uid"
+                    | "resourceVersion"
+                    | "creationTimestamp"
+                    | "deletionTimestamp"
+                    | "labels"
+            )
+        ),
+        _ => false,
+    }
+}
+
 /// Values at `path`; `[*]` fans out over arrays.
 pub fn eval(path: &[Segment], value: &Value) -> Vec<String> {
     let mut current = vec![value];
