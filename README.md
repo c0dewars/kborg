@@ -53,7 +53,7 @@
 | **Secrets** | Opt-in key listing and masked YAML/describe (`y`/`d`: values shown as sizes, TLS subject/expiry, registry hostnames); reveal one value for 30 seconds; never exported or copied |
 | **Metrics & charts** | Pod/Node CPU and memory tables with exact values and request/limit comparisons; live charts (`g` in `:metrics`) with units and % of request, limit or allocatable; dashboard trend charts (`G`) and 15-minute sparklines; braille, block or ASCII rendering |
 | **Copilot** | Minimized diagnostic preview, `:ask` about the current screen, exact account approval, contained native runtime (macOS ARM64) |
-| **Workspace** | Saved context groups and scopes, remembered dashboard (`kborg dashboard`), k9s-format `views.yaml` columns, sort by any column, recent namespaces on `1`–`9`, custom aliases and k9s-format hotkeys, every key remappable on every screen (`keymap.yaml`, `?` help per screen, `:keymap`), UI styling (`ui.yaml`), reviewed extensions and k9s plugins with `$VARIABLES` and shortcuts (`:ext`, `kborg extensions import-k9s`), 20 themes plus custom palettes, shell completions |
+| **Workspace** | Saved context groups and scopes, remembered dashboard (`kborg dashboard`), k9s-format `views.yaml` columns, sort by any column, recent namespaces on `1`–`9`, custom aliases and k9s-format hotkeys, every key remappable on every screen (`keymap.yaml`, `?` help per screen, `:keymap`), Ctrl-P command palette, UI styling (`ui.yaml`), reviewed extensions and k9s plugins with `$VARIABLES` and shortcuts (`:ext`, `kborg extensions import-k9s`), 20 themes plus custom palettes, shell completions |
 
 ![Cross-cluster tail: two clusters' checkout services merged in timestamp order](docs/screenshots/cross-cluster-tail.png)
 
@@ -200,6 +200,7 @@ KBorg uses your kubeconfig directly: the current context unless you pass `--cont
 | Dashboard `1`–`9`, `w`, `L`, `t`, `G` | Focus (again = full screen), select warning, Pod logs, cross-cluster tail, trend charts |
 | `:metrics` then `g` | Live CPU and memory chart for the selected Pod or Node |
 | `?`, `:keymap` | Keys for the screen you're on (Tab: every screen); every action and its key |
+| Ctrl-P | Command palette (KBorg extension): fuzzy search the current screen's actions with their keys, `:` commands, resource kinds, recent contexts, namespaces and objects; Enter runs it like the key, with the same opt-ins and reviews |
 
 The bottom row always shows the keys that work for what's selected and the flags you started with. The [k9s compatibility map](docs/K9S_COMPATIBILITY.md) documents every command and the few deliberate differences.
 
