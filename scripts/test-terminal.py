@@ -204,7 +204,10 @@ def lifecycle_session(binary, args, captures):
                     "usage=resource.getrusage(resource.RUSAGE_CHILDREN); "
                     "print('\\nKBORG_PTY_RESULT '+json.dumps({'status':status,'cpu':usage.ru_utime+usage.ru_stime,'rss':usage.ru_maxrss}),flush=True); "
                     "sys.stdin.readline(); sys.exit(status)")
-        process = subprocess.Popen([sys.executable, "-c", launcher, str(binary), "--demo", "--theme", "catppuccin-mocha", "--write", "--allow-helm", "--allow-helm-write", "--helm-tool", "/demo/helm", "--allow-logs", "--no-splash", "--no-mouse", "--color=always"], stdin=slave, stdout=slave, stderr=slave, env=environment, preexec_fn=child_setup)
+        # Exercise denial and typed-review paths explicitly; operator defaults enable these capabilities.
+        policy = Path(temporary) / "operator.json"
+        policy.write_text(json.dumps({"schema_version": 1, "strict_confirmations": True, "allow_helm_hooks": False, "allow_helm_crds": False}))
+        process = subprocess.Popen([sys.executable, "-c", launcher, str(binary), "--config", str(policy), "--demo", "--theme", "catppuccin-mocha", "--write", "--allow-helm", "--allow-helm-write", "--helm-tool", "/demo/helm", "--allow-logs", "--no-splash", "--no-mouse", "--color=always"], stdin=slave, stdout=slave, stderr=slave, env=environment, preexec_fn=child_setup)
         screen = Screen(120, 32)
         output = bytearray()
         def drain(seconds):
@@ -272,7 +275,7 @@ def lifecycle_session(binary, args, captures):
             capture("helm-review-cancelled",["INSTALL HELM RELEASE","demo-new"])
             pinned = "oci://registry.example/team/chart@sha256:" + "a"*64
             keys(b"\t\x15" + pinned.encode())
-            capture("helm-oci-default-off",["INSTALL HELM RELEASE","OCI sha256:","hooks OFF","CRDs OFF","signature not checked"])
+            capture("helm-oci-operator-disabled",["INSTALL HELM RELEASE","OCI sha256:","hooks OFF","CRDs OFF","signature not checked"])
             keys(b"\x15/demo/chart.tgz")
             keys(b"\r","HELM REVIEW")
             resize(48,12)
@@ -307,7 +310,7 @@ def lifecycle_session(binary, args, captures):
             capture("helm-uninstall-simulated",["HELM OPERATION SUCCEEDED","SIMULATED"])
             keys(b"\x1b","HELM / releases")
             keys(b"c")
-            capture("helm-crds-denied",["HELM / releases","--allow-helm-crds"])
+            capture("helm-crds-denied",["HELM / releases","Chart CRD actions require explicit permission"])
             keys(b"\x1b")
             drain(.3)
             keys(b":deploy\r","deployments")
@@ -351,7 +354,9 @@ def extension_form_session(binary, args, captures):
         def setup():
             os.setsid()
             fcntl.ioctl(0,termios.TIOCSCTTY,0)
-        process=subprocess.Popen([str(binary),"--demo","--theme","catppuccin-mocha","--write","--allow-helm","--allow-helm-write","--allow-helm-hooks","--allow-helm-crds","--helm-tool","/demo/helm","--no-splash","--no-mouse","--color=always"],stdin=slave,stdout=slave,stderr=slave,env=environment,preexec_fn=setup)
+        policy = Path(temporary) / "operator.json"
+        policy.write_text(json.dumps({"schema_version": 1, "strict_confirmations": True}))
+        process=subprocess.Popen([str(binary),"--config",str(policy),"--demo","--theme","catppuccin-mocha","--write","--allow-helm","--allow-helm-write","--allow-helm-hooks","--allow-helm-crds","--helm-tool","/demo/helm","--no-splash","--no-mouse","--color=always"],stdin=slave,stdout=slave,stderr=slave,env=environment,preexec_fn=setup)
         screen=Screen(120,32)
         output=bytearray()
         def drain(seconds):
@@ -505,7 +510,7 @@ def main():
                     "usage=resource.getrusage(resource.RUSAGE_CHILDREN); "
                     "print('\\nKBORG_PTY_RESULT '+json.dumps({'status':status,'cpu':usage.ru_utime+usage.ru_stime,'rss':usage.ru_maxrss}),flush=True); "
                     "sys.stdin.readline(); sys.exit(status)")
-        process = subprocess.Popen([sys.executable, "-c", launcher, str(binary), "--demo", "--theme", "catppuccin-mocha", "--no-splash", "--allow-logs", "--no-mouse", "--color=always"],
+        process = subprocess.Popen([sys.executable, "-c", launcher, str(binary), "--demo", "--read-only", "--theme", "catppuccin-mocha", "--no-splash", "--allow-logs", "--no-mouse", "--color=always"],
                                    stdin=slave, stdout=slave, stderr=slave, env=environment, preexec_fn=child_setup)
         screen = Screen(120, 32)
         all_output = bytearray()
@@ -576,7 +581,7 @@ def main():
             capture("containers", ["CONTAINERS", "app", "running"])
             keys(b"\x1b")
             keys(b":actions\r")
-            capture("actions", ["ACTIONS", "[OFF]", "READ ONLY"])
+            capture("actions", ["ACTIONS", "[OFF] Delete selected resource: read-only mode"])
             keys(b"\x1b")
             keys(b"\x01")
             capture("aliases", ["Aliases", "deployments.apps", "deploy"])
@@ -585,12 +590,26 @@ def main():
             keys(b"S")
             capture("sorted-pods", ["sort: status", "api-7d4f9"])
             keys(b"C", 1)
-            capture("metrics-table", ["CPU(m)", "MEM", "125", "64Mi", "sort: cpu"])
+            capture("metrics-table", ["CPU(m)", "MEM", "sort: cpu", "api-7d4f9", "worker-6a1bc"])
+            # The synthetic usage wave advances on refresh; verify values and unknown semantics, not one phase.
+            metric_lines = screen.text().splitlines()
+            header = next(line for line in metric_lines if "CPU(m)" in line and "MEM" in line)
+            cpu_start, memory_start = header.index("CPU(m)"), header.index("MEM")
+            api_row = next(line for line in metric_lines if "api-7d4f9" in line)
+            worker_row = next(line for line in metric_lines if "worker-6a1bc" in line)
+            cpu = api_row[cpu_start:memory_start].strip()
+            memory = api_row[memory_start:].split()[0]
+            assert re.fullmatch(r"\d+(?:\.\d+)?", cpu), f"missing numeric Pod CPU: {api_row}"
+            assert re.fullmatch(r"\d+(?:\.\d+)?Mi", memory), f"missing numeric Pod memory: {api_row}"
+            assert 112 <= float(cpu) <= 212 and 57 <= float(memory[:-2]) <= 108, f"demo wave outside expected bounds: {api_row}"
+            assert worker_row[cpu_start:memory_start].strip() == "-" and worker_row[memory_start:].split()[0] == "-", f"missing worker metrics must remain unknown, not zero: {worker_row}"
             keys(b"N")
             keys(b"m", 1)
             capture("metrics", ["METRICS", "CPU", "MEM", "SESSION HISTORY"])
             keys(b"M", 1)
-            capture("allocations", ["requests", "50.00%", "Resource comparisons"])
+            capture("allocations", ["requests", "Resource comparisons"])
+            percentages = [float(value) for value in re.findall(r"(\d+\.\d{2})%", screen.text())]
+            assert percentages and all(0 < value <= 200 for value in percentages), f"expected positive bounded demo resource percentages: {screen.text()}"
             keys(b"\x1b")
             keys(b"l", 1)
             capture("log-detail", ["LOGS", "demo", "INFO"])
@@ -602,7 +621,7 @@ def main():
             keys(b":helm\r", 1)
             capture("helm-releases", ["HELM", "demo-api", "deployed", "Secret"])
             keys(b"u")
-            capture("helm-lifecycle-denied", ["--write", "--allow-helm-write"])
+            capture("helm-lifecycle-denied", ["Helm lifecycle requires permission", "--read-only"])
             keys(b"\r", 1)
             capture("helm-history", ["HELM HISTORY", "superseded", "1.1.0"])
             keys(b"\r", 1)

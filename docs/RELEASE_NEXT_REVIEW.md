@@ -59,3 +59,10 @@ Final full offline WSL library run: **648 passed, 0 failed, 8 explicitly ignored
 The final Windows offline suite passed 613 library tests plus the metrics contract (2 library tests explicitly ignored). Native Windows x64 release compilation passed. Formatting and whitespace checks passed.
 
 [Startup consent acceptance](evidence/connection-startup-consent.json) passed five synthetic WSL PTY cases against the measured release binary: cancel the current context, select another context and cancel, approve the current context, approve another context, and reject kubeconfig replacement between review and approval. No helper or connection occurred before approval; only the approved context's helper ran; the application never changed the kubeconfig. The replacement case displayed restart guidance and executed no helper. These fixtures do not prove real company-provider login or browser OAuth.
+
+
+## Final offline terminal acceptance
+
+The final Linux x86_64 release binary passed three WSL PTY sessions covering 63 asserted frames, including demo Copilot local preview/send denial, read-only action denial, metrics, logs, navigation, narrow layouts, operator-disabled Helm hooks/CRDs, strict painted-review coverage, and simulated Helm lifecycle/schema actions. [Terminal acceptance evidence](evidence/terminal-acceptance.json) records binary SHA-256 `f9209d9aa038cb051f0b6abc513d459eb2b9f750f2de86820e3f4d8ceaa54793`. All sessions restored terminal state; the two-second quiet interval emitted 0 bytes.
+
+The harness now explicitly selects read-only and strict-confirmation fixture policies instead of relying on earlier defaults. Dynamic demo metrics are checked for positive bounded CPU/memory values, numeric resource percentages, and `-` for the unmeasured worker; it no longer requires one fixed phase of the synthetic usage wave. No runtime code changed in this acceptance pass. These are offline synthetic UI checks, not real company login, browser OAuth, cluster/registry/Helm execution, model inference, or a native-terminal/platform matrix.
