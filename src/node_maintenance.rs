@@ -1165,6 +1165,10 @@ mod tests {
     #[test]
     fn accepted_eviction_timeout_keeps_pending_audit_and_cordon() -> Result<()> {
         runtime(async {
+            // Synchronous audit I/O can exceed one second on busy Windows CI.
+            // Advance only the async clock so the eviction is accepted before
+            // its wait deadline, regardless of host scheduling or disk speed.
+            tokio::time::pause();
             let mut replies = drain_replies(200);
             for _ in 0..8 {
                 replies.push(("GET", "/api/v1/namespaces/test/pods/app-abc", 200, pod()));
