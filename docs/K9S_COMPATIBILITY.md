@@ -101,7 +101,20 @@ k9s's node shell creates a privileged Pod on the Node. KBorg does the same behin
 
 ## Plugins and extensions
 
-k9s plugins run shell commands with `$NAME`-style substitution. KBorg's equivalent is a registered read-only extension: an absolute executable with literal arguments that receives the selected object as redacted JSON on stdin after a whole-input review (`RUN TOOL`), with a 15-second limit and captured output that is never applied. Register with `kborg extensions register`, run with `:ext NAME` (`--allow-extensions --allow-tools`), and bind a key in `hotkeys.yaml` (`command: ext NAME`). `kborg extensions import-k9s ~/.config/k9s/plugins.yaml` reports which k9s plugins fit this model, prints their register commands and a hotkeys snippet, and explains the rest.
+KBorg runs k9s plugins as registered extensions: an absolute executable pinned by SHA-256 that receives the selected object as redacted JSON on stdin after a full review, with a 15-second limit and captured output that is never applied. Run them with `:ext NAME`, their `shortCut`, or `:actions` (`--allow-extensions --allow-tools`).
+
+`kborg extensions import-k9s ~/.config/k9s/plugins.yaml` classifies every plugin and prints a `kborg extensions register-k9s plugins.yaml NAME --tool /ABS/PATH` command for each one that runs a single program (the path is looked up on PATH for the report only). The common community plugins stern, dive, log-full and helm-values import unchanged; plugins that wrap `sh -c`/`bash -c` scripts (debug-container, watch-events, blame) or use pipes are flagged for review, with the built-in equivalent where one exists (`:debug`, `:events`, `l`, Helm `v`).
+
+| k9s field | KBorg behavior |
+|---|---|
+| `command`, `args` | Registered with `register-k9s ... --tool ABS`; the executable is never looked up on PATH at run time |
+| `shortCut` | Bound in the matching view (resource table, container list, Helm release list) only when no action's effective key, `hotkeys.yaml` key, reserved key or earlier plugin uses it there; otherwise `? help` notes the conflict and `:ext NAME` still works. Change it by re-registering or with `hotkeys.yaml` (`command: ext NAME`) |
+| `description` | Shown in `?` help, `:actions` and the `:ext` picker |
+| `scopes` | Resource names (plural, singular, short name), `containers`, `helm` or `all`; a plugin does not run outside its scopes |
+| `dangerous` | Every run needs `RUN DANGEROUS NAME` instead of `RUN TOOL`; so do shell executables and arguments with a kubectl/helm write verb |
+| `confirm`, `background`, `overwriteOutput` | Accepted; KBorg always shows the review, runs in the foreground and shows the captured output |
+
+Variables: `$NAMESPACE`, `$NAME`, `$CONTEXT`, `$CLUSTER`, `$USER`, `$GROUPS` (always empty), `$KUBECONFIG`, `$CONTAINER`, `$POD`, `$FILTER`, `$RESOURCE_NAME`, `$RESOURCE_GROUP`, `$RESOURCE_VERSION` and `$COL-<COLUMN>` (a table column, spaces as `_`; the container list offers NAME, IMAGE, READY, RESTARTS, STATE; the Helm list NAME, NAMESPACE, REVISION, STATUS, CHART, APP_VERSION). `$VAR` and `${VAR}` expand inside one argument and the result stays exactly one argument: no shell, no word splitting, no globbing; `$(...)`, lowercase names and `$1` stay literal and `$$` is a literal `$`. Unknown uppercase variables (for example `$HOME`) are refused at import and registration: environment variables are never read. Values come from the cluster and are untrusted: a value with control or formatting characters is refused, and a value starting with `-` is refused when it would begin an argument (an option position) before a literal `--`, so a Pod named `--exec=...` cannot become an option. For a shell executable every value must be letters, digits or `._:/@=+,-` and may not start with `-`. The review lists the exact expanded argv, one numbered argument per line.
 
 ## Custom views (columns and sort)
 

@@ -53,7 +53,7 @@
 | **Secrets** | Opt-in key listing and masked YAML/describe (`y`/`d`: values shown as sizes, TLS subject/expiry, registry hostnames); reveal one value for 30 seconds; never exported or copied |
 | **Metrics & charts** | Pod/Node CPU and memory tables with exact values and request/limit comparisons; live charts (`g` in `:metrics`) with units and % of request, limit or allocatable; dashboard trend charts (`G`) and 15-minute sparklines; braille, block or ASCII rendering |
 | **Copilot** | Minimized diagnostic preview, `:ask` about the current screen, exact account approval, contained native runtime (macOS ARM64) |
-| **Workspace** | Saved context groups and scopes, remembered dashboard (`kborg dashboard`), k9s-format `views.yaml` columns, sort by any column, recent namespaces on `1`–`9`, custom aliases and k9s-format hotkeys, every key remappable on every screen (`keymap.yaml`, `?` help per screen, `:keymap`), UI styling (`ui.yaml`), reviewed read-only extensions (`:ext`, k9s `plugins.yaml` import), 20 themes plus custom palettes, shell completions |
+| **Workspace** | Saved context groups and scopes, remembered dashboard (`kborg dashboard`), k9s-format `views.yaml` columns, sort by any column, recent namespaces on `1`–`9`, custom aliases and k9s-format hotkeys, every key remappable on every screen (`keymap.yaml`, `?` help per screen, `:keymap`), UI styling (`ui.yaml`), reviewed extensions and k9s plugins with `$VARIABLES` and shortcuts (`:ext`, `kborg extensions import-k9s`), 20 themes plus custom palettes, shell completions |
 
 ![Cross-cluster tail: two clusters' checkout services merged in timestamp order](docs/screenshots/cross-cluster-tail.png)
 
@@ -166,7 +166,7 @@ More opt-ins, each reviewed:
 | `--allow-node-shell` | `s` on a Node: a reviewed privileged Pod and a root shell, deleted afterwards |
 | `--allow-debug` | `:debug [CONTAINER]`: a reviewed ephemeral debug container and a shell in it |
 | `--scanner ABS_PATH --allow-scan` | `:scan` / `:scan ns` / `kborg scan`: image vulnerability scan with your installed Trivy or Grype (network: database and image pulls) |
-| `--allow-extensions --allow-tools` | `:ext NAME`: hand the selected object to a registered read-only tool |
+| `--allow-extensions --allow-tools` | `:ext NAME` or a plugin shortCut: run a registered tool or k9s plugin on the selection |
 
 KBorg uses your kubeconfig directly: the current context unless you pass `--context`, and every file in `$KUBECONFIG` merged the way kubectl does (first definition wins). kubectl, Helm, Python and an AI account are not needed for browsing. Server-side RBAC and admission always have the final say.
 
