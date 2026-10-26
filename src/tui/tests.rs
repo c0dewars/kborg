@@ -5160,8 +5160,8 @@ fn live_reload_keeps_the_last_good_config_and_names_the_line_and_next_step() -> 
     assert_eq!(app.ui, good, "the last good ui.yaml stays");
     assert!(
         app.status
-            .starts_with("ui.yaml not applied: invalid ui.yaml at line 3")
-            && app.status.contains("The last good settings stay. Next:")
+            .starts_with("ui.yaml not applied, last good kept: invalid at line 3")
+            && app.status.contains("Next: fix and save")
             && app.sticky_status,
         "{}",
         app.status

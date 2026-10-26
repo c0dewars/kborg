@@ -27,13 +27,22 @@ The UI uses thin rounded frames in UTF-8 locales, with ASCII frames otherwise. R
 
 ## ui.yaml
 
-`ui.yaml` in the config root changes layout and style without code: borders, which chrome rows are shown, table style, dashboard cards and per-role colors on top of the active theme. `kborg ui init` writes a commented example (it never replaces an existing file) and `kborg ui validate` checks the installed file. In a running KBorg, `:ui reload` re-reads it; an invalid file keeps the current settings and explains why.
+`ui.yaml` in the config root changes layout and style without code: borders, which chrome rows are shown, table style, dashboard cards and per-role colors on top of the active theme. `kborg ui init` writes a commented example (it never replaces an existing file) and `kborg ui validate` checks the installed file. A running KBorg applies a saved change within about a second; `:ui reload` re-reads it on demand. An invalid file keeps the current settings and explains why.
+
+### Live reload
+
+KBorg checks its config folder every 500 ms (one `stat` per file, no platform watcher, so network folders work too) and applies a file once it has been unchanged for 200 ms, so editors that write a temp file and rename it, or truncate and write, are applied once and complete. Watched: `ui.yaml`, `appearance.json` (the picker's theme), the active custom theme file `themes/ID.json`, `keymap.yaml`, `hotkeys.yaml`, `aliases.yaml`, `views.yaml` and the plugin registry folder.
+
+Every reload repeats the startup checks: no symlink in the path, a regular file within the size bound, not writable by group or others and owned by the config folder's owner, then the same strict loader. A refused or invalid file keeps the last good settings; the status line says which file, the line and column (or field) and the next step, for example `ui.yaml not applied, last good kept: invalid at line 3, column 1; ... Next: fix and save; kborg ui validate explains.`. Theme and layout changes apply at once and a `views.yaml` change redraws the table; keymap, hotkey, alias and plugin changes wait until any open dialog (including a typed approval) closes, so keys never change under a confirmation.
+
+Turn it off with `reload: false` in `ui.yaml` (then `:ui reload` or a restart applies changes; `:ui reload` also turns it back on when the file says `reload: true`) or the environment variable `KBORG_CONFIG_RELOAD=off`.
 
 The file is data only: at most 16 KiB, one document, no anchors, aliases, merge keys or duplicate keys. Unknown keys and wrong value types are rejected. A missing, empty or comment-only file means the built-in look. At startup an invalid file shows a notice and falls back to the built-in layout with the saved theme.
 
 | Key | Values (default first) | Effect |
 | --- | --- | --- |
 | `version` | `1` | Schema version; anything else is rejected. |
+| `reload` | `true`, `false` | Apply saved config files live (see [Live reload](#live-reload)). |
 | `theme` | unset, or a theme id | Theme for each session. It overrides the picker's saved choice; `--theme` still overrides it. The picker still previews, but the next start uses this id again. |
 | `splash` | unset, `true`, `false` | Startup animation. Unset keeps the `kborg startup on\|off` preference; `--no-splash` still turns it off. |
 | `borders` | `auto`, `rounded`, `square`, `ascii`, `none` | Panel frames. `auto` uses rounded glyphs in UTF-8 locales and ASCII otherwise. `none` draws blank frames and keeps the layout. |
