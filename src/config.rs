@@ -156,7 +156,8 @@ pub fn apply(config: Config, options: &mut Options) -> Result<()> {
     c.allow_attach &= config.allow_attach;
     c.allow_port_forward &= config.allow_forward;
     c.allow_file_copy &= config.allow_file_copy;
-    c.allow_auth_helper &= config.allow_auth_helper;
+    // A deny must not turn off reviewed mode and fall back to native execution.
+    c.deny_auth_helpers |= !config.allow_auth_helper;
     c.allow_secret_reveal &= config.allow_secret_reveal;
     c.allow_force_kill &= config.allow_force_kill;
     c.allow_yaml_edit &= config.allow_yaml_edit;
@@ -326,7 +327,7 @@ mod tests {
             ("allow_copilot_screen", |o| o.allow_copilot_screen),
             ("allow_debug", |o| o.connection.allow_debug),
             ("allow_scan", |o| o.allow_scan),
-            ("allow_auth_helper", |o| !o.connection.allow_auth_helper),
+            ("allow_auth_helper", |o| !o.connection.deny_auth_helpers),
         ];
         for (field, enabled) in off {
             let config: Config =
@@ -334,12 +335,29 @@ mod tests {
                     .map_err(|_| format!("{field} must parse"))?;
             let mut opts = options();
             apply(config, &mut opts)?;
-            if field == "allow_auth_helper" {
-                assert!(enabled(&opts), "{field}");
-            } else {
-                assert!(!enabled(&opts), "{field} stayed on");
-            }
+            assert!(!enabled(&opts), "{field} stayed on");
             assert!(opts.connection.writable, "{field} must not touch writes");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn auth_helper_denial_preserves_reviewed_mode_and_cannot_be_reenabled() -> Result<()> {
+        for reviewed in [false, true] {
+            let mut opts = options();
+            opts.connection.allow_auth_helper = reviewed;
+            apply(
+                Config {
+                    allow_auth_helper: false,
+                    ..Default::default()
+                },
+                &mut opts,
+            )?;
+            assert!(opts.connection.deny_auth_helpers);
+            assert_eq!(opts.connection.allow_auth_helper, reviewed);
+            apply(Config::default(), &mut opts)?;
+            assert!(opts.connection.deny_auth_helpers);
+            assert_eq!(opts.connection.allow_auth_helper, reviewed);
         }
         Ok(())
     }

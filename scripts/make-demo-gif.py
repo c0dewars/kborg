@@ -15,6 +15,7 @@ Standard library plus Pillow. Unix only (macOS, Linux).
 import argparse
 import fcntl
 import json
+import hashlib
 import os
 from pathlib import Path
 import pty
@@ -35,7 +36,7 @@ _lifecycle = runpy.run_path(str(SCRIPTS / "test-live-lifecycle-ui.py"))
 Screen, _spawn = _lifecycle["Screen"], _lifecycle["_spawn"]
 
 WIDTH, HEIGHT = 120, 32
-ARGS = ["--demo", "--no-splash", "--theme", "flexoki-dark",
+ARGS = ["--demo", "--no-splash", "--theme", "catppuccin-mocha",
         "--allow-logs", "--no-mouse", "--color=always"]
 
 # The emulator in test-terminal.py understands CSI [0-9;?]* <letter> only and
@@ -50,7 +51,7 @@ _INCOMPLETE = re.compile(rb"\x1b(?:\][^\x07]*|[P^_].*|\[[0-9;?<>= -/]*|[()])?$",
 
 
 class Session:
-    def __init__(self, binary, frames_dir, extra_args=(), copilot_account=None):
+    def __init__(self, binary, frames_dir, extra_args=(), copilot_account=None, connection_tour=False):
         self.frames_dir = frames_dir
         self.copilot_account = copilot_account
         self.caption = ""
@@ -65,6 +66,18 @@ class Session:
             "XDG_STATE_HOME": str(home / "state"), "XDG_CACHE_HOME": str(home / "cache"),
             "KUBECONFIG": str(home / "no-kubeconfig"),
         }
+        if connection_tour:
+            config = home / "no-kubeconfig"
+            config.write_text(json.dumps({
+                "apiVersion": "v1", "kind": "Config", "current-context": "company-prod",
+                "clusters": [{"name": "company", "cluster": {"server": "https://127.0.0.1:9"}}],
+                "users": [{"name": "demo-user", "user": {"token": "SYNTHETIC-NOT-A-CREDENTIAL"}}],
+                "contexts": [
+                    {"name": "company-prod", "context": {"cluster": "company", "user": "demo-user", "namespace": "payments"}},
+                    {"name": "company-dev", "context": {"cluster": "company", "user": "demo-user", "namespace": "development"}},
+                ],
+            }))
+            config.chmod(0o600)
         if copilot_account:
             # The pinned gh lookup reads the selected stored account from the
             # real HOME; KBorg's own config and state stay in the temp dirs.
@@ -74,7 +87,7 @@ class Session:
         self.screen = Screen(WIDTH, HEIGHT)
         self.pending = b""
         self.started = time.monotonic()
-        self.proc = _spawn([str(binary)] + ARGS + list(extra_args), env, self.slave)
+        self.proc = _spawn([str(binary)] + [arg for arg in ARGS if not (connection_tour and arg == "--demo")] + list(extra_args), env, self.slave)
 
     # ------------------------------------------------------------ terminal
 
@@ -91,11 +104,11 @@ class Session:
                 return
             if not data:
                 return
-            # Answer queries like a real terminal (flexoki-dark colors).
+            # Answer queries like a real terminal (Catppuccin Mocha colors).
             if b"\x1b]11;?" in data:
-                os.write(self.master, b"\x1b]11;rgb:1010/0f0f/0f0f\x1b\\")
+                os.write(self.master, b"\x1b]11;rgb:1e1e/1e1e/2e2e\x1b\\")
             if b"\x1b]10;?" in data:
-                os.write(self.master, b"\x1b]10;rgb:cece/cdcd/c3c3\x1b\\")
+                os.write(self.master, b"\x1b]10;rgb:cdcd/d6d6/f4f4\x1b\\")
             if b"\x1b[6n" in data:
                 os.write(self.master, b"\x1b[1;1R")
             if b"\x1b[c" in data or b"\x1b[0c" in data:
@@ -141,11 +154,11 @@ class Session:
         self.frames.append((path, duration_ms, text, self.caption))
 
     def soft_wait(self, pattern, timeout=8):
-        """Like wait, but carry on (and say so) if the marker never appears."""
+        """Require the scene marker; never publish a silently incomplete tour."""
         try:
             self.wait(pattern, timeout)
-        except RuntimeError:
-            print(f"warning: {pattern!r} not seen; continuing", file=sys.stderr)
+        except RuntimeError as error:
+            raise RuntimeError(f"Refusing to publish a tour with a missing scene: {pattern!r}") from error
 
     def close(self):
         if self.proc.poll() is None:
@@ -162,6 +175,28 @@ class Session:
         os.close(self.master)
         os.close(self.slave)
         self.tmp.cleanup()
+
+
+def connection_tour(s):
+    s.wait(r"Connect to Kubernetes", 15)
+    s.caption = "Use the kubeconfig already prepared by your company CLI"
+    s.frame(3000)
+    s.caption = "Context, cluster and namespace are named before connecting"
+    s.frame(2500)
+    s.keys(b"n", 0.3)
+    s.wait(r"Choose an existing context", 8)
+    s.caption = "No opens a searchable list; your kubeconfig stays unchanged"
+    s.type("dev", 200)
+    s.frame(2500)
+    s.keys(b"\r", 0.3)
+    s.wait(r"Context: company-dev", 8)
+    s.caption = "Enter / Y connects; Esc exits without running a login helper"
+    s.frame(3500)
+    # Do not connect, contact an API, or run a helper in a public recording.
+    s.keys(b"\x1b", 0.3)
+    s.proc.wait(timeout=5)
+    if s.proc.returncode != 0:
+        raise RuntimeError("connection preview did not exit cleanly")
 
 
 def record(session):
@@ -291,12 +326,12 @@ def tour(session):
     s.drain(25.0)  # a few more samples (the demo series steps every refresh)
     step("Live charts: CPU and memory over time, % of request and limit", 3000)
     s.keys(b"\x1b", 0.4)
-    command(":deploy", r"deployments", 1200, "Every change is dry-run, reviewed and typed to confirm")
+    command(":deploy", r"deployments", 1200, "Review before changing; server dry-run where supported")
     s.keys(b"s", 0.5)
     s.type("3", 120)
     s.keys(b"\r", 0.6)
     s.soft_wait(r"Type |REVIEW|DEMO")
-    step("Every change is dry-run, reviewed and typed to confirm", 3200)
+    step("Review before changing; server dry-run where supported", 3200)
     s.keys(b"\x1b", 0.4)
     s.keys(b"\x1b", 0.4)
     command(":secrets", r"(?i)secret", 1200, ":secrets: masked YAML, reveal one key for 30 s")
@@ -315,10 +350,27 @@ def tour(session):
     step("G: trend charts for the focused cluster", 2600)
     s.keys(b"\x1b", 0.4)
     s.keys(b"\x1b", 0.4)
-    command(":themes", r"(?i)theme", 900, ":themes previews 20 themes live; ui.yaml styles everything")
-    for _ in range(3):
-        s.keys(b"j", 0.35)
-        s.frame(700)
+    command(":pods", r"api-7d4f9", 400)
+    command(":xray po", r"(?i)xray|relationship", 2400, "Relationships: :xray links workloads, Pods and Services")
+    s.keys(b"\x1b", 0.4)
+    command(":subjects", r"RBAC SUBJECTS", 2600, "RBAC subjects and bindings: inspect who can do what")
+    s.keys(b"\x1b", 0.4)
+    command(":helm", r"(?i)helm", 2800, "Helm releases, history and reviewed lifecycle actions")
+    s.keys(b"\x1b", 0.4)
+    command(":nodes", r"(?i)nodes", 1200, "Node health, metrics and maintenance workflows")
+    s.keys(b"?", 0.4)
+    step("Node actions: review cordon, drain or shell before execution", 2600)
+    s.keys(b"\x1b", 0.4)
+    command(":pods", r"api-7d4f9", 500)
+    s.keys(b"\x10", 0.4)
+    s.type("shell", 90)
+    step("Ctrl-P discovers actions: shell, forward, copy, debug and more", 2800)
+    s.keys(b"\x1b", 0.4)
+    command(":copilot setup", r"COPILOT SETUP", 3200, "Copilot setup explains login, prerequisites and platform availability")
+    s.keys(b"\x1b", 0.4)
+    command(":themes", r"(?i)theme", 900, ":themes previews palettes; this tour stays in Catppuccin Mocha")
+    # Keep the requested Mocha palette throughout the recording.
+    s.frame(2400)
     s.keys(b"\x1b", 0.4)
     s.keys(b"?", 0.5)
     step("? opens help for the screen you are on", 2400)
@@ -340,7 +392,7 @@ def captioned(image, caption):
     if not caption:
         return image
     bar = 46
-    out = Image.new("RGB", (image.width, image.height + bar), (16, 15, 15))
+    out = Image.new("RGB", (image.width, image.height + bar), (30, 30, 46))
     out.paste(image, (0, 0))
     draw = ImageDraw.Draw(out)
     font = None
@@ -352,8 +404,11 @@ def captioned(image, caption):
         except OSError:
             continue
     font = font or ImageFont.load_default()
-    draw.rectangle((0, image.height, image.width, image.height + 3), fill=(255, 122, 26))
-    draw.text((18, image.height + 10), caption, fill=(236, 226, 204), font=font)
+    draw.rectangle((0, image.height, image.width, image.height + 3), fill=(203, 166, 247))
+    caption = "DEMO | " + caption
+    while draw.textlength(caption, font=font) > image.width - 36 and getattr(font, "size", 12) > 14:
+        font = font.font_variant(size=font.size - 1)
+    draw.text((18, image.height + 10), caption, fill=(205, 214, 244), font=font)
     return out
 
 
@@ -386,7 +441,11 @@ def main():
                         help="tour only: include a live :ask step with this policy (sends the synthetic demo screen)")
     parser.add_argument("--tour", action="store_true",
                         help="record the full feature tour (with captions) instead of the short demo")
+    parser.add_argument("--connection-tour", action="store_true",
+                        help="record the real startup prompt with a synthetic local kubeconfig; never connects")
     args = parser.parse_args()
+    if args.tour and args.connection_tour:
+        parser.error("choose either --tour or --connection-tour")
     binary = args.binary.resolve(strict=True)
     with tempfile.TemporaryDirectory(prefix="kborg-demo-frames-") as tmp:
         frames_dir = args.frames.resolve() if args.frames else Path(tmp)
@@ -399,13 +458,22 @@ def main():
             policy = args.copilot_policy.resolve(strict=True)
             account = json.loads(policy.read_text())["gh_cli"]["account"]
             extra += ["--copilot-policy", str(policy), "--allow-copilot-screen"]
-        session = Session(binary, frames_dir, extra, account)
+        session = Session(binary, frames_dir, extra, account, args.connection_tour)
         try:
-            (tour if args.tour else record)(session)
+            (connection_tour if args.connection_tour else tour if args.tour else record)(session)
         finally:
             session.close()
         total = assemble(session.frames, args.out, args.scale)
     size = args.out.stat().st_size
+    manifest = {
+        "schema": 1, "theme": "catppuccin-mocha", "mode": "synthetic local kubeconfig preview (no connection)" if args.connection_tour else "offline demo",
+        "binary_sha256": hashlib.sha256(binary.read_bytes()).hexdigest(),
+        "frames": len(session.frames), "duration_seconds": total / 1000,
+        "gif_bytes": size, "gif_sha256": hashlib.sha256(args.out.read_bytes()).hexdigest(),
+        "captions": list(dict.fromkeys(frame[3] for frame in session.frames)),
+        "scope": "Synthetic feature-family tour. Operation previews are not live acceptance; no cluster, auth helper, scanner, shell or model request is used without --copilot-policy.",
+    }
+    args.out.with_suffix(".json").write_text(json.dumps(manifest, indent=2) + "\n")
     print(f"{args.out}: {len(session.frames)} frames, {total / 1000:.1f} s, {size / 2**20:.2f} MiB")
 
 

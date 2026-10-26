@@ -25,6 +25,7 @@ mod advice_ui;
 #[path = "ui_charts.rs"]
 mod charts_ui;
 mod commands;
+mod connection_prompt;
 #[path = "ui_dashboard.rs"]
 mod dashboard_ui;
 mod format;
@@ -338,6 +339,8 @@ struct App {
     pending_session: Option<(Box<crate::ops::ReviewedOperation>, String)>,
     /// Ctrl-E in the YAML editor: hand the draft to $EDITOR on the next loop.
     pending_editor: bool,
+    pending_copilot_setup: bool,
+    pending_copilot_question: Option<String>,
     pending_tool: Option<(Box<crate::handoff::Prepared>, String)>,
     /// Ctrl-P command palette, drawn over the current view while open.
     palette: Option<Box<palette::Palette>>,
@@ -815,7 +818,7 @@ fn ui_theme(ui: &crate::ui_config::UiConfig, cli: Option<&str>) -> Result<(Theme
     Ok((theme, error))
 }
 
-pub fn run(options: Options) -> Result<()> {
+pub fn run(mut options: Options) -> Result<()> {
     let (ui, mut ui_error) = match crate::ui_config::load() {
         Ok(ui) => (ui, None),
         Err(error) => (crate::ui_config::UiConfig::default(), Some(error)),
@@ -831,6 +834,20 @@ pub fn run(options: Options) -> Result<()> {
         && !startup_animation(&theme, options.color)?
     {
         return Ok(());
+    }
+    if !options.connection.demo {
+        // Resolve remembered dashboards before consent so every startup target
+        // is named before any worker/client or auth helper can be started.
+        if options.dashboard_last
+            && options.dashboard.is_empty()
+            && let Some(last) = crate::dashboard_memory::load()?
+        {
+            options.connection.namespace = last.namespace;
+            options.dashboard = last.contexts;
+        }
+        if !connection_prompt::confirm(&mut options, &theme)? {
+            return Ok(());
+        }
     }
     let (aliases, alias_error) = match crate::aliases::load() {
         Ok(aliases) => (aliases, None),
@@ -936,6 +953,8 @@ pub fn run(options: Options) -> Result<()> {
         selection_ui: Default::default(),
         pending_session: None,
         pending_editor: false,
+        pending_copilot_setup: false,
+        pending_copilot_question: None,
         pending_tool: None,
         palette: None,
         visited: Default::default(),
@@ -1018,6 +1037,14 @@ pub fn run(options: Options) -> Result<()> {
     loop {
         if app.receive() {
             dirty = true;
+        }
+        if std::mem::take(&mut app.pending_copilot_setup) {
+            drop(terminal_guard.take());
+            let setup = crate::copilot_setup::interactive();
+            terminal_guard = Some(Terminal::enter(app.options.mouse)?);
+            app.finish_copilot_setup(setup);
+            draw(&mut app)?;
+            continue;
         }
         if std::mem::take(&mut app.pending_editor)
             && let Modal::YamlEditor(editor) = &mut app.modal

@@ -167,8 +167,12 @@ class Screen:
 
     def png(self, path):
         from PIL import Image, ImageDraw, ImageFont
-        font_path = "/System/Library/Fonts/Menlo.ttc"
-        font = ImageFont.truetype(font_path, 17) if Path(font_path).exists() else ImageFont.load_default()
+        font_path = next((path for path in (
+            "/System/Library/Fonts/Menlo.ttc",
+            "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
+            "/usr/share/fonts/truetype/liberation2/LiberationMono-Regular.ttf",
+        ) if Path(path).exists()), None)
+        font = ImageFont.truetype(font_path, 17) if font_path else ImageFont.load_default()
         cell_width = int(font.getlength("M") + .5)
         cell_height = 24
         cells = self.visible_cells()

@@ -2,6 +2,7 @@
 pub mod chart;
 pub mod cli;
 pub mod copilot;
+pub mod copilot_setup;
 pub mod gateway;
 pub mod metrics;
 pub mod policy;

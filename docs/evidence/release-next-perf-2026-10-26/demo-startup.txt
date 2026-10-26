@@ -1,0 +1,40 @@
+ KBORG    Pods                                                                                                                 ?  
+CTX demo | NS demo | API offline sample data                                                                      DEMO SAMPLE DATA
+ SAMPLE   2 Pods   1 healthy  1 needs attention  sort: name                                                                       
+╭ pods [1/2] | METRICS 1 measured | UID verified | m details ────────────────────────────────────────────────────────────────────╮
+│   NAMESPACE        NAME^                                          READY   STATUS               RSTS  AGE    CPU(m)    MEM      │
+│>  demo             api-7d4f9                                      1/1     Running              0     16d    125       64Mi     │
+│   demo             worker-6a1bc                                   0/1     CrashLoopBackOff     7     16d    -         -        │
+│                                                                                                                                │
+│                                                                                                                                │
+│                                                                                                                                │
+│                                                                                                                                │
+│                                                                                                                                │
+│                                                                                                                                │
+│                                                                                                                                │
+│                                                                                                                                │
+│                                                                                                                                │
+│                                                                                                                                │
+│                                                                                                                                │
+│                                                                                                                                │
+│                                                                                                                                │
+│                                                                                                                                │
+│                                                                                                                                │
+│                                                                                                                                │
+│                                                                                                                                │
+│                                                                                                                                │
+│                                                                                                                                │
+│                                                                                                                                │
+│                                                                                                                                │
+│                                                                                                                                │
+│                                                                                                                                │
+│                                                                                                                                │
+│                                                                                                                                │
+│                                                                                                                                │
+│                                                                                                                                │
+│                                                                                                                                │
+│                                                                                                                                │
+╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+ 2 objects | cached filter | refresh every 5s                                                                                     
+                                                                                                                                  
+ ? all keys   Ctrl-P palette   Enter containers   l logs   s shell   F forward   d describe   y yaml   / filter   : command       

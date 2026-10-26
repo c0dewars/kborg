@@ -517,14 +517,14 @@ fn valid_pin(pin: &str) -> bool {
             .bytes()
             .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
 }
-fn valid_account(account: &str) -> bool {
+pub(crate) fn valid_account(account: &str) -> bool {
     !account.is_empty()
         && account.len() <= 39
         && account
             .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
-        && !account.starts_with('-')
-        && !account.ends_with('-')
+            .all(|byte| byte.is_ascii_alphanumeric() || b"-_".contains(&byte))
+        && account.as_bytes()[0].is_ascii_alphanumeric()
+        && account.as_bytes()[account.len() - 1].is_ascii_alphanumeric()
 }
 impl Options {
     pub fn deployment(&self) -> Result<copilot::Deployment> {
@@ -826,6 +826,17 @@ fn verify_runtime(options: &Options) -> Result<(Credential, String)> {
         options,
         std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
     )
+}
+
+/// Guided setup validates the same runtime and selected account as a request,
+/// but sends no diagnostics and makes no model call.
+pub fn validate_setup(options: &Options) -> Result<()> {
+    verify_runtime(options).map(|_| ())
+}
+/// Pin a locally selected native installation after the operator reviews its
+/// provenance. A digest alone is never a publisher-identity assertion.
+pub(crate) fn setup_fingerprint(path: &Path) -> Result<String> {
+    fingerprint(path).map(|(_, pin)| pin)
 }
 
 /// The deployment-specific provider sentence of a transfer review.

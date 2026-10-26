@@ -1,0 +1,17 @@
+{
+  "schema": 1,
+  "theme": "catppuccin-mocha",
+  "mode": "synthetic local kubeconfig preview (no connection)",
+  "binary_sha256": "f9209d9aa038cb051f0b6abc513d459eb2b9f750f2de86820e3f4d8ceaa54793",
+  "frames": 6,
+  "duration_seconds": 12.1,
+  "gif_bytes": 97963,
+  "gif_sha256": "2fffac996ce6bfc2aaa3c1d400073db54ea87ddb1a5f866f6ed7d90ba420b604",
+  "captions": [
+    "Use the kubeconfig already prepared by your company CLI",
+    "Context, cluster and namespace are named before connecting",
+    "No opens a searchable list; your kubeconfig stays unchanged",
+    "Enter / Y connects; Esc exits without running a login helper"
+  ],
+  "scope": "Synthetic feature-family tour. Operation previews are not live acceptance; no cluster, auth helper, scanner, shell or model request is used without --copilot-policy."
+}

@@ -19,9 +19,22 @@ kborg --version
 
 No cluster? `kborg demo` opens an offline sample cluster.
 
+For changes newer than the RC tag, install `--branch release/next` instead. Match reports to `kborg --version` and the exact Git commit; historical screenshots and acceptance reports are not evidence for a newer binary.
+
+## Connection acceptance
+
+Prepare a context with your normal company/cloud CLI, then start KBorg in that terminal. Confirm the correct context name appears. Exit with Esc and verify no auth helper/API call occurred. Start again, choose No, filter for another existing context, review it and choose Yes. Check that your original kubeconfig current-context is unchanged. Repeat with explicit `--kubeconfig`, merged `KUBECONFIG` and `--context`.
+
+Automated local-only negative-path checks (Unix/WSL PTY; synthetic kubeconfig and a loopback listener, no real credentials):
+
+```sh
+python3 scripts/test-connection-startup.py --binary target/release/kborg \
+  --output test-results/connection-startup-consent.json
+```
+
 ## Fifteen-minute tour
 
-1. `kborg --context YOUR_CONTEXT` (or `kborg doctor` first if something doesn't connect): browse with k9s keys (`:pods`, `:deploy`, `/filter`, `Enter`, `d`, `y`, `l`). `?` lists every key.
+1. `kborg --context YOUR_CONTEXT`, then Enter/Y to connect (or `kborg doctor` first if something does not connect): browse with k9s keys (`:pods`, `:deploy`, `/filter`, `Enter`, `d`, `y`, `l`). `?` lists every key.
 2. `D`: the dashboard for this cluster. `kborg --contexts a,b` shows several at once; `1`–`9` focus a card, `w` then Enter drills into a warning, `t` tails workloads across clusters.
 3. `Ctrl-Z`: only things that need attention. `Ctrl-W`: wide columns. `N` twice: sort by name descending. `:sort AGE desc`.
 4. `:lint`: misconfiguration report for the namespace.
@@ -40,7 +53,7 @@ No cluster? `kborg demo` opens an offline sample cluster.
 | Node shell | `s` on a Node (privileged Pod; only on a cluster you own) |
 | YAML edit | `e` on a Deployment, change replicas or an image, Ctrl-S to review |
 | Secrets | `:secrets`, then `x` on one key |
-| Copilot (macOS ARM64) | with `copilot-policy.json` in the config folder: `:ask why is this failing?` on a table, describe or logs view; check the review, press `y` |
+| Copilot | Start with `:ask` or `:copilot setup`; a visible next step must appear. On supported macOS ARM64, complete guided setup/login and review the exact transfer. On Windows/Linux/Intel Mac, verify that account-only sign-in is clearly distinguished from unsupported in-app inference and no model request is made. |
 | Exec-auth clusters | EKS/GKE/AKS or kubelogin contexts connect without extra steps; `kborg doctor` shows the helper it runs |
 | Company policy | `--config` with `"strict_confirmations": true` or `"allow_node_shell": false` |
 

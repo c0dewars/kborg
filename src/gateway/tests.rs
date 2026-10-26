@@ -787,3 +787,121 @@ fn duplicate_kubeconfig_names_across_yaml_documents_are_rejected() {
     let merged = parse_config_text(&distinct, parent).unwrap_or_else(|e| panic!("{e}"));
     assert_eq!(merged.contexts.len(), 2);
 }
+#[test]
+fn operator_auth_helper_denial_prevents_native_and_reviewed_execution() -> Result<()> {
+    let root = std::env::temp_dir()
+        .canonicalize()
+        .map_err(|_| "temporary root")?
+        .join(format!(
+            "kborg-denied-helper-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_err(|_| "clock")?
+                .as_nanos()
+        ));
+    std::fs::create_dir(&root).map_err(|_| "create fixture")?;
+    let marker = root.join("helper-ran");
+    let path = root.join("config.json");
+    let (command, args) = if cfg!(windows) {
+        (
+            "C:\\Windows\\System32\\cmd.exe",
+            vec![
+                "/d".into(),
+                "/c".into(),
+                format!("echo ran > \"{}\"", marker.display()),
+            ],
+        )
+    } else {
+        (
+            "/bin/sh",
+            vec![
+                "-c".into(),
+                "printf ran > \"$1\"".into(),
+                "fixture".into(),
+                marker.to_string_lossy().into_owned(),
+            ],
+        )
+    };
+    let mut raw = serde_json::json!({"apiVersion":"v1","kind":"Config","current-context":"test",
+        "contexts":[{"name":"test","context":{"cluster":"test","user":"test"}}],
+        "clusters":[{"name":"test","cluster":{"server":"https://127.0.0.1:9","insecure-skip-tls-verify":true}}],
+        "users":[{"name":"test","user":{"exec":{"apiVersion":"client.authentication.k8s.io/v1beta1","command":command,"args":args,"interactiveMode":"Never"}}}]
+    });
+    let rt = runtime()?;
+    for reviewed in [false, true] {
+        std::fs::write(
+            &path,
+            serde_json::to_vec(&raw).map_err(|_| "encode fixture")?,
+        )
+        .map_err(|_| "write fixture")?;
+        let result = rt.block_on(Gateway::connect(Connection {
+            kubeconfig: Some(path.clone()),
+            deny_auth_helpers: true,
+            allow_auth_helper: reviewed,
+            ..Default::default()
+        }));
+        assert!(result.err().is_some_and(|error| {
+            error.starts_with("Authentication helpers are disabled by operator configuration")
+        }));
+        assert!(!marker.exists(), "denied authentication helper executed");
+    }
+    let approved = config_fingerprint(&read_config(&Connection {
+        kubeconfig: Some(path.clone()),
+        ..Default::default()
+    })?)?;
+    raw["clusters"][0]["cluster"]["server"] = serde_json::json!("https://127.0.0.1:10");
+    std::fs::write(
+        &path,
+        serde_json::to_vec(&raw).map_err(|_| "encode fixture")?,
+    )
+    .map_err(|_| "write fixture")?;
+    let changed = rt.block_on(Gateway::connect(Connection {
+        kubeconfig: Some(path.clone()),
+        startup_config_fingerprint: Some(approved),
+        ..Default::default()
+    }));
+    assert!(
+        changed
+            .err()
+            .is_some_and(|error| error.starts_with("Kubeconfig changed after connection approval"))
+    );
+    assert!(
+        !marker.exists(),
+        "changed kubeconfig ran its helper before reapproval"
+    );
+    raw["users"][0]["user"] =
+        serde_json::json!({"auth-provider":{"name":"gcp","config":{"cmd-path":command}}});
+    std::fs::write(
+        &path,
+        serde_json::to_vec(&raw).map_err(|_| "encode fixture")?,
+    )
+    .map_err(|_| "write fixture")?;
+    let result = rt.block_on(Gateway::connect(Connection {
+        kubeconfig: Some(path.clone()),
+        deny_auth_helpers: true,
+        ..Default::default()
+    }));
+    assert!(result.err().is_some_and(|error| {
+        error.starts_with("Authentication helpers are disabled by operator configuration")
+    }));
+    assert!(!marker.exists());
+    // Static token identities remain available; constructing the client makes
+    // no API request and does not need a reachable server.
+    raw["users"][0]["user"] = serde_json::json!({"token":"SYNTHETIC-LOCAL-TEST"});
+    std::fs::write(
+        &path,
+        serde_json::to_vec(&raw).map_err(|_| "encode fixture")?,
+    )
+    .map_err(|_| "write fixture")?;
+    assert!(
+        rt.block_on(Gateway::connect(Connection {
+            kubeconfig: Some(path),
+            deny_auth_helpers: true,
+            ..Default::default()
+        }))
+        .is_ok()
+    );
+    std::fs::remove_dir_all(root).map_err(|_| "cleanup fixture")?;
+    Ok(())
+}

@@ -707,7 +707,7 @@ pub(super) fn worker() -> Worker {
                                 Ok((Some(prepared),text))
                             } else {
                                 let preview=crate::advice::prepare_preview(&object,"github.com")?;
-                                Ok((None,format!("01 LOCAL PREVIEW    /    No request sent\n\nCOPILOT ADVISORY\nReview diagnostic status before sharing it with GitHub Copilot.\nNames, namespaces, cluster identity, specs, logs and credentials are omitted.\nOnly known status terms are shared. Counters can still reveal workload state.\n\n{}\n\nEXACT DIAGNOSTIC PAYLOAD\n{}",if gateway.is_demo(){"DEMO / sample data. Sending is disabled in demo mode."}else{"Setup required: launch with --copilot-policy ABS. See docs/COPILOT_INTEGRATION.md."},preview.preview()?)))
+                                Ok((None,format!("01 LOCAL PREVIEW    /    No request sent\n\nCOPILOT ADVISORY\nReview diagnostic status before sharing it with GitHub Copilot.\nNames, namespaces, cluster identity, specs, logs and credentials are omitted.\nOnly known status terms are shared. Counters can still reveal workload state.\n\n{}\n\nEXACT DIAGNOSTIC PAYLOAD\n{}",if gateway.is_demo(){"DEMO / sample data. Sending is disabled in demo mode."}else{"Local preview only; nothing is sent. Esc returns, then :copilot setup opens account login and shows platform availability."},preview.preview()?)))
                             }
                         }.await;
                         Reply::AdvicePrepared(result)

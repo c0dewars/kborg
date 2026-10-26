@@ -4,16 +4,31 @@ KBorg can send an explicitly reviewed, minimized Kubernetes status bundle to Git
 
 `:copilot` opens a local preview for the selected resource. A configured policy enables a separate transfer review; configuration alone never sends data. Check the preview and press `y` to send (strict mode: type the exact host/account confirmation). CLI `copilot diagnose RESOURCE NAME --copilot-policy ABS` requires an interactive terminal and the same explicit confirmation. Demo mode keeps `:copilot` local preview only (see `:ask` below). Cancel with Ctrl-C; cancellation cannot retract bytes already received by the provider.
 
+## Start here: guided setup
+
+Use `:ask` or `:copilot setup` inside KBorg. Missing configuration, an unsupported platform, or an operator prohibition produces a visible explanation. Press **S** in the setup panel to enter the interactive wizard, then return to the TUI. Choose GitHub.com or your company `TENANT.ghe.com`; if needed, the official GitHub CLI presents a one-time code and browser link. No copied token is requested. `:copilot status` shows the current readiness; CLI equivalents are:
+
+```sh
+kborg copilot status
+kborg copilot setup
+```
+
+The wizard discovers `gh`, lets you select the GitHub host/account and offers browser login if needed. On supported macOS ARM64 it also discovers and validates the native Copilot runtime, then writes the pinned policy after review. On other platforms it completes account sign-in only and says that in-app inference remains unavailable. No token copying or manual JSON is required for that path. Setup makes no model request and sends no Kubernetes data. An entitled account, the supported runtime and working network are prerequisites.
+
+**Windows, Linux and Intel macOS:** the contained inference runtime is not implemented for these platforms. KBorg explains this before offering account-only login; a successful login alone does not enable containment. Browsing Kubernetes does not depend on Copilot. Do not bypass the policy or copy cluster credentials into another AI tool to work around this limit.
+
+The JSON examples below are advanced/manual configuration for administrators, not the normal onboarding path.
+
 ## Ask about the screen (`:ask`)
 
 `:ask QUESTION` (or `:ask` alone, which prompts for the question) asks Copilot about what you are looking at. When you press `:`, KBorg renders the current view as plain text: the same frame you see, with box drawing turned into ASCII and the key-hint row dropped. That works for tables, describe/YAML, logs, metrics and the dashboard. The question (1–500 characters, one line) and up to 24 KiB of screen text form the payload.
 
-- **Setup once:** needs a Copilot policy: `copilot-policy.json` in the KBorg config folder is used automatically, or pass `--copilot-policy ABS`. `:ask` is on by default; an operator configuration can turn it off with `allow_copilot_screen: false`. Without a policy, `:ask` shows a local preview of exactly what would be sent, and nothing leaves the machine.
+- **Setup once:** use the guided setup above. Its `copilot-policy.json` is reused automatically, or an administrator may pass `--copilot-policy ABS`. `:ask` is available by default; `allow_copilot_screen: false` disables it. Missing setup opens a visible next-step screen and sends nothing.
 - **Not minimized:** unlike `:copilot`, the screen text can include context, namespace and object names, statuses, events and log lines. Masked Secret values and other display redaction apply first. The review lists the exact bytes, and every line must be painted before approval.
 - **Approval:** press `y` after the review (strict mode: type `SEND SCREEN TO HOST AS ACCOUNT`). It expires after five minutes and is bound to the policy, executable and credential identity, like `:copilot`.
 - **Prompt injection:** the fixed instruction tells the model to treat screen text as data. A hostile log line can still try to steer the answer, so answers are advice only and are never executed.
 - **Demo mode:** `kborg demo` screens are synthetic, so `:ask` can send them, which is a safe way to try the feature with your account.
-- **Validation:** tested live on GitHub.com with a `gh_cli` account through the release TUI in demo mode. The answer named the crash-looping Pod from the screen.
+- **Historical validation:** the [2026-10-23 acceptance report](TRUST_MIGRATION_ACCEPTANCE.md) records a GitHub.com backend test with a selected stored `gh` account and a synthetic public bundle. Its source-specific evidence does not validate the new release/next device-login wizard: live OAuth/account acceptance and enterprise tenant acceptance remain open.
 
 The instruction and payload are written together to the CLI's stdin. They are not passed with `-p`, which would put the payload in the process argument list, and the pinned CLI ignores stdin when `-p` is present. The review's exact payload is that stdin text.
 

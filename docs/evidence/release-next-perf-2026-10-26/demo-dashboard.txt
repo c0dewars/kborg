@@ -1,0 +1,40 @@
+ KBORG    Dashboard                                                                                                            ?  
+ 1 context  /  demo                                                                                             DEMO SAMPLE DATA  
+ CONTEXT OVERVIEW / Pod health and recent warnings                                                                                
+                                                                                                                                  
+╭ > 1  demo ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ NEEDS ATTENTION                                                 WARNINGS / LAST 15m                                            │
+│ 2 Pods   1 ready   1 attention                                  1 warning record / SAMPLE                                      │
+│ 7 restarts   0 OOM evidence                                     BackOff / worker-6a1bc                                         │
+│ 0 pending   0 failed   0 completed                                                                                             │
+│ 1 unready   0 terminating   0 unknown                                                                                          │
+│                                                                                                                                │
+│ NODES 1/1 ready   CPU 30%   MEM 19%                                                                                            │
+│ APPS 1 deploy   1 sts   0 degraded                                                                                             │
+│ RESTARTS 1 Pod at >=5 restarts                                                                                                 │
+│   demo/worker-6a1bc (7)                                                                                                        │
+│                                                                                                                                │
+│                                                                                                                                │
+│                                                                                                                                │
+│                                                                                                                                │
+│                                                                                                                                │
+│ SAMPLE / observed 0s ago                                                                                                       │
+╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+                                                                                                                                  
+                                                                                                                                  
+                                                                                                                                  
+                                                                                                                                  
+                                                                                                                                  
+                                                                                                                                  
+                                                                                                                                  
+                                                                                                                                  
+                                                                                                                                  
+                                                                                                                                  
+                                                                                                                                  
+                                                                                                                                  
+                                                                                                                                  
+                                                                                                                                  
+                                                                                                                                  
+                                                                                                                                  
+ 1 of 1  demo                                                                                                                     
+ 1..9 focus   Enter Pods   w warnings   t tail workloads   G charts   ? keymap   Esc back                                         
