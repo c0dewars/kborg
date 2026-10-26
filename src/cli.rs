@@ -65,6 +65,8 @@ pub struct Options {
     pub copilot_policy: Option<PathBuf>,
     /// Opt-in: `:ask` may send the visible screen text to Copilot (with review).
     pub allow_copilot_screen: bool,
+    /// Typed confirmation phrases instead of one key (operator strict mode).
+    pub strict_confirm: bool,
     pub helm_timeout_seconds: u16,
     pub log_seconds: u32,
     pub log_read: crate::logs::ReadOptions,
@@ -77,6 +79,161 @@ pub struct Options {
     /// `cp-from` / `cp-to --recursive`: copy a directory.
     pub recursive: bool,
     pub command: Vec<String>,
+}
+
+/// The default capability set: every workflow on, matching k9s. Flags such as
+/// `--write` or `--allow-exec` are still accepted and change nothing.
+pub(crate) fn enable_everything(opts: &mut Options) {
+    let c = &mut opts.connection;
+    c.writable = true;
+    c.logs = true;
+    c.allow_helm = true;
+    c.allow_helm_write = true;
+    c.allow_helm_hooks = true;
+    c.allow_helm_crds = true;
+    c.allow_exec = true;
+    c.allow_attach = true;
+    c.allow_port_forward = true;
+    c.allow_file_copy = true;
+    c.allow_node_shell = true;
+    c.allow_debug = true;
+    c.allow_node_maintenance = true;
+    c.allow_yaml_edit = true;
+    c.allow_apply = true;
+    c.allow_force_kill = true;
+    c.allow_secret_reveal = true;
+    opts.allow_tools = true;
+    opts.allow_extensions = true;
+    opts.allow_scan = true;
+    opts.external_editor = true;
+    opts.allow_copilot_screen = true;
+}
+
+/// Tools the user didn't name are found like k9s finds them: helm, trivy or
+/// grype on PATH, and a Copilot policy saved in the KBorg config folder.
+fn find_default_tools(opts: &mut Options) {
+    if opts.connection.demo {
+        return;
+    }
+    if opts.helm_tool.is_none() {
+        opts.helm_tool = crate::extensions::resolve_on_path("helm");
+    }
+    if opts.scanner.is_none() {
+        opts.scanner = crate::extensions::resolve_on_path("trivy")
+            .or_else(|| crate::extensions::resolve_on_path("grype"));
+    }
+    if opts.copilot_policy.is_none()
+        && let Ok(dir) = safety::config_dir()
+    {
+        let policy = dir.join("copilot-policy.json");
+        if policy.is_file() {
+            opts.copilot_policy = Some(policy);
+        }
+    }
+}
+
+/// Check everything KBorg needs, report each step with a next step, and only
+/// then try the cluster, so one failure never hides the rest.
+fn doctor(opts: &Options) -> Result<()> {
+    let ok = |found: bool| if found { "ok" } else { "missing" };
+    outputln!("KBorg {}", env!("CARGO_PKG_VERSION"));
+    outputln!(
+        "mode: {}{}",
+        if opts.connection.writable {
+            "read and write"
+        } else {
+            "read only"
+        },
+        if opts.strict_confirm {
+            ", strict typed confirmations"
+        } else {
+            "; changes are confirmed with y/Enter"
+        }
+    );
+    let utf8 = ["LC_ALL", "LC_CTYPE", "LANG"]
+        .iter()
+        .find_map(|name| std::env::var(name).ok().filter(|value| !value.is_empty()))
+        .is_some_and(|value| {
+            value.to_ascii_uppercase().contains("UTF-8")
+                || value.to_ascii_uppercase().contains("UTF8")
+        });
+    let color = std::env::var("COLORTERM").unwrap_or_default();
+    outputln!(
+        "terminal: TERM={} COLORTERM={} UTF-8={}",
+        safety::safe_text(&std::env::var("TERM").unwrap_or_default(), 64),
+        safety::safe_text(&color, 32),
+        if utf8 {
+            "yes"
+        } else {
+            "no (names show as ?; set LANG=en_US.UTF-8)"
+        }
+    );
+    outputln!(
+        "tools: helm {} | scanner {} | copilot policy {}",
+        opts.helm_tool
+            .as_ref()
+            .map_or("not found (Helm installs need helm on PATH)".into(), |p| {
+                safety::safe_text(&p.to_string_lossy(), 200)
+            }),
+        opts.scanner.as_ref().map_or(
+            "not found (:scan needs trivy or grype on PATH)".into(),
+            |p| safety::safe_text(&p.to_string_lossy(), 200)
+        ),
+        ok(opts.copilot_policy.is_some())
+    );
+    if opts.connection.demo {
+        outputln!("cluster: demo sample data");
+        return Ok(());
+    }
+    match crate::gateway::audit(&opts.connection) {
+        Ok(lines) => {
+            for line in lines {
+                outputln!("{line}");
+            }
+        }
+        Err(error) => {
+            outputln!("kubeconfig: {error}");
+            return Err("doctor found a problem; see above".into());
+        }
+    }
+    let rt = runtime()?;
+    rt.block_on(async {
+        let gateway = match tokio::time::timeout(
+            Duration::from_secs(20),
+            Gateway::connect(opts.connection.clone()),
+        )
+        .await
+        {
+            Ok(Ok(gateway)) => gateway,
+            Ok(Err(error)) => {
+                outputln!("connect: {error}");
+                return Err("doctor found a problem; see above".into());
+            }
+            Err(_) => {
+                outputln!("connect: timed out after 20 s. Next: check VPN/proxy and that the API server is reachable");
+                return Err("doctor found a problem; see above".into());
+            }
+        };
+        let ns = gateway.namespace.clone();
+        match tokio::time::timeout(Duration::from_secs(15), gateway.list("pods", &ns)).await {
+            Ok(Ok(pods)) => {
+                outputln!(
+                    "cluster: OK, {} Pods readable in {}",
+                    pods["items"].as_array().map_or(0, Vec::len),
+                    safety::safe_text(if ns.is_empty() { "default" } else { &ns }, 63)
+                );
+                Ok(())
+            }
+            Ok(Err(error)) => {
+                outputln!("cluster: {error}");
+                Err("doctor found a problem; see above".into())
+            }
+            Err(_) => {
+                outputln!("cluster: listing Pods timed out. Next: check VPN/proxy and API server load");
+                Err("doctor found a problem; see above".into())
+            }
+        }
+    })
 }
 
 fn parse(args: Vec<String>) -> Result<Options> {
@@ -110,6 +267,7 @@ fn parse(args: Vec<String>) -> Result<Options> {
         helm_sigstore_policy: None,
         copilot_policy: None,
         allow_copilot_screen: false,
+        strict_confirm: false,
         helm_timeout_seconds: 300,
         log_seconds: crate::logs::DEFAULT_FOLLOW_SECONDS,
         log_read: crate::logs::ReadOptions::default(),
@@ -121,6 +279,10 @@ fn parse(args: Vec<String>) -> Result<Options> {
         recursive: false,
         command: vec![],
     };
+    // Everything is available by default, like k9s: every change still shows
+    // a review and is confirmed with one key. `--read-only` turns writes off,
+    // and an operator `--config` can turn any capability off.
+    enable_everything(&mut opts);
     let mut args = args.into_iter();
     let mut config_path = None;
     while let Some(arg) = args.next() {
@@ -299,7 +461,7 @@ fn parse(args: Vec<String>) -> Result<Options> {
             }
             "--theme" => opts.theme = Some(args.next().ok_or("--theme needs a value")?),
             "--write" => opts.connection.writable = true,
-            "--readonly" => opts.connection.writable = false,
+            "--readonly" | "--read-only" => opts.connection.writable = false,
             "--allow-logs" => opts.connection.logs = true,
             "--allow-tools" => opts.allow_tools = true,
             "--allow-extensions" => opts.allow_extensions = true,
@@ -416,9 +578,7 @@ fn parse(args: Vec<String>) -> Result<Options> {
         || opts.helm_registry_ca.is_some()
         || opts.helm_registry_auth.is_some()
         || opts.helm_keyring.is_some()
-        || opts.helm_sigstore_policy.is_some()
-        || opts.connection.allow_helm_hooks
-        || opts.connection.allow_helm_crds)
+        || opts.helm_sigstore_policy.is_some())
         && opts
             .command
             .first()
@@ -426,13 +586,13 @@ fn parse(args: Vec<String>) -> Result<Options> {
     {
         return Err("Helm lifecycle, registry, hook and CRD options require ui or helm".into());
     }
-    if (opts.scanner.is_some() || opts.allow_scan)
+    if opts.scanner.is_some()
         && opts
             .command
             .first()
             .is_some_and(|command| !matches!(command.as_str(), "ui" | "scan"))
     {
-        return Err("--scanner and --allow-scan require ui or scan".into());
+        return Err("--scanner requires ui or scan".into());
     }
     if opts.copilot_policy.is_some()
         && opts
@@ -531,7 +691,8 @@ pub fn run() -> Result<()> {
     run_args(std::env::args().skip(1).collect())
 }
 pub fn run_args(args: Vec<String>) -> Result<()> {
-    let opts = parse(args)?;
+    let mut opts = parse(args)?;
+    find_default_tools(&mut opts);
     // Crossterm independently memoizes NO_COLOR. Respect the fully resolved
     // option so an explicit --color=always also overrides that internal gate.
     crossterm::style::force_color_output(opts.color);
@@ -693,12 +854,19 @@ pub fn run_args(args: Vec<String>) -> Result<()> {
         | "uncordon" | "drain" => {}
         _ => return Err("unknown command; see --help".into()),
     }
+    if cmd == "view" && !opts.command.iter().any(|arg| arg == "--tool") {
+        // Without an external filter tool, view opens the built-in pager.
+        opts.interactive = true;
+    }
     if cmd == "view"
         && ((!opts.allow_tools && !opts.interactive)
             || !io::stdin().is_terminal()
             || !io::stdout().is_terminal())
     {
         return Err("view requires --interactive or --allow-tools, and a terminal".into());
+    }
+    if cmd == "doctor" {
+        return doctor(&opts);
     }
     let rt = runtime()?;
     rt.block_on(async {
@@ -843,9 +1011,6 @@ pub fn run_args(args: Vec<String>) -> Result<()> {
                 let value=if opts.metrics_resources {crate::metrics::collect_with_allocations(&gateway,scope,&ns).await?} else {crate::metrics::collect(&gateway,scope,&ns).await?};
                 if opts.json {print_json(&serde_json::to_value(value).map_err(|_| "metrics output failed")?)?;} else {output!("{}",value.text());}
             },
-            "doctor"=>{outputln!("KBorg {}\ncontext: {}\nserver: {}\nnamespace: {}\nmode: {}\nauth: certificate/token; reviewed helpers require explicit trust policy\nAI diagnosis: disabled; registered extensions require explicit opt-in\nexec/attach/forward require separate explicit capability and --write",env!("CARGO_PKG_VERSION"),safety::safe_text(&gateway.context,100),safety::safe_text(&gateway.server,200),safety::safe_text(&ns,63),if opts.connection.writable{"WRITE ENABLED"}else{"READ ONLY"});
-                let result=tokio::time::timeout(Duration::from_secs(15),gateway.list("pods",&ns)).await.map_err(|_|"API timed out")??;
-                outputln!("API pods read: OK ({} objects)",result["items"].as_array().map_or(0,Vec::len));},
             "resources"=>{let resources=tokio::time::timeout(Duration::from_secs(15),gateway.discover()).await.map_err(|_|"discovery timed out")??; if opts.json{print_json(&serde_json::to_value(resources).map_err(|_|"serialization failed")?)?;}else{for kind in resources{outputln!("{}\t{}",kind.key(),if kind.namespaced{"namespaced"}else{"cluster"});}}},
             "list"=>{if args.len()!=1{return Err("usage: list <resource>".into());}let value=tokio::time::timeout(Duration::from_secs(15),gateway.list_selector(&args[0],&ns,&opts.selector)).await.map_err(|_|"API timed out")??;
                 if opts.json {print_json(&value)?;} else {outputln!("NAMESPACE\tNAME\tSTATUS");if let Some(items)=value["items"].as_array(){for v in items{outputln!("{}\t{}\t{}",safety::safe_text(v["metadata"]["namespace"].as_str().unwrap_or("-"),63),safety::safe_text(v["metadata"]["name"].as_str().unwrap_or("-"),253),safety::safe_text(&summary(v),100));}}
@@ -1839,7 +2004,6 @@ mod tests {
         assert!(words(&format!("--scanner {grype} --allow-scan")).is_ok());
         assert!(words("scan ns --scanner trivy --allow-scan").is_err());
         assert!(words(&format!("list pods --scanner {trivy}")).is_err());
-        assert!(words("lint --allow-scan").is_err());
         assert!(words("scan ns --scanner").is_err());
         // Without the opt-in nothing connects or runs.
         let error = run_args(vec!["--demo".into(), "scan".into(), "ns".into()])
@@ -1946,8 +2110,6 @@ mod tests {
         }
         for command in [
             "helm install web oci://registry.example/team/chart".to_owned(),
-            "--allow-helm-hooks list pods".to_owned(),
-            "--allow-helm-crds history web".to_owned(),
             "--helm-registry-ca relative.pem helm list".to_owned(),
             "--helm-registry-auth relative.json helm list".to_owned(),
             "--helm-keyring relative.gpg helm list".to_owned(),
@@ -1977,8 +2139,8 @@ mod tests {
             HelmCommand::Test("web".into())
         );
         let defaults = parse(vec!["ui".into()])?;
-        assert!(!defaults.connection.allow_helm_hooks);
-        assert!(!defaults.connection.allow_helm_crds);
+        assert!(defaults.connection.allow_helm_hooks);
+        assert!(defaults.connection.allow_helm_crds);
         Ok(())
     }
     #[test]
@@ -2025,7 +2187,7 @@ mod tests {
         }
         assert!(words(&format!("--helm-tool {tool} list pods")).is_err());
         assert!(words("logs --selector app=web --all-containers --follow").is_ok());
-        assert!(!words("helm list")?.connection.allow_helm_write);
+        assert!(words("helm list")?.connection.allow_helm_write);
         assert!(words("logs pod/api.worker --all-containers").is_ok());
         Ok(())
     }
@@ -2084,7 +2246,9 @@ mod tests {
             )?
             .all_containers
         );
-        assert!(!parse(vec![])?.connection.allow_helm);
+        // Everything is on by default; --read-only turns writes off.
+        assert!(parse(vec![])?.connection.allow_helm);
+        assert!(!parse(vec!["--read-only".into()])?.connection.writable);
         Ok(())
     }
     #[test]
@@ -2118,12 +2282,12 @@ mod tests {
             .to_vec(),
         )?;
         assert!(options.allow_tools);
-        assert!(!options.connection.writable);
+        assert!(options.connection.writable);
         assert_eq!(
             &options.command[4..],
             &["/usr/bin/cat", "--tool-arg", "--write"]
         );
-        assert!(!parse(vec![])?.allow_tools);
+        assert!(parse(vec![])?.allow_tools);
         assert!(
             parse(
                 ["get", "pods", "api", "--tool", "/usr/bin/cat"]
@@ -2165,7 +2329,7 @@ mod tests {
         .unwrap_or_else(|e| panic!("{e}"));
         assert_eq!(p.connection.context.as_deref(), Some("local"));
         assert_eq!(p.connection.namespace, "test");
-        assert!(!p.connection.writable);
+        assert!(p.connection.writable);
     }
     #[test]
     fn refuses_unknown_flags() {

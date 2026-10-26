@@ -821,6 +821,7 @@ pub fn run(options: Options) -> Result<()> {
         Err(error) => (crate::ui_config::UiConfig::default(), Some(error)),
     };
     crate::text::set_unicode(ui.text.unicode());
+    review_ui::set_strict(options.strict_confirm);
     let first_run = options.theme.is_none() && ui.theme.is_none() && themes::first_run()?;
     let (theme, theme_error) = ui_theme(&ui, options.theme.as_deref())?;
     ui_error = ui_error.or(theme_error);

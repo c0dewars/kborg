@@ -343,34 +343,28 @@ impl App {
             let reason = if selection && self.visible().is_empty() {
                 Some("select an object")
             } else if matches!(name, "logs" | "logs.previous") && !connection.logs {
-                Some("requires --allow-logs")
+                Some("off (read-only or operator config)")
             } else if write && !connection.writable {
-                Some("READ ONLY; requires --write")
+                Some("read-only mode")
             } else if name == "scale"
                 && !["deployments.apps", "statefulsets.apps"].contains(&kind.as_str())
             {
                 Some("Deployments and StatefulSets only")
             } else if name == "restart" && !crate::edit::supports_resource(&kind) {
                 Some("Supported workloads only")
-            } else if matches!(name, "shell" | "exec") && !connection.allow_exec {
-                Some("requires --allow-exec")
-            } else if name == "attach" && !connection.allow_attach {
-                Some("requires --allow-attach")
-            } else if name == "forward" && !connection.allow_port_forward {
-                Some("requires --allow-forward")
-            } else if name == "edit" && !connection.allow_yaml_edit {
-                Some("requires --allow-yaml-edit")
-            } else if name == "kill" && !connection.allow_force_kill {
-                Some("requires --allow-force-kill")
-            } else if name == "node.shell" && !connection.allow_node_shell {
-                Some("requires --allow-node-shell")
-            } else if matches!(name, "cordon" | "uncordon" | "drain")
-                && !connection.allow_node_maintenance
+            } else if name == "scan" && self.options.scanner.is_none() {
+                Some("needs trivy or grype")
+            } else if (matches!(name, "shell" | "exec") && !connection.allow_exec)
+                || (name == "attach" && !connection.allow_attach)
+                || (name == "forward" && !connection.allow_port_forward)
+                || (name == "edit" && !connection.allow_yaml_edit)
+                || (name == "kill" && !connection.allow_force_kill)
+                || (name == "node.shell" && !connection.allow_node_shell)
+                || (matches!(name, "cordon" | "uncordon" | "drain")
+                    && !connection.allow_node_maintenance)
+                || (name == "scan" && !self.options.allow_scan)
             {
-                Some("requires --allow-node-maintenance")
-            } else if name == "scan" && (self.options.scanner.is_none() || !self.options.allow_scan)
-            {
-                Some("requires --scanner and --allow-scan")
+                Some("off (read-only or operator config)")
             } else {
                 None
             };
@@ -381,21 +375,14 @@ impl App {
                 .or(name.strip_prefix("helm.")),
             Some("install" | "upgrade" | "uninstall" | "rollback")
         );
-        let reason = if helm_write && (!connection.writable || !connection.allow_helm_write) {
-            Some("requires --write --allow-helm-write")
-        } else if name.ends_with(".test")
-            && name.starts_with("helm.")
-            && !connection.allow_helm_hooks
-        {
-            Some("requires --allow-helm-hooks")
-        } else if name.ends_with(".crds")
-            && name.starts_with("helm.")
-            && !connection.allow_helm_crds
-        {
-            Some("requires --allow-helm-crds")
-        } else {
-            None
-        };
+        let off = (helm_write && (!connection.writable || !connection.allow_helm_write))
+            || (name.ends_with(".test")
+                && name.starts_with("helm.")
+                && !connection.allow_helm_hooks)
+            || (name.ends_with(".crds")
+                && name.starts_with("helm.")
+                && !connection.allow_helm_crds);
+        let reason = off.then_some("off (read-only or operator config)");
         reason.map(str::to_owned)
     }
 

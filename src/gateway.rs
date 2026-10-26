@@ -36,7 +36,7 @@ use kube::{
 #[cfg(any(test, fuzzing))]
 pub(crate) use kubeconfig::parse_config_text;
 use kubeconfig::*;
-pub use kubeconfig::{contexts, plugin_identity, review_auth_helper};
+pub use kubeconfig::{audit, contexts, plugin_identity, review_auth_helper};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
@@ -187,25 +187,26 @@ impl Gateway {
             .and_then(|name| raw.auth_infos.iter().find(|u| &u.name == name))
             .and_then(|u| u.auth_info.as_ref())
             .cloned();
-        if cluster.insecure_skip_tls_verify == Some(true) {
-            return Err("kubeconfig sets insecure-skip-tls-verify, which KBorg forbids. Next: remove it and set certificate-authority or certificate-authority-data for this cluster".into());
+        // Like kubectl, the kubeconfig is trusted as written: exec helpers,
+        // auth providers, impersonation, proxies and insecure-skip-tls-verify
+        // all work. `--allow-auth-helper --auth-helper-policy FILE` keeps the
+        // stricter reviewed mode, which refuses all of them.
+        let strict = options.allow_auth_helper;
+        if strict && cluster.insecure_skip_tls_verify == Some(true) {
+            return Err("Reviewed helper mode refuses insecure-skip-tls-verify. Next: remove it and set certificate-authority-data, or drop --allow-auth-helper".into());
         }
-        if cluster.proxy_url.is_some() {
-            return Err(
-                "kubeconfig proxy-url is not supported yet (proxies need a reviewed adapter). Next: remove proxy-url for this cluster and connect directly or through a VPN"
-                    .into(),
-            );
+        if strict && cluster.proxy_url.is_some() {
+            return Err("Reviewed helper mode refuses proxy-url. Next: remove proxy-url for this cluster, or drop --allow-auth-helper".into());
         }
         if let Some(u) = &user {
-            if u.auth_provider.is_some() {
-                return Err("Legacy authentication providers are disabled. Next: use a reviewed ExecCredential helper (`kborg auth-helper review`) or a short-lived token/certificate kubeconfig".into());
-            }
-            if u.impersonate.is_some()
-                || u.impersonate_groups.is_some()
-                || u.impersonate_uid.is_some()
-                || u.impersonate_user_extra.is_some()
+            if strict
+                && (u.auth_provider.is_some()
+                    || u.impersonate.is_some()
+                    || u.impersonate_groups.is_some()
+                    || u.impersonate_uid.is_some()
+                    || u.impersonate_user_extra.is_some())
             {
-                return Err("Impersonation in kubeconfig is disabled. Next: remove the as/as-groups settings from this user or pick another context".into());
+                return Err("Reviewed helper mode refuses auth providers and impersonation. Next: drop --allow-auth-helper to use this kubeconfig as kubectl does".into());
             }
             for path in [&u.client_certificate, &u.client_key, &u.token_file]
                 .into_iter()
@@ -217,12 +218,10 @@ impl Gateway {
         if let Some(path) = &cluster.certificate_authority {
             safety::read_small(&PathBuf::from(path), 1024 * 1024)?;
         }
-        let auth_gate = if let Some(user) = &user
+        let auth_gate = if strict
+            && let Some(user) = &user
             && let Some(exec) = &user.exec
         {
-            if !options.allow_auth_helper {
-                return Err("Authentication helper is unreviewed/disabled. Next: review it with `kborg auth-helper review`, then pass --allow-auth-helper --auth-helper-policy FILE".into());
-            }
             validate_helper_user(user)?;
             let policy = options
                 .auth_helper_policy
@@ -266,20 +265,23 @@ impl Gateway {
         {
             return Err("The cluster server URL must be HTTPS without userinfo or query credentials. Next: set server to https://HOST:PORT in kubeconfig".into());
         }
-        config.accept_invalid_certs = false;
+        config.accept_invalid_certs = !strict && cluster.insecure_skip_tls_verify == Some(true);
         config.disable_compression = true;
         config.default_retry = false;
-        config.proxy_url = None;
+        if strict {
+            config.proxy_url = None;
+        }
         config.connect_timeout = Some(Duration::from_secs(5));
         // Normal reads remain bounded by BodyBudgetLayer. Quiet log/TTY
         // sessions use their own explicit lifetime rather than an idle cutoff.
         config.read_timeout = None;
         config.write_timeout = Some(Duration::from_secs(10));
+        // Helm install/upgrade hands static credentials to the helm binary,
+        // so it needs a token or certificate context. Other contexts still
+        // connect; only Helm lifecycle actions explain why they can't run.
         let lifecycle_connection = if options.allow_helm_write {
-            Some(crate::helm_lifecycle::StaticConnection::from_config(
-                &mut config,
-                auth_gate.clone(),
-            )?)
+            crate::helm_lifecycle::StaticConnection::from_config(&mut config, auth_gate.clone())
+                .ok()
         } else {
             None
         };
@@ -355,7 +357,7 @@ impl Gateway {
                 .ok_or("Helm lifecycle needs a real selected cluster. Next: connect with --context NAME")?,
             self.lifecycle_connection
                 .clone()
-                .ok_or("Helm lifecycle has no static validated connection. Next: reconnect with --context NAME --write --allow-helm --allow-helm-write")?,
+                .ok_or("Helm install/upgrade/rollback needs a context with a static token or client certificate; this one uses an exec helper, auth provider, impersonation or proxy. Next: run helm directly for this cluster, or switch to a token context with :ctx")?,
             self.session.clone(),
         ))
     }

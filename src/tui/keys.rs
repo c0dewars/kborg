@@ -2,6 +2,41 @@
 use super::*;
 
 impl App {
+    /// Outside strict mode a review is approved with one key, like k9s:
+    /// `y` or Enter fills in the exact confirmation and approves, `n` cancels.
+    /// The executors still check the exact confirmation, target and expiry.
+    fn quick_confirm(&mut self, code: KeyCode) -> KeyCode {
+        if review_ui::strict() || !matches!(code, KeyCode::Enter | KeyCode::Char('y' | 'n')) {
+            return code;
+        }
+        let review = matches!(
+            self.modal,
+            Modal::WriteReview(..)
+                | Modal::HelmReview(..)
+                | Modal::AdviceReview(..)
+                | Modal::SessionConfirm(..)
+                | Modal::Confirm(..)
+                | Modal::ScanConfirm(..)
+        );
+        if !review {
+            return code;
+        }
+        if code == KeyCode::Char('n') {
+            return KeyCode::Esc;
+        }
+        match &mut self.modal {
+            Modal::WriteReview(review) => review.view.accept(),
+            Modal::HelmReview(review) => review.accept(),
+            Modal::AdviceReview(review) => review.accept(),
+            Modal::SessionConfirm(prepared, text) => *text = prepared.confirmation(),
+            Modal::Confirm(prepared, text) => {
+                *text = format!("{}/{}", prepared.target.namespace, prepared.target.name)
+            }
+            Modal::ScanConfirm(_, typed) => typed.clear(),
+            _ => {}
+        }
+        KeyCode::Enter
+    }
     pub(super) fn key(&mut self, code: KeyCode) -> Result<bool> {
         self.key_with_approval_size(code, terminal::size)
     }
@@ -10,6 +45,7 @@ impl App {
         code: KeyCode,
         approval_size: impl FnOnce() -> io::Result<(u16, u16)>,
     ) -> Result<bool> {
+        let code = self.quick_confirm(code);
         if self.palette.is_some() && !self.write_inflight {
             return self.palette_key(code, KeyModifiers::NONE);
         }
@@ -543,9 +579,9 @@ impl App {
                             || self.options.connection.demo
                         {
                             self.status = if attach {
-                                "Attach requires a live Pod, --write and --allow-attach."
+                                "Attach requires a live Pod, permission (off in --read-only mode or by operator config)."
                             } else {
-                                "Shell requires a live Pod, --write and --allow-exec."
+                                "Shell requires a live Pod, permission (off in --read-only mode or by operator config)."
                             }
                             .into();
                             self.modal = Modal::PodContainers(object, index);
@@ -580,7 +616,7 @@ impl App {
                             || self.options.connection.demo
                         {
                             self.status =
-                                "Port-forward requires a live Pod, --write and --allow-forward."
+                                "Port-forward requires a live Pod, permission (off in --read-only mode or by operator config)."
                                     .into();
                             self.modal = Modal::PodContainers(object, index);
                         } else {
@@ -611,7 +647,7 @@ impl App {
                     }
                     KeyCode::Enter | KeyCode::Char('l') | KeyCode::Char('L' | 'p') => {
                         if !self.options.connection.logs {
-                            self.status = "Logs require --allow-logs.".into();
+                            self.status = "Logs require permission (off in --read-only mode or by operator config).".into();
                             self.modal = Modal::PodContainers(object, index);
                         } else if let Some(container) = names.get(index) {
                             let n = namespace(&object).to_owned();
@@ -1644,7 +1680,7 @@ impl App {
                         if self.options.external_editor {
                             self.pending_editor = true;
                         } else {
-                            self.status = "Start KBorg with --allow-external-editor to edit drafts in $EDITOR.".into();
+                            self.status = "The external editor is off (operator config).".into();
                         }
                         self.modal = Modal::YamlEditor(editor);
                     }

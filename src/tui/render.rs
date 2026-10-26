@@ -270,6 +270,74 @@ pub(super) fn ui_color(app: &App, role: &str) -> Color {
         Color::Reset
     }
 }
+/// What the header names: the screen in front, so it always says what you
+/// are looking at (Nodes, Deployments, Logs, Namespaces, ...).
+pub(super) fn screen_title(app: &App, modal: &Modal) -> String {
+    let kind = || {
+        app.kinds
+            .get(app.kind_index)
+            .map(resource_label)
+            .unwrap_or_else(|| app.kind())
+    };
+    let one = || {
+        let label = kind();
+        if let Some(stem) = label.strip_suffix("ies") {
+            format!("{stem}y")
+        } else if let Some(stem) = label.strip_suffix("sses") {
+            format!("{stem}ss")
+        } else {
+            label.strip_suffix('s').map(str::to_owned).unwrap_or(label)
+        }
+    };
+    match modal {
+        // A prompt or filter over another screen keeps that screen's name.
+        Modal::Input("Command", _) | Modal::Filter(..) => app
+            .subviews
+            .last()
+            .map(|below| screen_title(app, below))
+            .unwrap_or_else(kind),
+        Modal::Input(label, _) => (*label).to_owned(),
+        Modal::LiveOverview(..) => "Dashboard".to_owned(),
+        Modal::Helm(..) | Modal::HelmForm(..) | Modal::HelmLoading(..) => {
+            "Helm releases".to_owned()
+        }
+        Modal::HelmReview(..) | Modal::HelmRunning(..) | Modal::HelmOutcome(..) => {
+            "Helm change".to_owned()
+        }
+        Modal::HelmDocument(..) => "Helm release".to_owned(),
+        Modal::ForwardView | Modal::ForwardForm(..) => "Port forwards".to_owned(),
+        Modal::Themes(..) | Modal::NewTheme(..) => "Appearance".to_owned(),
+        Modal::Help(..) => "Keymap".to_owned(),
+        Modal::Picker("Namespace", ..) => "Namespaces".to_owned(),
+        Modal::Picker("Context (Pod view)", ..) => "Contexts".to_owned(),
+        Modal::Picker(label, ..) => (*label).to_owned(),
+        Modal::Detail(..) | Modal::Overview(..) => format!("{} / details", one()),
+        Modal::Metrics(..) => format!("{} / metrics", kind()),
+        Modal::Follow(..) => "Logs".to_owned(),
+        Modal::Containers(..) | Modal::PodContainers(..) | Modal::SessionContainers(..) => {
+            "Containers".to_owned()
+        }
+        Modal::Secrets(..) => "Secrets".to_owned(),
+        Modal::Subjects(..) => "RBAC subjects".to_owned(),
+        Modal::Directory(..) => "Local manifests".to_owned(),
+        Modal::Editor(..) | Modal::EditContainers(..) | Modal::Image(..) | Modal::Resources(..) => {
+            format!("Edit {}", one())
+        }
+        Modal::YamlEditor(..) => format!("Edit {} YAML", one()),
+        Modal::Scale(..) => format!("Scale {}", one()),
+        Modal::Export(..) => "Export".to_owned(),
+        Modal::Confirm(..)
+        | Modal::SessionConfirm(..)
+        | Modal::WriteReview(..)
+        | Modal::WriteRunning => "Review change".to_owned(),
+        Modal::AdviceReview(..)
+        | Modal::AdviceLoading
+        | Modal::AdviceRunning
+        | Modal::AdviceDocument(..) => "Copilot".to_owned(),
+        Modal::ScanConfirm(..) | Modal::ScanRunning(..) => "Image scan".to_owned(),
+        _ => kind(),
+    }
+}
 pub(super) fn render_advice_footer(
     out: &mut impl Write,
     review: &advice_ui::Review,
@@ -279,7 +347,9 @@ pub(super) fn render_advice_footer(
 ) -> io::Result<()> {
     let [accent, warning, bg] = colors;
     let remaining = review.remaining(usize::from(w.saturating_sub(2)));
-    let label = if review.prepared.is_some() {
+    let label = if review.prepared.is_some() && !review_ui::strict() {
+        format!(" {}?  y/Enter send | n/Esc cancel", review.confirmation())
+    } else if review.prepared.is_some() {
         format!("{} > {}_", review.confirmation(), review.typed)
     } else {
         review.confirmation()
@@ -312,11 +382,18 @@ pub(super) fn render_helm_review_footer(
     let width = usize::from(w.saturating_sub(2));
     let remaining = review.remaining(width);
     let (painted, total) = review.progress(width);
-    let text = format!(
-        "CONFIRM {} > {}_",
-        review.prepared.confirmation(),
-        review.typed
-    );
+    let text = if review_ui::strict() {
+        format!(
+            "CONFIRM {} > {}_",
+            review.prepared.confirmation(),
+            review.typed
+        )
+    } else {
+        format!(
+            " {}?  y/Enter run | n/Esc cancel",
+            review.prepared.confirmation()
+        )
+    };
     let chars = text.chars().collect::<Vec<_>>();
     let start = chars.len().saturating_sub(usize::from(w));
     row(
@@ -357,7 +434,11 @@ pub(super) fn render_write_footer(
         out,
         h - 2,
         w,
-        &format!(" {} > {}_", review.confirmation, review.typed),
+        &if review_ui::strict() {
+            format!(" {} > {}_", review.confirmation, review.typed)
+        } else {
+            format!(" {}?  y/Enter apply | n/Esc cancel", review.confirmation)
+        },
         warning,
         bg,
     )?;
@@ -691,9 +772,10 @@ fn render_frame(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
     let mode = if app.options.connection.demo {
         "DEMO SAMPLE DATA"
     } else if app.options.connection.writable {
-        "PRODUCTION WRITE"
+        // Like k9s, a writable session is the normal case and needs no badge.
+        ""
     } else {
-        "PRODUCTION READ ONLY"
+        "READ ONLY"
     };
     let border = if app.options.color && !t.terminal {
         blend(t.get("background"), t.get("muted"), 45).color()
@@ -727,18 +809,7 @@ fn render_frame(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
         )
         .map_err(|_| "draw failed")?;
     }
-    let title = match &app.modal {
-        Modal::LiveOverview(..) => "Dashboard".to_owned(),
-        Modal::Helm(..) | Modal::HelmForm(..) | Modal::HelmReview(..) => "Helm releases".to_owned(),
-        Modal::ForwardView | Modal::ForwardForm(..) => "Port forwards".to_owned(),
-        Modal::Themes(..) => "Appearance".to_owned(),
-        Modal::Help(..) => "Keymap".to_owned(),
-        _ => app
-            .kinds
-            .get(app.kind_index)
-            .map(resource_label)
-            .unwrap_or_else(|| app.kind()),
-    };
+    let title = screen_title(app, &app.modal);
     let help_width = if w >= 64 { 4 } else { 0 };
     match (chrome.header, chrome.identity) {
         // Folded identity: context, namespace and mode share the header bar.
@@ -1600,22 +1671,38 @@ fn render_frame(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
                 generated
             } else if let Modal::Confirm(prepared, text) = modal {
                 if confirmation_fits(&prepared.summary, text, w, h) {
-                    "Enter execute | Esc cancel"
+                    if review_ui::strict() {
+                        "Type namespace/name | Enter execute | Esc cancel"
+                    } else {
+                        "y/Enter execute | n/Esc cancel"
+                    }
                 } else {
                     "Esc cancel | Enlarge terminal to review complete mutation."
                 }
             } else if let Modal::SessionConfirm(prepared, text) = modal {
                 if confirmation_fits(prepared.summary(), text, w, h) {
-                    "Enter start session | Esc cancel | Ctrl-] ends session"
+                    if review_ui::strict() {
+                        "Type target | Enter start session | Esc cancel | Ctrl-] ends session"
+                    } else {
+                        "y/Enter start | n/Esc cancel | Ctrl-] ends session"
+                    }
                 } else {
                     "Esc cancel | Enlarge terminal to review complete session."
                 }
             } else if let Modal::WriteReview(review) = modal
                 && matches!(review.plan, WritePlan::Batch(_))
             {
-                "PgUp/PgDown read every target  Type verb and count  Enter run batch  Esc back"
+                if review_ui::strict() {
+                    "PgUp/PgDown read every target  Type verb and count  Enter run batch  Esc back"
+                } else {
+                    "y/Enter run batch  n/Esc cancel  PgUp/PgDown scroll"
+                }
             } else if matches!(modal, Modal::WriteReview(_)) {
-                "PgUp/PgDown read all changes  Type target  Enter apply  Esc back"
+                if review_ui::strict() {
+                    "PgUp/PgDown read all changes  Type target  Enter apply  Esc back"
+                } else {
+                    "y/Enter apply  n/Esc cancel  PgUp/PgDown scroll"
+                }
             } else if matches!(modal, Modal::WriteRunning) {
                 "Operation in progress / wait for final outcome"
             } else if matches!(modal, Modal::Input("Command", _)) {

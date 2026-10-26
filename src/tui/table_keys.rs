@@ -192,7 +192,7 @@ impl App {
                     self.prepare(Action::Trigger);
                 } else {
                     self.status = format!(
-                        "Copy files with :cp-from / :cp-to (--allow-file-copy). {} triggers a selected CronJob.",
+                        "Copy files with :cp-from / :cp-to (permission (off in --read-only mode or by operator config)). {} triggers a selected CronJob.",
                         self.keymap
                             .primary("trigger")
                             .unwrap_or_else(|| ":trigger".into())
@@ -287,7 +287,9 @@ impl App {
             "edit" => self.yaml_editor(),
             "resources" => {
                 if !self.options.connection.writable {
-                    self.status = "READ ONLY: resource budgets require --write.".into();
+                    self.status =
+                        "resource budgets require write permission (off in --read-only mode)."
+                            .into();
                 } else if !crate::edit::supports_resource(&self.kind()) {
                     self.status = "Resource budgets apply to supported workload containers.".into();
                 } else if let Some((k, n, name)) = self.selected_target() {

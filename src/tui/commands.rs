@@ -218,7 +218,7 @@ impl App {
                 let selected=self.subviews.iter().rev().find_map(|modal|if let Modal::Helm(table)=modal{table.selected().cloned()}else{None});
                 if let Some(release)=selected{self.request_helm(helm_ui::Request::History(release),false);}else{self.status="Use :history RELEASE or select a release in :helm and press Enter.".into();}
             }
-            ("helm"|"history",_)=>self.status="Use :helm [NAMESPACE] or :history RELEASE; --allow-helm enables live release storage reads.".into(),
+            ("helm"|"history",_)=>self.status="Use :helm [NAMESPACE] or :history RELEASE. Helm reads are off (operator config).".into(),
             ("lint" | "popeye" | "pop" | "sanitize", []) => self.send(Task::Lint(self.namespace.clone())),
             ("scans"|"scan",[])=>self.scan(false),
             ("scans"|"scan",[scope]) if matches!(scope.as_str(),"ns"|"namespace")=>self.scan(true),
@@ -256,7 +256,7 @@ impl App {
     }
     pub(super) fn scale(&mut self) -> Result<bool> {
         if !self.options.connection.writable {
-            self.status = "READ ONLY: scale requires --write.".into();
+            self.status = "scale requires write permission (off in --read-only mode).".into();
         } else if !["deployments.apps", "statefulsets.apps"].contains(&self.kind().as_str()) {
             self.status = "Scale supports Deployments and StatefulSets; other scale workflows are unavailable.".into();
         } else if let Some((k, n, name)) = self.selected_target() {
@@ -266,7 +266,7 @@ impl App {
     }
     pub(super) fn image(&mut self) -> Result<bool> {
         if !self.options.connection.writable {
-            self.status = "READ ONLY: image edits require --write.".into();
+            self.status = "image edits require write permission (off in --read-only mode).".into();
         } else if !crate::edit::supports_resource(&self.kind()) {
             self.status =
                 "Image edits support Deployment, StatefulSet, DaemonSet and CronJob containers."
@@ -355,7 +355,7 @@ impl App {
         }
         if !self.options.connection.writable {
             self.status =
-                "READ ONLY: editing requires --write and a full server dry-run review.".into();
+                "editing requires write permission (off in --read-only mode) and a full server dry-run review.".into();
             return;
         }
         if !crate::edit::supports_resource(&self.kind()) {
@@ -498,7 +498,7 @@ impl App {
             return;
         }
         if !self.options.connection.demo && !self.options.connection.logs {
-            dashboard.set_notice("Workload tails require --allow-logs.".into(), true);
+            dashboard.set_notice("Workload tails require permission (off in --read-only mode or by operator config).".into(), true);
             return;
         }
         if self.busy {
@@ -595,7 +595,11 @@ impl App {
             return;
         };
         if !self.options.connection.demo && !self.options.connection.logs {
-            dashboard.set_notice("Log panes require --allow-logs.".into(), true);
+            dashboard.set_notice(
+                "Log panes require permission (off in --read-only mode or by operator config)."
+                    .into(),
+                true,
+            );
             return;
         }
         if uid.is_empty() || !safety::valid_id(&namespace) {
@@ -642,7 +646,7 @@ impl App {
     }
     pub(super) fn secrets(&mut self) {
         if !self.options.connection.allow_secret_reveal {
-            self.status = "Secrets are excluded by default; start with --allow-secret-reveal to list keys and reveal one value at a time.".into();
+            self.status = "Secret reveal is off (operator config). Next: ask your admin, or remove allow_secret_reveal: false from the config.".into();
             return;
         }
         if self.namespace == "all" || self.namespace == "*" {
@@ -654,7 +658,7 @@ impl App {
     /// k9s Ctrl-K: a reviewed, approved Pod delete with gracePeriodSeconds=0.
     pub(super) fn kill(&mut self) {
         if !self.options.connection.writable || !self.options.connection.allow_force_kill {
-            self.status = "Force kill requires --write --allow-force-kill; Ctrl-D is a reviewed graceful delete.".into();
+            self.status = "Force kill requires permission (off in --read-only mode or by operator config); Ctrl-D is a reviewed graceful delete.".into();
             return;
         }
         if self.kind() != "pods" {
@@ -686,7 +690,7 @@ impl App {
             .clone()
             .filter(|_| self.options.allow_scan)
         else {
-            self.status = "Image scanning requires --scanner ABS_PATH (Trivy or Grype) and --allow-scan. :lint checks misconfigurations.".into();
+            self.status = "Image scanning needs trivy or grype. Next: install one (brew install trivy) or pass --scanner ABS_PATH. :lint checks misconfigurations.".into();
             return;
         };
         if self.options.connection.demo {
@@ -756,7 +760,7 @@ impl App {
     /// Review an ephemeral debug container for the selected Pod.
     pub(super) fn debug_container(&mut self, target: Option<String>) {
         if !self.options.connection.writable || !self.options.connection.allow_debug {
-            self.status = "Debug containers require --write --allow-debug.".into();
+            self.status = "Debug containers require permission (off in --read-only mode or by operator config).".into();
             return;
         }
         if self.options.connection.demo || self.kind() != "pods" {
@@ -808,7 +812,7 @@ impl App {
             self.modal = Modal::AdviceDocument(
                 "ASK COPILOT / local preview, nothing sent".into(),
                 format!(
-                    "Setup required to send: start KBorg with --copilot-policy ABS --allow-copilot-screen (see docs/COPILOT_INTEGRATION.md).\nThis is exactly what would be sent, after a review you must confirm:\n\n{bundle}"
+                    "Copilot is not set up yet. Next: put copilot-policy.json in the KBorg config folder or start with --copilot-policy ABS (see docs/COPILOT_INTEGRATION.md).\nThis is exactly what would be sent, after a review you must confirm:\n\n{bundle}"
                 ),
                 0,
             );
@@ -831,7 +835,9 @@ impl App {
     /// Review a privileged node shell Pod for the selected Node.
     pub(super) fn node_shell(&mut self) {
         if !self.options.connection.writable || !self.options.connection.allow_node_shell {
-            self.status = "Node shell requires --write --allow-node-shell.".into();
+            self.status =
+                "Node shell requires permission (off in --read-only mode or by operator config)."
+                    .into();
             return;
         }
         if self.options.connection.demo {
@@ -858,7 +864,8 @@ impl App {
     /// Dry-run and review a server-side apply of a local manifest.
     pub(super) fn apply_manifest(&mut self, path: std::path::PathBuf) {
         if !self.options.connection.writable || !self.options.connection.allow_apply {
-            self.status = "Apply requires --write --allow-apply.".into();
+            self.status =
+                "Apply requires permission (off in --read-only mode or by operator config).".into();
             return;
         }
         if self.options.connection.demo {
@@ -884,7 +891,7 @@ impl App {
             || !self.options.connection.allow_file_copy
             || self.options.connection.demo
         {
-            self.status = "File copy requires a live Pod, --write and --allow-file-copy.".into();
+            self.status = "File copy requires a live Pod, permission (off in --read-only mode or by operator config).".into();
             return;
         }
         if self.kind() != "pods" {
@@ -963,7 +970,9 @@ impl App {
             return;
         }
         if !self.options.connection.writable || !self.options.connection.allow_yaml_edit {
-            self.status = "YAML editing requires --write --allow-yaml-edit.".into();
+            self.status =
+                "YAML editing requires permission (off in --read-only mode or by operator config)."
+                    .into();
             return;
         }
         if let Some((kind, ns, name)) = self.selected_target() {
@@ -980,7 +989,7 @@ impl App {
             return;
         }
         if !self.options.connection.writable || !self.options.connection.allow_node_maintenance {
-            self.status = "Node maintenance requires --write --allow-node-maintenance.".into();
+            self.status = "Node maintenance requires permission (off in --read-only mode or by operator config).".into();
             return;
         }
         if let Some((_, _, name)) = self.selected_target() {
