@@ -172,6 +172,16 @@ pub fn read_small(path: &Path, limit: u64) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 
+/// " at line L, column C" for a YAML decode failure in a user config file, so
+/// the message points at the field; empty when the decoder has no position.
+pub fn yaml_location(error: &serde_saphyr::Error) -> String {
+    error
+        .location()
+        .filter(|at| at.line() > 0)
+        .map(|at| format!(" at line {}, column {}", at.line(), at.column()))
+        .unwrap_or_default()
+}
+
 pub fn config_dir() -> Result<PathBuf> {
     if let Some(path) =
         std::env::var_os("KBORG_CONFIG_DIR").or_else(|| std::env::var_os("K8BORG_CONFIG_DIR"))

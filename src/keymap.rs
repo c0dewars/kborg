@@ -1662,8 +1662,11 @@ pub fn parse(text: &str) -> Result<Keymap> {
         strict_booleans: true,
         with_snippet: false,
     };
-    let file: File = serde_saphyr::from_str_with_options(text, options).map_err(|_| {
-        "invalid keymap.yaml; expected keys: {ACTION: KEY or [KEYS]} and optional scopes: sections"
+    let file: File = serde_saphyr::from_str_with_options(text, options).map_err(|error| {
+        format!(
+            "invalid keymap.yaml{}; expected keys: {{ACTION: KEY or [KEYS]}} and optional scopes: sections",
+            safety::yaml_location(&error)
+        )
     })?;
     let mut entries = Vec::new();
     for (name, binding) in file.keys {
@@ -1735,12 +1738,16 @@ pub fn parse(text: &str) -> Result<Keymap> {
 }
 
 pub fn load() -> Result<Keymap> {
-    let path = safety::config_dir()?.join("keymap.yaml");
-    safety::checked_path(&path)?;
+    load_from(&safety::config_dir()?.join("keymap.yaml"))
+}
+
+/// Load from an explicit path (live reload watches the config folder).
+pub fn load_from(path: &std::path::Path) -> Result<Keymap> {
+    safety::checked_path(path)?;
     if !path.exists() {
         return Ok(Keymap::default());
     }
-    let bytes = safety::read_small(&path, 64 * 1024)?;
+    let bytes = safety::read_small(path, 64 * 1024)?;
     parse(std::str::from_utf8(&bytes).map_err(|_| "keymap.yaml must be UTF-8")?)
 }
 
