@@ -4389,6 +4389,8 @@ fn unicode_truncation_keeps_clusters_whole_and_columns_aligned() {
 #[test]
 fn ascii_text_mode_keeps_question_marks_for_non_ascii_names() {
     let (mut app, _replies, _commands) = harness();
+    // Border selection is independent of data text mode and the host locale.
+    app.ui.borders = crate::ui_config::Borders::Ascii;
     app.items = unicode_pods("");
     let frame = crate::text::with_mode(false, || screen(&app, 120, 24));
     let rows = pod_rows(&frame);

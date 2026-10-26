@@ -646,7 +646,15 @@ mod tests {
             view.key(KeyCode::Char('é'));
         }
         assert_eq!(view.draft.as_ref().map(String::len), Some(FILTER_BYTES));
-        assert!(view.render(5, 2).iter().all(|line| line.len() <= 5));
+        for unicode in [false, true] {
+            crate::text::with_mode(unicode, || {
+                let rendered = view.render(5, 2);
+                assert!(rendered.iter().all(|line| crate::text::width(line) <= 5));
+                if !unicode {
+                    assert!(rendered.iter().all(|line| line.is_ascii()));
+                }
+            });
+        }
     }
     #[test]
     fn timestamp_wrap_horizontal_lock_and_ranges_preserve_their_own_semantics() {
@@ -755,10 +763,25 @@ mod tests {
         view.key(KeyCode::Char('w'));
         view.key(KeyCode::Char('?'));
         for (width, height) in [(0, 0), (1, 1), (1, 200), (48, 12), (120, 32)] {
-            let rendered = view.render(width, height);
-            assert!(rendered.len() <= height);
-            assert!(rendered.iter().all(|line| line.len() <= width));
-            assert!(rendered.iter().all(|line| line.is_ascii()));
+            for unicode in [false, true] {
+                crate::text::with_mode(unicode, || {
+                    let rendered = view.render(width, height);
+                    assert!(rendered.len() <= height);
+                    assert!(
+                        rendered
+                            .iter()
+                            .all(|line| crate::text::width(line) <= width)
+                    );
+                    assert!(
+                        rendered
+                            .iter()
+                            .all(|line| !line.contains('\x1b') && !line.contains('\u{202e}'))
+                    );
+                    if !unicode {
+                        assert!(rendered.iter().all(|line| line.is_ascii()));
+                    }
+                });
+            }
         }
     }
 }
