@@ -246,7 +246,8 @@ def measure(name, argv, first, steps=(), seconds=10, kubeconfig=None, env=None,
             pattern = re.compile(marker)
             last_send = since
             while time.monotonic() - since < timeout:
-                drain()
+                # Short slices: a marker is noticed within ~10 ms, not 50 ms.
+                drain(0.01)
                 if resend and keys and time.monotonic() - last_send >= resend:
                     send(keys)  # opt-in: the app may ignore keys while a request is busy
                     last_send = time.monotonic()

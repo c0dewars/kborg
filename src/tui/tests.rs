@@ -108,6 +108,7 @@ fn harness() -> Harness {
             status: "waiting".into(),
             stale: false,
             truncated: false,
+            list_loading: false,
             modal: Modal::None,
             epoch: 12,
             busy: false,
@@ -156,9 +157,9 @@ fn harness() -> Harness {
 #[test]
 fn copilot_local_preview_remains_available_without_login() -> Result<()> {
     let (mut app, _replies, mut commands) = harness();
-    app.items = vec![
+    app.items = shared(vec![
         serde_json::json!({"apiVersion":"v1","kind":"Pod","metadata":{"name":"test","namespace":"test","uid":"test-uid"}}),
-    ];
+    ]);
     app.options.connection.demo = true;
     app.options.copilot_policy = None;
     app.command("copilot")?;
@@ -172,9 +173,9 @@ fn copilot_local_preview_remains_available_without_login() -> Result<()> {
 #[test]
 fn copilot_closed_queue_and_late_previews_do_not_leave_loading_views() -> Result<()> {
     let (mut app, replies, commands) = harness();
-    app.items = vec![
+    app.items = shared(vec![
         serde_json::json!({"apiVersion":"v1","kind":"Pod","metadata":{"name":"test","namespace":"test","uid":"test-uid"}}),
-    ];
+    ]);
     drop(commands);
     app.command("copilot")?;
     assert!(!app.busy);
@@ -687,7 +688,7 @@ fn workload_logs_capture_once_and_range_reload_retains_exact_pod_membership() ->
     let (mut app, replies, mut commands) = harness();
     app.options.connection.logs = true;
     app.kind_index = app.resolve_resource("deployments.apps")?;
-    app.items = vec![object];
+    app.items = shared(vec![object]);
     app.request_logs(false, true);
     let (target, generation) = match commands.try_recv() {
         Ok((
@@ -703,7 +704,7 @@ fn workload_logs_capture_once_and_range_reload_retains_exact_pod_membership() ->
         }
         _ => return Err("missing fixed membership capture".into()),
     };
-    app.items[0]["metadata"]["uid"] = "replacement".into();
+    std::sync::Arc::make_mut(&mut app.items[0])["metadata"]["uid"] = "replacement".into();
     let mut target = target;
     target.membership = Some(membership.clone());
     replies
@@ -779,7 +780,7 @@ fn pod_log_defaults_and_source_toggle_preserve_captured_identity() -> Result<()>
     pod["apiVersion"] = "v1".into();
     pod["kind"] = "Pod".into();
     pod["spec"] = serde_json::json!({"containers":[{"name":"app"},{"name":"sidecar"}],"initContainers":[{"name":"init"}]});
-    app.items = vec![pod.clone()];
+    app.items = shared(vec![pod.clone()]);
     app.subviews
         .push(Modal::Follow(Box::new(crate::ui_logs::LogView::new(
             "older session".into(),
@@ -800,7 +801,7 @@ fn pod_log_defaults_and_source_toggle_preserve_captured_identity() -> Result<()>
         _ => return Err("missing merged follow".into()),
     };
     app.busy = false;
-    app.items[0]["metadata"]["uid"] = "replacement".into();
+    std::sync::Arc::make_mut(&mut app.items[0])["metadata"]["uid"] = "replacement".into();
     app.key(KeyCode::Char('a'))?;
     match commands.try_recv() {
         Ok((_, Task::Follow(target, _, _, _))) => {
@@ -814,7 +815,7 @@ fn pod_log_defaults_and_source_toggle_preserve_captured_identity() -> Result<()>
     app.key(KeyCode::Esc)?;
     pod["metadata"]["annotations"] =
         serde_json::json!({"kubectl.kubernetes.io/default-container":"sidecar"});
-    app.items = vec![pod];
+    app.items = shared(vec![pod]);
     app.request_logs(false, true);
     assert!(
         matches!(commands.try_recv(),Ok((_,Task::Follow(target,_,_,_))) if !target.all && target.container.as_deref()==Some("sidecar"))
@@ -987,9 +988,9 @@ fn custom_kind_collisions_use_inspection_instead_of_builtin_drilldowns() {
         custom.group = "example.test".into();
         app.kinds.push(custom.clone());
         app.kind_index = app.kinds.len() - 1;
-        app.items = vec![
+        app.items = shared(vec![
             serde_json::json!({"apiVersion":"example.test/v1","kind":kind,"metadata":{"name":"custom-a","namespace":"test","uid":"custom-uid"},"spec":{"selector":{"matchLabels":{"app":"api"}},"nodeName":"worker-a"}}),
-        ];
+        ]);
         assert!(app.key(KeyCode::Enter).is_ok());
         match commands.try_recv() {
             Ok((_, Task::Inspect(resource, _, _))) => assert_eq!(resource, custom.key()),
@@ -1016,9 +1017,9 @@ fn history_restores_destination_crd_catalog_and_keeps_unavailable_entries() {
     app.kind_index = app.kinds.len() - 1;
     app.filter = "gadget".into();
     app.selector = "app=b".into();
-    app.items = vec![
+    app.items = shared(vec![
         serde_json::json!({"kind":"Gadget","metadata":{"name":"gadget-b","namespace":"team-b","uid":"b-selected"}}),
-    ];
+    ]);
     app.back.push(ViewState {
         resource: widget.key(),
         namespace: "team-a".into(),
@@ -1077,7 +1078,7 @@ fn history_restores_destination_crd_catalog_and_keeps_unavailable_entries() {
         ),
         ("team-a", "widget", "app=a")
     );
-    app.replace_items(vec![serde_json::json!({"kind":"Widget","metadata":{"name":"widget-a","namespace":"team-a","uid":"a-selected"}})]);
+    app.replace_items(shared(vec![serde_json::json!({"kind":"Widget","metadata":{"name":"widget-a","namespace":"team-a","uid":"a-selected"}})]));
     assert_eq!(app.selected_uid().as_deref(), Some("a-selected"));
     app.go_forward();
     assert_eq!(app.kind(), gadget.key());
@@ -1367,7 +1368,7 @@ fn explicit_core_gvr_is_unambiguous_and_discovered_aliases_are_usable() {
     assert_eq!(app.resolve_resource("custompo"), Ok(app.kinds.len() - 1));
     assert!(app.command("secret").is_ok());
     assert!(app.status.contains("Secret reveal is off"));
-    app.items = vec![object("api"), object("web"), object("worker")];
+    app.items = shared(vec![object("api"), object("web"), object("worker")]);
     app.filter = "api|web".into();
     assert_eq!(app.visible().len(), 2);
     app.filter = "!api|web".into();
@@ -1384,9 +1385,9 @@ fn explicit_core_gvr_is_unambiguous_and_discovered_aliases_are_usable() {
 fn drilldown_uses_node_fields_and_workload_labels_and_escape_restores_scope() {
     let (mut app, _replies, mut commands) = harness();
     app.command("nodes").unwrap_or(false);
-    app.items = vec![
+    app.items = shared(vec![
         serde_json::json!({"apiVersion":"v1","kind":"Node","metadata":{"name":"worker-a","uid":"node-uid"}}),
-    ];
+    ]);
     assert!(app.key(KeyCode::Enter).is_ok());
     assert_eq!(
         (
@@ -1400,17 +1401,17 @@ fn drilldown_uses_node_fields_and_workload_labels_and_escape_restores_scope() {
     assert_eq!(app.kind(), "nodes");
     assert!(app.field_selector.is_empty());
     app.command("deploy").unwrap_or(false);
-    app.items = vec![
+    app.items = shared(vec![
         serde_json::json!({"apiVersion":"apps/v1","kind":"Deployment","metadata":{"name":"api","namespace":"team","uid":"dep"},"spec":{"selector":{"matchLabels":{"app":"api"}}}}),
-    ];
+    ]);
     assert!(app.key(KeyCode::Enter).is_ok());
     assert_eq!(
         (app.kind(), app.namespace.as_str(), app.selector.as_str()),
         ("pods".into(), "team", "app=api")
     );
-    app.items = vec![
+    app.items = shared(vec![
         serde_json::json!({"apiVersion":"v1","kind":"Pod","metadata":{"name":"api-a","namespace":"team","uid":"pod"}}),
-    ];
+    ]);
     assert!(app.key(KeyCode::Enter).is_ok());
     assert!(matches!(commands.try_recv(), Ok((_, Task::Drill(_, _, _)))));
 }
@@ -1449,9 +1450,9 @@ fn late_log_snapshot_is_rejected_and_static_marks_keep_original_lines() {
 #[test]
 fn responsive_frames_preserve_identity_mode_and_bounds() {
     let (mut app, _replies, _commands) = harness();
-    app.items = vec![
+    app.items = shared(vec![
         serde_json::json!({"kind":"Pod","metadata":{"name":"api","namespace":"test","uid":"pod1","creationTimestamp":"2026-10-10T07:00:00Z"},"spec":{"containers":[{"name":"app"}]},"status":{"phase":"Running","containerStatuses":[{"ready":true,"restartCount":4}]}}),
-    ];
+    ]);
     for width in [28, 40, 60, 80, 88, 120] {
         for height in [10, 12, 24] {
             {
@@ -1555,7 +1556,7 @@ fn readiness_restarts_age_and_sort_use_real_fields_and_keep_uid() {
     assert_eq!(age(&pod, now), "1d");
     assert_eq!(age(&pod, 0), "future");
     assert_eq!(age(&object("missing-time"), now), "-");
-    app.items = vec![pod, object("a")];
+    app.items = shared(vec![pod, object("a")]);
     app.selected = 1;
     assert_eq!(app.selected_uid().as_deref(), Some("uid-z"));
     app.set_sort(Sort::Restarts);
@@ -1568,11 +1569,11 @@ fn readiness_restarts_age_and_sort_use_real_fields_and_keep_uid() {
 fn table_metrics_sort_exact_usage_and_missing_rows_last_preserving_uid() -> Result<()> {
     let (mut app, replies, mut commands) = harness();
     let pod = |name: &str, uid: &str| serde_json::json!({"apiVersion":"v1","kind":"Pod","metadata":{"name":name,"namespace":"test","uid":uid},"spec":{"containers":[{"name":"app"}]}});
-    app.items = vec![
+    app.items = shared(vec![
         pod("big", "big-uid"),
         pod("small", "small-uid"),
         pod("unknown", "unknown-uid"),
-    ];
+    ]);
     let row = |name: &str, uid: &str, cpu: u64, memory: u64| crate::metrics::MetricsRow {
         name: name.into(),
         namespace: Some("test".into()),
@@ -1658,7 +1659,7 @@ fn table_metrics_sort_exact_usage_and_missing_rows_last_preserving_uid() -> Resu
     let before = app.selected_uid();
     assert!(app.expire_table_metrics(Instant::now() + Duration::from_secs(46)));
     assert_eq!(app.selected_uid(), before);
-    app.items[1]["metadata"]["uid"] = "new-uid".into();
+    std::sync::Arc::make_mut(&mut app.items[1])["metadata"]["uid"] = "new-uid".into();
     assert!(
         app.table_metrics
             .usage(&app.items[1], Instant::now())
@@ -1716,7 +1717,7 @@ fn theme_creation_captures_preview_palette_and_cancel_restores_previous_theme() 
 #[test]
 fn live_filter_keeps_table_visible_and_cancel_restores_selected_uid() {
     let (mut app, _replies, _commands) = harness();
-    app.items = vec![object("alpha"), object("beta")];
+    app.items = shared(vec![object("alpha"), object("beta")]);
     app.selected = 1;
     assert!(app.key(KeyCode::Char('/')).is_ok());
     assert!(app.key(KeyCode::Char('a')).is_ok());
@@ -1724,7 +1725,11 @@ fn live_filter_keeps_table_visible_and_cancel_restores_selected_uid() {
     assert_eq!(app.visible().len(), 1);
     let frame = screen(&app, 60, 12).join("\n");
     assert!(frame.contains("alpha") && frame.contains("Filter > al_"));
-    app.replace_items(vec![object("aardvark"), object("alpha"), object("beta")]);
+    app.replace_items(shared(vec![
+        object("aardvark"),
+        object("alpha"),
+        object("beta"),
+    ]));
     assert!(app.key(KeyCode::Esc).is_ok());
     assert_eq!(app.filter, "");
     assert_eq!(app.selected_uid().as_deref(), Some("uid-beta"));
@@ -1739,7 +1744,7 @@ fn long_context_does_not_hide_namespace_identity_and_actions_explain_capabilitie
         assert!(frame[1].contains("CTX ") && frame[1].contains("  |  NS "));
         assert!(frame[1].contains('~'));
     }
-    app.items = vec![object("selected")];
+    app.items = shared(vec![object("selected")]);
     let actions = app.action_menu();
     assert!(actions[2].contains("[OFF]") && actions[2].contains("operator config"));
     assert!(actions[7].contains("read-only mode"));
@@ -1751,7 +1756,7 @@ fn long_context_does_not_hide_namespace_identity_and_actions_explain_capabilitie
 #[test]
 fn resource_table_uses_every_column_and_mouse_never_changes_resource() {
     let (mut app, _replies, _commands) = harness();
-    app.items = vec![object("a"), object("b")];
+    app.items = shared(vec![object("a"), object("b")]);
     for (w, h) in [(28, 10), (48, 12), (120, 32)] {
         let layout = Layout::new(w, h);
         assert_eq!(layout.table.x, 0);
@@ -1783,9 +1788,9 @@ fn resource_table_uses_every_column_and_mouse_never_changes_resource() {
 #[test]
 fn full_width_frame_shows_health_and_centered_actions_without_clear() {
     let (mut app, _replies, _commands) = harness();
-    app.items = vec![
+    app.items = shared(vec![
         serde_json::json!({"kind":"Pod","metadata":{"name":"api","namespace":"test","uid":"pod1"},"spec":{"nodeName":"worker-a","containers":[{"name":"app","image":"example/api:v2"}]},"status":{"phase":"Running","containerStatuses":[{"name":"app","ready":true,"restartCount":0}]}}),
-    ];
+    ]);
     let frame = screen(&app, 120, 32).join("\n");
     for label in ["1 healthy", "0 need attention", "NAMESPACE", "api"] {
         assert!(frame.contains(label));
@@ -1816,7 +1821,7 @@ fn human_overview_uses_redacted_object_fields_and_json_remains_accessible() {
         assert!(text.contains(label));
     }
     assert!(!text.contains("canary-secret"));
-    app.items = vec![pod.clone()];
+    app.items = shared(vec![pod.clone()]);
     assert!(app.key(KeyCode::Char('d')).is_ok());
     assert!(matches!(commands.try_recv(), Ok((_, Task::Inspect(..)))));
     assert!(replies.send((12, Reply::Object(Box::new(pod)))).is_ok());
@@ -1828,7 +1833,7 @@ fn human_overview_uses_redacted_object_fields_and_json_remains_accessible() {
 #[test]
 fn extensions_need_both_flags_and_unknown_names_do_not_open_a_review() {
     let (mut app, _replies, _commands) = harness();
-    app.items = vec![object("api")];
+    app.items = shared(vec![object("api")]);
     assert!(app.command("ext viewer").is_ok());
     assert!(app.status.contains("operator config"));
     app.options.allow_extensions = true;
@@ -1840,7 +1845,9 @@ fn extensions_need_both_flags_and_unknown_names_do_not_open_a_review() {
 fn node_shell_needs_its_capability_and_reviews_the_selected_node() {
     let (mut app, _replies, mut commands) = harness();
     app.command("nodes").unwrap_or(false);
-    app.items = vec![serde_json::json!({"kind":"Node","metadata":{"name":"worker-1","uid":"n1"}})];
+    app.items = shared(vec![
+        serde_json::json!({"kind":"Node","metadata":{"name":"worker-1","uid":"n1"}}),
+    ]);
     assert!(app.key(KeyCode::Char('s')).is_ok());
     assert!(app.status.contains("operator config"));
     while commands.try_recv().is_ok() {}
@@ -1867,10 +1874,10 @@ fn views_yaml_columns_custom_paths_and_sort_by_any_column() {
     )
     .unwrap_or_default();
     app.command("pods").unwrap_or(false);
-    app.items = vec![
+    app.items = shared(vec![
         serde_json::json!({"kind":"Pod","metadata":{"name":"a","namespace":"x","uid":"1","labels":{"team":"red"}},"spec":{"containers":[{"image":"alpha:1"}]},"status":{"phase":"Running"}}),
         serde_json::json!({"kind":"Pod","metadata":{"name":"b","namespace":"x","uid":"2","labels":{"team":"blue"}},"spec":{"containers":[{"image":"zulu:9"}]},"status":{"phase":"Running"}}),
-    ];
+    ]);
     app.items_generation += 1;
     app.sync_scope();
     let text = screen(&app, 120, 14).join("\n");
@@ -1907,7 +1914,7 @@ fn views_yaml_columns_custom_paths_and_sort_by_any_column() {
 #[test]
 fn scan_needs_a_trusted_scanner_and_targets_the_selection_or_namespace() {
     let (mut app, _replies, mut commands) = harness();
-    app.items = vec![object("api")];
+    app.items = shared(vec![object("api")]);
     assert!(app.command("scan").is_ok());
     assert!(app.status.contains("trivy or grype"));
     // The scanner path alone is not an opt-in.
@@ -1945,7 +1952,7 @@ fn scan_needs_a_trusted_scanner_and_targets_the_selection_or_namespace() {
 #[test]
 fn debug_needs_its_capability_and_reviews_the_selected_pod() {
     let (mut app, _replies, mut commands) = harness();
-    app.items = vec![object("api")];
+    app.items = shared(vec![object("api")]);
     assert!(app.command("debug").is_ok());
     assert!(app.status.contains("operator config"));
     app.options.connection.writable = true;
@@ -1968,9 +1975,9 @@ fn cronjob_keys_and_errors_only_toggle() {
     let (mut app, _replies, mut commands) = harness();
     app.options.connection.writable = true;
     app.command("cronjobs").unwrap_or(false);
-    app.items = vec![
+    app.items = shared(vec![
         serde_json::json!({"kind":"CronJob","metadata":{"name":"tick","namespace":"ops","uid":"c1"},"spec":{"suspend":true}}),
-    ];
+    ]);
     while commands.try_recv().is_ok() {}
     app.busy = false;
     assert!(app.key(KeyCode::Char('s')).is_ok());
@@ -1985,10 +1992,10 @@ fn cronjob_keys_and_errors_only_toggle() {
         Ok((_, Task::Prepare(_, _, _, _, Action::Trigger)))
     ));
     app.command("pods").unwrap_or(false);
-    app.items = vec![
+    app.items = shared(vec![
         serde_json::json!({"kind":"Pod","metadata":{"name":"ok","namespace":"a","uid":"1"},"status":{"phase":"Running","containerStatuses":[{"ready":true}]}}),
         serde_json::json!({"kind":"Pod","metadata":{"name":"bad","namespace":"a","uid":"2"},"status":{"phase":"Pending"}}),
-    ];
+    ]);
     app.items_generation += 1;
     assert_eq!(app.visible().len(), 2);
     assert!(
@@ -2028,9 +2035,9 @@ fn apply_requires_its_capability_and_queues_a_dry_run_review() {
 #[test]
 fn file_copy_commands_review_the_selected_pod_default_container() {
     let (mut app, _replies, mut commands) = harness();
-    app.items = vec![
+    app.items = shared(vec![
         serde_json::json!({"kind":"Pod","metadata":{"name":"api","namespace":"shop","uid":"api-uid","annotations":{"kubectl.kubernetes.io/default-container":"app"}},"spec":{"containers":[{"name":"sidecar"},{"name":"app"}]}}),
-    ];
+    ]);
     assert!(app.command("cp-from /etc/hosts").is_ok());
     assert!(app.status.contains("operator config"));
     assert!(commands.try_recv().is_err());
@@ -2085,9 +2092,9 @@ fn file_copy_commands_review_the_selected_pod_default_container() {
 #[test]
 fn pod_shell_picker_preserves_captured_identity_and_capabilities() {
     let (mut app, _replies, mut commands) = harness();
-    app.items = vec![
+    app.items = shared(vec![
         serde_json::json!({"kind":"Pod","metadata":{"name":"first","namespace":"test","uid":"first-uid"},"spec":{"containers":[{"name":"app"}]}}),
-    ];
+    ]);
     assert!(app.key(KeyCode::Char('E')).is_ok());
     assert!(matches!(app.modal, Modal::None));
     app.options.connection.writable = true;
@@ -2095,7 +2102,7 @@ fn pod_shell_picker_preserves_captured_identity_and_capabilities() {
     assert!(matches!(app.modal, Modal::None));
     app.options.connection.allow_exec = true;
     assert!(app.key(KeyCode::Char('E')).is_ok());
-    app.items = vec![object("replacement")];
+    app.items = shared(vec![object("replacement")]);
     assert!(app.key(KeyCode::Enter).is_ok());
     match commands.try_recv() {
         Ok((
@@ -2467,6 +2474,7 @@ fn oversized_scope_falls_back_to_bounded_polling_instead_of_an_empty_table() -> 
             message: "watch cache limit exceeded; narrow namespace scope".into(),
             terminal: true,
             truncated: true,
+            partial: false,
         },
     );
     app.receive();
@@ -2491,7 +2499,7 @@ fn oversized_scope_falls_back_to_bounded_polling_instead_of_an_empty_table() -> 
 fn visible_order_is_memoized_and_invalidated_by_filter_sort_and_versions() {
     let (mut app, _replies, _commands) = harness();
     let pod = |name: &str, restarts: u64, rv: &str| serde_json::json!({"kind":"Pod","metadata":{"name":name,"namespace":"default","uid":format!("uid-{name}"),"resourceVersion":rv},"status":{"phase":"Running","containerStatuses":[{"restartCount":restarts}]}});
-    app.items = vec![pod("b", 1, "1"), pod("a", 5, "1"), pod("c", 3, "1")];
+    app.items = shared(vec![pod("b", 1, "1"), pod("a", 5, "1"), pod("c", 3, "1")]);
     let names = |app: &App| {
         app.visible()
             .iter()
@@ -2505,7 +2513,7 @@ fn visible_order_is_memoized_and_invalidated_by_filter_sort_and_versions() {
     ));
     app.sort = Sort::Restarts;
     assert_eq!(names(&app), ["a", "c", "b"]);
-    app.items[2] = pod("c", 9, "2");
+    app.items[2] = std::sync::Arc::new(pod("c", 9, "2"));
     app.items_generation += 1;
     assert_eq!(names(&app), ["c", "a", "b"]);
     app.filter = "default [ac] ".into();
@@ -2855,12 +2863,12 @@ fn metrics_extra_resource_reads_require_explicit_uppercase_key() {
 fn resource_budget_form_captures_uid_and_validates_before_preparation() {
     let (mut app, _replies, mut commands) = harness();
     app.kind_index = 1;
-    app.items = vec![object("first")];
+    app.items = shared(vec![object("first")]);
     assert!(app.key(KeyCode::Char('V')).is_ok());
     assert!(matches!(app.modal, Modal::None));
     app.options.connection.writable = true;
     assert!(app.key(KeyCode::Char('V')).is_ok());
-    app.items = vec![object("replacement")];
+    app.items = shared(vec![object("replacement")]);
     for character in "app 100m 128Mi 500m 512Mi".chars() {
         assert!(app.key(KeyCode::Char(character)).is_ok());
     }
@@ -2950,12 +2958,12 @@ fn escape_cancels_log_modal_and_scope_change_rejects_old_logs() {
 fn image_form_captures_target_uid_and_readonly_never_opens_it() {
     let (mut app, _replies, mut commands) = harness();
     app.kind_index = 1;
-    app.items = vec![object("first")];
+    app.items = shared(vec![object("first")]);
     assert!(app.command("image").is_ok());
     assert!(matches!(app.modal, Modal::None));
     app.options.connection.writable = true;
     assert!(app.command("image").is_ok());
-    app.items = vec![object("replacement")];
+    app.items = shared(vec![object("replacement")]);
     for c in "app".chars() {
         assert!(app.key(KeyCode::Char(c)).is_ok());
     }
@@ -2975,14 +2983,19 @@ fn image_form_captures_target_uid_and_readonly_never_opens_it() {
         _ => panic!("image form changed selected target"),
     }
 }
+/// Table rows as the app holds them (shared with the watch cache).
+fn shared(objects: Vec<Value>) -> Vec<std::sync::Arc<Value>> {
+    objects.into_iter().map(std::sync::Arc::new).collect()
+}
 fn snapshot(name: &str) -> crate::watch::WatchSnapshot {
     crate::watch::WatchSnapshot {
-        objects: vec![object(name)],
+        objects: vec![std::sync::Arc::new(object(name))],
         resource_version: "rv".into(),
         stale: false,
         message: "LIVE".into(),
         terminal: false,
         truncated: false,
+        partial: false,
     }
 }
 #[test]
@@ -3110,7 +3123,7 @@ fn namespace_changed_during_connect_is_not_overwritten_and_old_session_is_reject
 #[test]
 fn obsolete_watch_is_dropped_and_revocation_clears_the_view() {
     let (mut app, _replies, _commands) = harness();
-    app.items = vec![object("old")];
+    app.items = shared(vec![object("old")]);
     app.changed();
     app.worker.watch.publish(12, snapshot("obsolete"));
     assert!(!app.receive());
@@ -3149,12 +3162,12 @@ fn watch_insertion_preserves_identity_and_scale_form_captures_name_and_uid() {
     let (mut app, _replies, mut commands) = harness();
     app.options.connection.writable = true;
     app.kind_index = 1;
-    app.items = vec![object("b")];
+    app.items = shared(vec![object("b")]);
     assert!(app.command("scale").is_ok());
-    app.replace_items(vec![object("a"), object("b")]);
+    app.replace_items(shared(vec![object("a"), object("b")]));
     assert_eq!(app.selected, 1);
     // Even if the original row disappears, the form must not prepare a different row.
-    app.replace_items(vec![object("a")]);
+    app.replace_items(shared(vec![object("a")]));
     assert!(app.key(KeyCode::Char('2')).is_ok());
     assert!(app.key(KeyCode::Enter).is_ok());
     match commands.try_recv() {
@@ -3198,7 +3211,7 @@ fn background_replies_never_unlock_an_in_flight_write() -> Result<()> {
 fn missing_metrics_does_not_invalidate_resource_data() {
     let (mut app, replies, _commands) = harness();
     app.last_table_metrics = Instant::now().checked_sub(Duration::from_secs(30));
-    app.items = vec![object("a")];
+    app.items = shared(vec![object("a")]);
     // Metrics refreshes are background work: they never hold the busy gate.
     app.modal = Modal::Metrics("loading".into(), 0);
     assert!(
@@ -3315,8 +3328,9 @@ fn saved_workload_waits_for_fresh_list_and_rejects_replacement_uid() {
         name: "api".into(),
         uid: "old-uid".into(),
     });
-    app.items =
-        vec![serde_json::json!({"metadata":{"namespace":"test","name":"api","uid":"new-uid"}})];
+    app.items = shared(vec![
+        serde_json::json!({"metadata":{"namespace":"test","name":"api","uid":"new-uid"}}),
+    ]);
     app.stale = true;
     assert!(!app.finish_saved_workload_focus());
     assert!(app.selection_ui.focus.is_some());
@@ -3366,7 +3380,7 @@ fn ui_pods() -> Vec<Value> {
 #[test]
 fn ui_yaml_ascii_borders_and_hidden_hints_row_give_the_table_more_room() -> Result<()> {
     let (mut app, _replies, _commands) = harness();
-    app.items = ui_pods();
+    app.items = shared(ui_pods());
     let default = screen(&app, 80, 24);
     assert!(default[23].contains("all keys"));
     assert!(default[21].contains("waiting"));
@@ -3392,7 +3406,7 @@ fn ui_yaml_ascii_borders_and_hidden_hints_row_give_the_table_more_room() -> Resu
 fn ui_yaml_color_override_reaches_the_rendered_frame() -> Result<()> {
     use crossterm::Command;
     let (mut app, _replies, _commands) = harness();
-    app.items = ui_pods();
+    app.items = shared(ui_pods());
     app.options.color = true;
     let mut before = Vec::new();
     render(&app, 80, 24, &mut before)?;
@@ -3413,7 +3427,7 @@ fn ui_yaml_color_override_reaches_the_rendered_frame() -> Result<()> {
 #[test]
 fn ui_yaml_compact_chrome_and_table_style() -> Result<()> {
     let (mut app, _replies, _commands) = harness();
-    app.items = ui_pods();
+    app.items = shared(ui_pods());
     app.ui = crate::ui_config::parse(
         "header:\n  compact: true\ntable:\n  density: relaxed\n  zebra: true\n  column_separator: \"|\"\n  selection_marker: \"@\"\n  mark_marker: \"+\"\n  age: long\n  sort_ascending: \"<\"\n",
     )?;
@@ -3619,7 +3633,7 @@ fn marks_turn_delete_into_one_batch_prepare_of_every_marked_object() -> Result<(
     let (mut app, replies, mut commands) = harness();
     app.options.connection.writable = true;
     app.desired_resource = Some("deployments.apps".into());
-    app.items = marked_deployments();
+    app.items = shared(marked_deployments());
     app.key_event(KeyCode::Char(' '), KeyModifiers::NONE)?;
     app.key_event(KeyCode::Char(' '), KeyModifiers::NONE)?;
     assert!(
@@ -3688,7 +3702,7 @@ fn batch_marks_refuse_unlisted_objects_and_mixed_cronjob_states() -> Result<()> 
     let (mut app, _replies, mut commands) = harness();
     app.options.connection.writable = true;
     app.desired_resource = Some("deployments.apps".into());
-    app.items = marked_deployments();
+    app.items = shared(marked_deployments());
     app.marks.insert("uid-api".into());
     app.marks.insert("uid-gone".into());
     app.key_event(KeyCode::Char('d'), KeyModifiers::CONTROL)?;
@@ -3696,10 +3710,10 @@ fn batch_marks_refuse_unlisted_objects_and_mixed_cronjob_states() -> Result<()> 
     assert!(commands.try_recv().is_err());
     app.marks.clear();
     app.desired_resource = Some("cronjobs.batch".into());
-    app.items = vec![
+    app.items = shared(vec![
         serde_json::json!({"metadata":{"name":"a","namespace":"test","uid":"uid-a"},"spec":{"suspend":true}}),
         serde_json::json!({"metadata":{"name":"b","namespace":"test","uid":"uid-b"},"spec":{"suspend":false}}),
-    ];
+    ]);
     app.marks.extend(["uid-a".to_owned(), "uid-b".to_owned()]);
     app.key_event(KeyCode::Char('s'), KeyModifiers::NONE)?;
     assert!(
@@ -4108,9 +4122,9 @@ fn chart_app(style: crate::ui_config::ChartStyle) -> Result<App> {
     let (mut app, _replies, _commands) = harness();
     app.ui.charts.style = style;
     app.desired_resource = Some("pods".into());
-    app.items = vec![
+    app.items = shared(vec![
         serde_json::json!({"apiVersion":"v1","kind":"Pod","metadata":{"name":"api-7d4f9","namespace":"demo","uid":"demo-Pod-api-7d4f9"},"spec":{"containers":[{"name":"app","resources":{"requests":{"cpu":"250m","memory":"128Mi"},"limits":{"cpu":"1","memory":"512Mi"}}}]}}),
-    ];
+    ]);
     app.namespace = "demo".into();
     let start = Instant::now()
         .checked_sub(Duration::from_secs(120))
@@ -4189,7 +4203,8 @@ fn metrics_chart_braille_and_blocks_use_only_trusted_glyphs() -> Result<()> {
         assert!(text.chars().any(|c| range.contains(&c)), "{text}");
         assert!(text.contains('│') && text.contains('└'), "{text}");
         // Data text keeps the ASCII policy even beside chart glyphs.
-        app.items[0]["metadata"]["name"] = "api-7d4f9\u{2588}".into();
+        std::sync::Arc::make_mut(&mut app.items[0])["metadata"]["name"] =
+            "api-7d4f9\u{2588}".into();
         let text = screen(&app, 90, 30).join("\n");
         assert!(text.contains("CHART needs a selected Pod") || !text.contains("api-7d4f9\u{2588}"));
     }
@@ -4267,9 +4282,9 @@ fn dashboard_chart_panel_renders_trend_axes_for_the_focused_card() -> Result<()>
 #[test]
 fn ask_shows_visible_setup_and_operator_denial_without_sending() -> Result<()> {
     let (mut app, _replies, mut commands) = harness();
-    app.items = vec![
+    app.items = shared(vec![
         serde_json::json!({"kind":"Pod","metadata":{"name":"api","namespace":"test","uid":"pod1"},"status":{"phase":"Running"}}),
-    ];
+    ]);
     let text = snapshot::screen_text(&app, 100, 30)?;
     assert!(text.contains("api") && text.contains("NAMESPACE"));
     assert!(text.is_ascii() && !text.contains('\x1b'));
@@ -4371,7 +4386,7 @@ fn pod_rows(frame: &[String]) -> Vec<String> {
 #[test]
 fn unicode_pod_names_render_real_glyphs_in_aligned_columns() {
     let (mut app, _replies, _commands) = harness();
-    app.items = unicode_pods("");
+    app.items = shared(unicode_pods(""));
     crate::text::with_mode(true, || {
         for width in [100u16, 120, 160] {
             let frame = screen(&app, width, 24);
@@ -4404,7 +4419,9 @@ fn unicode_pod_names_render_real_glyphs_in_aligned_columns() {
 #[test]
 fn unicode_truncation_keeps_clusters_whole_and_columns_aligned() {
     let (mut app, _replies, _commands) = harness();
-    app.items = unicode_pods("-日本語日本語日本語日本語日本語日本語日本語日本語");
+    app.items = shared(unicode_pods(
+        "-日本語日本語日本語日本語日本語日本語日本語日本語",
+    ));
     crate::text::with_mode(true, || {
         for width in [61u16, 70, 80, 81, 100] {
             let frame = screen(&app, width, 24);
@@ -4433,7 +4450,7 @@ fn ascii_text_mode_keeps_question_marks_for_non_ascii_names() {
     let (mut app, _replies, _commands) = harness();
     // Border selection is independent of data text mode and the host locale.
     app.ui.borders = crate::ui_config::Borders::Ascii;
-    app.items = unicode_pods("");
+    app.items = shared(unicode_pods(""));
     let frame = crate::text::with_mode(false, || screen(&app, 120, 24));
     let rows = pod_rows(&frame);
     assert!(rows.iter().all(|row| row.is_ascii() && row.len() == 120));
@@ -4532,7 +4549,7 @@ fn k9s_plugin_shortcut_help_menu_and_review_show_the_exact_expanded_argv() -> Re
     app.plugins.directory = Some(registry.0.clone());
     app.context = "docker-desktop".into();
     let pod = |name: &str| serde_json::json!({"apiVersion":"v1","kind":"Pod","metadata":{"name":name,"namespace":"shop","uid":"u1"}});
-    app.items = vec![pod("api-7d9")];
+    app.items = shared(vec![pod("api-7d9")]);
 
     app.key_event(KeyCode::Char('?'), KeyModifiers::NONE)?;
     let help = screen(&app, 120, 200).join("\n");
@@ -4571,7 +4588,7 @@ fn k9s_plugin_shortcut_help_menu_and_review_show_the_exact_expanded_argv() -> Re
 
     // A hostile Pod name is refused before any review opens.
     app.modal = Modal::None;
-    app.items = vec![pod("--exec=/bin/sh")];
+    app.items = shared(vec![pod("--exec=/bin/sh")]);
     app.key_event(KeyCode::Char('l'), KeyModifiers::CONTROL)?;
     assert!(matches!(app.modal, Modal::None));
     assert!(
@@ -4612,7 +4629,7 @@ fn k9s_plugin_in_containers_binds_free_keys_and_respects_the_keymap() -> Result<
     app.options.allow_tools = true;
     let pod = serde_json::json!({"apiVersion":"v1","kind":"Pod","metadata":{"name":"web-1","namespace":"shop"},
         "spec":{"containers":[{"name":"nginx","image":"nginx:1.27"}]}});
-    app.items = vec![pod.clone()];
+    app.items = shared(vec![pod.clone()]);
     app.modal = Modal::PodContainers(Box::new(pod), 1);
     app.key_event(KeyCode::Char('?'), KeyModifiers::NONE)?;
     let help = screen(&app, 120, 200).join("\n");
@@ -4719,7 +4736,7 @@ fn palette_shows_remapped_keys_and_opens_from_its_remapped_key() -> Result<()> {
 fn palette_refuses_disabled_actions_with_their_reason() -> Result<()> {
     let (mut app, _replies, _commands) = harness();
     app.desired_resource = Some("deployments.apps".into());
-    app.items = marked_deployments();
+    app.items = shared(marked_deployments());
     ctrl(&mut app, 'p')?;
     type_text(&mut app, "scale")?;
     assert_eq!(palette_first(&app).as_deref(), Some("scale"));
@@ -4759,7 +4776,7 @@ fn palette_scale_opens_the_same_review_as_the_scale_key() -> Result<()> {
         let (mut app, replies, commands) = harness();
         app.options.connection.writable = true;
         app.desired_resource = Some("deployments.apps".into());
-        app.items = marked_deployments();
+        app.items = shared(marked_deployments());
         app.selected = 1;
         (app, replies, commands)
     };
@@ -4914,19 +4931,19 @@ fn palette_action_in_a_view_runs_its_key_and_picker_choice_works() -> Result<()>
 fn palette_remembers_opened_objects_and_jumps_back_to_them() -> Result<()> {
     let (mut app, _replies, mut commands) = harness();
     app.desired_resource = Some("deployments.apps".into());
-    app.items = marked_deployments();
+    app.items = shared(marked_deployments());
     app.selected = 2;
     app.key_event(KeyCode::Char('d'), KeyModifiers::NONE)?;
     let _ = commands.try_recv();
     app.busy = false;
     for index in 0..60 {
-        app.items = vec![object(&format!("obj-{index}"))];
+        app.items = shared(vec![object(&format!("obj-{index}"))]);
         app.selected = 0;
         app.remember_visit("yaml");
     }
     assert_eq!(app.visited.len(), palette::MAX_VISITED);
     assert_eq!(app.visited.front().map(|v| v.name.as_str()), Some("obj-59"));
-    app.items = marked_deployments();
+    app.items = shared(marked_deployments());
     app.selected = 2;
     app.remember_visit("describe");
     assert_eq!(app.visited.len(), palette::MAX_VISITED);
@@ -4951,7 +4968,7 @@ fn palette_closes_when_a_review_replaces_its_view() -> Result<()> {
     let (mut app, _replies, _commands) = harness();
     app.options.connection.writable = true;
     app.desired_resource = Some("deployments.apps".into());
-    app.items = marked_deployments();
+    app.items = shared(marked_deployments());
     ctrl(&mut app, 'p')?;
     app.modal = Modal::Scale(
         "deployments.apps".into(),
@@ -4971,7 +4988,7 @@ fn palette_closes_when_a_review_replaces_its_view() -> Result<()> {
 fn palette_renders_key_name_category_and_description_at_80x24_and_120x32() -> Result<()> {
     let (mut app, _replies, _commands) = harness();
     app.desired_resource = Some("deployments.apps".into());
-    app.items = marked_deployments();
+    app.items = shared(marked_deployments());
     assert!(screen(&app, 80, 24)[23].contains(" Ctrl-P  palette"));
     ctrl(&mut app, 'p')?;
     let small = screen(&app, 80, 24);
@@ -5109,7 +5126,7 @@ impl LiveConfig {
 #[test]
 fn live_reload_applies_a_saved_ui_yaml_and_views_yaml_without_ui_reload() -> Result<()> {
     let (mut app, _replies, _commands) = harness();
-    app.items = ui_pods();
+    app.items = shared(ui_pods());
     let mut live = LiveConfig::new(&mut app)?;
     assert!(!screen(&app, 80, 24)[3].starts_with('┌'));
     live.write("ui.yaml", "version: 1\nborders: square\n", 0o600)?;
@@ -5304,7 +5321,7 @@ fn marked_rows_are_tinted_and_legible_in_every_theme() {
 fn summary_counts_marked_rows_and_identity_keeps_its_labels() {
     let (mut app, _replies, _commands) = harness();
     app.desired_resource = Some("deployments.apps".into());
-    app.items = marked_deployments();
+    app.items = shared(marked_deployments());
     let frame = screen(&app, 120, 24);
     assert!(!frame[2].contains("marked"), "{}", frame[2]);
     app.marks.insert("uid-api".into());

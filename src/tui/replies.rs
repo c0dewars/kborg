@@ -217,7 +217,14 @@ impl App {
                     }
                 }
                 Reply::Items(value) => {
-                    self.replace_items(value["items"].as_array().cloned().unwrap_or_default());
+                    self.replace_items(
+                        value["items"]
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                            .map(|object| std::sync::Arc::new(object.clone()))
+                            .collect(),
+                    );
                     self.truncated = value["truncated"] == true;
                     self.selected = self.selected.min(self.visible().len().saturating_sub(1));
                     self.stale = false;
@@ -684,6 +691,7 @@ impl App {
             self.replace_items(snapshot.objects);
             self.selected = self.selected.min(self.visible().len().saturating_sub(1));
             self.stale = snapshot.stale;
+            self.list_loading = snapshot.partial;
             self.truncated = snapshot.truncated;
             self.watching = !snapshot.terminal;
             self.watch_blocked = snapshot.terminal;

@@ -4,7 +4,7 @@ use super::*;
 pub(super) enum Task {
     Connect(Connection),
     List(String, String, String, String),
-    Watch(String, String, String, String),
+    Watch(String, String, String, String, crate::watch::Projection),
     Metrics(crate::metrics::MetricsScope, String, bool),
     Inspect(String, String, String),
     Drill(String, String, String),
@@ -556,8 +556,8 @@ pub(super) fn worker() -> Worker {
                             Err(_) => Reply::Failure("connection timeout; select a context or retry".into()),
                         }
                     }
-                    Task::Watch(k, n, selector,fields) => {
-                        match gateway.as_ref().ok_or("not connected; select a context or retry".to_string()).and_then(|g| g.watch_fields(&k, &n, &selector,&fields)) {
+                    Task::Watch(k, n, selector,fields,projection) => {
+                        match gateway.as_ref().ok_or("not connected; select a context or retry".to_string()).and_then(|g| g.watch_fields(&k, &n, &selector,&fields,projection)).map(crate::watch::WatchFeed::progressive) {
                             Err(e) => Reply::Failure(e),
                             Ok(mut feed) => {
                                 let mailbox = watch_results.clone();

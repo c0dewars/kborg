@@ -11,14 +11,17 @@ impl Gateway {
         ns: &str,
         selector: &str,
     ) -> Result<crate::watch::WatchFeed> {
-        self.watch_fields(key, ns, selector, "")
+        self.watch_fields(key, ns, selector, "", crate::watch::Projection::Full)
     }
+    /// A metadata projection is honored only for kinds whose built-in columns
+    /// need nothing else; other kinds always get full objects.
     pub fn watch_fields(
         &self,
         key: &str,
         ns: &str,
         selector: &str,
         fields: &str,
+        projection: crate::watch::Projection,
     ) -> Result<crate::watch::WatchFeed> {
         crate::selectors::validate(selector)?;
         let scope = crate::selectors::field_scope(fields)?;
@@ -31,12 +34,18 @@ impl Gateway {
                 scope.kind()
             ));
         }
+        let projection = if crate::watch::metadata_kind(&kind) {
+            projection
+        } else {
+            crate::watch::Projection::Full
+        };
         Ok(crate::watch::WatchFeed::with_filters(
             self.api(&kind, ns)?,
             kind,
             selector.into(),
             fields.into(),
         )
+        .with_projection(projection)
         .with_origin(&self.context, &self.server))
     }
     pub(crate) fn metrics_api(

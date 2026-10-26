@@ -113,7 +113,7 @@ pub(crate) struct PodHealth {
 }
 
 impl PodHealth {
-    pub fn from_objects(pods: &[Value]) -> Self {
+    pub fn from_objects<T: std::borrow::Borrow<Value>>(pods: &[T]) -> Self {
         let mut summary = HealthSummary {
             ready: 0,
             unready: 0,
@@ -130,6 +130,7 @@ impl PodHealth {
         };
         let mut identities = BTreeSet::new();
         for pod in pods {
+            let pod: &Value = pod.borrow();
             if let Some(identity) = identity(&pod["metadata"]) {
                 identities.insert(identity);
             }
@@ -264,9 +265,10 @@ impl EventEvidence {
         }
     }
 
-    pub fn from_objects(events: &[Value], truncated: bool) -> Self {
+    pub fn from_objects<T: std::borrow::Borrow<Value>>(events: &[T], truncated: bool) -> Self {
         let candidates = events
             .iter()
+            .map(|event| -> &Value { event.borrow() })
             .filter(|event| event["type"] == "Warning" && event["involvedObject"]["kind"] == "Pod")
             .filter_map(|event| {
                 let identity = identity(&event["involvedObject"])?;
@@ -468,7 +470,7 @@ mod tests {
             pods.with_warnings(&unknown, 100).warnings.state,
             EvidenceState::Truncated
         );
-        let truncated = EventEvidence::from_objects(&[], true);
+        let truncated = EventEvidence::from_objects::<Value>(&[], true);
         assert_eq!(
             pods.with_warnings(&truncated, 100).warnings.state,
             EvidenceState::Truncated

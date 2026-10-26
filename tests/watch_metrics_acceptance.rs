@@ -51,7 +51,7 @@ async fn matching(
             let snapshot = feed.next().await;
             assert!(!snapshot.terminal, "{}", snapshot.message);
             assert!(
-                !serde_json::to_string(&snapshot.objects)
+                !serde_json::to_string(&snapshot.objects.iter().map(|o| &**o).collect::<Vec<_>>())
                     .unwrap_or_default()
                     .contains("KBORG_WATCH_PAYLOAD_CANARY")
             );

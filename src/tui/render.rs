@@ -932,7 +932,7 @@ fn render_frame(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
         )
         .map_err(|_| "draw failed")?;
     }
-    let freshness = if app.busy {
+    let freshness = if app.busy || app.list_loading {
         "LOADING"
     } else if app.stale {
         "STALE"
