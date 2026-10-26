@@ -617,6 +617,9 @@ fn parse_k9s(text: &str) -> Result<Vec<K9sPlugin>> {
     };
     let file: PluginFile = serde_saphyr::from_str_with_options(text, options)
         .map_err(|_| "invalid plugins.yaml; expected a k9s plugins: mapping")?;
+    if file.plugins.len() > 256 {
+        return Err("plugins.yaml lists more than 256 plugins; split it".into());
+    }
     let text = |value: &Value, limit: usize| {
         match value {
             Value::String(text) => text.clone(),
@@ -635,7 +638,7 @@ fn parse_k9s(text: &str) -> Result<Vec<K9sPlugin>> {
             let name = safety::safe_text(name, 63);
             K9sPlugin {
                 id: name.to_ascii_lowercase().replace([' ', '_'], "-"),
-                command: text(&plugin["command"], 4096),
+                command: text(&plugin["command"], 4097),
                 args: plugin["args"]
                     .as_array()
                     .map(|args| args.iter().map(|arg| text(arg, 4097)).collect())
@@ -670,6 +673,20 @@ fn parse_k9s(text: &str) -> Result<Vec<K9sPlugin>> {
         .collect())
 }
 
+/// One word for a command line the user may paste into a shell: plain words
+/// stay as they are, anything else is POSIX single-quoted.
+pub(crate) fn shell_word(word: &str) -> String {
+    let plain = !word.is_empty()
+        && word
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"_./=:@%+,-".contains(&b));
+    if plain {
+        word.to_owned()
+    } else {
+        format!("'{}'", word.replace('\'', "'\\''"))
+    }
+}
+
 /// The named k9s plugin from `plugins.yaml`, validated for `register-k9s`.
 pub fn k9s_plugin(text: &str, name: &str) -> Result<K9sPlugin> {
     let plugin = parse_k9s(text)?
@@ -697,8 +714,17 @@ fn blocking(plugin: &K9sPlugin) -> Vec<String> {
     if let Err(error) = plugin.meta.validate() {
         reasons.push(error);
     }
-    if plugin.args.len() > 64 || plugin.args.iter().any(|arg| arg.len() > 4096) {
-        reasons.push("more than 64 arguments or an argument over 4096 bytes".into());
+    if plugin.args.len() > 64
+        || plugin.command.len() > 4096
+        || plugin.args.iter().any(|arg| arg.len() > 4096)
+    {
+        reasons.push("more than 64 arguments, or a command or argument over 4096 bytes".into());
+    }
+    if std::iter::once(&plugin.command)
+        .chain(&plugin.args)
+        .any(|word| word.chars().any(char::is_control))
+    {
+        reasons.push("command or argument contains control characters".into());
     }
     if !safety::valid_id(&plugin.id) {
         reasons
@@ -833,12 +859,12 @@ pub fn import_k9s(
             } else {
                 format!(" {}", plugin.meta.description)
             },
-            safety::safe_text(file, 4096),
+            shell_word(&safety::safe_text(file, 4096)),
             plugin.id,
-            tool.map_or_else(
+            shell_word(&tool.map_or_else(
                 || format!("/ABSOLUTE/PATH/TO/{command}"),
                 |path| safety::safe_text(&path.to_string_lossy(), 4096)
-            ),
+            )),
         );
         if !variables.is_empty() {
             line.push_str(&format!("    variables: {}\n", variables.join(" ")));
@@ -1249,6 +1275,28 @@ mod tests {
         assert_eq!(
             safety::read_small(&entry_path(&directory.0, "view")?, MAX_ENTRY)?,
             raw
+        );
+        Ok(())
+    }
+    #[test]
+    fn import_suggestions_quote_paths_and_refuse_hidden_or_oversized_words() -> Result<()> {
+        assert_eq!(shell_word("/opt/bin/kubectl"), "/opt/bin/kubectl");
+        assert_eq!(shell_word("my plugins.yaml"), "'my plugins.yaml'");
+        assert_eq!(shell_word("a'b;$(x)"), "'a'\\''b;$(x)'");
+        let hostile = "plugins:\n  evil:\n    shortCut: Shift-E\n    scopes: [pods]\n    command: kubectl\n    args: [\"get\\u001b[2J\"]\n";
+        let report = import_k9s(hostile, "x; rm -rf ~.yaml", &|_| None)?;
+        assert!(report.contains("control characters"), "{report}");
+        let many: String = (0..257)
+            .map(|i| format!("  p{i}:\n    command: kubectl\n"))
+            .collect();
+        assert!(import_k9s(&format!("plugins:\n{many}"), "p.yaml", &|_| None).is_err());
+        let fine = "plugins:\n  logs:\n    shortCut: Shift-L\n    scopes: [pods]\n    command: kubectl\n    args: [logs, $NAME]\n";
+        let report = import_k9s(fine, "my plugins.yaml", &|_| {
+            Some(PathBuf::from("/opt/my tools/kubectl"))
+        })?;
+        assert!(
+            report.contains("register-k9s 'my plugins.yaml' logs --tool '/opt/my tools/kubectl'"),
+            "{report}"
         );
         Ok(())
     }
