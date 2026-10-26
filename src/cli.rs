@@ -435,6 +435,11 @@ fn parse(args: Vec<String>) -> Result<Options> {
                     return Err("session duration must be 1..3600 seconds".into());
                 }
             }
+            "--session-escape" => crate::session::set_escape(crate::session::parse_escape(
+                &args
+                    .next()
+                    .ok_or("--session-escape needs a key such as ctrl-]")?,
+            )?),
             "--allow-auth-helper" => opts.connection.allow_auth_helper = true,
             "--auth-helper-policy" => {
                 opts.connection.auth_helper_policy = Some(PathBuf::from(
@@ -2344,5 +2349,13 @@ mod tests {
         );
         assert!(parse(vec!["--json".into(), "doctor".into()]).is_err());
         assert!(parse(vec!["--json".into()]).is_err());
+    }
+
+    #[test]
+    fn session_escape_rejects_keys_the_remote_shell_needs() {
+        for key in ["ctrl-c", "ctrl-m", "enter"] {
+            assert!(parse(vec!["--session-escape".into(), key.into()]).is_err());
+        }
+        assert!(parse(vec!["--session-escape".into()]).is_err());
     }
 }

@@ -1667,6 +1667,7 @@ fn render_frame(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
                 charts_ui::metrics(app, out, inner, modal_bg)?;
             }
             let generated = keyhelp::modal_hint(app, modal);
+            let session_hint;
             let hints = if let Some(generated) = generated.as_deref() {
                 generated
             } else if let Modal::Confirm(prepared, text) = modal {
@@ -1681,11 +1682,18 @@ fn render_frame(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
                 }
             } else if let Modal::SessionConfirm(prepared, text) = modal {
                 if confirmation_fits(prepared.summary(), text, w, h) {
-                    if review_ui::strict() {
-                        "Type target | Enter start session | Esc cancel | Ctrl-] ends session"
+                    session_hint = if review_ui::strict() {
+                        format!(
+                            "Type target | Enter start session | Esc cancel | {} ends session",
+                            crate::session::escape_label()
+                        )
                     } else {
-                        "y/Enter start | n/Esc cancel | Ctrl-] ends session"
-                    }
+                        format!(
+                            "y/Enter start | n/Esc cancel | {} ends session",
+                            crate::session::escape_label()
+                        )
+                    };
+                    &session_hint
                 } else {
                     "Esc cancel | Enlarge terminal to review complete session."
                 }

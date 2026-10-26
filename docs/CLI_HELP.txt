@@ -79,6 +79,7 @@ Options (put KBorg flags before exec's -- separator):
   --context NAME     --namespace NAME / -n NAME (all or "*" for every namespace)
   --kubeconfig FILE  --read-only (no changes)   --config FILE (operator restrictions)
   --interactive     --session-seconds 1..3600    --log-seconds 1..86400
+  --session-escape KEY  Local key that ends a full-TTY session (default ctrl-])
   --metrics-resources  --selector LABELS / -l LABELS (ui/list/watch/logs)
   --tail 1..2000      --since-seconds 1..86400   --head (logs only)
   --helm-storage secret|configmap   --all-containers
@@ -107,7 +108,10 @@ Kubeconfig works as in kubectl: exec helpers (aws, gcloud, kubelogin, ...),
 auth providers, impersonation, proxy-url and insecure-skip-tls-verify are honored.
 Helm install/upgrade needs a context with a static token or client certificate,
 because the helm binary receives those credentials.
-Exec/attach sessions use Ctrl-] to disconnect. Follow defaults 1h; rolling
+Interactive exec/attach sessions are a full TTY like kubectl exec -it (vim, top,
+less work): the remote program controls your terminal, unfiltered. Ctrl-] (or
+--session-escape KEY) disconnects; resizes are forwarded; 1..3600s, 16MiB output/
+8MiB input; terminal modes are reset on return. Follow defaults 1h; rolling
 display 256KiB/2000 lines, 64MiB wire cap and per-second flood limits.
 
 Themes:

@@ -429,6 +429,19 @@ async fn verify_review(
     Ok(api)
 }
 
+/// `namespace/pod (container)` for the full-TTY session banner; the session
+/// sanitizes it before printing.
+fn session_target(reviewed: &ReviewedOperation) -> String {
+    let container = match &reviewed.request {
+        Request::InteractiveExec { container, .. }
+        | Request::InteractiveAttach { container, .. }
+        | Request::Debug { container, .. } => container.as_str(),
+        Request::NodeShell { .. } => crate::node_shell::CONTAINER,
+        _ => "",
+    };
+    format!("{}/{} ({container})", reviewed.namespace, reviewed.pod)
+}
+
 async fn connect_interactive(
     api: &kube::Api<k8s_openapi::api::core::v1::Pod>,
     reviewed: &ReviewedOperation,
@@ -543,13 +556,16 @@ pub async fn run(gateway: &Gateway, reviewed: ReviewedOperation, typed: &str) ->
         | Request::InteractiveAttach { seconds, .. }
         | Request::NodeShell { seconds, .. }
         | Request::Debug { seconds, .. } => match connect_interactive(&api, &reviewed).await {
-            Ok(process) => match crate::session::terminal(process, *seconds).await {
-                Ok(outcome) => {
-                    session_unknown = outcome.remote_outcome_unknown();
-                    Ok(outcome.summary())
+            Ok(process) => {
+                match crate::session::terminal(process, *seconds, &session_target(&reviewed)).await
+                {
+                    Ok(outcome) => {
+                        session_unknown = outcome.remote_outcome_unknown();
+                        Ok(outcome.summary())
+                    }
+                    Err(error) => Err(error),
                 }
-                Err(error) => Err(error),
-            },
+            }
             Err(error) => Err(error),
         },
         Request::CopyFrom {
