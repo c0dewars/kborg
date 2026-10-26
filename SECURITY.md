@@ -104,6 +104,27 @@ conflicts are never forced. Secrets, cluster-scoped kinds, system namespaces
 and GitOps-managed objects are refused. A multi-object apply is not atomic: a
 failure part-way leaves earlier objects applied, and the result says which.
 
+Interactive sessions (Pod shell `s`, attach `a`, node shell, debug and
+`--interactive exec/attach`) are a full terminal, like `kubectl exec -it`. They are
+on by default like k9s (`--read-only`, or an operator config with
+`allow_exec: false` and the attach, node-shell or debug fields, turns them
+off). Each one first shows a review of the exact Pod, container, UID and argv
+and needs a confirmation (typed with `strict_confirmations`); the UID is
+rechecked before connecting and each session is audited. While
+connected the remote program controls your terminal: its output, including
+escape sequences, is not filtered, so it can change the window title, draw
+anywhere, query the terminal and, if your terminal allows OSC 52, write the
+clipboard. Only open sessions to containers you trust that much. Ctrl-] (or
+`--session-escape`) always disconnects, also when the remote enables kitty or
+modifyOtherKeys keyboard modes. On every exit, including errors and panics,
+KBorg writes a reset that aborts any unfinished escape sequence and turns off
+mouse tracking, bracketed paste, application keypad/cursor keys, the alternate
+screen, scroll regions, line-drawing charsets, palette changes and hidden
+cursor, restores the saved title, then redraws. Sessions end at the configured
+lifetime (1..3600 s), 16 MiB received output or 8 MiB typed input. Output-only
+exec/attach and the controlled-input API still filter output to text and safe
+colors.
+
 Node shell is on by default (an operator config can set `allow_node_shell: false`) and is root on the
 Node. The review shows the complete privileged Pod (host PID, network and IPC
 namespaces). The session only targets KBorg's own node-shell Pod on the

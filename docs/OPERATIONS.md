@@ -146,9 +146,9 @@ provider-specific chains and stronger handle-based path trust remain gates.
 
 CLI `--interactive exec/attach` and TUI `E` acquire one terminal owner after exact
 review. `Ctrl-]` disconnects; `Ctrl-C` goes to the remote process. Resize is sent
-through the native Kubernetes protocol. Finite time/input/output budgets and
-terminal restoration apply. Remote full-screen applications and privileged node
-shells are unsupported. Interactive APIs have the same residual subresource
+through the native Kubernetes protocol. Sessions are a full TTY passthrough
+(remote full-screen applications such as vim and top work); finite
+time/input/output budgets and terminal-mode reset on return apply. Interactive APIs have the same residual subresource
 name-recreation race as noninteractive operations.
 
 `V`/`set-resources` reviews four CPU/memory request/limit values for one ordinary

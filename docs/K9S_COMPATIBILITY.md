@@ -93,6 +93,10 @@ k9s embeds grype for its vulscan view. KBorg contains no scanner or vulnerabilit
 
 A short review shows the scanner (detected from `--version`), the images and that the scanner may download its database and pull image layers from registries; Enter or `scan` starts it. Results open in a document view: counts by severity per image and the ten most severe findings (ID, package, installed -> fixed version). Esc or Ctrl-C cancels. Trivy runs as `trivy image --quiet --format json --scanners vuln -- IMAGE` and may use a local Docker daemon; Grype runs as `grype -q -o json -- registry:IMAGE`, always pulling from the registry. Images that exist only inside the cluster node, such as kind-loaded images, cannot be scanned by Grype. See [SECURITY.md](../SECURITY.md).
 
+## Pod shell
+
+k9s `s` on a Pod or container runs `kubectl exec -it` with a full terminal. KBorg's `s` (and `a` for attach) is the same full terminal, on by default (off with `--read-only` or an operator config): after the exact review (Pod, container, UID, argv) and `y`/Enter it leaves its screen, passes every key, paste, mouse report and escape sequence through unchanged, forwards window resizes, and runs vim, top, less or htop as kubectl would. Ctrl-] returns to KBorg (k9s: exit the shell); `--session-escape KEY` picks another Ctrl key. On return KBorg resets terminal modes the remote program left behind and redraws. Differences: KBorg opens `/bin/sh -i` (k9s tries bash first), and sessions have a lifetime (`--session-seconds`, default 900) and 16 MiB output / 8 MiB input limits.
+
 ## Node shell
 
 k9s's node shell creates a privileged Pod on the Node. KBorg does the same: `s` on a Node (or `kborg node-shell NODE`) shows the complete Pod (host PID/network/IPC, privileged, pinned busybox, override with `--node-shell-image`) after a server dry run, and on `shell NODE` creates it in the current namespace (or `default`), waits for it and opens `nsenter -t 1 … /bin/sh -i`. The Pod is deleted when the session ends and has `activeDeadlineSeconds`, so it also ends if KBorg is killed. Pod Security admission or RBAC may refuse it; choose a namespace that permits privileged Pods.
