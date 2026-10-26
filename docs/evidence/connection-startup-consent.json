@@ -1,0 +1,48 @@
+{
+  "schema": 1,
+  "utc": "2026-10-26T21:34:49.917231+00:00",
+  "binary_sha256": "f9209d9aa038cb051f0b6abc513d459eb2b9f750f2de86820e3f4d8ceaa54793",
+  "scope": "WSL PTY, synthetic kubeconfig and local listener; no real cluster or credentials",
+  "cases": [
+    {
+      "alternative_context": false,
+      "approved": false,
+      "changed_config_rejected": false,
+      "helper_after_approval_only": true,
+      "kubeconfig_unchanged": true,
+      "clean_exit": true
+    },
+    {
+      "alternative_context": true,
+      "approved": false,
+      "changed_config_rejected": false,
+      "helper_after_approval_only": true,
+      "kubeconfig_unchanged": true,
+      "clean_exit": true
+    },
+    {
+      "alternative_context": false,
+      "approved": true,
+      "changed_config_rejected": false,
+      "helper_after_approval_only": true,
+      "kubeconfig_unchanged": true,
+      "clean_exit": true
+    },
+    {
+      "alternative_context": true,
+      "approved": true,
+      "changed_config_rejected": false,
+      "helper_after_approval_only": true,
+      "kubeconfig_unchanged": true,
+      "clean_exit": true
+    },
+    {
+      "alternative_context": false,
+      "approved": false,
+      "changed_config_rejected": true,
+      "helper_after_approval_only": true,
+      "kubeconfig_unchanged": true,
+      "clean_exit": true
+    }
+  ]
+}

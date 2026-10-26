@@ -1,0 +1,40 @@
+ KBORG    Pods                                                                                                                 ?  
+CTX demo | NS demo | API offline sample data                                                                      DEMO SAMPLE DATA
+ SAMPLE   5002 Pods   5001 healthy  1 needs attention  sort: name                                                                 
+╭ pods [1/5002] | METRICS 1 measured | UID verified | m details ─────────────────────────────────────────────────────────────────╮
+│   NAMESPACE        NAME^                                          READY   STATUS               RSTS  AGE    CPU(m)    MEM      │
+│>  demo             api-7d4f9                                      1/1     Running              0     16d    125       64Mi     │
+│   demo             scale-00000                                    1/1     Running              0     16d    -         -        │
+│   demo             scale-00001                                    1/1     Running              1     16d    -         -        │
+│   demo             scale-00002                                    1/1     Running              2     16d    -         -        │
+│   demo             scale-00003                                    1/1     Running              3     16d    -         -        │
+│   demo             scale-00004                                    1/1     Running              0     16d    -         -        │
+│   demo             scale-00005                                    1/1     Running              1     16d    -         -        │
+│   demo             scale-00006                                    1/1     Running              2     16d    -         -        │
+│   demo             scale-00007                                    1/1     Running              3     16d    -         -        │
+│   demo             scale-00008                                    1/1     Running              0     16d    -         -        │
+│   demo             scale-00009                                    1/1     Running              1     16d    -         -        │
+│   demo             scale-00010                                    1/1     Running              2     16d    -         -        │
+│   demo             scale-00011                                    1/1     Running              3     16d    -         -        │
+│   demo             scale-00012                                    1/1     Running              0     16d    -         -        │
+│   demo             scale-00013                                    1/1     Running              1     16d    -         -        │
+│   demo             scale-00014                                    1/1     Running              2     16d    -         -        │
+│   demo             scale-00015                                    1/1     Running              3     16d    -         -        │
+│   demo             scale-00016                                    1/1     Running              0     16d    -         -        │
+│   demo             scale-00017                                    1/1     Running              1     16d    -         -        │
+│   demo             scale-00018                                    1/1     Running              2     16d    -         -        │
+│   demo             scale-00019                                    1/1     Running              3     16d    -         -        │
+│   demo             scale-00020                                    1/1     Running              0     16d    -         -        │
+│   demo             scale-00021                                    1/1     Running              1     16d    -         -        │
+│   demo             scale-00022                                    1/1     Running              2     16d    -         -        │
+│   demo             scale-00023                                    1/1     Running              3     16d    -         -        │
+│   demo             scale-00024                                    1/1     Running              0     16d    -         -        │
+│   demo             scale-00025                                    1/1     Running              1     16d    -         -        │
+│   demo             scale-00026                                    1/1     Running              2     16d    -         -        │
+│   demo             scale-00027                                    1/1     Running              3     16d    -         -        │
+│   demo             scale-00028                                    1/1     Running              0     16d    -         -        │
+│   demo             scale-00029                                    1/1     Running              1     16d    -         -        │
+╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+ 5002 objects | cached filter | refresh every 5s                                                                                  
+                                                                                                                                  
+ ? all keys   Ctrl-P palette   Enter containers   l logs   s shell   F forward   d describe   y yaml   / filter   : command       

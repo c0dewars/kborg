@@ -1,0 +1,145 @@
+{
+  "demo-startup": {
+    "tool": "demo-startup",
+    "argv": [
+      "/home/garcia/.cache/k8borg-target/release/kborg",
+      "--demo",
+      "--no-splash",
+      "--theme",
+      "flexoki-dark"
+    ],
+    "binary": "/home/garcia/.cache/k8borg-target/release/kborg",
+    "binary_mib": 20.6,
+    "platform": "Linux x86_64",
+    "idle_seconds": 10.0,
+    "first_data_seconds": 0.053,
+    "steps": [],
+    "sampled_seconds": 10.012,
+    "sample_count": 10,
+    "rss_mib_median": 12.1,
+    "rss_mib_peak": 12.2,
+    "cpu_percent_avg": 0.0,
+    "network": "unavailable on this platform",
+    "total_wall_seconds": 12.1,
+    "repeat": 3,
+    "runs": [
+      {
+        "first_data_seconds": 0.053,
+        "rss_mib_median": 12.0,
+        "rss_mib_peak": 12.0,
+        "cpu_percent_avg": 0.0
+      },
+      {
+        "first_data_seconds": 0.052,
+        "rss_mib_median": 12.1,
+        "rss_mib_peak": 12.2,
+        "cpu_percent_avg": 0.0
+      },
+      {
+        "first_data_seconds": 0.053,
+        "rss_mib_median": 12.1,
+        "rss_mib_peak": 12.2,
+        "cpu_percent_avg": 0.0
+      }
+    ]
+  },
+  "demo-scale": {
+    "tool": "demo-scale",
+    "argv": [
+      "/home/garcia/.cache/k8borg-target/release/kborg",
+      "--demo",
+      "--no-splash",
+      "--theme",
+      "flexoki-dark"
+    ],
+    "binary": "/home/garcia/.cache/k8borg-target/release/kborg",
+    "binary_mib": 20.6,
+    "platform": "Linux x86_64",
+    "idle_seconds": 10.0,
+    "first_data_seconds": 0.181,
+    "steps": [],
+    "sampled_seconds": 10.005,
+    "sample_count": 10,
+    "rss_mib_median": 121.5,
+    "rss_mib_peak": 143.5,
+    "cpu_percent_avg": 1.8,
+    "network": "unavailable on this platform",
+    "total_wall_seconds": 12.3,
+    "repeat": 3,
+    "runs": [
+      {
+        "first_data_seconds": 0.242,
+        "rss_mib_median": 121.5,
+        "rss_mib_peak": 136.9,
+        "cpu_percent_avg": 1.8
+      },
+      {
+        "first_data_seconds": 0.181,
+        "rss_mib_median": 136.7,
+        "rss_mib_peak": 143.5,
+        "cpu_percent_avg": 1.8
+      },
+      {
+        "first_data_seconds": 0.18,
+        "rss_mib_median": 121.2,
+        "rss_mib_peak": 167.6,
+        "cpu_percent_avg": 1.8
+      }
+    ]
+  },
+  "demo-dashboard": {
+    "tool": "demo-dashboard",
+    "argv": [
+      "/home/garcia/.cache/k8borg-target/release/kborg",
+      "--demo",
+      "--no-splash",
+      "--theme",
+      "flexoki-dark"
+    ],
+    "binary": "/home/garcia/.cache/k8borg-target/release/kborg",
+    "binary_mib": 20.6,
+    "platform": "Linux x86_64",
+    "idle_seconds": 10.0,
+    "first_data_seconds": 0.053,
+    "steps": [
+      {
+        "keys": "",
+        "marker": "METRICS [0-9]+ measured",
+        "seconds": 0.061
+      },
+      {
+        "keys": "D",
+        "marker": "CONTEXT OVERVIEW",
+        "seconds": 0.059
+      }
+    ],
+    "sampled_seconds": 10.01,
+    "sample_count": 10,
+    "rss_mib_median": 13.4,
+    "rss_mib_peak": 13.4,
+    "cpu_percent_avg": 0.0,
+    "network": "unavailable on this platform",
+    "total_wall_seconds": 12.2,
+    "repeat": 3,
+    "runs": [
+      {
+        "first_data_seconds": 0.053,
+        "rss_mib_median": 13.6,
+        "rss_mib_peak": 13.6,
+        "cpu_percent_avg": 0.0
+      },
+      {
+        "first_data_seconds": 0.053,
+        "rss_mib_median": 13.4,
+        "rss_mib_peak": 13.4,
+        "cpu_percent_avg": 0.0
+      },
+      {
+        "first_data_seconds": 0.053,
+        "rss_mib_median": 13.3,
+        "rss_mib_peak": 13.3,
+        "cpu_percent_avg": 0.0
+      }
+    ]
+  }
+}

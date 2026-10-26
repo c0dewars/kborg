@@ -180,22 +180,30 @@ impl App {
             ("logs-live",[selector])=>self.request_log_group(self.namespace.clone(),crate::logs::PodLogSelection::Selector(selector.clone()),false,true,true),
             ("logs-live",[])=>self.request_dynamic_workload_logs(),
             ("ask", []) => {
-                if self.ask_screen.is_none() {
-                    self.status = "Nothing captured to ask about; press : on the screen you want to ask about.".into();
+                self.refresh_copilot_policy();
+                if !self.options.allow_copilot_screen || !crate::copilot_setup::supported() || self.options.copilot_policy.is_none() {
+                    self.show_copilot_setup();
+                } else if self.ask_screen.is_none() {
+                    self.copilot_notice("ASK COPILOT", "No screen is captured yet. Esc returns; press : on the resource, logs or dashboard you want help with, then type ask QUESTION. Nothing was sent.");
                 } else {
                     self.modal = Modal::Input(ASK_LABEL, String::new());
                 }
             }
+            ("copilot", [action]) if action == "setup" || action == "status" => self.show_copilot_setup(),
             ("ask", words) => {
                 let question = words.join(" ");
                 self.ask(&question);
             }
             ("copilot",[])=>{
+                self.refresh_copilot_policy();
+                // Keep the credential-free local diagnostic preview available
+                // on every platform; :ask remains the guided question flow.
+                let policy = if crate::copilot_setup::supported() { self.options.copilot_policy.clone() } else { None };
                 if let Some((kind,namespace,name))=self.selected_target() {
                     if self.busy {self.status="Wait for the current request before preparing Copilot.".into();}
                     else {
                         self.modal=Modal::AdviceLoading;
-                        self.send(Task::AdvicePrepare(kind,namespace,name,self.selected_uid(),self.options.copilot_policy.clone()));
+                        self.send(Task::AdvicePrepare(kind,namespace,name,self.selected_uid(),policy));
                         if !self.busy {
                             self.modal=Modal::AdviceDocument("COPILOT NOT STARTED".into(),"Request queue unavailable; open Copilot again when the worker is available.".into(),0);
                         }
@@ -790,46 +798,93 @@ impl App {
         let (width, height) = terminal::size().unwrap_or((120, 40));
         self.ask_screen = snapshot::screen_text(self, width, height).ok();
     }
-    /// Ask Copilot about the screen captured when the prompt opened. Without
-    /// a policy and --allow-copilot-screen this shows a local preview only.
-    pub(super) fn ask(&mut self, question: &str) {
-        // Each capture is used once, so a later :ask never reuses an old screen.
-        let Some(screen) = self.ask_screen.take() else {
-            self.status =
-                "Nothing captured to ask about; open :ask from the screen you want to ask about."
-                    .into();
+    fn copilot_notice(&mut self, title: &str, text: &str) {
+        self.modal = Modal::AdviceDocument(title.into(), text.into(), 0);
+        self.status = "Copilot: nothing sent. See the open dialog for the next step.".into();
+    }
+    fn refresh_copilot_policy(&mut self) {
+        if self.options.copilot_policy.is_none() {
+            self.options.copilot_policy = crate::copilot_setup::saved_policy();
+        }
+    }
+    fn show_copilot_setup(&mut self) {
+        self.refresh_copilot_policy();
+        if !self.options.allow_copilot_screen {
+            self.copilot_notice("COPILOT DISABLED", "Screen questions are disabled by the operator configuration (allow_copilot_screen: false). Ask your administrator to enable them if permitted. Login cannot override this policy. Nothing was sent. Esc returns.");
             return;
-        };
-        let bundle = match crate::advice::screen_bundle(question, &screen) {
-            Ok(bundle) => bundle,
+        }
+        let text = crate::copilot_setup::status_text(self.options.copilot_policy.as_deref());
+        self.copilot_notice(crate::copilot_setup::TITLE, &text);
+    }
+    pub(super) fn finish_copilot_setup(&mut self, result: Result<crate::copilot_setup::Outcome>) {
+        match result {
+            Ok(crate::copilot_setup::Outcome::AccountSignedIn {host, account}) => {
+                self.ask_screen = None;
+                self.pending_copilot_question = None;
+                self.copilot_notice("GITHUB ACCOUNT SELECTED", &format!("Stored account selected: {account}\nHost: {host}\n\nCredentials remain in the official GitHub CLI. In-app Copilot answers are still unavailable on this platform; login alone cannot enable the missing containment backend. No question or cluster data was sent.\n\nEsc returns to Kubernetes."));
+            }
+            Ok(crate::copilot_setup::Outcome::Ready(path)) => {
+                self.options.copilot_policy = Some(path);
+                if let Some(question) = self.pending_copilot_question.take() {
+                    self.ask(&question);
+                } else if self.ask_screen.is_some() {
+                    self.modal = Modal::Input(ASK_LABEL, String::new());
+                } else {
+                    self.show_copilot_setup();
+                }
+            }
+            Err(error) => self.copilot_notice(crate::copilot_setup::TITLE, &format!("Setup did not finish. No question or cluster data was sent.\n\n{}\n\nS retries setup. Esc returns.", safety::safe_text(&error, 8192))),
+        }
+    }
+    /// Keep the bounded sanitized capture until the connection is available,
+    /// then consume it once when preparing an explicitly reviewed transfer.
+    pub(super) fn ask(&mut self, question: &str) {
+        let question = match crate::advice::validate_question(question) {
+            Ok(question) => question,
             Err(error) => {
-                self.status = error;
+                self.copilot_notice(
+                    "ASK COPILOT / question needed",
+                    &format!("{error}\n\nEsc returns. Use :ask QUESTION. Nothing was sent."),
+                );
                 return;
             }
         };
-        let policy = self.options.copilot_policy.clone();
-        if policy.is_none() || !self.options.allow_copilot_screen {
-            self.modal = Modal::AdviceDocument(
-                "ASK COPILOT / local preview, nothing sent".into(),
-                format!(
-                    "Copilot is not set up yet. Next: put copilot-policy.json in the KBorg config folder or start with --copilot-policy ABS (see docs/COPILOT_INTEGRATION.md).\nThis is exactly what would be sent, after a review you must confirm:\n\n{bundle}"
-                ),
-                0,
-            );
+        self.refresh_copilot_policy();
+        if !self.options.allow_copilot_screen
+            || !crate::copilot_setup::supported()
+            || self.options.copilot_policy.is_none()
+        {
+            if self.options.allow_copilot_screen && crate::copilot_setup::supported() {
+                self.pending_copilot_question = Some(question);
+            } else {
+                self.pending_copilot_question = None;
+                self.ask_screen = None;
+            }
+            self.show_copilot_setup();
             return;
         }
         if self.busy {
-            self.status = "Wait for the current request before asking Copilot.".into();
+            self.copilot_notice("COPILOT BUSY", "Wait for the current request to finish, then open :ask QUESTION again. Nothing was sent.");
+            self.ask_screen = None;
             return;
         }
+        let Some(screen) = self.ask_screen.take() else {
+            self.copilot_notice("ASK COPILOT / screen needed", "No screen is captured yet. Esc returns; press : on the resource, logs or dashboard you want help with, then type ask QUESTION. Nothing was sent.");
+            return;
+        };
+        if let Err(error) = crate::advice::screen_bundle(&question, &screen) {
+            self.copilot_notice("ASK COPILOT / invalid capture", &format!("{error}\n\nEsc returns. Capture the screen again with :ask QUESTION. Nothing was sent."));
+            return;
+        }
+        self.pending_copilot_question = None;
         self.modal = Modal::AdviceLoading;
-        self.send(Task::AskPrepare(question.to_owned(), screen, policy));
+        self.send(Task::AskPrepare(
+            question,
+            screen,
+            self.options.copilot_policy.clone(),
+        ));
         if !self.busy {
-            self.modal = Modal::AdviceDocument(
-                "COPILOT NOT STARTED".into(),
-                "Request queue unavailable; ask again when the worker is available.".into(),
-                0,
-            );
+            self.copilot_notice("COPILOT NOT STARTED", "Request queue unavailable. Esc returns; ask again when the worker is available. Nothing was sent.");
         }
     }
     /// Review a privileged node shell Pod for the selected Node.
@@ -1104,6 +1159,8 @@ impl App {
         }
     }
     pub(super) fn changed(&mut self) {
+        self.pending_copilot_question = None;
+        self.ask_screen = None;
         self.worker.forward.cancel();
         self.selection_ui.restoring = None;
         self.selection_ui.focus = None;

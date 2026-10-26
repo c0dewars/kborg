@@ -1,16 +1,18 @@
-# KBorg roadmap: top of the line in five areas
+# KBorg roadmap
 
-This plan follows 0.5.0-rc.3. Each item has a measurable bar ("done when") so we know when an area is top of the line, not just improved. Items are ordered by impact within each area. [REMAINING_WORK.md](REMAINING_WORK.md) stays the register of what exists today. This file is what we build next.
+This plan follows 0.5.0-rc.3. Each item has a measurable acceptance bar ("done when"). Items are ordered by impact within each area. [REMAINING_WORK.md](REMAINING_WORK.md) stays the register of what exists today. This file is what we build next.
+
+Updated 2026-10-26: P1, S2, F1, F2, U1 and X1 are implemented; the CI performance gate exists and runs on manual dispatch. Use each row's completion evidence and the current register as the release checklist. New context consent and guided Copilot setup are described in OPERATIONS.md and COPILOT_INTEGRATION.md. Automatic GitHub Actions remains off; a first signed release and longer external acceptance are separate gates.
 
 ## Where we stand
 
-| Area | Today | Gap to top of the line |
+| Area | Current scope | Remaining acceptance or work |
 |---|---|---|
-| Performance | Faster first data than k9s (0.06 s vs 0.69 s), 40 % of k9s memory/CPU at 5,000 objects | Network under churn is **worse** than k9s (101 vs 56 KiB/min); nothing in CI catches regressions; no p95/p99 frame latency; above 10,000 objects we show only the first 10,000 |
-| Security | Opt-in per capability, dry-run + typed review on every write, sandboxed Copilot | Unsigned binaries; no fuzzing; Copilot containment is macOS ARM64 only; no external audit; Windows file ACLs |
-| Features | k9s workflows covered (see K9S_COMPATIBILITY.md) plus dashboard, charts, Copilot | Full-screen remote shells (vim, top) unsupported; k9s plugins without variable substitution; no cluster-scoped apply; per-context config; enterprise Copilot unvalidated |
-| UI | 20 themes, ui.yaml, charts, keymap everywhere | Wide/emoji Unicode shown as `?`; no k9s skin import; no automated screenshot matrix for real terminals |
-| UX | `?` help per screen, typed command grammar, action menu | No fuzzy command palette over actions; no first-run tips; config edits need `:ui reload`; error messages vary in actionability |
+| Performance | Recorded comparisons, bookmark/gzip traffic improvements and a manually dispatched regression gate | Current-source p95/p99 frame latency, long soak/fault evidence and browsing beyond the 10,000-object cap |
+| Security | Operator default with review; company capability restrictions/read-only and strict confirmations; dry-run where supported; macOS ARM64 contained Copilot | First signed release pending; fuzz targets exist but longer campaigns remain; Copilot containment is macOS ARM64 only; no external audit; Windows file ACLs |
+| Features | Broad k9s-style workflows with documented limits (K9S_COMPATIBILITY.md), dashboard, charts and platform-limited Copilot | Full-screen shells and plugin variable substitution implemented; cluster-scoped apply and per-context policy remain; enterprise Copilot unvalidated |
+| UI | 20 themes, ui.yaml, charts, keymap everywhere | Unicode width implemented with ASCII fallback; no k9s skin import; no automated screenshot matrix for real terminals |
+| UX | `?` help per screen, typed command grammar, action menu | Fuzzy palette and actionable errors implemented; first-run tips and automatic config reload remain |
 
 ## 1. Performance
 

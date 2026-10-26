@@ -408,7 +408,7 @@ fn explain_cause(cause: &Cause, scope: &Scope) -> (String, String) {
         Cause::Unauthorized => (
             "authorization denied: the API server rejected the credentials (expired or invalid)"
                 .into(),
-            "refresh your login (for example your cloud CLI login) and reconnect, or check the user in kubeconfig".into(),
+            "rerun your existing cluster login CLI (for example orbit-use) in this terminal, then reconnect; KBorg reuses that kubeconfig without copied tokens".into(),
         ),
         Cause::NotFound(name) => (
             match name {
@@ -474,11 +474,11 @@ fn explain_cause(cause: &Cause, scope: &Scope) -> (String, String) {
             format!(
                 "TLS verification of {host} failed: the certificate-authority in kubeconfig does not match the server certificate"
             ),
-            "update certificate-authority or certificate-authority-data for this cluster in kubeconfig; verification is never skipped".into(),
+            "refresh this cluster with your existing cluster CLI or ask your administrator for its trusted CA; do not disable TLS verification as a workaround".into(),
         ),
         Cause::Credentials => (
             "authentication with the API server failed: the credential helper or client certificate did not produce valid credentials".into(),
-            "refresh your login and reconnect; review the helper with `kborg auth-helper review`".into(),
+            "rerun your existing cluster login CLI (for example orbit-use) in this terminal, ensure its credential helper is on PATH, then reconnect; no token copying is needed".into(),
         ),
         Cause::Network => (
             format!("the connection to {host} failed or was interrupted"),

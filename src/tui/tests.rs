@@ -135,6 +135,8 @@ fn harness() -> Harness {
             selection_ui: Default::default(),
             pending_session: None,
             pending_editor: false,
+            pending_copilot_setup: false,
+            pending_copilot_question: None,
             pending_tool: None,
             palette: None,
             visited: Default::default(),
@@ -151,6 +153,22 @@ fn harness() -> Harness {
     )
 }
 #[test]
+fn copilot_local_preview_remains_available_without_login() -> Result<()> {
+    let (mut app, _replies, mut commands) = harness();
+    app.items = vec![
+        serde_json::json!({"apiVersion":"v1","kind":"Pod","metadata":{"name":"test","namespace":"test","uid":"test-uid"}}),
+    ];
+    app.options.connection.demo = true;
+    app.options.copilot_policy = None;
+    app.command("copilot")?;
+    assert!(matches!(app.modal, Modal::AdviceLoading));
+    assert!(matches!(
+        commands.try_recv(),
+        Ok((_, Task::AdvicePrepare(_, _, _, _, None)))
+    ));
+    Ok(())
+}
+#[test]
 fn copilot_closed_queue_and_late_previews_do_not_leave_loading_views() -> Result<()> {
     let (mut app, replies, commands) = harness();
     app.items = vec![
@@ -160,7 +178,7 @@ fn copilot_closed_queue_and_late_previews_do_not_leave_loading_views() -> Result
     app.command("copilot")?;
     assert!(!app.busy);
     assert!(
-        matches!(app.modal, Modal::AdviceDocument(ref title,..) if title.contains("NOT STARTED"))
+        matches!(app.modal, Modal::AdviceDocument(ref title,..) if title.contains("NOT STARTED") || title == crate::copilot_setup::TITLE || title == "COPILOT DISABLED")
     );
     app.modal = Modal::AdviceLoading;
     app.key(KeyCode::Esc)?;
@@ -4246,29 +4264,52 @@ fn dashboard_chart_panel_renders_trend_axes_for_the_focused_card() -> Result<()>
     Ok(())
 }
 #[test]
-fn ask_captures_the_screen_behind_the_prompt_and_previews_locally_without_opt_in() -> Result<()> {
-    let (mut app, _replies, _commands) = harness();
+fn ask_shows_visible_setup_and_operator_denial_without_sending() -> Result<()> {
+    let (mut app, _replies, mut commands) = harness();
     app.items = vec![
         serde_json::json!({"kind":"Pod","metadata":{"name":"api","namespace":"test","uid":"pod1"},"status":{"phase":"Running"}}),
     ];
     let text = snapshot::screen_text(&app, 100, 30)?;
-    assert!(text.contains("api") && text.contains("NAMESPACE"), "{text}");
-    assert!(text.is_ascii() && !text.contains('\u{1b}'), "{text}");
+    assert!(text.contains("api") && text.contains("NAMESPACE"));
+    assert!(text.is_ascii() && !text.contains('\x1b'));
     app.command("ask why")?;
-    assert!(app.status.contains("Nothing captured"));
+    assert!(
+        matches!(&app.modal, Modal::AdviceDocument(title,body,_) if title == "COPILOT DISABLED" && body.contains("operator configuration"))
+    );
+    assert!(!app.busy && commands.try_recv().is_err());
+    app.key(KeyCode::Esc)?;
+    app.options.allow_copilot_screen = true;
     app.key(KeyCode::Char(':'))?;
     assert!(app.ask_screen.as_deref().is_some_and(|s| s.contains("api")));
     app.modal = Modal::None;
-    app.command("ask")?;
-    assert!(matches!(app.modal, Modal::Input(ASK_LABEL, _)));
-    app.modal = Modal::None;
-    app.command("ask is api healthy?")?;
-    assert!(!app.busy);
-    assert!(matches!(&app.modal, Modal::AdviceDocument(title, body, _)
-        if title.contains("nothing sent") && body.contains("QUESTION:\nis api healthy?") && body.contains("not set up")));
-    // The capture is used once; asking again needs a fresh one.
-    assert!(app.ask_screen.is_none());
+    app.command("copilot setup")?;
+    assert!(
+        matches!(&app.modal, Modal::AdviceDocument(title,..) if title == crate::copilot_setup::TITLE)
+    );
+    if !crate::copilot_setup::supported() {
+        assert!(
+            matches!(&app.modal, Modal::AdviceDocument(_,body,_) if body.contains("not available on this platform") && body.contains("copilot login"))
+        );
+        app.key(KeyCode::Char('s'))?;
+        assert!(app.pending_copilot_setup);
+        app.pending_copilot_setup = false;
+    }
+    app.key(KeyCode::Esc)?;
+    assert!(app.ask_screen.is_none() && app.pending_copilot_question.is_none());
+    assert!(commands.try_recv().is_err());
+    app.command("copilot status")?;
+    assert!(
+        matches!(&app.modal, Modal::AdviceDocument(title,..) if title == crate::copilot_setup::TITLE)
+    );
     Ok(())
+}
+#[test]
+fn context_change_discards_pending_copilot_question_and_capture() {
+    let (mut app, _, _) = harness();
+    app.ask_screen = Some("bounded captured screen".into());
+    app.pending_copilot_question = Some("why?".into());
+    app.changed();
+    assert!(app.ask_screen.is_none() && app.pending_copilot_question.is_none());
 }
 #[test]
 fn long_actionable_status_keeps_its_next_step_visible() {

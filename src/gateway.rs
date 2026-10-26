@@ -36,7 +36,10 @@ use kube::{
 #[cfg(any(test, fuzzing))]
 pub(crate) use kubeconfig::parse_config_text;
 use kubeconfig::*;
-pub use kubeconfig::{audit, contexts, plugin_identity, review_auth_helper};
+pub use kubeconfig::{
+    ConnectionCatalog, ContextSummary, audit, connection_catalog, contexts, plugin_identity,
+    review_auth_helper,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
@@ -79,6 +82,10 @@ pub struct Connection {
     pub allow_force_kill: bool,
     pub allow_secret_reveal: bool,
     pub allow_auth_helper: bool,
+    /// Operator policy denial, independent of the optional reviewed helper mode.
+    pub deny_auth_helpers: bool,
+    /// Parsed kubeconfig approved by the interactive startup prompt.
+    pub startup_config_fingerprint: Option<[u8; 32]>,
     pub auth_helper_policy: Option<PathBuf>,
 }
 
@@ -162,6 +169,11 @@ impl Gateway {
             });
         }
         let mut raw = read_config(&options)?;
+        if let Some(approved) = options.startup_config_fingerprint
+            && approved != config_fingerprint(&raw)?
+        {
+            return Err("Kubeconfig changed after connection approval; no login helper was run. Next: restart KBorg to review the updated context.".into());
+        }
         let name = options
             .context
             .clone()
@@ -187,6 +199,13 @@ impl Gateway {
             .and_then(|name| raw.auth_infos.iter().find(|u| &u.name == name))
             .and_then(|u| u.auth_info.as_ref())
             .cloned();
+        if options.deny_auth_helpers
+            && user
+                .as_ref()
+                .is_some_and(|u| u.exec.is_some() || u.auth_provider.is_some())
+        {
+            return Err("Authentication helpers are disabled by operator configuration. Next: ask your administrator for an approved kubeconfig identity; command-line flags cannot override this policy.".into());
+        }
         // Like kubectl, the kubeconfig is trusted as written: exec helpers,
         // auth providers, impersonation, proxies and insecure-skip-tls-verify
         // all work. `--allow-auth-helper --auth-helper-policy FILE` keeps the
@@ -254,7 +273,7 @@ impl Gateway {
             },
         )
         .await
-        .map_err(|_| "Cannot load cluster credentials or CA from kubeconfig (details suppressed). Next: check that the certificate-authority, client-certificate and token files for this context exist and are readable")?;
+        .map_err(|_| "Cannot load cluster credentials or CA from kubeconfig (details suppressed). Next: rerun your existing cluster login CLI (for example orbit-use) in this terminal and ensure its credential helper is on PATH, then retry; KBorg reuses that kubeconfig without copied tokens")?;
         if config.cluster_url.scheme_str() != Some("https")
             || config.cluster_url.authority().is_none()
             || config

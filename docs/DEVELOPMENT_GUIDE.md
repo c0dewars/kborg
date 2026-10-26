@@ -1,6 +1,12 @@
 # KBorg — Architecture and Development Guide
 
-Status: 0.4.0 released, 0.5.0 in development; production validation (external audit, signing) remains incomplete. Updated: 2026-10-24. Current capabilities: [IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md). Authoritative gaps: [REMAINING_WORK.md](REMAINING_WORK.md). The design sections below were written for earlier versions; dated appendices describe their original versions.
+Status: 0.4.0 released, 0.5.0 in development; production validation (external audit, signing) remains incomplete. Updated: 2026-10-26. Current capabilities: [IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md). Authoritative gaps: [REMAINING_WORK.md](REMAINING_WORK.md). The design sections below were written for earlier versions; dated appendices describe their original versions.
+
+## Current release-next contract
+
+This branch reuses the user's existing kubeconfig/login tooling. Interactive startup asks Yes/No for the named context before any connection/helper; No opens the context picker and Esc exits. Machine-readable CLI and demo remain noninteractive. Operator capabilities are available by default, with per-operation review and quick confirmation; `--read-only` and company profiles constrain access. `strict_confirmations` restores typed phrases. Kubeconfig TLS/proxy/exec options follow the current source, so the older deny-by-default design below is historical, not a claim about today's defaults.
+
+Copilot has discoverable setup/status and an explicit transfer review; contained inference currently requires macOS ARM64 and an entitled supported GitHub account/runtime. A status panel is not proof of real enterprise acceptance. The [current status](IMPLEMENTATION_STATUS.md), [remaining gates](REMAINING_WORK.md) and [release-next review](RELEASE_NEXT_REVIEW.md) take precedence over dated architecture/acceptance sections below.
 
 ## Source map
 

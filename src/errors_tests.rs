@@ -79,7 +79,13 @@ fn classification_table_names_cause_and_next_step() {
         ),
         (
             api(401, "Unauthorized", "Unauthorized", null()),
-            &["authorization denied", "credentials", "refresh your login"],
+            &[
+                "authorization denied",
+                "credentials",
+                "rerun your existing cluster login CLI",
+                "orbit-use",
+                "without copied tokens",
+            ],
             &[],
         ),
         (

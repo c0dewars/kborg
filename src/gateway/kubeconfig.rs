@@ -185,6 +185,126 @@ pub fn contexts(options: &Connection) -> Result<Vec<String>> {
         .collect())
 }
 
+/// Local metadata only: loading this catalog never creates a Kubernetes client
+/// or executes an authentication helper. Credentials are not returned.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ContextSummary {
+    pub name: String,
+    pub cluster: String,
+    pub server: String,
+    pub insecure_tls: bool,
+    pub namespace: String,
+}
+pub struct ConnectionCatalog {
+    /// Internal digest only; never log credential-bearing configuration.
+    pub fingerprint: [u8; 32],
+    pub contexts: Vec<ContextSummary>,
+    pub selected: Option<usize>,
+    pub source: String,
+}
+/// Hash the exact parsed configuration used by the client. Sorting nested
+/// object keys makes equivalent serialized maps stable across executions.
+/// Relative file references have already been resolved; external credential
+/// file contents can still rotate, as they do for kubectl.
+pub(super) fn config_fingerprint(raw: &Kubeconfig) -> Result<[u8; 32]> {
+    fn canonical(value: Value) -> Value {
+        match value {
+            Value::Object(map) => {
+                let sorted: std::collections::BTreeMap<_, _> = map.into_iter().collect();
+                Value::Object(
+                    sorted
+                        .into_iter()
+                        .map(|(key, value)| (key, canonical(value)))
+                        .collect(),
+                )
+            }
+            Value::Array(values) => Value::Array(values.into_iter().map(canonical).collect()),
+            other => other,
+        }
+    }
+    let value = serde_json::to_value(raw).map_err(|_| "Cannot bind kubeconfig approval. Next: restart KBorg to review the configuration; if this repeats, report the failure without attaching credentials")?;
+    let bytes =
+        serde_json::to_vec(&canonical(value)).map_err(|_| "Cannot bind kubeconfig approval. Next: restart KBorg to review the configuration; if this repeats, report the failure without attaching credentials")?;
+    ring::digest::digest(&ring::digest::SHA256, &bytes)
+        .as_ref()
+        .try_into()
+        .map_err(|_| "Cannot bind kubeconfig approval. Next: restart KBorg to review the configuration; if this repeats, report the failure without attaching credentials".into())
+}
+
+pub fn connection_catalog(options: &Connection) -> Result<ConnectionCatalog> {
+    let raw = read_config(options)?;
+    catalog_from_config(options, &raw)
+}
+fn catalog_from_config(options: &Connection, raw: &Kubeconfig) -> Result<ConnectionCatalog> {
+    let contexts: Vec<_> = raw
+        .contexts
+        .iter()
+        .filter_map(|named| {
+            named.context.as_ref().map(|context| ContextSummary {
+                name: named.name.clone(),
+                cluster: context.cluster.clone(),
+                server: raw
+                    .clusters
+                    .iter()
+                    .find(|cluster| cluster.name == context.cluster)
+                    .and_then(|cluster| cluster.cluster.as_ref())
+                    .and_then(|cluster| cluster.server.as_deref())
+                    .and_then(|server| server.parse::<http::Uri>().ok())
+                    .and_then(|uri| {
+                        uri.authority().map(|authority| {
+                            format!(
+                                "{}://{}",
+                                uri.scheme_str().unwrap_or("https"),
+                                authority.as_str().rsplit('@').next().unwrap_or("invalid")
+                            )
+                        })
+                    })
+                    .unwrap_or_else(|| "(missing or invalid server)".into()),
+                insecure_tls: raw
+                    .clusters
+                    .iter()
+                    .find(|cluster| cluster.name == context.cluster)
+                    .and_then(|cluster| cluster.cluster.as_ref())
+                    .is_some_and(|cluster| cluster.insecure_skip_tls_verify == Some(true)),
+                namespace: if options.namespace.is_empty() {
+                    context
+                        .namespace
+                        .clone()
+                        .unwrap_or_else(|| "default".into())
+                } else {
+                    options.namespace.clone()
+                },
+            })
+        })
+        .collect();
+    if contexts.is_empty() {
+        return Err("No contexts found in kubeconfig. Next: run your company's cluster login CLI (for example orbit-use), then start kborg in the same terminal.".into());
+    }
+    let selected_name = options
+        .context
+        .as_ref()
+        .or(raw.current_context.as_ref())
+        .filter(|name| !name.is_empty());
+    let selected =
+        selected_name.and_then(|name| contexts.iter().position(|context| &context.name == name));
+    if selected_name.is_some() && selected.is_none() {
+        return Err("Selected context is missing from kubeconfig. Next: run your cluster CLI again, or choose an existing context with --context NAME.".into());
+    }
+    let source = if let Some(path) = &options.kubeconfig {
+        path.to_string_lossy().into_owned()
+    } else if std::env::var_os("KUBECONFIG").is_some_and(|value| !value.is_empty()) {
+        "KUBECONFIG (existing configured files)".into()
+    } else {
+        "~/.kube/config".into()
+    };
+    Ok(ConnectionCatalog {
+        fingerprint: config_fingerprint(raw)?,
+        contexts,
+        selected,
+        source,
+    })
+}
+
 /// Prepare an exact local trust review without running a kubeconfig command.
 pub fn review_auth_helper(
     options: &Connection,
@@ -344,4 +464,53 @@ pub fn audit(options: &Connection) -> Result<Vec<String>> {
         );
     }
     Ok(lines)
+}
+
+#[cfg(test)]
+mod connection_catalog_tests {
+    use super::*;
+    #[test]
+    fn existing_context_and_credentials_need_no_extra_setup() -> Result<()> {
+        let raw = parse_config_text(
+            r#"apiVersion: v1
+kind: Config
+current-context: company-prod
+clusters:
+- name: company
+  cluster: {server: https://example.test}
+contexts:
+- name: company-prod
+  context: {cluster: company, user: company-user, namespace: team}
+- name: company-dev
+  context: {cluster: company, user: company-user}
+users:
+- name: company-user
+  user:
+    token: NEVER-DISPLAY-THIS
+    exec:
+      apiVersion: client.authentication.k8s.io/v1
+      command: NEVER-RUN-THIS-DURING-PREVIEW
+      interactiveMode: Never
+"#,
+            std::path::Path::new("."),
+        )?;
+        let mut options = Connection::default();
+        let catalog = catalog_from_config(&options, &raw)?;
+        assert_eq!(catalog.selected, Some(0));
+        assert_eq!(catalog.contexts[0].name, "company-prod");
+        assert_eq!(catalog.contexts[0].namespace, "team");
+        assert!(!format!("{:?}", catalog.contexts).contains("NEVER-"));
+        options.context = Some("company-dev".into());
+        options.namespace = "override".into();
+        let catalog = catalog_from_config(&options, &raw)?;
+        assert_eq!(catalog.selected, Some(1));
+        assert_eq!(catalog.contexts[1].namespace, "override");
+        options.context = Some("absent".into());
+        assert!(catalog_from_config(&options, &raw).is_err());
+        options.context = None;
+        let mut no_current = raw;
+        no_current.current_context = None;
+        assert_eq!(catalog_from_config(&options, &no_current)?.selected, None);
+        Ok(())
+    }
 }

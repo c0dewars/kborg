@@ -271,7 +271,17 @@ impl App {
             }
             Modal::AdviceRunning => self.modal = Modal::AdviceRunning,
             Modal::AdviceDocument(title, text, offset) => {
-                if matches!(code, KeyCode::Esc | KeyCode::Char('q')) {
+                if title == crate::copilot_setup::TITLE && matches!(code, KeyCode::Char('s' | 'S'))
+                {
+                    if self.options.allow_copilot_screen {
+                        self.pending_copilot_setup = true;
+                    }
+                    self.modal = Modal::AdviceDocument(title, text, offset);
+                } else if matches!(code, KeyCode::Esc | KeyCode::Char('q')) {
+                    if title == crate::copilot_setup::TITLE || title == "COPILOT DISABLED" {
+                        self.pending_copilot_question = None;
+                        self.ask_screen = None;
+                    }
                     self.close_subview();
                 } else {
                     let offset = scroll_offset(&text, offset, code);

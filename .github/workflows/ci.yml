@@ -31,6 +31,8 @@ jobs:
         run: rustup toolchain install 1.99.0 --profile minimal
       - name: Build release
         run: cargo build --release --locked
+      - name: Benchmark harness regression tests
+        run: python3 scripts/test-bench-tui.py
       - name: Performance regression gate (demo mode, no cluster)
         run: python3 scripts/bench-tui.py gate --budgets scripts/bench-budgets.json --binary target/release/kborg --repeat 3 --out bench-results
       - if: always()

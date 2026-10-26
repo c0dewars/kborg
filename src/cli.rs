@@ -1690,6 +1690,9 @@ fn print_json(value: &serde_json::Value) -> Result<()> {
 fn copilot_command(opts: &Options) -> Result<()> {
     let args = &opts.command[1..];
     match args.first().map(String::as_str) {
+        Some("setup") if args.len() == 1 => crate::copilot_setup::interactive().map(|_| ()),
+        Some("status") if args.len() == 1 => write_text(&format!("{}\n", crate::copilot_setup::status_text(opts.copilot_policy.as_deref()))),
+
         Some("diagnose") if args.len() == 3 => {
             if opts.json || !io::stdin().is_terminal() || !io::stdout().is_terminal() { return Err("Copilot diagnosis requires an interactive transfer review; --json is unavailable".into()); }
             let path = opts.copilot_policy.as_ref().ok_or("Copilot diagnosis requires --copilot-policy ABS; see docs/COPILOT_INTEGRATION.md")?;
@@ -1756,7 +1759,7 @@ fn copilot_command(opts: &Options) -> Result<()> {
             outputln!("Minimized context saved locally. Inspect the JSON before manually sharing with GitHub Copilot. No AI request was made.");
             Ok(())
         }
-        _ => Err("usage: copilot diagnose RESOURCE NAME --copilot-policy ABS | copilot preflight --cli ABS_NATIVE --host HOST [--expected-sha256 SHA] [--credential-file FILE] | copilot preview RESOURCE NAME --host HOST | copilot login --cli <absolute executable> --host <github.com|org.ghe.com> | copilot context <resource> <name> --output <new JSON file>".into()),
+        _ => Err("usage: copilot setup | copilot status | copilot diagnose RESOURCE NAME --copilot-policy ABS | copilot preflight --cli ABS_NATIVE --host HOST [--expected-sha256 SHA] [--credential-file FILE] | copilot preview RESOURCE NAME --host HOST | copilot login --cli <absolute executable> --host <github.com|org.ghe.com> | copilot context <resource> <name> --output <new JSON file>".into()),
     }
 }
 async fn discover_if_needed(gateway: &mut Gateway, resource: &str) -> Result<()> {

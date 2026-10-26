@@ -1,8 +1,14 @@
 # KBorg remaining work and acceptance register
 
-Reviewed: 2026-10-24. Current iteration: KBorg 0.5.0 (unreleased) on top of the 0.4.0 release. 0.5.0 closes the remaining k9s workflow gaps behind separate opt-ins: reviewed server-side apply, node shell, file and directory copy, `:lint`, a port-forward benchmark, extensions in the TUI with a k9s `plugins.yaml` importer, and k9s-format hotkeys; dashboard cards name the busiest Nodes; configuration profiles now gate every capability; and audit-pack findings were hardened. 0.4.0 added the 1–9 cluster dashboard, Secret reveal, force kill, external editor, multi-file KUBECONFIG, GHE/GHES Copilot and the performance work. This register supersedes historical remaining-work statements. Implemented does not mean independently certified for production; the external gates below remain open. Exact command compatibility is recorded in [K9S_COMPATIBILITY.md](K9S_COMPATIBILITY.md); the external review scope is in [SECURITY_AUDIT_PACK.md](SECURITY_AUDIT_PACK.md); dated acceptance reports ([MAC_V1_HARDENING_ACCEPTANCE.md](MAC_V1_HARDENING_ACCEPTANCE.md), [DASHBOARD_ACCEPTANCE.md](DASHBOARD_ACCEPTANCE.md), [MAC_V1_ACCEPTANCE.md](MAC_V1_ACCEPTANCE.md) and earlier) keep the evidence of their exact builds.
+Reviewed: 2026-10-26 (release/next working source). Current iteration: KBorg 0.5.0 (unreleased) on top of the 0.4.0 release. 0.5.0 closes the remaining k9s workflow gaps as reviewed workflows: reviewed server-side apply, node shell, file and directory copy, `:lint`, a port-forward benchmark, extensions in the TUI with a k9s `plugins.yaml` importer, and k9s-format hotkeys; dashboard cards name the busiest Nodes; configuration profiles now gate every capability; and audit-pack findings were hardened. 0.4.0 added the 1–9 cluster dashboard, Secret reveal, force kill, external editor, multi-file KUBECONFIG, GHE/GHES Copilot and the performance work. This register supersedes historical remaining-work statements. Implemented does not mean independently certified for production; the external gates below remain open. Exact command compatibility is recorded in [K9S_COMPATIBILITY.md](K9S_COMPATIBILITY.md); the external review scope is in [SECURITY_AUDIT_PACK.md](SECURITY_AUDIT_PACK.md); dated acceptance reports ([MAC_V1_HARDENING_ACCEPTANCE.md](MAC_V1_HARDENING_ACCEPTANCE.md), [DASHBOARD_ACCEPTANCE.md](DASHBOARD_ACCEPTANCE.md), [MAC_V1_ACCEPTANCE.md](MAC_V1_ACCEPTANCE.md) and earlier) keep the evidence of their exact builds.
 
 Status definitions: **Done** means an implemented workflow with retained evidence; **Partial** means useful behavior exists but the stated requirement is not fully met; **Missing** means no supported workflow; **External gate** means code alone cannot supply the necessary environment, identity, signing authority, or operational acceptance. A passing mock or configured CI job is not live acceptance. Automated independent agent reviews are not an external security audit.
+
+## Current release-next defaults and onboarding
+
+The release-next operator default enables available capabilities; the old `--write`/`--allow-*` flags remain compatibility aliases. Configuration can deny capabilities or force read-only, and strict confirmations are optional. References to named capability flags in the inventory identify functionality, not an additional opt-in requirement. Standard kubeconfig auth, proxy and TLS settings are reused; reviewed helper mode is a distinct opt-in. This is a change from the original 0.3 security model and needs organizational acceptance.
+
+Interactive startup displays the existing context/cluster/namespace and asks Yes/No before client or helper execution. No opens a searchable existing-context list; the selected name is session-local. `:ask` and `:copilot setup/status` expose onboarding; contained inference still has the macOS ARM64 boundary. These workflows remove unnecessary manual token/policy setup without claiming that expired provider login or unsupported AI platforms can work automatically.
 
 ## Current product inventory
 
@@ -52,7 +58,7 @@ Status definitions: **Done** means an implemented workflow with retained evidenc
 |---|---|---|
 | S01 | Local file trust | Improved: same-directory synced atomic replacement; Unix0700/0600 tested. Windows ACL provisioning and handle-based race resistance remain gates |
 | S02 | Audit integrity and crash reconciliation | Partial: bounded pending-intent/crash reporting includes Helm intent/outcome; no automatic retry or rollback. Partial/unknown operations require inspection. Protected external audit sink and operational reconciliation drills remain |
-| S03 | Credential lifecycle and cloud helpers | Implemented opt-in reviewed Unix native ExecCredential v1/v1beta1 token or cert/key with bounded supervision, context/endpoint/CA/TLS/argv/env/SHA binding, expiry and 401/403 stop; legacy providers/interpreters/PATH chains rejected | Mock rotation/expiry/leak tests plus real Docker Desktop helper/403/reconnect/trust-tamper test; Windows helpers are unsupported; actual cloud identities, chained CLIs and handle-based trust remain acceptance gates |
+| S03 | Credential lifecycle and cloud helpers | Implemented opt-in reviewed Unix native ExecCredential v1/v1beta1 token or cert/key with bounded supervision, context/endpoint/CA/TLS/argv/env/SHA binding, expiry and 401/403 stop; legacy providers/interpreters/PATH chains rejected | Mock rotation/expiry/leak tests plus real Docker Desktop helper/403/reconnect/trust-tamper test; Windows reviewed/supervised helpers are unsupported; normal kubeconfig exec helpers remain available subject to company policy; actual cloud identities, chained CLIs and handle-based trust remain acceptance gates |
 | S04 | Server authorization/admission | External gate plus test fixtures: use least-privilege RBAC and admission policies independently of client controls; retain forbidden/dry-run/admission mutation cases for each new write family. |
 | S05 | Transport edge cases | Partial: mandatory TLS, bounded bodies and no credential-bearing redirects/proxies. Current isolated TLS scenarios pass 429 backoff, 410 relist, 503 recovery, 401/403 clearing/stop, namespace and object caps, slow-body timeout and CA rotation requiring explicit reconnect. These are protocol fixtures, not a live certificate rotation or provider-identity test. Deployment-specific rotation, APF throttling and proxy design remain open; see MAC_V1_HARDENING_ACCEPTANCE.md. |
 | S06 | Secret and terminal safety | Partial: bounded known-field redaction, terminal sanitation, strict local-manifest parsing and re-redacted saved snapshots remain. Internal review fixed ambiguous Unicode approval displays: Unicode/control values and literal backslashes now have distinct bounded presentations before wrapping and read-all coverage. Expanded reviews over 1 MiB block approval. Untrusted-input parsers have invariant-checking fuzz targets (`src/fuzzing.rs`, `fuzz/`; run in `cargo test` and the manual Fuzz workflow). Broader sink canaries remain; logs and arbitrary CRDs may contain confidential fields outside known projections. |
@@ -68,23 +74,17 @@ Status definitions: **Done** means an implemented workflow with retained evidenc
 | D02 | Operations and maintenance | Implemented operational installation/update/rollback/uninstall/config/recovery guide; organizational pilot and disaster drills remain external gates |
 | D03 | Documentation consistency | This register, HELM_LIFECYCLE.md and K9S_COMPATIBILITY.md distinguish supported subsets from missing behavior. MAC_V1_HARDENING_ACCEPTANCE.md is the current source-specific report; dashboard/operator and earlier platform reports remain dated evidence. Release instructions describe manual-only CI, fresh native packaging and unsigned provenance accurately |
 
-## Safe implementation order
+## Release-next completion order
 
-1. Complete rename/migration and reconcile current docs. Establish profile/capability configuration so later features share one enforcement boundary.
-2. Add read-only workflows: redacted YAML, bounded log follow/container selection, multi-context snapshot overview with explicit limits, CLI completions and visible actions.
-3. Implement individually scoped edits with immutable prepared requests and readable dry-run diffs; add GitOps restrictions and approval race tests. Editing rendered/redacted objects directly is unsafe because it may overwrite omitted data; prepare the operation from a fresh trusted object and only the explicitly approved fields.
-4. Implement lifecycle-bound forwarding and exec/attach behind distinct capabilities, followed by trusted process handoff. Keep their authorization separate from read-only resource browsing. Reuse the Kubernetes client's reviewed protocol support rather than invoking kubectl as an unbounded substitute.
-5. Harden storage, discovery, audit recovery and authentication; expand fault/load and platform evidence. Add automated Copilot only after its isolation and transfer-review contract can actually be enforced.
-6. Refine visual layout/accessibility and rerun performance, then create renamed native packages. Publish a release only at its demonstrated readiness level; incomplete external gates remain visible.
-
-The current Helm lifecycle workflow validates an executable named `helm`;
-renamed executables and CSA-to-SSA field ownership migration remain compatibility
-gaps. Native admission does not force field ownership. See
-[HELM_LIFECYCLE.md](HELM_LIFECYCLE.md).
+1. Validate startup Yes/No and context selection against prepared kubeconfigs, including negative paths that execute no helper and make no connection.
+2. Validate Copilot setup/status and `:ask` feedback on supported and unsupported platforms; retain explicit review and no-silent-transfer behavior. Real enterprise inference remains an external gate.
+3. Run the full source-specific native suites, security tests and performance gate. Fix failures instead of reusing earlier acceptance as evidence for changed code.
+4. Reconcile user-facing defaults and platform limits, record the Catppuccin Mocha feature tour, and verify every captured scene. Demo previews are not real operation acceptance.
+5. Build, checksum and attest the release artifacts; complete real terminal, accessibility, fault/soak and organizational pilot gates at their documented scope before production promotion.
 
 ## Explicit exclusions
 
-The node shell that earlier versions excluded is now an explicit, reviewed opt-in (W04).
+The node shell that earlier versions excluded is now a reviewed capability (W04), enabled by the operator default and disableable by company policy.
 
 
 Autonomous AI remediation, arbitrary in-process plugins, automatic cluster-admin setup, an embedded terminal multiplexer and a self-updating binary remain outside this production design. “All terminal programs” means documented standards-based CLI and approved process interoperability, not universal compatibility. Optional AI and generic extensions must not block a safe core release.

@@ -50,10 +50,9 @@ GATED = ("first_data_seconds", "rss_mib_median", "cpu_percent_avg")
 DEMO_ARGS = ["--demo", "--no-splash", "--theme", "flexoki-dark"]
 GATE_SCENARIOS = {
     "demo-startup": {"args": DEMO_ARGS, "first": r"api-7d4f9", "steps": []},
-    # KBORG_DEMO_SCALE adds synthetic Pods named scale-00000...; SKIPPED when the
-    # binary does not support it yet (marker never appears).
+    # The 5k scale scenario is required; a missing marker is a regression.
     "demo-scale": {"args": DEMO_ARGS, "first": r"scale-0000", "steps": [],
-                   "env": {"KBORG_DEMO_SCALE": "5000"}, "skip_if_missing": True},
+                   "env": {"KBORG_DEMO_SCALE": "5000"}},
     # D is ignored while the startup metrics request is busy: wait for it to
     # finish, then press D (re-sent every 2 s as a safety net on slow runners).
     "demo-dashboard": {"args": DEMO_ARGS, "first": r"api-7d4f9",
@@ -265,19 +264,21 @@ def measure(name, argv, first, steps=(), seconds=10, kubeconfig=None, env=None,
             for keys, marker, *rest in steps:
                 since = time.monotonic()
                 send(keys)
-                seconds = wait(marker, since, keys, rest[0] if rest else 0)
-                result["steps"].append({"keys": keys, "marker": marker, "seconds": round(seconds, 3)})
+                step_seconds = wait(marker, since, keys, rest[0] if rest else 0)
+                result["steps"].append({"keys": keys, "marker": marker, "seconds": round(step_seconds, 3)})
             drain(2)
             base, net_base = sample(proc.pid), network(proc.pid)
             window_start = time.monotonic()
             rss = []
             while time.monotonic() - window_start < seconds:
-                drain(1.0)
+                drain(min(1.0, max(0, seconds - (time.monotonic() - window_start))))
                 point = sample(proc.pid)
                 if point:
                     rss.append(point[0])
             last, net_last = sample(proc.pid), network(proc.pid)
             window = time.monotonic() - window_start
+            result["sampled_seconds"] = round(window, 3)
+            result["sample_count"] = len(rss)
             if not (base and last and rss):
                 raise RuntimeError(f"{name}: process exited during sampling")
             result["rss_mib_median"] = round(statistics.median(rss) / 1024, 1)
@@ -366,10 +367,6 @@ def cmd_gate(args):
                                       None, scenario.get("env"), args.timeout,
                                       Path(args.out).resolve() if args.out else None)
         except MarkerMissing as error:
-            if scenario.get("skip_if_missing"):
-                rows.append([name, "-", "-", "-", "SKIPPED (feature not in this binary)"])
-                results[name] = {"status": "skipped", "reason": str(error)}
-                continue
             rows.append([name, "first marker", "missing", "-", "FAIL"])
             results[name] = {"status": "fail", "reason": str(error)}
             print(f"gate: {name}: {error}", file=sys.stderr)
