@@ -1,0 +1,66 @@
+{
+  "schema": 1,
+  "tolerance_percent": 15.0,
+  "floors": {
+    "seconds": 0.05,
+    "latency_ms": 3.0,
+    "rss_mib": 4.0,
+    "cpu_percent": 1.0,
+    "size_mib": 0.5
+  },
+  "platforms": {
+    "Darwin-arm64": {
+      "recorded": "2026-10-26",
+      "commit": "717557e",
+      "machine": "Apple M2 Pro",
+      "repeat": 3,
+      "idle_seconds": 10,
+      "binary_bytes": 17821152,
+      "metrics": {
+        "binary": {
+          "size_mib": 17.0
+        },
+        "demo-startup": {
+          "first_data_seconds": 0.078,
+          "rss_mib_median": 10.3,
+          "rss_mib_max": 10.5,
+          "cpu_percent_avg": 0.0,
+          "key_latency_ms_p50": 1.78,
+          "key_latency_ms_p95": 5.2,
+          "key_latency_ms_p99": 44.3
+        },
+        "scale-5k": {
+          "first_data_seconds": 0.121,
+          "rss_mib_median": 129.2,
+          "rss_mib_max": 129.4,
+          "cpu_percent_avg": 1.31,
+          "key_latency_ms_p50": 8.75,
+          "key_latency_ms_p95": 9.31,
+          "key_latency_ms_p99": 10.08,
+          "filter_seconds": 0.174,
+          "clear_filter_seconds": 0.018,
+          "sort_seconds": 0.012
+        },
+        "scale-20k": {
+          "first_data_seconds": 0.352,
+          "rss_mib_median": 484.5,
+          "rss_mib_max": 485.1,
+          "cpu_percent_avg": 4.3,
+          "key_latency_ms_p50": 29.1,
+          "key_latency_ms_p95": 33.35,
+          "key_latency_ms_p99": 42.0,
+          "filter_seconds": 0.549,
+          "clear_filter_seconds": 0.051,
+          "sort_seconds": 0.039
+        },
+        "demo-dashboard": {
+          "first_data_seconds": 0.044,
+          "rss_mib_median": 11.4,
+          "rss_mib_max": 11.4,
+          "cpu_percent_avg": 0.0,
+          "dashboard_seconds": 0.014
+        }
+      }
+    }
+  }
+}

@@ -9,7 +9,10 @@ config directories, so the user's own settings are never read or written.
 
 Subcommands:
   run      measure one command:   bench-tui.py run --name kborg --first api-7d4f9 -- kborg --demo
-  gate     run fixed demo-mode scenarios and fail when a metric exceeds its budget
+  gate     run fixed demo-mode scenarios; fail when a metric exceeds its budget or
+           regresses more than 15 % against the committed per-OS/arch baseline
+  check    re-evaluate a saved gate.json (e.g. a CI artifact) against the baseline,
+           optionally storing it as the new baseline for its platform
   compare  KBorg vs k9s vs k10s against a live context, printed as a Markdown table
 
 Standard library only. Pillow is needed only for --screenshots (PNG captures).
@@ -41,23 +44,52 @@ Screen = runpy.run_path(str(SCRIPTS / "test-terminal.py"))["Screen"]
 WIDTH, HEIGHT = 130, 40
 SYSTEM = platform.system()
 
-# Metrics reduced by median across --repeat runs and checked by the gate.
-METRICS = ("first_data_seconds", "rss_mib_median", "rss_mib_peak", "cpu_percent_avg",
-           "net_kib_in_per_min", "net_kib_out_per_min")
+# Metrics reduced by median across --repeat runs.
+METRICS = ("first_data_seconds", "rss_mib_median", "rss_mib_peak", "rss_mib_max",
+           "cpu_percent_avg", "net_kib_in_per_min", "net_kib_out_per_min",
+           "key_latency_ms_p50", "key_latency_ms_p95", "key_latency_ms_p99")
+# Checked against the absolute budgets in bench-budgets.json.
 GATED = ("first_data_seconds", "rss_mib_median", "cpu_percent_avg")
+# Checked against the committed baseline (lower is better for all of them).
+# Step timings are added per scenario through "step_metrics".
+COMPARED = ("first_data_seconds", "rss_mib_median", "rss_mib_max", "cpu_percent_avg",
+            "key_latency_ms_p50", "key_latency_ms_p95", "key_latency_ms_p99")
+DEFAULT_TOLERANCE = 15.0
+# Absolute floors: a regression must exceed both the tolerance and the floor,
+# so tiny values (a 2 ms latency, 0.1 % CPU) cannot flap on noisy runners.
+DEFAULT_FLOORS = {"seconds": 0.05, "latency_ms": 3.0, "rss_mib": 4.0,
+                  "cpu_percent": 1.0, "size_mib": 0.5}
 
 # An explicit theme skips the first-run theme picker in the fresh config dir.
 DEMO_ARGS = ["--demo", "--no-splash", "--theme", "flexoki-dark"]
+
+
+def _scale_scenario(count):
+    """KBORG_DEMO_SCALE adds synthetic Pods named scale-00000...: time load, a
+    name filter down to one Pod, clearing it, and a reverse name sort, then
+    measure key-to-frame latency with j/k on the full list."""
+    target = f"scale-{count * 7 // 10:05d}"
+    after = f"scale-{count * 7 // 10 + 1:05d}"
+    return {"args": DEMO_ARGS, "first": r"scale-0000", "env": {"KBORG_DEMO_SCALE": str(count)},
+            "latency": True,
+            "steps": [[f"/{target}\\r", r"\[1/1\] FILTERED"],
+                      ["\\x1b", r"pods \[\d+/\d{4,}\]"],
+                      # Selection stays on target; descending puts `after` above it.
+                      ["N", after + r".*\n.*" + target]],
+            "step_metrics": ["filter_seconds", "clear_filter_seconds", "sort_seconds"]}
+
+
 GATE_SCENARIOS = {
-    "demo-startup": {"args": DEMO_ARGS, "first": r"api-7d4f9", "steps": []},
-    # The 5k scale scenario is required; a missing marker is a regression.
-    "demo-scale": {"args": DEMO_ARGS, "first": r"scale-0000", "steps": [],
-                   "env": {"KBORG_DEMO_SCALE": "5000"}},
+    "demo-startup": {"args": DEMO_ARGS, "first": r"api-7d4f9", "steps": [], "latency": True},
+    # The scale scenarios are required; a missing marker is a regression.
+    "scale-5k": _scale_scenario(5000),
+    "scale-20k": _scale_scenario(20000),
     # D is ignored while the startup metrics request is busy: wait for it to
     # finish, then press D (re-sent every 2 s as a safety net on slow runners).
     "demo-dashboard": {"args": DEMO_ARGS, "first": r"api-7d4f9",
                        "steps": [["", r"METRICS [0-9]+ measured"],
-                                 ["D", r"CONTEXT OVERVIEW", 2.0]]},
+                                 ["D", r"CONTEXT OVERVIEW", 2.0]],
+                       "step_metrics": [None, "dashboard_seconds"]},
 }
 
 ESCAPES = re.compile(rb"\x1b(\[[0-9;?<>=]*[ -/]*[@-~]|\][^\x07\x1b]*(\x07|\x1b\\)|[()][A-Z0-9]|[=>78])")
@@ -181,22 +213,57 @@ def _signal(proc, sig):
             continue
 
 
+def _reap(proc):
+    """Reap proc with wait4 so its resource usage is kept; None while it runs."""
+    if proc.returncode is not None:
+        return getattr(proc, "rusage", None) or False
+    try:
+        pid, status, usage = os.wait4(proc.pid, os.WNOHANG)
+    except ChildProcessError:
+        proc.returncode = -1
+        return False
+    if pid == 0:
+        return None
+    proc.returncode = os.waitstatus_to_exitcode(status)
+    proc.rusage = usage
+    return usage
+
+
+def _peak_rss_mib(usage):
+    """ru_maxrss is bytes on macOS and KiB on Linux."""
+    if not usage:
+        return None
+    return round(usage.ru_maxrss / (2**20 if SYSTEM == "Darwin" else 2**10), 1)
+
+
 def _stop(proc, drain):
-    """SIGTERM, keep draining the PTY so terminal restore cannot block, then SIGKILL."""
+    """SIGTERM, keep draining the PTY so terminal restore cannot block, then
+    SIGKILL. Returns the child's rusage (for the peak RSS) when available."""
     for sig, grace in ((signal.SIGTERM, 5), (signal.SIGKILL, 5)):
-        if proc.poll() is not None:
-            return
+        if _reap(proc) is not None:
+            return _reap(proc)
         _signal(proc, sig)
         deadline = time.monotonic() + grace
-        while proc.poll() is None and time.monotonic() < deadline:
+        while _reap(proc) is None and time.monotonic() < deadline:
             drain(0.1)
             time.sleep(0.02)
-    proc.wait(1)
+    return _reap(proc)
+
+
+def percentile(values, pct):
+    """Nearest-rank percentile of a non-empty list."""
+    ordered = sorted(values)
+    rank = max(1, -(-len(ordered) * pct // 100))
+    return ordered[int(rank) - 1]
 
 
 def measure(name, argv, first, steps=(), seconds=10, kubeconfig=None, env=None,
-            timeout=60, out=None, screenshots=False):
-    """Run argv once and return a result dict. Raises MarkerMissing."""
+            timeout=60, out=None, screenshots=False, latency_samples=0):
+    """Run argv once and return a result dict. Raises MarkerMissing.
+
+    With latency_samples, after the idle window it alternately sends j and k and
+    times each key until the emulated screen (text or colors, after any
+    synchronized update completes) differs from the frame before the key."""
     binary = shutil.which(argv[0]) or argv[0]
     argv = [binary] + list(argv[1:])
     result = {"tool": name, "argv": argv, "binary": binary,
@@ -211,32 +278,59 @@ def measure(name, argv, first, steps=(), seconds=10, kubeconfig=None, env=None,
         started = time.monotonic()
         proc = _spawn(argv, _isolated_env(home, kubeconfig, env), slave)
 
+        def pump(wait_seconds):
+            """Read and process one chunk; False on timeout, None on EOF."""
+            if not select.select([master], [], [], wait_seconds)[0]:
+                return False
+            try:
+                data = os.read(master, 1 << 16)
+            except OSError:
+                return None
+            if not data:
+                return None
+            raw.extend(data)
+            if len(raw) > 1 << 20:
+                del raw[:len(raw) - (1 << 19)]
+            if b"\x1b]11;?" in data:
+                os.write(master, b"\x1b]11;rgb:1010/0f0f/0f0f\x1b\\")
+            if b"\x1b]10;?" in data:
+                os.write(master, b"\x1b]10;rgb:cece/cdcd/c3c3\x1b\\")
+            if b"\x1b[6n" in data:
+                os.write(master, b"\x1b[1;1R")
+            if b"\x1b[c" in data or b"\x1b[0c" in data:
+                os.write(master, b"\x1b[?62;22c")
+            try:
+                screen.feed(data)
+            except Exception:  # emulator is best effort; the raw stream is also searched
+                pass
+            return True
+
         def drain(duration=0.05):
             end = time.monotonic() + duration
             while time.monotonic() < end:
-                if not select.select([master], [], [], 0.02)[0]:
-                    continue
-                try:
-                    data = os.read(master, 1 << 16)
-                except OSError:
+                if pump(0.02) is None:
                     return
-                if not data:
-                    return
-                raw.extend(data)
-                if len(raw) > 1 << 20:
-                    del raw[:len(raw) - (1 << 19)]
-                if b"\x1b]11;?" in data:
-                    os.write(master, b"\x1b]11;rgb:1010/0f0f/0f0f\x1b\\")
-                if b"\x1b]10;?" in data:
-                    os.write(master, b"\x1b]10;rgb:cece/cdcd/c3c3\x1b\\")
-                if b"\x1b[6n" in data:
-                    os.write(master, b"\x1b[1;1R")
-                if b"\x1b[c" in data or b"\x1b[0c" in data:
-                    os.write(master, b"\x1b[?62;22c")
-                try:
-                    screen.feed(data)
-                except Exception:  # emulator is best effort; the raw stream is also searched
-                    pass
+
+        def key_latency(samples):
+            """Milliseconds from each key write to the first changed frame."""
+            times, timeouts = [], 0
+            for index in range(samples):
+                quiet_since, settle_end = time.monotonic(), time.monotonic() + 1.0
+                while time.monotonic() < settle_end and time.monotonic() - quiet_since < 0.05:
+                    if pump(0.01):
+                        quiet_since = time.monotonic()
+                before = [row[:] for row in screen.visible_cells()]
+                started_key = time.monotonic()
+                send("jk"[index % 2])
+                while time.monotonic() - started_key < 1.0:
+                    if pump(0.005) is None:
+                        break
+                    if screen.visible_cells() != before:
+                        times.append((time.monotonic() - started_key) * 1000)
+                        break
+                else:
+                    timeouts += 1
+            return times, timeouts
 
         def send(keys):
             os.write(master, keys.encode("utf-8").decode("unicode_escape").encode("latin-1"))
@@ -246,13 +340,16 @@ def measure(name, argv, first, steps=(), seconds=10, kubeconfig=None, env=None,
             pattern = re.compile(marker)
             last_send = since
             while time.monotonic() - since < timeout:
-                # Short slices: a marker is noticed within ~10 ms, not 50 ms.
-                drain(0.01)
+                # Check the emulated screen after every chunk so step timings are
+                # not rounded up to a polling interval; the slower raw-stream
+                # search runs only once output pauses.
+                got = pump(0.02)
                 if resend and keys and time.monotonic() - last_send >= resend:
                     send(keys)  # opt-in: the app may ignore keys while a request is busy
                     last_send = time.monotonic()
-                plain = ESCAPES.sub(b"", bytes(raw)).decode("utf-8", "replace")
-                if pattern.search(screen.text()) or pattern.search(plain):
+                if got and pattern.search(screen.text()):
+                    return time.monotonic() - since
+                if not got and pattern.search(ESCAPES.sub(b"", bytes(raw)).decode("utf-8", "replace")):
                     return time.monotonic() - since
                 if proc.poll() is not None:
                     break
@@ -290,6 +387,12 @@ def measure(name, argv, first, steps=(), seconds=10, kubeconfig=None, env=None,
                 result["net_kib_out_per_min"] = round((net_last[1] - net_base[1]) / 1024 * 60 / window, 1)
             else:
                 result["network"] = "unavailable on this platform"
+            if latency_samples:
+                times, timeouts = key_latency(latency_samples)
+                if not times:
+                    raise RuntimeError(f"{name}: no frame changed after {latency_samples} keys")
+                _latency_summary(result, [round(t, 3) for t in times])
+                result["key_latency_timeouts"] = timeouts
             result["total_wall_seconds"] = round(time.monotonic() - started, 1)
             if out:
                 out.mkdir(parents=True, exist_ok=True)
@@ -297,14 +400,31 @@ def measure(name, argv, first, steps=(), seconds=10, kubeconfig=None, env=None,
                 if screenshots:
                     screen.png(out / f"{name}.png")
         finally:
-            _stop(proc, drain)
+            peak = _peak_rss_mib(_stop(proc, drain))
             os.close(master)
             os.close(slave)
+    if peak is not None:
+        result["rss_mib_max"] = peak  # whole-run high-water mark (getrusage)
     return result
 
 
+def _latency_summary(result, times):
+    result["key_latency_ms"] = times
+    for pct in (50, 95, 99):
+        result[f"key_latency_ms_p{pct}"] = round(percentile(times, pct), 2)
+    result["key_latency_samples"] = len(times)
+
+
+def _is_timing(metric):
+    return metric.endswith("_seconds") or metric.startswith("key_latency_ms_p")
+
+
 def measure_repeated(repeat, *args, **kwargs):
-    """Median of each metric across `repeat` runs; the individual runs are kept."""
+    """Reduce `repeat` runs to one result; the individual runs are kept.
+
+    Timings (first data, steps, key latency percentiles) take the best run:
+    noisy neighbours on a shared runner only ever add time, while a real
+    slowdown raises every run. Memory and CPU take the median."""
     runs = [measure(*args, **kwargs) for _ in range(repeat)]
     if repeat == 1:
         return runs[0]
@@ -312,10 +432,12 @@ def measure_repeated(repeat, *args, **kwargs):
     for metric in METRICS:
         values = [r[metric] for r in runs if metric in r]
         if values:
-            merged[metric] = round(statistics.median(values), 3)
-    for index, step in enumerate(merged.get("steps", [])):
-        merged["steps"][index] = dict(step, seconds=round(statistics.median(
-            r["steps"][index]["seconds"] for r in runs), 3))
+            merged[metric] = round(min(values) if _is_timing(metric) else statistics.median(values), 3)
+    merged["steps"] = [dict(step, seconds=round(min(r["steps"][index]["seconds"] for r in runs), 3))
+                       for index, step in enumerate(runs[0].get("steps", []))]
+    merged.pop("key_latency_ms", None)
+    if any("key_latency_timeouts" in r for r in runs):
+        merged["key_latency_timeouts"] = sum(r.get("key_latency_timeouts", 0) for r in runs)
     merged["repeat"] = repeat
     merged["runs"] = [{m: r.get(m) for m in METRICS if m in r} for r in runs]
     return merged
@@ -351,49 +473,204 @@ def _table(rows, headers):
                      + [line(r) for r in rows])
 
 
-def cmd_gate(args):
+def platform_key():
+    """Baseline key, e.g. Darwin-arm64 or Linux-x86_64."""
+    return f"{SYSTEM}-{platform.machine()}"
+
+
+def _machine():
+    try:
+        if SYSTEM == "Darwin":
+            return subprocess.check_output(["sysctl", "-n", "machdep.cpu.brand_string"],
+                                           text=True, stderr=subprocess.DEVNULL).strip()
+        for line in Path("/proc/cpuinfo").read_text().splitlines():
+            if line.lower().startswith(("model name", "cpu model")):
+                return line.split(":", 1)[1].strip()
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return platform.processor() or platform.machine()
+
+
+def _commit():
+    try:
+        return subprocess.check_output(["git", "-C", str(REPO), "rev-parse", "--short", "HEAD"],
+                                       text=True, stderr=subprocess.DEVNULL).strip()
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def flat_metrics(doc):
+    """{scenario: {metric: value}} from a gate results document, including
+    binary size under the pseudo-scenario "binary"."""
+    metrics = {"binary": {"size_mib": doc["binary_mib"]}} if doc.get("binary_mib") else {}
+    for name, result in doc.get("scenarios", {}).items():
+        if result.get("status") in ("fail", "skipped"):
+            continue
+        values = {m: result[m] for m in COMPARED if result.get(m) is not None}
+        for step in result.get("steps", []):
+            if step.get("metric"):
+                values[step["metric"]] = step["seconds"]
+        metrics[name] = values
+    return metrics
+
+
+def floor_for(metric, floors):
+    if metric.startswith("key_latency_ms"):
+        return floors["latency_ms"]
+    if metric.startswith("rss_mib"):
+        return floors["rss_mib"]
+    for key in ("seconds", "cpu_percent", "size_mib"):
+        if key in metric:
+            return floors[key]
+    return 0.0
+
+
+def evaluate(doc, budgets, baseline, tolerance):
+    """Rows for the delta table and whether the gate failed.
+
+    A metric fails when it exceeds its absolute budget, or when it is more than
+    `tolerance` percent AND more than its absolute floor above the baseline."""
+    floors = dict(DEFAULT_FLOORS, **baseline.get("floors", {}))
+    base = baseline.get("platforms", {}).get(doc["platform"], {}).get("metrics", {})
+    rows, failed = [], False
+    for name, result in doc.get("scenarios", {}).items():
+        if result.get("status") == "skipped":
+            rows.append([name, "-", "-", "-", "-", "-", "SKIPPED (feature not in this binary)"])
+        elif result.get("status") == "fail":
+            reason = " ".join(result.get("reason", "").split())[:120]
+            rows.append([name, "measurement", "-", "-", "-", "-", f"FAIL: {reason}"])
+            failed = True
+    for name, values in flat_metrics(doc).items():
+        budget = budgets.get(name, {}).get("budget", {})
+        for metric, value in values.items():
+            reference = base.get(name, {}).get(metric)
+            limit = budget.get(metric)
+            notes = []
+            if limit is not None and value > limit:
+                notes.append(f"FAIL: over budget {limit}")
+            if reference is None:
+                delta = "-"
+                notes.append("new (no baseline)")
+            else:
+                diff = value - reference
+                delta = f"{100 * diff / reference:+.1f} %" if reference else f"{diff:+g}"
+                floor = floor_for(metric, floors)
+                if diff > floor and diff > reference * tolerance / 100:
+                    notes.append(f"FAIL: > {tolerance:g} % regression")
+                elif -diff > floor and -diff > reference * tolerance / 100:
+                    notes.append("better (consider --update-baseline)")
+            if any(note.startswith("FAIL") for note in notes):
+                failed = True
+            rows.append([name, metric, reference if reference is not None else "-", value, delta,
+                         limit if limit is not None else "-", "; ".join(notes) or "ok"])
+    for name, values in base.items():  # a metric that vanished is a broken scenario
+        for metric in values:
+            if name in doc.get("scenarios", {}) and metric not in flat_metrics(doc).get(name, {}):
+                status = doc["scenarios"][name].get("status")
+                if status not in ("fail", "skipped"):
+                    rows.append([name, metric, values[metric], "-", "-", "-", "FAIL: not measured"])
+                    failed = True
+    return rows, failed
+
+
+def update_baseline(path, doc):
+    """Store doc's metrics as the baseline for doc's platform; other platforms
+    are kept. Refuses when any scenario failed to measure."""
+    if any(r.get("status") == "fail" for r in doc.get("scenarios", {}).values()):
+        sys.exit("baseline: refusing to update from a run with failed scenarios")
+    path = Path(path)
+    baseline = json.loads(path.read_text()) if path.exists() else {
+        "schema": 1, "tolerance_percent": DEFAULT_TOLERANCE, "floors": DEFAULT_FLOORS,
+        "platforms": {}}
+    baseline.setdefault("platforms", {})[doc["platform"]] = {
+        "recorded": doc.get("date"), "commit": doc.get("commit"), "machine": doc.get("machine"),
+        "repeat": doc.get("repeat"), "idle_seconds": doc.get("seconds"),
+        "binary_bytes": doc.get("binary_bytes"), "metrics": flat_metrics(doc)}
+    path.write_text(json.dumps(baseline, indent=2) + "\n")
+    print(f"baseline: wrote {doc['platform']} to {path}")
+
+
+def report(doc, rows, failed, tolerance, out):
+    """Print the delta table and write it as Markdown to OUT/summary.md and,
+    in GitHub Actions, to the job summary."""
+    table = _table(rows, ["scenario", "metric", "baseline", "value", "delta", "budget", "status"])
+    print(table)
+    verdict = "FAILED" if failed else "passed"
+    summary = (f"## Performance gate: {verdict}\n\n"
+               f"Platform `{doc['platform']}` ({doc.get('machine')}), commit `{doc.get('commit')}`, "
+               f"median of {doc.get('repeat')} run(s), {doc.get('seconds')} s idle window. "
+               f"Fails on more than {tolerance:g} % regression against `scripts/bench-baseline.json` "
+               f"(and beyond an absolute floor) or on exceeding `scripts/bench-budgets.json`.\n\n"
+               f"{table}\n")
+    if out:
+        out.mkdir(parents=True, exist_ok=True)
+        (out / "summary.md").write_text(summary)
+    step_summary = os.environ.get("GITHUB_STEP_SUMMARY")
+    if step_summary:
+        with open(step_summary, "a", encoding="utf-8") as handle:
+            handle.write(summary)
+    print(f"gate: {verdict}")
+
+
+def _finish(args, doc):
+    path = Path(args.baseline)
+    baseline = json.loads(path.read_text()) if path.exists() else {}
+    tolerance = args.tolerance if args.tolerance is not None else baseline.get(
+        "tolerance_percent", DEFAULT_TOLERANCE)
     budgets = json.loads(Path(args.budgets).read_text())["scenarios"]
+    if doc["platform"] not in baseline.get("platforms", {}):
+        print(f"gate: no baseline for {doc['platform']} in {path}; only budgets are checked. "
+              f"Store this run with: bench-tui.py check --results gate.json --update-baseline",
+              file=sys.stderr)
+    rows, failed = evaluate(doc, budgets, baseline, tolerance)
+    report(doc, rows, failed, tolerance, Path(args.out).resolve() if args.out else None)
+    if args.update_baseline:
+        update_baseline(path, doc)
+        return 0
+    return 1 if failed else 0
+
+
+def cmd_gate(args):
     binary = str(Path(args.binary).resolve())
     if not os.access(binary, os.X_OK):
         sys.exit(f"gate: binary not executable: {binary}")
-    selected = args.only or list(GATE_SCENARIOS)
-    rows, failed, results = [], False, {}
-    for name in selected:
+    size = os.path.getsize(binary)
+    doc = {"schema": 2, "platform": platform_key(), "machine": _machine(), "commit": _commit(),
+           "date": time.strftime("%Y-%m-%d"), "repeat": args.repeat, "seconds": args.seconds,
+           "binary_bytes": size, "binary_mib": round(size / 2**20, 2), "scenarios": {}}
+    out = Path(args.out).resolve() if args.out else None
+    for name in args.only or list(GATE_SCENARIOS):
         scenario = GATE_SCENARIOS[name]
-        budget = budgets.get(name, {}).get("budget", {})
-        print(f"gate: running {name} ({args.repeat}x, {args.seconds}s idle)...", file=sys.stderr, flush=True)
+        samples = args.latency_samples if scenario.get("latency") else 0
+        print(f"gate: running {name} ({args.repeat}x, {args.seconds}s idle, "
+              f"{samples} latency keys)...", file=sys.stderr, flush=True)
         try:
             result = measure_repeated(args.repeat, name, [binary] + scenario["args"],
                                       scenario["first"], scenario["steps"], args.seconds,
-                                      None, scenario.get("env"), args.timeout,
-                                      Path(args.out).resolve() if args.out else None)
-        except MarkerMissing as error:
-            rows.append([name, "first marker", "missing", "-", "FAIL"])
-            results[name] = {"status": "fail", "reason": str(error)}
-            print(f"gate: {name}: {error}", file=sys.stderr)
-            failed = True
+                                      None, scenario.get("env"), args.timeout, out,
+                                      latency_samples=samples)
+        except (MarkerMissing, RuntimeError) as error:
+            skip = isinstance(error, MarkerMissing) and scenario.get("skip_if_missing")
+            doc["scenarios"][name] = {"status": "skipped" if skip else "fail", "reason": str(error)}
+            if not skip:
+                print(f"gate: {name}: {error}", file=sys.stderr)
             continue
-        results[name] = result
-        for metric in GATED:
-            value, limit = result.get(metric), budget.get(metric)
-            if limit is None:
-                status = "no budget"
-            elif value is None:
-                status, failed = "FAIL (not measured)", True
-            elif value > limit:
-                status, failed = "FAIL", True
-            else:
-                status = "ok"
-            rows.append([name, metric, value, limit if limit is not None else "-", status])
-        for step in result.get("steps", []):
-            label = f"step {step['keys']!r} -> /{step['marker']}/ (s)" if step["keys"] else f"wait /{step['marker']}/ (s)"
-            rows.append([name, label, step["seconds"], "-", "info"])
-    print(_table(rows, ["scenario", "metric", "value", "budget", "status"]))
-    if args.out:
-        Path(args.out).mkdir(parents=True, exist_ok=True)
-        (Path(args.out) / "gate.json").write_text(json.dumps(results, indent=2) + "\n")
-    print("gate: FAILED" if failed else "gate: passed")
-    sys.exit(1 if failed else 0)
+        for step, metric in zip(result.get("steps", []), scenario.get("step_metrics", [])):
+            if metric:
+                step["metric"] = metric
+        doc["scenarios"][name] = result
+    if out:
+        out.mkdir(parents=True, exist_ok=True)
+        (out / "gate.json").write_text(json.dumps(doc, indent=2) + "\n")
+    sys.exit(_finish(args, doc))
+
+
+def cmd_check(args):
+    """Re-evaluate a saved gate.json, e.g. the bench-results CI artifact."""
+    doc = json.loads(Path(args.results).read_text())
+    if doc.get("schema") != 2:
+        sys.exit("check: results must come from `gate --out DIR` (schema 2)")
+    sys.exit(_finish(args, doc))
 
 
 def cmd_compare(args):
@@ -459,12 +736,29 @@ def main():
     run.add_argument("argv", nargs=argparse.REMAINDER)
     run.set_defaults(func=cmd_run)
 
+    def baseline_args(p):
+        p.add_argument("--budgets", default=str(SCRIPTS / "bench-budgets.json"))
+        p.add_argument("--baseline", default=str(SCRIPTS / "bench-baseline.json"),
+                       help="per-OS/arch baseline file (default scripts/bench-baseline.json)")
+        p.add_argument("--tolerance", type=float, metavar="PERCENT",
+                       help="allowed regression (default: the baseline file's tolerance_percent, 15)")
+        p.add_argument("--update-baseline", action="store_true",
+                       help="store these results as the baseline for their platform and exit 0")
+
     gate = sub.add_parser("gate", help="cluster-free demo-mode regression gate")
-    gate.add_argument("--budgets", default=str(SCRIPTS / "bench-budgets.json"))
+    baseline_args(gate)
     gate.add_argument("--binary", default=str(REPO / "target/release/kborg"))
     gate.add_argument("--only", action="append", choices=list(GATE_SCENARIOS))
+    gate.add_argument("--latency-samples", type=int, default=100, metavar="N",
+                      help="j/k keys timed per run for key-to-frame latency (default 100)")
     common(gate, 10)
     gate.set_defaults(func=cmd_gate, timeout=30)
+
+    check = sub.add_parser("check", help="evaluate a saved gate.json against the baseline")
+    check.add_argument("--results", required=True, help="gate.json written by `gate --out DIR`")
+    check.add_argument("--out", help="directory for summary.md")
+    baseline_args(check)
+    check.set_defaults(func=cmd_check)
 
     compare = sub.add_parser("compare", help="KBorg vs k9s vs k10s on a live context")
     compare.add_argument("--context", required=True)
