@@ -129,8 +129,8 @@ Releases up to 0.5.0-rc.3 are unsigned. See [Release process](docs/RELEASE_PROCE
 ### Debian/Ubuntu (.deb) and Fedora/RHEL (.rpm)
 
 ```sh
-sudo apt install ./kborg_0.5.0~rc.4_amd64.deb      # Debian / Ubuntu
-sudo dnf install ./kborg-0.5.0~rc.4-1.x86_64.rpm   # Fedora / RHEL-compatible
+sudo apt install ./kborg_0.5.0.rc.4_amd64.deb      # Debian / Ubuntu
+sudo dnf install ./kborg-0.5.0.rc.4-1.x86_64.rpm   # Fedora / RHEL-compatible
 ```
 
 Both install `/usr/bin/kborg` and bash, zsh and fish completions, and need glibc 2.39 or newer. CI builds the .deb; the .rpm is built from `packaging/rpm/kborg.spec`. See [Operations](docs/OPERATIONS.md#install-from-a-deb-or-rpm).
