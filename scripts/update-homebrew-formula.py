@@ -25,8 +25,8 @@ def main():
         default=Path(__file__).resolve().parent.parent / "packaging/homebrew/kborg.rb",
     )
     args = parser.parse_args()
-    if not re.fullmatch(r"\d+\.\d+\.\d+", args.version):
-        sys.exit("version must look like 0.4.0")
+    if not re.fullmatch(r"\d+\.\d+\.\d+(-rc\.\d+)?", args.version):
+        sys.exit("version must look like 0.4.0 or 0.5.0-rc.4")
     url = f"https://github.com/{args.repo}/archive/refs/tags/v{args.version}.tar.gz"
     digest = hashlib.sha256()
     with urllib.request.urlopen(url, timeout=60) as response:
