@@ -85,6 +85,9 @@ fn harness() -> Harness {
             keymap: Default::default(),
             faults_only: false,
             ask_screen: None,
+            ask_status: None,
+            ask_thread: None,
+            ask_inflight: None,
             views: Default::default(),
             ui: Default::default(),
             wide: false,
@@ -5457,5 +5460,183 @@ fn context_settings_never_turn_writes_back_on() -> Result<()> {
     assert!(!app.load_context_settings("prod"));
     assert!(!app.load_context_settings("dev"));
     assert!(!app.options.connection.writable);
+    Ok(())
+}
+
+fn advice_answer(answer: &str) -> crate::advice::AdviceOutput {
+    crate::advice::AdviceOutput {
+        schema_version: 1,
+        host: "github.com".into(),
+        account: "c0dewars".into(),
+        model: "auto".into(),
+        answer: answer.into(),
+        notice: String::new(),
+        network: crate::advice::NetworkReport::default(),
+    }
+}
+
+/// Roadmap F4: a follow-up reuses the reviewed screen and the conversation,
+/// and goes through a fresh preview and approval.
+#[test]
+fn ask_follow_up_carries_the_screen_and_conversation_into_a_new_review() -> Result<()> {
+    let (mut app, replies, mut commands) = harness();
+    let thread = AskThread {
+        screen: "pod api Pending".into(),
+        turns: Vec::new(),
+        epoch: app.epoch,
+    };
+    app.ask_inflight = Some(("why pending?".into(), thread));
+    app.modal = Modal::AdviceRunning;
+    replies
+        .send((
+            app.epoch,
+            Reply::AdviceOutcome(Ok(advice_answer("No node has 4 CPUs free."))),
+        ))
+        .map_err(|_| "reply closed")?;
+    app.receive();
+    assert!(
+        matches!(&app.modal, Modal::AdviceDocument(title, text, _) if title == ADVICE_TITLE && text.contains("f asks a follow-up"))
+    );
+    // Esc on the follow-up question returns to the answer.
+    app.key(KeyCode::Char('f'))?;
+    assert!(matches!(app.modal, Modal::Input(FOLLOW_UP_LABEL, _)));
+    app.key(KeyCode::Esc)?;
+    assert!(matches!(&app.modal, Modal::AdviceDocument(title, ..) if title == ADVICE_TITLE));
+    app.key(KeyCode::Char('f'))?;
+    type_text(&mut app, "which node is closest?")?;
+    app.key(KeyCode::Enter)?;
+    assert!(matches!(app.modal, Modal::AdviceLoading));
+    match commands.try_recv() {
+        Ok((_, Task::AskPrepare(question, screen, history, _))) => {
+            assert_eq!(question, "which node is closest?");
+            assert_eq!(screen, "pod api Pending");
+            assert_eq!(
+                history,
+                vec![(
+                    "why pending?".to_owned(),
+                    "No node has 4 CPUs free.".to_owned()
+                )]
+            );
+        }
+        _ => return Err("expected a follow-up AskPrepare".into()),
+    }
+    // A diagnostic answer is not a conversation: no follow-up offered.
+    app.ask_inflight = None;
+    app.ask_thread = None;
+    replies
+        .send((app.epoch, Reply::AdviceOutcome(Ok(advice_answer("ok")))))
+        .map_err(|_| "reply closed")?;
+    app.receive();
+    assert!(matches!(&app.modal, Modal::AdviceDocument(_, text, _) if !text.contains("follow-up")));
+    Ok(())
+}
+
+#[test]
+fn ask_follow_up_after_a_context_switch_sends_nothing() -> Result<()> {
+    let (mut app, _replies, mut commands) = harness();
+    app.ask_thread = Some(AskThread {
+        screen: "pod api Pending".into(),
+        turns: vec![("why?".into(), "because".into())],
+        epoch: app.epoch,
+    });
+    app.epoch += 1;
+    app.ask_follow_up("and now?");
+    assert!(
+        matches!(&app.modal, Modal::AdviceDocument(title, ..) if title.contains("context changed"))
+    );
+    assert!(app.ask_thread.is_none() && commands.try_recv().is_err());
+    Ok(())
+}
+
+#[test]
+fn explain_sends_the_status_line_error_with_the_screen() -> Result<()> {
+    let (mut app, _replies, mut commands) = harness();
+    app.items = shared(ui_pods());
+    app.status =
+        "Delete failed (HTTP 403): forbidden. Next: run kubectl auth can-i delete pods".into();
+    app.capture_ask_screen();
+    assert!(
+        app.ask_status
+            .as_deref()
+            .is_some_and(|s| s.contains("HTTP 403"))
+    );
+    app.options.allow_copilot_screen = true;
+    if crate::copilot_setup::supported() {
+        app.command("explain")?;
+        // With a saved Copilot setup the transfer is prepared at once; without
+        // one the question waits for setup. Either way the error leads.
+        let screen = match commands.try_recv() {
+            Ok((_, Task::AskPrepare(question, screen, history, _))) => {
+                assert!(question.starts_with("Explain the status line") && history.is_empty());
+                screen
+            }
+            _ => {
+                assert!(
+                    app.pending_copilot_question
+                        .as_deref()
+                        .is_some_and(|q| q.starts_with("Explain the status line"))
+                );
+                app.ask_screen.clone().unwrap_or_default()
+            }
+        };
+        assert!(
+            screen.starts_with("STATUS LINE MESSAGE TO EXPLAIN:\nDelete failed"),
+            "{screen}"
+        );
+        app.modal = Modal::None;
+        app.busy = false;
+        app.ask_inflight = None;
+    }
+    app.status = "Ready".into();
+    app.capture_ask_screen();
+    assert!(
+        app.ask_status.is_none(),
+        "an ordinary status is not an error"
+    );
+    app.command("explain")?;
+    assert!(
+        matches!(&app.modal, Modal::AdviceDocument(title, ..) if title == "EXPLAIN / no error")
+    );
+    assert!(app.ask_screen.is_none(), "nothing kept after a refusal");
+    Ok(())
+}
+
+#[test]
+fn ask_from_filtered_logs_adds_the_selected_lines() -> Result<()> {
+    let (mut app, _replies, _commands) = harness();
+    let text = (0..300)
+        .map(|n| {
+            if n % 3 == 0 {
+                format!("line-{n} ERROR payment failed")
+            } else {
+                format!("line-{n} ok")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    app.modal = Modal::Follow(Box::new(crate::ui_logs::LogView::new(
+        text,
+        crate::logs::ReadOptions::default(),
+    )));
+    app.capture_ask_screen();
+    assert!(
+        !app.ask_screen
+            .as_deref()
+            .unwrap_or("")
+            .contains("SELECTED LOG LINES"),
+        "without a selection the screen is enough"
+    );
+    app.key(KeyCode::Char('/'))?;
+    type_text(&mut app, "payment")?;
+    app.key(KeyCode::Enter)?;
+    app.capture_ask_screen();
+    let captured = app.ask_screen.clone().unwrap_or_default();
+    assert!(
+        captured.contains("SELECTED LOG LINES (filter /payment)"),
+        "{captured}"
+    );
+    assert!(captured.contains("100 of 100 matching lines"), "{captured}");
+    assert!(captured.contains("line-0 ERROR") && captured.contains("line-297 ERROR"));
+    assert!(!captured.contains("line-1 ok"));
     Ok(())
 }

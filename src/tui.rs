@@ -71,17 +71,29 @@ use worker::*;
 
 const OVERVIEW_CONTEXTS_LABEL: &str = "Overview contexts (comma separated, max 9)";
 const ASK_LABEL: &str = "Ask Copilot about this screen";
+const FOLLOW_UP_LABEL: &str = "Follow-up question (same screen)";
+/// Title of a Copilot answer document; `f` there asks a follow-up.
+const ADVICE_TITLE: &str = "COPILOT ADVICE / review independently";
 const OVERVIEW_INPUT_BYTES: usize = crate::overview::MAX_LIVE_CONTEXTS * 254 - 1;
 fn input_limit(label: &str) -> usize {
     if label == OVERVIEW_CONTEXTS_LABEL {
         OVERVIEW_INPUT_BYTES
     } else if label == "Command" {
         nav::COMMAND_BYTES
-    } else if label == ASK_LABEL {
+    } else if label == ASK_LABEL || label == FOLLOW_UP_LABEL {
         crate::advice::MAX_QUESTION
     } else {
         100
     }
+}
+
+/// A screen capture and the questions and answers about it so far.
+#[derive(Clone)]
+struct AskThread {
+    screen: String,
+    turns: Vec<(String, String)>,
+    /// Context/scope generation; a follow-up after a switch is refused.
+    epoch: u64,
 }
 
 enum Modal {
@@ -278,6 +290,12 @@ struct App {
     faults_only: bool,
     /// The screen as it was when the command prompt opened, for `:ask`.
     ask_screen: Option<String>,
+    /// The status line when the screen was captured, for `:explain`.
+    ask_status: Option<String>,
+    /// The answered `:ask` conversation a follow-up continues.
+    ask_thread: Option<AskThread>,
+    /// The screen question in flight: its question and the thread it extends.
+    ask_inflight: Option<(String, AskThread)>,
     /// k9s-format views.yaml: per-resource columns and default sort.
     views: crate::views::Views,
     /// Data-only ui.yaml: borders, chrome rows, table style, color overrides.
@@ -933,6 +951,9 @@ pub fn run(mut options: Options) -> Result<()> {
         keymap,
         faults_only: false,
         ask_screen: None,
+        ask_status: None,
+        ask_thread: None,
+        ask_inflight: None,
         views,
         ui,
         wide: false,

@@ -76,7 +76,12 @@ pub(super) enum Task {
     Manifest(std::path::PathBuf),
     Helm(helm_ui::Request, u64),
     HelmPrepare(Box<helm_ui::WriteDraft>, u64),
-    AskPrepare(String, String, Option<std::path::PathBuf>),
+    AskPrepare(
+        String,
+        String,
+        Vec<(String, String)>,
+        Option<std::path::PathBuf>,
+    ),
     AdvicePrepare(
         String,
         String,
@@ -683,12 +688,12 @@ pub(super) fn worker() -> Worker {
                             }
                         }else{Reply::Failure("Not connected; review again after reconnecting.".into())}
                     }
-                    Task::AskPrepare(question,screen,policy)=>{
+                    Task::AskPrepare(question,screen,history,policy)=>{
                         let result=async {
                             if epoch!=watch_results.epoch.load(std::sync::atomic::Ordering::SeqCst){return Err("Copilot question canceled: context/scope changed.".into());}
                             let policy=policy.ok_or("Setup required: --copilot-policy ABS permission (off in --read-only mode or by operator config)")?;
                             let options=crate::advice::load_options(&policy)?;
-                            let prepared=crate::advice::prepare_screen(&question,&screen,options).await?;
+                            let prepared=crate::advice::prepare_screen(&question,&screen,&history,options).await?;
                             let text=format!("01 REVIEW SCREEN TRANSFER    /    02 Ask Copilot    /    03 Read answer\n\n{}\n\nEXACT TEXT SENT\n{}",prepared.summary(),prepared.preview()?);
                             Ok((Some(prepared),text))
                         }.await;
