@@ -277,6 +277,13 @@ impl App {
                         self.pending_copilot_setup = true;
                     }
                     self.modal = Modal::AdviceDocument(title, text, offset);
+                } else if title == ADVICE_TITLE
+                    && self.ask_thread.is_some()
+                    && matches!(code, KeyCode::Char('f'))
+                {
+                    // Esc on the question returns to this answer.
+                    self.push_subview(Modal::AdviceDocument(title, text, offset));
+                    self.modal = Modal::Input(FOLLOW_UP_LABEL, String::new());
                 } else if matches!(code, KeyCode::Esc | KeyCode::Char('q')) {
                     if title == crate::copilot_setup::TITLE || title == "COPILOT DISABLED" {
                         self.pending_copilot_question = None;
@@ -1100,6 +1107,9 @@ impl App {
                         self.selection_ui.draft = None;
                         self.selection_ui.deleting = None;
                         self.restore_selection_view();
+                    } else if label == FOLLOW_UP_LABEL {
+                        // Back to the answer the follow-up was opened from.
+                        self.close_subview();
                     }
                 }
                 KeyCode::Enter => {
@@ -1111,6 +1121,8 @@ impl App {
                         return self.command(&text);
                     } else if label == ASK_LABEL {
                         self.ask(&text);
+                    } else if label == FOLLOW_UP_LABEL {
+                        self.ask_follow_up(&text);
                     } else if label == "Filter" {
                         self.filter = text;
                         self.selected = 0;

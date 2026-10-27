@@ -307,15 +307,27 @@ impl App {
                 }
                 Reply::AdviceOutcome(result) => {
                     self.advice_cancel = None;
+                    let inflight = self.ask_inflight.take();
                     self.modal = match result {
-                        Ok(output) => Modal::AdviceDocument(
-                            "COPILOT ADVICE / review independently".into(),
-                            format!(
-                                "READ-ONLY ADVICE / no commands executed\n\n{}\n\nCheck suggestions against live state before taking action.",
-                                safety::safe_lines(&output.answer, 64 * 1024)
-                            ),
-                            0,
-                        ),
+                        Ok(output) => {
+                            let answer = safety::safe_lines(&output.answer, 64 * 1024);
+                            // A screen answer continues its conversation; `f` follows up.
+                            let follow_up = match inflight {
+                                Some((question, mut thread)) => {
+                                    thread.turns.push((question, answer.clone()));
+                                    self.ask_thread = Some(thread);
+                                    "\n\nf asks a follow-up about the same screen (reviewed again before anything is sent) | Esc closes"
+                                }
+                                None => "",
+                            };
+                            Modal::AdviceDocument(
+                                ADVICE_TITLE.into(),
+                                format!(
+                                    "READ-ONLY ADVICE / no commands executed\n\n{answer}\n\nCheck suggestions against live state before taking action.{follow_up}"
+                                ),
+                                0,
+                            )
+                        }
                         Err(error) => {
                             Modal::AdviceDocument("COPILOT REQUEST STOPPED".into(), error, 0)
                         }

@@ -235,6 +235,37 @@ impl LogView {
     fn source(&self) -> &str {
         self.paused.as_deref().unwrap_or(&self.text)
     }
+    /// For `:ask` from this view: the lines the filter or severity toggles
+    /// select, newest kept within `max_bytes`, under a header naming the
+    /// selection. `None` without a selection: the screen already shows it.
+    pub fn ask_lines(&self, max_bytes: usize) -> Option<String> {
+        if self.filter.is_empty() && !self.errors_only && !self.warnings_only {
+            return None;
+        }
+        let lines = self.selected_lines();
+        let mut kept = Vec::new();
+        let mut used = 0;
+        for line in lines.iter().rev() {
+            if used + line.len() + 1 > max_bytes {
+                break;
+            }
+            used += line.len() + 1;
+            kept.push(line.as_ref());
+        }
+        kept.reverse();
+        Some(format!(
+            "SELECTED LOG LINES ({}{}): {} of {} matching lines, oldest first\n{}",
+            if self.filter.is_empty() {
+                String::new()
+            } else {
+                format!("filter /{}", safety::safe_text(&self.filter, 80))
+            },
+            self.severity_badge(),
+            kept.len(),
+            lines.len(),
+            kept.join("\n")
+        ))
+    }
     fn severity_matches(&self, line: &str) -> bool {
         let severity = severity(line);
         (!self.errors_only && !self.warnings_only)

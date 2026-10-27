@@ -201,7 +201,7 @@ KBorg reuses your kubeconfig and its configured authentication: the current cont
 | Ctrl-Z, Ctrl-W, `1`–`9` | Errors only, wide columns, recent namespaces |
 | `N` `A` `S` `R` (again to reverse), `:sort COL` | Sort by any column; `views.yaml` sets columns |
 | `:subjects` `:users` `:groups`, `:can` | RBAC subjects with their roles; one subject's bindings and rules |
-| `:ask QUESTION`, `:copilot setup`, `:copilot status` | Ask about the current screen, connect/sign in or inspect AI availability |
+| `:ask QUESTION`, `:explain`, `:copilot setup`, `:copilot status` | Ask about the current screen (`f` on an answer follows up), explain the status-line error, connect/sign in or inspect AI availability |
 | `D` / `kborg dashboard` | Dashboard |
 | Dashboard `1`–`9`, `w`, `L`, `t`, `G` | Focus (again = full screen), select warning, Pod logs, cross-cluster tail, trend charts |
 | `:metrics` then `g` | Live CPU and memory chart for the selected Pod or Node |

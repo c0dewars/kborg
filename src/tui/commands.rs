@@ -1,6 +1,11 @@
 //! `:` command handling.
 use super::*;
 
+/// The fixed question `:explain` asks.
+const EXPLAIN_QUESTION: &str = "Explain the status line message shown above: what failed, the likely cause, and what to check next in KBorg or the cluster.";
+/// Bytes of filtered log lines an :ask from the logs view adds to the screen.
+const LOG_LINES_SENT: usize = 8 * 1024;
+
 impl App {
     pub(super) fn command(&mut self, text: &str) -> Result<bool> {
         let expanded = match crate::aliases::expand(text, &self.aliases) {
@@ -195,6 +200,7 @@ impl App {
                 let question = words.join(" ");
                 self.ask(&question);
             }
+            ("explain", []) => self.explain_status(),
             ("copilot",[])=>{
                 self.refresh_copilot_policy();
                 // Keep the credential-free local diagnostic preview available
@@ -204,6 +210,7 @@ impl App {
                     if self.busy {self.status="Wait for the current request before preparing Copilot.".into();}
                     else {
                         self.modal=Modal::AdviceLoading;
+                        self.ask_inflight=None;
                         self.send(Task::AdvicePrepare(kind,namespace,name,self.selected_uid(),policy));
                         if !self.busy {
                             self.modal=Modal::AdviceDocument("COPILOT NOT STARTED".into(),"Request queue unavailable; open Copilot again when the worker is available.".into(),0);
@@ -798,6 +805,16 @@ impl App {
         }
         let (width, height) = terminal::size().unwrap_or((120, 40));
         self.ask_screen = snapshot::screen_text(self, width, height).ok();
+        // In the logs view the filtered lines go along, not only those that fit.
+        if let (Some(screen), Modal::Follow(view)) = (&mut self.ask_screen, &self.modal)
+            && let Some(lines) = view.ask_lines(LOG_LINES_SENT)
+        {
+            screen.push_str("\n\n");
+            screen.push_str(&lines);
+        }
+        // Errors carry a next step; a sticky status is a warning to act on.
+        self.ask_status = (self.sticky_status || self.status.contains(crate::errors::NEXT))
+            .then(|| self.status.clone());
     }
     fn copilot_notice(&mut self, title: &str, text: &str) {
         self.modal = Modal::AdviceDocument(title.into(), text.into(), 0);
@@ -873,20 +890,75 @@ impl App {
             self.copilot_notice("ASK COPILOT / screen needed", "No screen is captured yet. Esc returns; press : on the resource, logs or dashboard you want help with, then type ask QUESTION. Nothing was sent.");
             return;
         };
-        if let Err(error) = crate::advice::screen_bundle(&question, &screen) {
+        if let Err(error) = crate::advice::screen_bundle(&question, &screen, &[]) {
             self.copilot_notice("ASK COPILOT / invalid capture", &format!("{error}\n\nEsc returns. Capture the screen again with :ask QUESTION. Nothing was sent."));
             return;
         }
         self.pending_copilot_question = None;
+        let thread = AskThread {
+            screen,
+            turns: Vec::new(),
+            epoch: self.epoch,
+        };
+        self.send_ask(question, thread);
+    }
+    /// Prepare the reviewed transfer for `question` about `thread`'s screen.
+    fn send_ask(&mut self, question: String, thread: AskThread) {
         self.modal = Modal::AdviceLoading;
+        self.ask_inflight = Some((question.clone(), thread.clone()));
         self.send(Task::AskPrepare(
             question,
-            screen,
+            thread.screen,
+            thread.turns,
             self.options.copilot_policy.clone(),
         ));
         if !self.busy {
+            self.ask_inflight = None;
             self.copilot_notice("COPILOT NOT STARTED", "Request queue unavailable. Esc returns; ask again when the worker is available. Nothing was sent.");
         }
+    }
+    /// `f` on an answer: another question about the same captured screen,
+    /// carrying the conversation so far. It is reviewed and approved again.
+    pub(super) fn ask_follow_up(&mut self, question: &str) {
+        let question = match crate::advice::validate_question(question) {
+            Ok(question) => question,
+            Err(error) => {
+                self.copilot_notice(
+                    "FOLLOW-UP / question needed",
+                    &format!("{error}\n\nEsc returns. Nothing was sent."),
+                );
+                return;
+            }
+        };
+        let Some(thread) = self.ask_thread.clone() else {
+            self.copilot_notice("FOLLOW-UP / no conversation", "There is no answered :ask to follow up. Press : on the screen you want help with and type ask QUESTION. Nothing was sent.");
+            return;
+        };
+        if thread.epoch != self.epoch {
+            self.ask_thread = None;
+            self.copilot_notice("FOLLOW-UP / context changed", "The context or scope changed since that answer, so its screen is out of date. Press : on the current screen and type ask QUESTION. Nothing was sent.");
+            return;
+        }
+        if self.busy {
+            self.copilot_notice("COPILOT BUSY", "Wait for the current request to finish, then ask the follow-up again. Nothing was sent.");
+            return;
+        }
+        self.send_ask(question, thread);
+    }
+    /// `:explain`: ask Copilot about the error on the status line when the
+    /// prompt opened, together with the screen, through the same review.
+    pub(super) fn explain_status(&mut self) {
+        let Some(error) = self.ask_status.take() else {
+            self.ask_screen = None;
+            self.copilot_notice("EXPLAIN / no error", "The status line shows no error to explain. Run :explain while an error or warning is on the status line. Nothing was sent.");
+            return;
+        };
+        if let Some(screen) = self.ask_screen.take() {
+            self.ask_screen = Some(format!(
+                "STATUS LINE MESSAGE TO EXPLAIN:\n{error}\n\n{screen}"
+            ));
+        }
+        self.ask(EXPLAIN_QUESTION);
     }
     /// Review a privileged node shell Pod for the selected Node.
     pub(super) fn node_shell(&mut self) {
