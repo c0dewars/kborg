@@ -582,10 +582,15 @@ def update_baseline(path, doc):
     baseline = json.loads(path.read_text()) if path.exists() else {
         "schema": 1, "tolerance_percent": DEFAULT_TOLERANCE, "floors": DEFAULT_FLOORS,
         "platforms": {}}
-    baseline.setdefault("platforms", {})[doc["platform"]] = {
+    platforms = baseline.setdefault("platforms", {})
+    entry = {
         "recorded": doc.get("date"), "commit": doc.get("commit"), "machine": doc.get("machine"),
         "repeat": doc.get("repeat"), "idle_seconds": doc.get("seconds"),
         "binary_bytes": doc.get("binary_bytes"), "metrics": flat_metrics(doc)}
+    # A re-recorded platform keeps its own tolerance.
+    if "tolerance_percent" in platforms.get(doc["platform"], {}):
+        entry["tolerance_percent"] = platforms[doc["platform"]]["tolerance_percent"]
+    platforms[doc["platform"]] = entry
     path.write_text(json.dumps(baseline, indent=2) + "\n")
     print(f"baseline: wrote {doc['platform']} to {path}")
 
@@ -615,8 +620,11 @@ def report(doc, rows, failed, tolerance, out):
 def _finish(args, doc):
     path = Path(args.baseline)
     baseline = json.loads(path.read_text()) if path.exists() else {}
-    tolerance = args.tolerance if args.tolerance is not None else baseline.get(
-        "tolerance_percent", DEFAULT_TOLERANCE)
+    # --tolerance, else the platform's own tolerance_percent (shared CI
+    # runners are noisier than a quiet workstation), else the file-wide one.
+    platform = baseline.get("platforms", {}).get(doc["platform"], {})
+    tolerance = args.tolerance if args.tolerance is not None else platform.get(
+        "tolerance_percent", baseline.get("tolerance_percent", DEFAULT_TOLERANCE))
     budgets = json.loads(Path(args.budgets).read_text())["scenarios"]
     if doc["platform"] not in baseline.get("platforms", {}):
         print(f"gate: no baseline for {doc['platform']} in {path}; only budgets are checked. "
