@@ -191,6 +191,23 @@ impl Gateway {
         key: &str,
     ) -> Result<crate::secrets::Revealed> {
         crate::secrets::validate_request(ns, name, key)?;
+        // The record names the Secret; the key name only enters the review
+        // hash, and the value never reaches the audit sink.
+        let event = crate::audit_sink::Event::new("secret-reveal", &self.context, &self.server)
+            .target(ns, "secrets", name, uid)
+            .review(&format!("reveal Secret {ns}/{name} uid {uid} key {key}"));
+        let audit = crate::audit_sink::intent(event)?;
+        let result = self.secret_value_approved(ns, name, uid, key).await;
+        audit.finish(&result)?;
+        result
+    }
+    async fn secret_value_approved(
+        &self,
+        ns: &str,
+        name: &str,
+        uid: &str,
+        key: &str,
+    ) -> Result<crate::secrets::Revealed> {
         let Some(api) = self.secret_api(ns)? else {
             if name != "api-credentials" || uid != "demo-secret-uid" {
                 return Err("Secret not found".into());

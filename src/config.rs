@@ -78,6 +78,18 @@ pub struct Config {
     pub allow_debug: bool,
     #[serde(default = "yes")]
     pub allow_scan: bool,
+    /// Audit sink: absolute path of an append-only, hash-chained JSONL file.
+    #[serde(default)]
+    pub audit_file: Option<std::path::PathBuf>,
+    /// Rotation size of `audit_file` in bytes (default 16 MiB).
+    #[serde(default)]
+    pub audit_file_max_bytes: Option<u64>,
+    /// Audit sink: send every record to local syslog.
+    #[serde(default)]
+    pub audit_syslog: bool,
+    /// Block a change when its audit record cannot be written.
+    #[serde(default)]
+    pub audit_required: bool,
 }
 impl Default for Config {
     fn default() -> Self {
@@ -112,6 +124,21 @@ impl Default for Config {
             allow_copilot_screen: true,
             allow_debug: true,
             allow_scan: true,
+            audit_file: None,
+            audit_file_max_bytes: None,
+            audit_syslog: false,
+            audit_required: false,
+        }
+    }
+}
+impl Config {
+    pub fn audit(&self) -> crate::audit_sink::Settings {
+        crate::audit_sink::Settings {
+            file: self.audit_file.clone(),
+            max_bytes: self.audit_file_max_bytes.unwrap_or(0),
+            syslog: self.audit_syslog,
+            required: self.audit_required,
+            syslog_socket: None,
         }
     }
 }
@@ -137,12 +164,20 @@ pub fn load(path: &Path) -> Result<Config> {
     if let Some(theme) = &config.theme {
         crate::themes::find(theme)?;
     }
+    config.audit().validate()?;
+    if config.audit_file_max_bytes == Some(0) {
+        return Err(format!(
+            "audit_file_max_bytes must be at least {}",
+            crate::audit_sink::MIN_MAX_BYTES
+        ));
+    }
     Ok(config)
 }
 pub fn apply(config: Config, options: &mut Options) -> Result<()> {
     // An operator configuration only takes capabilities away: everything is
     // on by default, and a field set to false (or the read-only profile)
     // turns that capability off whatever the command line says.
+    crate::audit_sink::configure(config.audit());
     let c = &mut options.connection;
     if config.profile == Profile::ReadOnly {
         c.writable = false;

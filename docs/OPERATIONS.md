@@ -85,6 +85,28 @@ Unknown or duplicate fields fail. Config never stores credentials. These are loc
 
 Run `kborg audit pending --json` after a crash or uncertain response. Missing, incomplete and failed outcomes remain uncertain. Do not automatically replay a write. Use the recorded context, namespace, UID and operation to inspect current API state and correlate with API-server audit. A later state observation cannot prove exactly which request took effect. Local records are operator-mutable and supplementary; organizations requiring protected audit must supply a protected server-side sink and test outages before promoting writes.
 
+## Audit sink for a SIEM
+
+An operator configuration can send every change to a company SIEM. Each change writes one JSON line when it is approved (`"stage":"intent"`, before anything is sent to the cluster) and one when it finishes (`"stage":"outcome"`, with `ok`, `failed` or `unknown` and a fixed `error_class` such as `conflict` or `forbidden`).
+
+```json
+{
+  "schema_version": 1,
+  "audit_file": "/var/log/kborg/audit.jsonl",
+  "audit_file_max_bytes": 16777216,
+  "audit_syslog": true,
+  "audit_required": true
+}
+```
+
+- `audit_file`: absolute path of an append-only, owner-only (0600) file. KBorg refuses a symlink or a file other users can write. At `audit_file_max_bytes` (default 16 MiB, minimum 64 KiB) it rotates to `FILE.1`; five rotated files are kept.
+- `audit_syslog`: the same records go to the local syslog daemon (`/dev/log`, which journald reads, or `/var/run/syslog` on macOS) with facility `auth`, for forwarding.
+- `audit_required`: `true` blocks a change whose intent record cannot be written. When `false`, KBorg makes the change and shows a warning instead.
+
+Records describe identities, never values: action, context, API server host, namespace, kind, name, UID, OS user, KBorg version, whether the approval was typed (`strict`) or one key, and `review_sha256`, the SHA-256 of the exact review the user approved. They never contain Secret data, tokens, exec commands or their input and output, log lines or file contents. Every write path is covered: scale, restart, image and resource edits, rollback, delete, force kill, batches (one record pair per object), YAML edit, server-side apply, Secret reveal, exec, attach, port forward, file copy, node cordon/uncordon/drain, node shell, debug containers, Helm lifecycle, external tools and Copilot transfers.
+
+Each record carries `prev`, the SHA-256 of the line before it (all zeros for the first record), so the file is a hash chain. `kborg audit verify FILE [FILE.1 ...]` checks it and reports the first line where a record was removed, inserted or edited; pass older rotated files first to check across rotations. The chain shows tampering after the fact; it cannot stop someone with write access to the file, so ship records off the host (syslog forwarding or a log agent) for protection.
+
 ## Support and production rollout
 
 Kubernetes 1.34 is the minimum binding. Previously tested minors are 1.34, 1.35 and 1.36; future minors require compatibility runs. Certificate/token authentication is supported. ExecCredential helpers require a reviewed immutable native executable and host/context/CA-bound policy; legacy providers remain blocked. Real provider identity rotation, proxy support, enterprise account policies and terminal combinations need deployment-specific acceptance.

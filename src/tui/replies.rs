@@ -4,6 +4,11 @@ use super::*;
 impl App {
     pub(super) fn receive(&mut self) -> bool {
         let mut changed = self.expire_table_metrics(Instant::now());
+        if let Some(warning) = crate::audit_sink::take_warning() {
+            self.status = warning;
+            self.sticky_status = true;
+            changed = true;
+        }
         if let Modal::Secrets(view) = &mut self.modal
             && view.tick()
         {

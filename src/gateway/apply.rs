@@ -183,8 +183,14 @@ impl Gateway {
                 uid,
                 version,
             };
+            let sink = crate::audit_sink::intent(self.audit_event(
+                "server-side-apply",
+                &target,
+                prepared.summary(),
+            ))?;
             let audit = start_operation_audit(&target, "server-side-apply", &self.context)?;
             let result = self.server_apply(planned, false).await;
+            sink.finish(&result)?;
             finish_audit(
                 &audit,
                 if result.is_ok() {

@@ -589,8 +589,25 @@ fn recheck_inventory(reviewed: &Inventory, current: &Inventory) -> Result<()> {
     Ok(())
 }
 pub async fn execute(gateway: &Gateway, review: ReviewedNode, typed: &str) -> Result<Report> {
+    if typed != review.confirmation() {
+        return Err("confirmation must exactly match nodes/name".into());
+    }
+    let audit = crate::audit_sink::intent(audit_event(gateway, &review))?;
     let directory = safety::config_dir()?.join("audit");
-    execute_at(gateway, review, typed, &directory).await
+    let result = execute_at(gateway, review, typed, &directory).await;
+    match &result {
+        Ok(report) if !report.complete => {
+            audit.outcome(crate::audit_sink::Outcome::Failed, Some("incomplete"))?
+        }
+        _ => audit.finish(&result)?,
+    }
+    result
+}
+/// Audit-sink event for a reviewed node operation (one record per node).
+pub fn audit_event(gateway: &Gateway, review: &ReviewedNode) -> crate::audit_sink::Event {
+    crate::audit_sink::Event::new(review.request.name(), &gateway.context, &gateway.server)
+        .target("", "nodes", &review.node.name, &review.node.uid)
+        .review(&review.summary)
 }
 async fn execute_at(
     gateway: &Gateway,

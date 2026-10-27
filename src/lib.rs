@@ -30,6 +30,7 @@ pub(crate) mod test_paths {
 }
 
 pub mod audit;
+pub mod audit_sink;
 pub mod cluster_health;
 pub mod completions;
 pub mod config;
