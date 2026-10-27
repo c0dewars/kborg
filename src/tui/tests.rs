@@ -142,6 +142,7 @@ fn harness() -> Harness {
             palette: None,
             visited: Default::default(),
             config_watch: Default::default(),
+            ctx_settings: Default::default(),
             worker: Worker {
                 tx,
                 rx,
@@ -5403,4 +5404,58 @@ fn metadata_rows_render_and_describe_fetches_the_full_object() {
         ),
         _ => panic!("describe must fetch the full object by name"),
     }
+}
+
+/// Roadmap F3: entering a context applies its theme, view, badge and
+/// read-only flag; leaving it restores what the session had.
+#[cfg(unix)]
+#[test]
+fn context_settings_switch_theme_view_badge_and_force_read_only() -> Result<()> {
+    let (mut app, _replies, _commands) = harness();
+    app.items = shared(ui_pods());
+    let dir = crate::config_watch::tests::folder()?;
+    let contexts = dir.0.join(crate::context_config::DIR_NAME);
+    crate::context_config::save_in(
+        &contexts,
+        "prod",
+        "view: deployments\ntheme: nord\nread_only: true\nlabel: PROD\ncolor: danger\n",
+    )?;
+    app.ctx_settings.directory = Some(contexts);
+    app.options.connection.writable = true;
+    // Leaving a themed context returns to the theme the session loads.
+    let session_theme = ui_theme(&app.ui, app.options.theme.as_deref())?.0.id;
+
+    app.ctx_settings.view_pending = true;
+    assert!(app.load_context_settings("prod"), "write access changed");
+    assert!(!app.options.connection.writable, "prod is forced read-only");
+    assert_eq!(app.theme.id, "nord");
+    assert_eq!(app.take_context_view().as_deref(), Some("deployments"));
+    assert_eq!(
+        app.take_context_view(),
+        None,
+        "the view applies once per switch"
+    );
+    assert!(screen(&app, 120, 24)[0].contains(" PROD "));
+
+    assert!(app.load_context_settings("dev"), "write access restored");
+    assert!(app.options.connection.writable);
+    assert_eq!(app.theme.id, session_theme);
+    assert!(!screen(&app, 120, 24)[0].contains("PROD"));
+    Ok(())
+}
+
+/// An operator's read-only session stays read-only in every context.
+#[cfg(unix)]
+#[test]
+fn context_settings_never_turn_writes_back_on() -> Result<()> {
+    let (mut app, _replies, _commands) = harness();
+    let dir = crate::config_watch::tests::folder()?;
+    let contexts = dir.0.join(crate::context_config::DIR_NAME);
+    crate::context_config::save_in(&contexts, "prod", "read_only: true\n")?;
+    app.ctx_settings.directory = Some(contexts);
+    app.options.connection.writable = false;
+    assert!(!app.load_context_settings("prod"));
+    assert!(!app.load_context_settings("dev"));
+    assert!(!app.options.connection.writable);
+    Ok(())
 }

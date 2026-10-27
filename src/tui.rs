@@ -26,6 +26,7 @@ mod advice_ui;
 mod charts_ui;
 mod commands;
 mod connection_prompt;
+mod context_settings;
 #[path = "ui_dashboard.rs"]
 mod dashboard_ui;
 mod format;
@@ -354,6 +355,8 @@ struct App {
     visited: std::collections::VecDeque<palette::Visited>,
     /// Live config reload: polls the config folder on the loop tick.
     config_watch: crate::config_watch::Watcher,
+    /// Per-context settings (contexts/NAME.yaml) for the current context.
+    ctx_settings: context_settings::State,
     worker: Worker,
 }
 impl App {
@@ -986,6 +989,11 @@ pub fn run(mut options: Options) -> Result<()> {
         palette: None,
         visited: Default::default(),
         config_watch,
+        ctx_settings: context_settings::State::new(
+            safety::config_dir()
+                .ok()
+                .map(|dir| dir.join(crate::context_config::DIR_NAME)),
+        ),
         worker,
     };
     if first_run {
@@ -1053,6 +1061,7 @@ pub fn run(mut options: Options) -> Result<()> {
         if let Err(error) = app.open_dashboard(names) {
             app.status = error;
         }
+        app.prepare_context_settings();
         app.connecting_epoch = Some(app.epoch);
         app.server = "connecting...".into();
         app.send(Task::Connect(app.options.connection.clone()));
@@ -1089,6 +1098,18 @@ pub fn run(mut options: Options) -> Result<()> {
                     }
                     Err(error) => error,
                 };
+            }
+            dirty = true;
+        }
+        if std::mem::take(&mut app.ctx_settings.pending_edit) {
+            match app.context_settings_text() {
+                Ok((context, text)) => {
+                    drop(terminal_guard.take());
+                    let result = crate::external_editor::edit(&text, 4096);
+                    terminal_guard = Some(Terminal::enter(app.options.mouse)?);
+                    app.finish_context_edit(&context, result);
+                }
+                Err(error) => app.status = error,
             }
             dirty = true;
         }

@@ -842,6 +842,26 @@ fn render_frame(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
         }
         Ok(())
     };
+    // Per-context badge (contexts/NAME.yaml label/color), e.g. a red PROD.
+    let badge = app.ctx_settings.badge().map(|badge| {
+        let background = badge.background(t);
+        let paint = |rgb: themes::Rgb| {
+            if app.options.color && !t.terminal {
+                rgb.color()
+            } else {
+                Color::Reset
+            }
+        };
+        (
+            format!(" {} ", badge.label),
+            paint(crate::context_config::Badge::foreground(background)),
+            paint(background),
+        )
+    });
+    let badge_width = badge
+        .as_ref()
+        .map_or(0, |(label, ..)| label.len() as u16 + 1)
+        .min(w / 3);
     if let Some(y) = chrome.header {
         row(out, y, w, "", fg, surface).map_err(|_| "draw failed")?;
         cell(
@@ -854,7 +874,25 @@ fn render_frame(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
             color("selection_background"),
         )
         .map_err(|_| "draw failed")?;
+        if let Some((label, badge_fg, badge_bg)) = &badge {
+            cell(
+                out,
+                9,
+                y,
+                badge_width.saturating_sub(1),
+                label,
+                *badge_fg,
+                *badge_bg,
+            )
+            .map_err(|_| "draw failed")?;
+        }
     }
+    // Without a header bar the badge leads the identity line.
+    let identity_x = if chrome.header.is_none() {
+        badge_width
+    } else {
+        0
+    };
     let title = screen_title(app, &app.modal);
     let help_width = if w >= 64 { 4 } else { 0 };
     // Identity spans in theme roles on the given surface.
@@ -873,17 +911,23 @@ fn render_frame(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
         // Folded identity: context, namespace and mode share the header bar.
         (Some(y), None) => {
             let mode_x = w.saturating_sub(mode_width + help_width);
-            let identity_width = mode_x.saturating_sub(10);
-            spans(out, 10, y, mode_x, &identity(identity_width, surface))
-                .map_err(|_| "draw failed")?;
+            let identity_x = 10 + badge_width;
+            spans(
+                out,
+                identity_x,
+                y,
+                mode_x,
+                &identity(mode_x.saturating_sub(identity_x), surface),
+            )
+            .map_err(|_| "draw failed")?;
             mode_chip(out, mode_x, y, surface).map_err(|_| "draw failed")?;
         }
         (Some(y), Some(_)) if w >= 64 => {
             cell(
                 out,
-                9,
+                9 + badge_width,
                 y,
-                w.saturating_sub(14),
+                w.saturating_sub(14 + badge_width),
                 &format!(" {title}"),
                 color("accent"),
                 surface,
@@ -906,18 +950,33 @@ fn render_frame(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
         row(out, y, w, "", fg, bg).map_err(|_| "draw failed")?;
         // Narrow terminals put the mode on the header bar when there is one.
         let mode_inline = w >= 64 || chrome.header.is_none();
-        let identity_width = if mode_inline {
+        let identity_end = if mode_inline {
             w.saturating_sub(mode_width + 1)
         } else {
             w
         };
+        if identity_x > 0
+            && let Some((label, badge_fg, badge_bg)) = &badge
+        {
+            cell(
+                out,
+                0,
+                y,
+                identity_x.saturating_sub(1),
+                label,
+                *badge_fg,
+                *badge_bg,
+            )
+            .map_err(|_| "draw failed")?;
+        }
         // One cell of margin keeps the identity off the terminal edge.
+        let identity_start = identity_x + 1;
         spans(
             out,
-            1,
+            identity_start,
             y,
-            identity_width,
-            &identity(identity_width.saturating_sub(1), bg),
+            identity_end,
+            &identity(identity_end.saturating_sub(identity_start), bg),
         )
         .map_err(|_| "draw failed")?;
         mode_chip(

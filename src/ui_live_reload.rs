@@ -132,6 +132,7 @@ impl App {
                 self.config_watch.watch_theme(&theme.id);
                 self.ui = ui;
                 self.theme = theme;
+                self.apply_context_theme();
                 *self.visible_cache.borrow_mut() = None;
                 if let Some(error) = error {
                     return Err(format!(
@@ -162,6 +163,7 @@ impl App {
                 }
                 self.config_watch.watch_theme(&theme.id);
                 self.theme = theme;
+                self.apply_context_theme();
                 Ok(true)
             }
             ConfigFile::Aliases => {
@@ -184,6 +186,7 @@ impl App {
                 Ok(true)
             }
             ConfigFile::Hotkeys | ConfigFile::Keymap => self.apply_keys(file),
+            ConfigFile::Context => self.reload_context_settings(),
         }
     }
 

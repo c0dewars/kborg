@@ -241,7 +241,7 @@ To style and lay out the UI to your taste, run `kborg ui init` and edit the gene
 
 Everything below lives in KBorg's configuration directory (macOS `~/Library/Application Support/KBorg`, Linux `~/.config/kborg`, or `KBORG_CONFIG_DIR`). All files are data only, strictly validated and bounded; a broken file shows a notice and KBorg falls back to its defaults.
 
-Saved changes apply live, within about a second, without `:ui reload`: `ui.yaml`, the theme choice and your custom theme file, `keymap.yaml`, `hotkeys.yaml`, `aliases.yaml`, `views.yaml` and plugin registrations. A file that fails validation or the trust checks (symlink, size, writable by other users) is refused: the last good settings stay and the status line names the file, the line or field and the next step. Key changes wait until an open dialog, such as a typed approval, closes. Turn it off with `reload: false` in `ui.yaml` or `KBORG_CONFIG_RELOAD=off`.
+Saved changes apply live, within about a second, without `:ui reload`: `ui.yaml`, the theme choice and your custom theme file, `keymap.yaml`, `hotkeys.yaml`, `aliases.yaml`, `views.yaml`, plugin registrations and the current context's `contexts/NAME.yaml`. A file that fails validation or the trust checks (symlink, size, writable by other users) is refused: the last good settings stay and the status line names the file, the line or field and the next step. Key changes wait until an open dialog, such as a typed approval, closes. Turn it off with `reload: false` in `ui.yaml` or `KBORG_CONFIG_RELOAD=off`.
 
 | File | Controls |
 |---|---|
@@ -249,6 +249,7 @@ Saved changes apply live, within about a second, without `:ui reload`: `ui.yaml`
 | `keymap.yaml` | Any key on any screen; Enter, Esc and review confirmations stay fixed — [format](docs/K9S_COMPATIBILITY.md#custom-keymap) |
 | `views.yaml` | Columns and default sort per resource, including `TITLE:.json.path` columns (k9s format) — [format](docs/K9S_COMPATIBILITY.md#custom-views-columns-and-sort) |
 | `hotkeys.yaml`, `aliases.yaml` | Keys and names that run commands (k9s format) |
+| `contexts/NAME.yaml` | Per-context namespace, view, theme, header badge (e.g. a red PROD), read-only and strict confirmations; `:ctx-config` edits it — [reference](docs/themes.md#per-context-settings) |
 | Themes | 20 built-ins, live preview in `:themes`, `kborg theme new` for your own |
 
 ## Terminals

@@ -38,7 +38,7 @@ pub(crate) use kubeconfig::parse_config_text;
 use kubeconfig::*;
 pub use kubeconfig::{
     ConnectionCatalog, ContextSummary, audit, connection_catalog, contexts, plugin_identity,
-    review_auth_helper,
+    review_auth_helper, selected_context,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};

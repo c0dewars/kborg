@@ -792,8 +792,14 @@ pub fn run_args(args: Vec<String>) -> Result<()> {
             if opts.json {
                 print_json(&serde_json::json!(list))?;
             } else {
+                let directory = crate::context_config::directory().ok();
                 for c in list {
-                    outputln!("{}", safety::safe_text(&c, 100));
+                    match &directory {
+                        Some(directory) => {
+                            outputln!("{}", crate::context_config::describe_in(directory, &c))
+                        }
+                        None => outputln!("{}", safety::safe_text(&c, 100)),
+                    }
                 }
             }
             return Ok(());
@@ -858,6 +864,19 @@ pub fn run_args(args: Vec<String>) -> Result<()> {
         | "pulses" | "xray" | "workloads" | "can" | "yaml-template" | "yaml-edit" | "cordon"
         | "uncordon" | "drain" => {}
         _ => return Err("unknown command; see --help".into()),
+    }
+    // contexts/NAME.yaml read_only / strict_confirmations restrict this run.
+    if let Ok(directory) = crate::context_config::directory()
+        && directory.is_dir()
+        && let Ok(context) = crate::gateway::selected_context(&opts.connection)
+        && let Some(warning) = crate::context_config::restrict_in(
+            &directory,
+            &context,
+            &mut opts.connection.writable,
+            &mut opts.strict_confirm,
+        )
+    {
+        eprintln!("{warning}");
     }
     if cmd == "view" && !opts.command.iter().any(|arg| arg == "--tool") {
         // Without an external filter tool, view opens the built-in pager.
