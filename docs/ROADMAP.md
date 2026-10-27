@@ -9,7 +9,7 @@ Updated 2026-10-26: P1, S2, F1, F2, U1 and X1 are implemented; the CI performanc
 | Area | Current scope | Remaining acceptance or work |
 |---|---|---|
 | Performance | Recorded comparisons, bookmark/gzip traffic improvements and a manually dispatched regression gate | Current-source p95/p99 frame latency, long soak/fault evidence and browsing beyond the 10,000-object cap |
-| Security | Operator default with review; company capability restrictions/read-only and strict confirmations; dry-run where supported; macOS ARM64 contained Copilot | First signed release pending; fuzz targets exist but longer campaigns remain; Copilot containment is macOS ARM64 only; no external audit; Windows file ACLs |
+| Security | Operator default with review; company capability restrictions/read-only and strict confirmations; dry-run where supported; macOS ARM64 contained Copilot | First signed release pending; fuzz targets exist but longer campaigns remain; Copilot containment is macOS ARM64 only; Windows file ACLs |
 | Features | Broad k9s-style workflows with documented limits (K9S_COMPATIBILITY.md), dashboard, charts and platform-limited Copilot | Full-screen shells and plugin variable substitution implemented; cluster-scoped apply and per-context policy remain; enterprise Copilot unvalidated |
 | UI | 20 themes, ui.yaml, charts, keymap everywhere | Unicode width implemented with ASCII fallback; no k9s skin import; no automated screenshot matrix for real terminals |
 | UX | `?` help per screen, typed command grammar, action menu | Fuzzy palette and actionable errors implemented; first-run tips and automatic config reload remain |
@@ -37,7 +37,6 @@ Updated 2026-10-26: P1, S2, F1, F2, U1 and X1 are implemented; the CI performanc
 | S5 | **Screen-capture hygiene for `:ask`** (done in rc3): a revealed Secret value is hidden before any capture, and each capture is used once | Tests cover both; extend the same rule to any future view that shows a revealed value |
 | S6 | **Windows file trust**: owner-only ACLs on config, saved selections, audit and exports; handle-based checks against swap races | Windows CI test asserts ACLs; S01 closed in REMAINING_WORK.md |
 | S7 | **Audit sink**: optional JSON-lines audit to syslog/journald or a file with hash chaining, so companies can ship write actions to their SIEM | Every write family emits one record with intent, approval hash and outcome; tamper test detects a removed line **Done.** `audit_file` (owner-only, hash-chained, rotated at `audit_file_max_bytes`, 5 kept), `audit_syslog` (facility auth) and `audit_required` in the operator config; intent and outcome records with `review_sha256` and identities only; `kborg audit verify` reports the first broken link. Live on Docker Desktop: scale, restart (conflict recorded as failed), set-image, apply, exec, Pod delete, cordon and uncordon wrote 16 chained records; removing one line fails verify at that line |
-| S8 | **Independent review**: commission an external audit of the write path, Copilot containment and terminal sanitizer; publish the report and fixes | Report linked from SECURITY.md |
 | S9 | **Supply chain gates**: `cargo deny` (licenses, advisories, duplicate crates, banned sources) and `cargo vet` in CI; OpenSSF Scorecard | Scorecard ≥ 8; CI fails on a new advisory **Partly done**: `deny.toml` (advisories, Apache-2.0-compatible licenses, duplicate crates as warnings, crates.io only) passes locally; `supply-chain` CI job runs pinned cargo-deny 0.20.2; manual OpenSSF Scorecard workflow. Open: a first Scorecard score (needs a public repo and a dispatched run) and `cargo vet` (deferred, see RELEASE_PROCESS.md) |
 
 ## 3. Features
@@ -77,6 +76,6 @@ Updated 2026-10-26: P1, S2, F1, F2, U1 and X1 are implemented; the CI performanc
 1. **Now (0.5.0 final)**: P1, P5, X3. These are small, high value or close an existing gap.
 2. **0.6**: P2, P4, S1, S2, S9, F1, F2, U1, X1, U5.
 3. **0.7**: S3, S4, S6, S7, F3, F4, P3, P6, U2, U3, X2, X4.
-4. **1.0**: S8 external audit, P7 soak, F5, F6, F7, U4, X5. A production pilot is the release gate.
+4. **1.0**: P7 soak, F5, F6, F7, U4, X5. A production pilot is the release gate.
 
 Items in the same step are independent and can be built in parallel, one branch each.

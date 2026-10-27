@@ -309,7 +309,7 @@ Details: [SECURITY.md](SECURITY.md), the [release-next review](docs/RELEASE_NEXT
 | [Performance comparison](docs/PERFORMANCE_COMPARISON.md) | Memory, CPU and API traffic vs k9s and k10s |
 | [Remaining work](docs/REMAINING_WORK.md) | What's done, partial and planned |
 
-**0.5.0-rc.4** in testing (Homebrew and signed release assets): see the [release notes](docs/RELEASE_NOTES.md) for apply, node shell, debug containers, file and directory copy, bulk actions, image scanning, `:lint`, live charts, masked Secret YAML and full keymap and UI customization. CI builds and tests Linux, macOS and Windows (x86_64 and ARM). Packages up to 0.5.0-rc.3 are unsigned; 0.5.0-rc.4 is the first signed, attested release. An external security audit and an organizational pilot are open release gates.
+**0.5.0-rc.4** in testing (Homebrew and signed release assets): see the [release notes](docs/RELEASE_NOTES.md) for apply, node shell, debug containers, file and directory copy, bulk actions, image scanning, `:lint`, live charts, masked Secret YAML and full keymap and UI customization. CI builds and tests Linux, macOS and Windows (x86_64 and ARM). Packages up to 0.5.0-rc.3 are unsigned; 0.5.0-rc.4 is the first signed, attested release. An organizational pilot is the open release gate.
 
 ## Credits
 
