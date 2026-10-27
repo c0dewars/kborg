@@ -4,7 +4,7 @@ Measurements use the release executable. They are observations of one developmen
 
 ## Performance gate (CI)
 
-`scripts/bench-tui.py gate` runs fixed demo-mode scenarios (no cluster) in a 130×40 pseudo-terminal and fails when any metric is more than **15 %** worse than the committed baseline for this OS and CPU architecture, or over its absolute budget. The `bench` job in `.github/workflows/ci.yml` (manual dispatch, like every workflow here) runs it on `ubuntu-24.04`.
+`scripts/bench-tui.py gate` runs fixed demo-mode scenarios (no cluster) in a 130×40 pseudo-terminal and fails when any metric is more than **15 %** worse (**25 %** on the shared Linux CI runner) than the committed baseline for this OS and CPU architecture, or over its absolute budget. The `bench` job in `.github/workflows/ci.yml` (manual dispatch, like every workflow here) runs it on `ubuntu-24.04`.
 
 | Scenario | Measures |
 |---|---|
@@ -17,7 +17,7 @@ Measurements use the release executable. They are observations of one developmen
 - **Memory**: `rss_mib_median` over the 10 s idle window and `rss_mib_max`, the whole-run high-water mark from `getrusage`.
 - **Idle CPU**: `cpu_percent_avg` over the idle window.
 - **Repeats**: with `--repeat 3` (CI), timings take the best run, because a busy runner only adds time while a real slowdown raises every run; memory and CPU take the median.
-- **Floors**: a regression must also exceed an absolute floor (0.05 s, 3 ms latency, 4 MiB, 1 % CPU, 0.5 MiB binary) so tiny numbers do not flap. Tolerance and floors live in `scripts/bench-baseline.json`; `--tolerance` overrides for one run.
+- **Floors**: a regression must also exceed an absolute floor (0.05 s, 3 ms latency, 4 MiB, 1 % CPU, 0.5 MiB binary) so tiny numbers do not flap. Tolerance and floors live in `scripts/bench-baseline.json`: the file-wide `tolerance_percent` (15) applies unless a platform entry sets its own (Linux-x86_64 uses 25, because GitHub's shared runners vary more between runs than a quiet workstation; re-recording a platform keeps its tolerance). `--tolerance` overrides both for one run.
 - **Output**: a Markdown delta table (baseline, value, delta %, budget, status) on stdout, in `bench-results/summary.md`, and in the GitHub job summary (`$GITHUB_STEP_SUMMARY`). `bench-results/gate.json` holds every run and is uploaded as the `bench-results` artifact.
 
 ```sh

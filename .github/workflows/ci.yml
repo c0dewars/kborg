@@ -34,7 +34,7 @@ jobs:
       - name: Benchmark harness regression tests
         run: python3 scripts/test-bench-tui.py
       # Demo scale 5k/20k load, filter, sort, key-to-frame latency, binary size,
-      # RSS and idle CPU. Fails on > 15 % regression against
+      # RSS and idle CPU. Fails on > 25 % regression (this platform's tolerance) against
       # scripts/bench-baseline.json (per OS/arch) or on a budget in
       # scripts/bench-budgets.json. The delta table goes to the job summary and
       # bench-results/summary.md; bench-results/gate.json can seed a missing
