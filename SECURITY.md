@@ -36,7 +36,7 @@ expiry, so a stale or swapped review cannot run.
   automatically; pass `--helm-tool`, `--scanner` or `--copilot-policy` to pin a
   specific file.
 
-Before production: independent sensitive-code review, dependency advisories/licenses, cloud-auth trust, protected audit, OS file-permission/race hardening, denial-of-service/fuzz tests, revocation/uncertain-result drills, supported platform matrix, release authenticity and deployment-specific RBAC/admission evidence.
+Before production: dependency advisories/licenses, cloud-auth trust, protected audit, OS file-permission/race hardening, denial-of-service/fuzz tests, revocation/uncertain-result drills, supported platform matrix, release authenticity and deployment-specific RBAC/admission evidence.
 
 Cluster text is sanitized before it is drawn: control, bidi and invisible format characters are removed (a zero-width joiner is kept only between two emoji). In UTF-8 terminals normal views then show real Unicode glyphs, so look-alike characters can appear in names; approval and typed-confirmation screens always show non-ASCII as reversible `\u{...}` escapes so a reviewer can tell them apart. `text: ascii` in `ui.yaml` draws `?` everywhere instead.
 
