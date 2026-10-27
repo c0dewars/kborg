@@ -191,6 +191,7 @@ pub const SPECIAL: &[&str] = &[
     "image",
     "restart",
     "delete",
+    "ctx-config",
 ];
 
 pub fn fuzzy_matches(pattern: &str, haystack: &str) -> bool {

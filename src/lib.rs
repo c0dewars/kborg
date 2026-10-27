@@ -34,6 +34,7 @@ pub mod cluster_health;
 pub mod completions;
 pub mod config;
 pub mod config_watch;
+pub mod context_config;
 pub mod dashboard_health;
 pub mod dashboard_memory;
 pub mod edit;

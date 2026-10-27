@@ -179,18 +179,30 @@ impl App {
                     self.status = "Review the local export; Enter saves, Esc cancels.".into();
                 }
                 Reply::Connected(c, s, n, k) => {
-                    let selected_kind = self.desired_resource.take().unwrap_or_else(|| self.kind());
+                    if self.connected_context_settings(&c) {
+                        continue;
+                    }
+                    let context_view = self.take_context_view();
+                    let selected_kind = context_view
+                        .clone()
+                        .or_else(|| self.desired_resource.take())
+                        .unwrap_or_else(|| self.kind());
                     self.connecting_epoch = None;
                     self.context = c;
                     self.server = s;
                     if !self.namespace_override {
-                        self.namespace = n;
+                        self.namespace = self.context_namespace().unwrap_or(n);
                     }
                     self.kinds = k;
                     let retained_kind = self
                         .kinds
                         .iter()
-                        .position(|kind| kind.key() == selected_kind);
+                        .position(|kind| kind.key() == selected_kind)
+                        .or_else(|| {
+                            context_view
+                                .as_ref()
+                                .and_then(|view| self.resolve_resource(view).ok())
+                        });
                     self.kind_index = retained_kind.unwrap_or(0);
                     self.desired_resource = retained_kind.is_none().then_some(selected_kind);
                     self.connected = true;
@@ -855,6 +867,7 @@ impl App {
         self.config_watch.watch_theme(&theme.id);
         self.ui = ui;
         self.theme = theme;
+        self.apply_context_theme();
         match error {
             Some(error) => {
                 self.modal = Modal::Detail(

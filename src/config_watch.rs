@@ -38,10 +38,12 @@ pub enum ConfigFile {
     Views,
     /// The extension/plugin registry folder (entries added or removed).
     Plugins,
+    /// The current context's settings, contexts/NAME.yaml.
+    Context,
 }
 
 impl ConfigFile {
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 9] = [
         Self::Ui,
         Self::Appearance,
         Self::Theme,
@@ -50,6 +52,7 @@ impl ConfigFile {
         Self::Keymap,
         Self::Views,
         Self::Plugins,
+        Self::Context,
     ];
     /// The name shown to the user.
     pub fn name(self) -> &'static str {
@@ -62,6 +65,7 @@ impl ConfigFile {
             Self::Keymap => "keymap.yaml",
             Self::Views => "views.yaml",
             Self::Plugins => "plugin registry",
+            Self::Context => "context settings",
         }
     }
     fn relative(self) -> &'static str {
@@ -74,13 +78,14 @@ impl ConfigFile {
             Self::Keymap => "keymap.yaml",
             Self::Views => "views.yaml",
             Self::Plugins => "extensions",
+            Self::Context => "contexts/.none",
         }
     }
     /// The loaders' own size bounds.
     fn limit(self) -> u64 {
         match self {
             Self::Ui => 16 * 1024,
-            Self::Appearance => 4096,
+            Self::Appearance | Self::Context => 4096,
             _ => safety::MAX_FILE,
         }
     }
@@ -228,6 +233,23 @@ impl Watcher {
             .tracked
             .iter_mut()
             .find(|tracked| tracked.file == ConfigFile::Theme && tracked.path != path)
+        {
+            tracked.seen = stamp(&path);
+            tracked.path = path;
+            tracked.candidate = None;
+        }
+    }
+    /// Follow the current context's settings file (`None`: nothing to watch).
+    pub fn watch_context(&mut self, path: Option<&Path>) {
+        let Some(dir) = &self.dir else { return };
+        let path = path.map_or_else(
+            || dir.join(ConfigFile::Context.relative()),
+            Path::to_path_buf,
+        );
+        if let Some(tracked) = self
+            .tracked
+            .iter_mut()
+            .find(|tracked| tracked.file == ConfigFile::Context && tracked.path != path)
         {
             tracked.seen = stamp(&path);
             tracked.path = path;

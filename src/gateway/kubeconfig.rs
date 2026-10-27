@@ -173,6 +173,19 @@ pub fn plugin_identity(
         kubeconfig,
     ))
 }
+/// The context a connection selects: `demo`, the explicit one, else the
+/// kubeconfig `current-context`. Names only; nothing is connected.
+pub fn selected_context(options: &Connection) -> Result<String> {
+    if options.demo {
+        return Ok("demo".into());
+    }
+    if let Some(context) = &options.context {
+        return Ok(context.clone());
+    }
+    read_config(options)?.current_context.ok_or_else(|| {
+        "No context selected: kubeconfig has no current-context. Next: pass --context NAME or run `kubectl config use-context NAME`".into()
+    })
+}
 pub fn contexts(options: &Connection) -> Result<Vec<String>> {
     if options.demo {
         return Ok(vec!["demo".into()]);

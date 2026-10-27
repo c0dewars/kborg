@@ -85,6 +85,7 @@ impl App {
                 if let Some(sort) = sort { self.set_sort(sort); } else { self.status = "Sort: name | namespace | status | restarts | age | ready | cpu | memory".into(); }
             }
             ("themes", []) => self.theme_picker()?,
+            ("ctx-config", []) => self.edit_context_settings(),
             ("ui", [action]) if action == "reload" => self.reload_ui()?,
             ("overview", []) => self.modal = Modal::Input(OVERVIEW_CONTEXTS_LABEL, self.context.clone()),
             ("metrics", []) => { self.metrics_resources = false; self.request_metrics(); }
@@ -1188,6 +1189,7 @@ impl App {
         self.log_target = None;
     }
     pub(super) fn connect(&mut self) {
+        self.prepare_context_settings();
         self.namespace_override = false;
         self.changed();
         self.connected = false;
