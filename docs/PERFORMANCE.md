@@ -38,7 +38,7 @@ python3 scripts/bench-tui.py gate --repeat 3 --update-baseline     # rewrites on
 
 `--update-baseline` stores the run for the current platform, keeps the other platforms, exits 0 and refuses if a scenario failed to measure. Raise `scripts/bench-budgets.json` only if a hard ceiling is hit.
 
-The committed baseline covers **Darwin-arm64** (Apple M2 Pro). A platform without a baseline (Linux on the first CI run) is checked only against budgets and every row shows `new (no baseline)`. To add it, download the `bench-results` artifact from that run and import it:
+The committed baseline covers **Darwin-arm64** (Apple M2 Pro) and **Linux-x86_64** (the CI `ubuntu-24.04` runner, imported from CI run 40538743684 at c425f3d). A platform without a baseline is checked only against budgets and every row shows `new (no baseline)`. To add it, download the `bench-results` artifact from that run and import it:
 
 ```sh
 gh run download RUN_ID -n bench-results -D bench-results
