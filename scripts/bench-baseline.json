@@ -61,6 +61,59 @@
           "dashboard_seconds": 0.014
         }
       }
+    },
+    "Linux-x86_64": {
+      "recorded": "2026-10-27",
+      "commit": "c425f3d",
+      "machine": "AMD EPYC 7763 64-Core Processor",
+      "repeat": 3,
+      "idle_seconds": 10,
+      "binary_bytes": 21836384,
+      "metrics": {
+        "binary": {
+          "size_mib": 20.82
+        },
+        "demo-startup": {
+          "first_data_seconds": 0.042,
+          "rss_mib_median": 12.5,
+          "rss_mib_max": 17.7,
+          "cpu_percent_avg": 0.1,
+          "key_latency_ms_p50": 3.31,
+          "key_latency_ms_p95": 3.75,
+          "key_latency_ms_p99": 5.97
+        },
+        "scale-5k": {
+          "first_data_seconds": 0.298,
+          "rss_mib_median": 140.1,
+          "rss_mib_max": 169.3,
+          "cpu_percent_avg": 3.2,
+          "key_latency_ms_p50": 18.45,
+          "key_latency_ms_p95": 19.52,
+          "key_latency_ms_p99": 20.95,
+          "filter_seconds": 0.176,
+          "clear_filter_seconds": 0.021,
+          "sort_seconds": 0.021
+        },
+        "scale-20k": {
+          "first_data_seconds": 1.1,
+          "rss_mib_median": 522.2,
+          "rss_mib_max": 637.4,
+          "cpu_percent_avg": 11.59,
+          "key_latency_ms_p50": 57.77,
+          "key_latency_ms_p95": 59.84,
+          "key_latency_ms_p99": 169.5,
+          "filter_seconds": 0.742,
+          "clear_filter_seconds": 0.071,
+          "sort_seconds": 0.069
+        },
+        "demo-dashboard": {
+          "first_data_seconds": 0.041,
+          "rss_mib_median": 14.0,
+          "rss_mib_max": 18.2,
+          "cpu_percent_avg": 0.1,
+          "dashboard_seconds": 0.005
+        }
+      }
     }
   }
 }
