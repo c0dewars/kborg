@@ -1,5 +1,10 @@
 # KBorg 0.5.0 — unreleased
 
+## Since 0.5.0-rc.4
+
+- **Clearer header and footer, in your theme's colors.** The context line labels CTX, NS and API in a muted tone, with the namespace in the accent color. The freshness state (LIVE, STALE, SAMPLE) is a filled chip, and counts and sort sit further apart; READ ONLY and DEMO are chips too. The table title keeps the kind and position in the accent color and the metrics note muted. The status line has a colored edge (accent for news, warning for problems), and key hints are keycaps.
+- **Marked rows are highlighted.** Space-marked rows get a tinted background from the theme's warning hue, separate from the cursor row, so a multi-row selection is visible at a glance; the summary shows how many rows are marked. Each theme gets the strongest tint that keeps text and status colors at 4.5:1.
+
 Pre-release **0.5.0-rc.4** (2026-10-26) contains everything below.
 
 **Existing kubeconfig, visible connection consent, reviewed workflows.** This branch expands the k9s-style workspace and makes first connection and Copilot discovery easier. Platform/tool prerequisites and production acceptance gates remain explicit.

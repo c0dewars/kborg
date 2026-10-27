@@ -777,20 +777,49 @@ pub(super) fn text_cells(text: &str) -> u16 {
 pub(super) fn padded(text: &str, width: usize) -> String {
     crate::text::column(text, width)
 }
-pub(super) fn identity_line(context: &str, namespace: &str, server: &str, width: usize) -> String {
-    let server_width = if width >= 110 { 32 } else { 0 };
-    let available = width.saturating_sub(10 + server_width);
+/// The CTX / NS / API identity as (text, theme role) spans: labels muted,
+/// values in the text color and the namespace in the accent color, so the
+/// eye finds the scope first. Joined, the spans fit `width` cells.
+pub(super) fn identity_spans(
+    context: &str,
+    namespace: &str,
+    server: &str,
+    width: usize,
+) -> Vec<(String, &'static str)> {
+    const SEP: &str = "  |  ";
+    let server_width = if width >= 110 { 36 } else { 0 };
+    let available = width.saturating_sub(4 + SEP.len() + 3 + server_width);
     let namespace_width = (available / 3).clamp(6, 24).min(available);
     let context_width = available.saturating_sub(namespace_width);
-    let mut line = format!(
-        "CTX {} | NS {}",
-        display(context, context_width),
-        display(namespace, namespace_width)
-    );
+    let mut spans = vec![
+        ("CTX ".to_owned(), "muted"),
+        (display(context, context_width), "text"),
+        (SEP.to_owned(), "muted"),
+        ("NS ".to_owned(), "muted"),
+        (display(namespace, namespace_width), "accent"),
+    ];
     if server_width > 0 {
-        line.push_str(&format!(" | API {}", display(server, server_width - 7)));
+        spans.push((SEP.to_owned(), "muted"));
+        spans.push(("API ".to_owned(), "muted"));
+        spans.push((display(server, server_width - SEP.len() - 4), "text"));
     }
-    line
+    spans
+}
+/// Background of marked table rows: a tint of the theme's warning hue, so a
+/// mark reads differently from the accent-based cursor row. Each theme gets
+/// the strongest tint (up to 18%) that keeps text, status and mark colors at
+/// 4.5:1; low-contrast palettes get a lighter tint.
+pub(super) fn mark_background(theme: &themes::Theme) -> themes::Rgb {
+    let tint = |percent| blend(theme.get("background"), theme.get("warning"), percent);
+    (2..=18)
+        .rev()
+        .map(tint)
+        .find(|mark| {
+            ["text", "success", "warning"]
+                .iter()
+                .all(|role| themes::contrast(theme.get(role), *mark) >= 4.5)
+        })
+        .unwrap_or_else(|| tint(2))
 }
 pub(super) fn blend(a: themes::Rgb, b: themes::Rgb, percent: u16) -> themes::Rgb {
     let channel =

@@ -1457,7 +1457,7 @@ fn responsive_frames_preserve_identity_mode_and_bounds() {
             {
                 let frame = screen(&app, width, height);
                 assert!(frame[..2].join(" ").contains("READ ONLY"));
-                assert!(frame[1].contains("CTX test | NS test"));
+                assert!(frame[1].contains("CTX test  |  NS test"));
                 assert!(frame[3].starts_with(['+', '╭']));
             }
         }
@@ -1736,7 +1736,7 @@ fn long_context_does_not_hide_namespace_identity_and_actions_explain_capabilitie
     app.namespace = "payments-production-namespace".into();
     for width in [28, 40, 80, 120] {
         let frame = screen(&app, width, 12);
-        assert!(frame[1].contains("CTX ") && frame[1].contains(" | NS "));
+        assert!(frame[1].contains("CTX ") && frame[1].contains("  |  NS "));
         assert!(frame[1].contains('~'));
     }
     app.items = vec![object("selected")];
@@ -2549,7 +2549,7 @@ fn table_hints_show_only_actions_that_work_for_this_kind_and_session() -> Result
     assert!(table_hints(&app).contains(&("c".to_owned(), "cordon")));
     app.modal = Modal::None;
     let bottom = screen(&app, 120, 24).pop().unwrap_or_default();
-    assert!(bottom.contains("? all keys") && bottom.contains("c cordon"));
+    assert!(bottom.contains(" ?  all keys") && bottom.contains(" c  cordon"));
     Ok(())
 }
 #[test]
@@ -3419,7 +3419,7 @@ fn ui_yaml_compact_chrome_and_table_style() -> Result<()> {
     )?;
     app.marks.insert("uid-web".into());
     let frame = screen(&app, 120, 24);
-    assert!(frame[0].contains("KBORG") && frame[0].contains("CTX test | NS test"));
+    assert!(frame[0].contains("KBORG") && frame[0].contains("CTX test  |  NS test"));
     assert!(frame[0].contains("READ ONLY"));
     assert!(frame[1].contains("healthy"));
     assert!(frame[2].starts_with(['+', '╭']));
@@ -3442,7 +3442,7 @@ fn ui_yaml_compact_chrome_and_table_style() -> Result<()> {
     assert_eq!(age_styled(&day, 3725, true), "1h2m");
     app.ui = crate::ui_config::parse("header:\n  show: false\n  summary: false\n")?;
     let frame = screen(&app, 80, 24);
-    assert!(frame[0].contains("CTX test | NS test") && frame[0].contains("READ ONLY"));
+    assert!(frame[0].contains("CTX test  |  NS test") && frame[0].contains("READ ONLY"));
     assert!(frame[1].starts_with(['+', '╭']));
     assert!(!frame.join("\n").contains("KBORG"));
     Ok(())
@@ -3486,7 +3486,7 @@ fn remapped_table_keys_run_their_action_and_the_old_key_stops() -> Result<()> {
     app.key(KeyCode::Esc)?;
     assert!(matches!(app.modal, Modal::None));
     let bottom = screen(&app, 120, 24).pop().unwrap_or_default();
-    assert!(bottom.contains("F1 all keys"), "{bottom}");
+    assert!(bottom.contains(" F1  all keys"), "{bottom}");
     Ok(())
 }
 
@@ -3911,7 +3911,7 @@ fn remapped_helm_form_keys_take_only_modified_keys_and_keep_typing() -> Result<(
     assert!(
         screen(&app, 140, 34)
             .join("\n")
-            .contains("Ctrl-N next field")
+            .contains(" Ctrl-N  next field")
     );
     app.key_event(KeyCode::Char('u'), KeyModifiers::CONTROL)?;
     assert!(matches!(&app.modal, Modal::HelmForm(form) if form.fields[1].1.is_empty()));
@@ -4972,7 +4972,7 @@ fn palette_renders_key_name_category_and_description_at_80x24_and_120x32() -> Re
     let (mut app, _replies, _commands) = harness();
     app.desired_resource = Some("deployments.apps".into());
     app.items = marked_deployments();
-    assert!(screen(&app, 80, 24)[23].contains("Ctrl-P palette"));
+    assert!(screen(&app, 80, 24)[23].contains(" Ctrl-P  palette"));
     ctrl(&mut app, 'p')?;
     let small = screen(&app, 80, 24);
     let text = small.join("\n");
@@ -5285,4 +5285,35 @@ fn live_keymap_changes_wait_until_a_typed_approval_closes() -> Result<()> {
     assert_eq!(app.keymap.keys("logs"), [crate::keymap::Key::Alt('l')]);
     assert_eq!(app.status, "Applied keymap.yaml.");
     Ok(())
+}
+
+#[test]
+fn marked_rows_are_tinted_and_legible_in_every_theme() {
+    for theme in themes::builtins() {
+        let mark = mark_background(&theme);
+        assert_ne!(mark, theme.get("selection_background"), "{}", theme.id);
+        assert_ne!(mark, theme.get("background"), "{}", theme.id);
+        for role in ["text", "success", "warning"] {
+            let ratio = themes::contrast(theme.get(role), mark);
+            assert!(ratio >= 4.5, "{} {role} on mark: {ratio:.2}", theme.id);
+        }
+    }
+}
+
+#[test]
+fn summary_counts_marked_rows_and_identity_keeps_its_labels() {
+    let (mut app, _replies, _commands) = harness();
+    app.desired_resource = Some("deployments.apps".into());
+    app.items = marked_deployments();
+    let frame = screen(&app, 120, 24);
+    assert!(!frame[2].contains("marked"), "{}", frame[2]);
+    app.marks.insert("uid-api".into());
+    app.marks.insert("uid-web".into());
+    let frame = screen(&app, 120, 24);
+    assert!(frame[2].contains("2 marked"), "{}", frame[2]);
+    assert!(
+        frame[1].starts_with(" CTX test  |  NS test"),
+        "{}",
+        frame[1]
+    );
 }
