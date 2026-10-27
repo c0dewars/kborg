@@ -1,6 +1,6 @@
 # KBorg current implementation status
 
-Updated 2026-10-26 for the `release/next` working branch (0.5.0-rc.4 package version; 0.5.0 final remains unreleased). This file and [REMAINING_WORK.md](REMAINING_WORK.md) supersede older progress notes. Historical acceptance reports keep their original scope and evidence.
+Updated 2026-10-27 for the `release/next` working branch (0.5.0-rc.5 package version; 0.5.0 final remains unreleased). This file and [REMAINING_WORK.md](REMAINING_WORK.md) supersede older progress notes. Historical acceptance reports keep their original scope and evidence.
 
 ## Implemented
 
