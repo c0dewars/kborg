@@ -55,7 +55,7 @@ The file is data only: at most 16 KiB, one document, no anchors, aliases, merge 
 | `hints.key_role`, `hints.text_role` | `accent`, `muted` | Palette roles for the shortcut keys and their labels. |
 | `table.density` | `normal`, `relaxed` | `relaxed` leaves a blank line between rows. |
 | `table.selection_marker` | `">"` | One printable ASCII character, or `""` for none. |
-| `table.mark_marker` | `"*"` | Marker for Space-marked rows; one character or `""`. |
+| `table.mark_marker` | `"*"` | Marker for Space-marked rows; one character or `""`. Marked rows also get a background tint from the theme's `warning` color, separate from the cursor row. |
 | `table.zebra` | `false`, `true` | Alternate rows use the raised surface color. |
 | `table.column_separator` | `" "` | Exactly one printable ASCII character, for example `"\|"`. |
 | `table.age` | `short`, `long` | `14d` or `14d3h` (also `5h12m`, `3m4s`). `long` widens AGE by two cells when NAME has room. |

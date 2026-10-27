@@ -239,29 +239,50 @@ pub(super) fn table_hints(app: &App) -> Vec<(String, &'static str)> {
     push(&mut hints, "dashboard", "dashboard");
     hints
 }
+/// Key hints as keycaps: the key on a raised `cap` surface in the key color,
+/// then its label. `colors` is [key, label, background, cap].
 pub(super) fn key_hints(
     out: &mut impl Write,
     y: u16,
     width: u16,
     hints: &[(impl AsRef<str>, impl AsRef<str>)],
-    colors: [Color; 3],
+    colors: [Color; 4],
 ) -> io::Result<()> {
-    let [key, text, bg] = colors;
+    let [key, text, bg, cap] = colors;
     row(out, y, width, "", text, bg)?;
     let mut x = 1;
     for (shortcut, label) in hints {
-        let (shortcut, label) = (shortcut.as_ref(), label.as_ref());
-        let label = format!(" {label}{}", if width < 50 { " " } else { "   " });
+        let shortcut = format!(" {} ", shortcut.as_ref());
+        let label = format!(" {}{}", label.as_ref(), if width < 50 { " " } else { "  " });
         // Keep complete actions together; a clipped shortcut is misleading.
         if x + shortcut.len() as u16 + label.len() as u16 > width {
             break;
         }
-        cell(out, x, y, shortcut.len() as u16, shortcut, key, bg)?;
+        cell(out, x, y, shortcut.len() as u16, &shortcut, key, cap)?;
         x += shortcut.len() as u16;
         cell(out, x, y, label.len() as u16, &label, text, bg)?;
         x += label.len() as u16;
     }
     Ok(())
+}
+/// Paints (text, fg, bg) spans left to right from `x`, clipped at `end`;
+/// returns where the next span would start.
+pub(super) fn spans(
+    out: &mut impl Write,
+    mut x: u16,
+    y: u16,
+    end: u16,
+    items: &[(String, Color, Color)],
+) -> io::Result<u16> {
+    for (text, fg, bg) in items {
+        let width = text_cells(text).min(end.saturating_sub(x));
+        if width == 0 {
+            break;
+        }
+        cell(out, x, y, width, text, *fg, *bg)?;
+        x += width;
+    }
+    Ok(x)
 }
 pub(super) fn ui_color(app: &App, role: &str) -> Color {
     if app.options.color && !app.theme.terminal {
@@ -758,6 +779,11 @@ fn render_frame(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
     } else {
         Color::Reset
     };
+    let mark_bg = if app.options.color && !t.terminal {
+        mark_background(t).color()
+    } else {
+        Color::Reset
+    };
     if w < 28 || h < 10 {
         for y in 0..h {
             row(out, y, w, "", fg, bg).map_err(|_| "draw failed")?;
@@ -795,7 +821,27 @@ fn render_frame(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
     } else {
         color("muted")
     };
-    let mode_width = (mode.len() as u16 + 1).min(w);
+    // The mode is a filled chip with a cell of margin on each side.
+    let mode_width = if mode.is_empty() {
+        1
+    } else {
+        (mode.len() as u16 + 4).min(w)
+    };
+    let mode_chip = |out: &mut _, x: u16, y: u16, on: Color| -> io::Result<()> {
+        cell(out, x, y, mode_width, "", fg, on)?;
+        if !mode.is_empty() {
+            cell(
+                out,
+                x + 1,
+                y,
+                mode_width.saturating_sub(2),
+                &format!(" {mode} "),
+                color("background"),
+                mode_color,
+            )?;
+        }
+        Ok(())
+    };
     if let Some(y) = chrome.header {
         row(out, y, w, "", fg, surface).map_err(|_| "draw failed")?;
         cell(
@@ -811,47 +857,47 @@ fn render_frame(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
     }
     let title = screen_title(app, &app.modal);
     let help_width = if w >= 64 { 4 } else { 0 };
+    // Identity spans in theme roles on the given surface.
+    let identity = |width: u16, on: Color| {
+        identity_spans(
+            &app.context,
+            &app.namespace,
+            &app.server,
+            usize::from(width),
+        )
+        .into_iter()
+        .map(|(text, role)| (text, color(role), on))
+        .collect::<Vec<_>>()
+    };
     match (chrome.header, chrome.identity) {
         // Folded identity: context, namespace and mode share the header bar.
         (Some(y), None) => {
             let mode_x = w.saturating_sub(mode_width + help_width);
-            let identity_width = mode_x.saturating_sub(9);
+            let identity_width = mode_x.saturating_sub(10);
+            spans(out, 10, y, mode_x, &identity(identity_width, surface))
+                .map_err(|_| "draw failed")?;
+            mode_chip(out, mode_x, y, surface).map_err(|_| "draw failed")?;
+        }
+        (Some(y), Some(_)) if w >= 64 => {
             cell(
                 out,
                 9,
                 y,
-                identity_width,
-                &identity_line(
-                    &app.context,
-                    &app.namespace,
-                    &app.server,
-                    usize::from(identity_width),
-                ),
-                fg,
+                w.saturating_sub(14),
+                &format!(" {title}"),
+                color("accent"),
                 surface,
             )
             .map_err(|_| "draw failed")?;
-            cell(
-                out,
-                mode_x,
-                y,
-                mode_width,
-                &format!(" {mode}"),
-                mode_color,
-                surface,
-            )
-            .map_err(|_| "draw failed")?;
-        }
-        (Some(y), Some(_)) if w >= 64 => {
-            cell(out, 10, y, w.saturating_sub(16), &title, fg, surface)
-                .map_err(|_| "draw failed")?;
         }
         _ => {}
     }
     if let Some(y) = chrome.header
         && w >= 64
     {
-        cell(out, w - 4, y, 4, " ? ", color("accent"), surface).map_err(|_| "draw failed")?;
+        // The help affordance reads as a key, like the hints at the bottom.
+        cell(out, w - 4, y, 1, " ", fg, surface).map_err(|_| "draw failed")?;
+        cell(out, w - 3, y, 3, " ? ", color("accent"), raised).map_err(|_| "draw failed")?;
     }
     if let Modal::LiveOverview(dashboard) = &app.modal {
         return dashboard_ui::render(app, dashboard, w, h, out);
@@ -865,22 +911,16 @@ fn render_frame(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
         } else {
             w
         };
-        cell(
+        // One cell of margin keeps the identity off the terminal edge.
+        spans(
             out,
-            0,
+            1,
             y,
             identity_width,
-            &identity_line(
-                &app.context,
-                &app.namespace,
-                &app.server,
-                usize::from(identity_width),
-            ),
-            fg,
-            bg,
+            &identity(identity_width.saturating_sub(1), bg),
         )
         .map_err(|_| "draw failed")?;
-        cell(
+        mode_chip(
             out,
             w - mode_width,
             if mode_inline {
@@ -888,9 +928,6 @@ fn render_frame(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
             } else {
                 chrome.header.unwrap_or(y)
             },
-            mode_width,
-            &format!(" {mode}"),
-            mode_color,
             if mode_inline { bg } else { surface },
         )
         .map_err(|_| "draw failed")?;
@@ -932,22 +969,24 @@ fn render_frame(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
     .into_iter()
     .flatten()
     .collect::<String>();
+    let freshness_role = if app.stale || app.truncated {
+        "warning"
+    } else {
+        "accent"
+    };
     let mut bands = if w >= 64 {
-        vec![
+        let mut bands = vec![
             (
                 format!(
                     " {freshness}{} ",
                     if app.truncated { " / TRUNCATED" } else { "" }
                 ),
-                if app.stale || app.truncated {
-                    "warning"
-                } else {
-                    "accent"
-                },
+                // A filled chip: the theme's background color on the role.
+                "chip",
             ),
             (
                 format!(
-                    "  {} {}  ",
+                    "   {} {}",
                     visible.len(),
                     if visible.len() == 1 {
                         app.kinds
@@ -960,31 +999,35 @@ fn render_frame(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
                 ),
                 "text",
             ),
-            (format!(" {healthy} healthy "), "success"),
+            (format!("   {healthy} healthy"), "success"),
             (
                 format!(
-                    " {attention} {} attention ",
+                    "   {attention} {} attention",
                     if attention == 1 { "needs" } else { "need" }
                 ),
                 if attention > 0 { "warning" } else { "muted" },
             ),
-            (
-                format!(
-                    " sort: {}{}{}{}",
-                    app.sort_column
-                        .as_deref()
-                        .map_or_else(|| app.sort.label().to_owned(), str::to_ascii_lowercase),
-                    if app.sort_desc { " desc" } else { "" },
-                    if app.faults_only {
-                        " | errors only"
-                    } else {
-                        ""
-                    },
-                    filter_hint,
-                ),
-                "muted",
+        ];
+        if !app.marks.is_empty() {
+            bands.push((format!("   {} marked", app.marks.len()), "warning"));
+        }
+        bands.push((
+            format!(
+                "   sort: {}{}{}{}",
+                app.sort_column
+                    .as_deref()
+                    .map_or_else(|| app.sort.label().to_owned(), str::to_ascii_lowercase),
+                if app.sort_desc { " desc" } else { "" },
+                if app.faults_only {
+                    " | errors only"
+                } else {
+                    ""
+                },
+                filter_hint,
             ),
-        ]
+            "muted",
+        ));
+        bands
     } else {
         vec![(
             format!(
@@ -998,21 +1041,20 @@ fn render_frame(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
     };
     if app.worker.forward.active_count() > 0 {
         bands.push((
-            format!("  {} forwards", app.worker.forward.active_count()),
+            format!("   {} forwards", app.worker.forward.active_count()),
             "accent",
         ));
     }
     if let Some(y) = chrome.summary {
         row(out, y, w, "", fg, bg).map_err(|_| "draw failed")?;
-        let mut x = 0u16;
-        for (text, role) in bands {
-            let width = text_cells(&text).min(w.saturating_sub(x));
-            if width == 0 {
-                break;
-            }
-            cell(out, x, y, width, &text, color(role), bg).map_err(|_| "draw failed")?;
-            x += width;
-        }
+        let items = bands
+            .into_iter()
+            .map(|(text, role)| match role {
+                "chip" => (text, color("background"), color(freshness_role)),
+                role => (text, color(role), bg),
+            })
+            .collect::<Vec<_>>();
+        spans(out, 1, y, w, &items).map_err(|_| "draw failed")?;
     }
     let style = &app.ui.table;
     let layout = Layout::for_ui(w, h, &app.ui);
@@ -1030,23 +1072,33 @@ fn render_frame(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
             visible.len(),
             if !filtered { "" } else { " FILTERED" }
         );
+        // The kind and position lead in the accent color; the metrics note
+        // after them is secondary and stays muted.
+        let main = title;
         let title = if w >= 90 && matches!(app.kind().as_str(), "pods" | "nodes") {
-            format!("{title} | {}", app.table_metrics.label(Instant::now()))
+            format!("{main} | {}", app.table_metrics.label(Instant::now()))
         } else {
-            title
+            main.clone()
         };
         panel(out, rect, "", false, border, bg, &app.ui).map_err(|_| "draw failed")?;
         let title = app.ui.inline_title(&title);
-        cell(
-            out,
-            rect.x + 1,
-            rect.y,
-            text_cells(&title).min(rect.width - 2),
-            &title,
-            color("accent"),
-            bg,
-        )
-        .map_err(|_| "draw failed")?;
+        let marker = app.ui.inline_title("X");
+        let lead = format!("{}{main}", &marker[..marker.find('X').unwrap_or(0)]);
+        let width = text_cells(&title).min(rect.width - 2);
+        cell(out, rect.x + 1, rect.y, width, &title, color("muted"), bg)
+            .map_err(|_| "draw failed")?;
+        if text_cells(&lead) <= width {
+            cell(
+                out,
+                rect.x + 1,
+                rect.y,
+                text_cells(&lead),
+                &lead,
+                color("accent"),
+                bg,
+            )
+            .map_err(|_| "draw failed")?;
+        }
         let namespaced = app
             .kinds
             .get(app.kind_index)
@@ -1117,7 +1169,12 @@ fn render_frame(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
         for (r, object) in visible.iter().skip(start).take(height).enumerate() {
             let selected = start + r == app.selected;
             let y = rect.y + 2 + r as u16 * layout.step;
-            let row_bg = if style.zebra && (start + r) % 2 == 1 {
+            let marked = object["metadata"]["uid"]
+                .as_str()
+                .is_some_and(|uid| app.marks.contains(uid));
+            let row_bg = if marked {
+                mark_bg
+            } else if style.zebra && (start + r) % 2 == 1 {
                 surface
             } else {
                 bg
@@ -1142,14 +1199,7 @@ fn render_frame(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
                 &format!(
                     "{}{} {}",
                     if selected { style.selection() } else { ' ' },
-                    if object["metadata"]["uid"]
-                        .as_str()
-                        .is_some_and(|uid| app.marks.contains(uid))
-                    {
-                        style.mark()
-                    } else {
-                        ' '
-                    },
+                    if marked { style.mark() } else { ' ' },
                     table_line_custom(
                         &cols,
                         object,
@@ -1171,6 +1221,27 @@ fn render_frame(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
                 },
             )
             .map_err(|_| "draw failed")?;
+            if marked {
+                // The mark glyph in the mark color, also on the cursor row.
+                cell(
+                    out,
+                    rect.x + 2,
+                    y,
+                    1,
+                    &style.mark().to_string(),
+                    if selected {
+                        color("selection_text")
+                    } else {
+                        color("warning")
+                    },
+                    if selected {
+                        color("selection_background")
+                    } else {
+                        row_bg
+                    },
+                )
+                .map_err(|_| "draw failed")?;
+            }
             if !selected {
                 let mut x = rect.x + 4;
                 for (column, width) in &cols {
@@ -1221,21 +1292,38 @@ fn render_frame(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
         }
     }
     let status_y = h.saturating_sub(chrome.bottom);
+    let alert = app.stale || app.sticky_status;
     row(
         out,
         status_y,
         w,
         &format!(
-            " {}{}",
+            "   {}{}",
             if app.sticky_status { "! " } else { "" },
-            crate::errors::fit(&app.status, usize::from(w).saturating_sub(3))
+            crate::errors::fit(&app.status, usize::from(w).saturating_sub(5))
         ),
-        if app.stale || app.sticky_status {
+        if alert {
             color("warning")
         } else {
             color("muted")
         },
         surface,
+    )
+    .map_err(|_| "draw failed")?;
+    // A colored edge marks the status line: accent for news, warning for
+    // problems, so it reads as a message rather than another table row.
+    cell(
+        out,
+        0,
+        status_y,
+        1,
+        " ",
+        fg,
+        if alert {
+            color("warning")
+        } else {
+            color("accent")
+        },
     )
     .map_err(|_| "draw failed")?;
     // Keep the everyday workspace quiet. The complete keyboard map lives behind ?.
@@ -1253,6 +1341,7 @@ fn render_frame(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
                     color(&app.ui.hints.key_role),
                     color(&app.ui.hints.text_role),
                     bg,
+                    raised,
                 ],
             )
             .map_err(|_| "draw failed")?;
@@ -1743,8 +1832,14 @@ fn render_frame(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
             };
             if matches!(modal, Modal::HelmForm(..)) {
                 let hints = keyhelp::helm_form_hints(app, w);
-                key_hints(out, h - 2, w, &hints, [color("accent"), color("muted"), bg])
-                    .map_err(|_| "draw failed")?;
+                key_hints(
+                    out,
+                    h - 2,
+                    w,
+                    &hints,
+                    [color("accent"), color("muted"), bg, raised],
+                )
+                .map_err(|_| "draw failed")?;
             } else {
                 row(out, h - 2, w, hints, color("muted"), bg).map_err(|_| "draw failed")?;
             }
