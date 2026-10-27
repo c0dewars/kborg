@@ -13,7 +13,7 @@ Thanks for testing. This guide gets you running in a few minutes and lists what 
 Release candidate from source (needs Rust; `rustup` installs the pinned toolchain):
 
 ```sh
-cargo install --locked --git https://github.com/c0dewars/kborg --tag v0.5.0-rc.4
+cargo install --locked --git https://github.com/c0dewars/kborg --tag v0.5.0-rc.5
 kborg --version
 ```
 

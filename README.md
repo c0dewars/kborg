@@ -15,7 +15,7 @@
   </p>
   <p>
     <img alt="Release 0.4.0" src="https://img.shields.io/badge/release-0.4.0-FF7A1A">
-    <img alt="Preview 0.5.0-rc.4" src="https://img.shields.io/badge/preview-0.5.0--rc.4-FFA41B">
+    <img alt="Preview 0.5.0-rc.5" src="https://img.shields.io/badge/preview-0.5.0--rc.5-FFA41B">
     <img alt="Rust" src="https://img.shields.io/badge/built%20with-Rust-0FA968">
     <img alt="Windows, macOS and Linux" src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-0B1220">
     <img alt="Apache 2.0" src="https://img.shields.io/badge/license-Apache%202.0-3BE08A">
@@ -78,10 +78,10 @@ The formula builds KBorg from the tagged source with Homebrew's Rust and install
 ### Try the 0.5.0 preview
 
 ```sh
-cargo install --locked --git https://github.com/c0dewars/kborg --tag v0.5.0-rc.4
+cargo install --locked --git https://github.com/c0dewars/kborg --tag v0.5.0-rc.5
 ```
 
-The tag is the published RC snapshot, the same version Homebrew installs. To test changes made since, use `--branch release/next` instead of `--tag v0.5.0-rc.4`. The [testing guide](docs/TESTING.md) has a 15-minute tour and what to report.
+The tag is the published RC snapshot, the same version Homebrew installs. To test changes made since, use `--branch release/next` instead of `--tag v0.5.0-rc.5`. The [testing guide](docs/TESTING.md) has a 15-minute tour and what to report.
 
 ### From source
 
@@ -129,15 +129,15 @@ Releases up to 0.5.0-rc.3 are unsigned. See [Release process](docs/RELEASE_PROCE
 ### Debian/Ubuntu (.deb) and Fedora/RHEL (.rpm)
 
 ```sh
-sudo apt install ./kborg_0.5.0.rc.4_amd64.deb      # Debian / Ubuntu
-sudo dnf install ./kborg-0.5.0.rc.4-1.x86_64.rpm   # Fedora / RHEL-compatible
+sudo apt install ./kborg_0.5.0.rc.5_amd64.deb      # Debian / Ubuntu
+sudo dnf install ./kborg-0.5.0.rc.5-1.x86_64.rpm   # Fedora / RHEL-compatible
 ```
 
 Both install `/usr/bin/kborg` and bash, zsh and fish completions, and need glibc 2.39 or newer. CI builds the .deb; the .rpm is built from `packaging/rpm/kborg.spec`. See [Operations](docs/OPERATIONS.md#install-from-a-deb-or-rpm).
 
 ## Run
 
-These instructions describe 0.5.0-rc.4, the version Homebrew and the `v0.5.0-rc.4` tag install.
+These instructions describe 0.5.0-rc.5, the version Homebrew and the `v0.5.0-rc.5` tag install.
 
 Try it without a cluster:
 
@@ -309,7 +309,7 @@ Details: [SECURITY.md](SECURITY.md), the [release-next review](docs/RELEASE_NEXT
 | [Performance comparison](docs/PERFORMANCE_COMPARISON.md) | Memory, CPU and API traffic vs k9s and k10s |
 | [Remaining work](docs/REMAINING_WORK.md) | What's done, partial and planned |
 
-**0.5.0-rc.4** in testing (Homebrew and signed release assets): see the [release notes](docs/RELEASE_NOTES.md) for apply, node shell, debug containers, file and directory copy, bulk actions, image scanning, `:lint`, live charts, masked Secret YAML and full keymap and UI customization. CI builds and tests Linux, macOS and Windows (x86_64 and ARM). Packages up to 0.5.0-rc.3 are unsigned; 0.5.0-rc.4 is the first signed, attested release. An organizational pilot is the open release gate.
+**0.5.0-rc.5** in testing (Homebrew and signed release assets): see the [release notes](docs/RELEASE_NOTES.md) for per-context settings, an audit sink for SIEMs, Copilot follow-ups, apply, node shell, debug containers, file and directory copy, bulk actions, image scanning, `:lint`, live charts, masked Secret YAML and full keymap and UI customization. CI builds and tests Linux, macOS and Windows (x86_64 and ARM). Packages up to 0.5.0-rc.3 are unsigned; 0.5.0-rc.4 is the first signed, attested release. An organizational pilot is the open release gate.
 
 ## Credits
 
