@@ -500,11 +500,18 @@ pub async fn run_interactive(
         _ => return Err("review does not authorize an interactive session".into()),
     };
     let api = verify_review(gateway, &reviewed, typed).await?;
+    let sink = crate::audit_sink::intent(audit_event(gateway, &reviewed))?;
     let audit = start_audit(gateway, &reviewed)?;
     let result = match connect_interactive(&api, &reviewed).await {
         Ok(process) => crate::session::pump(process, seconds, inputs, emit).await,
         Err(error) => Err(error),
     };
+    match &result {
+        Ok(outcome) if outcome.remote_outcome_unknown() => {
+            sink.outcome(crate::audit_sink::Outcome::Unknown, Some("session-ended"))?
+        }
+        _ => sink.finish(&result)?,
+    }
     finish_audit(
         &audit,
         match &result {
@@ -529,6 +536,7 @@ pub async fn run(gateway: &Gateway, reviewed: ReviewedOperation, typed: &str) ->
     ) {
         crate::session::ensure_terminal()?;
     }
+    let sink = crate::audit_sink::intent(audit_event(gateway, &reviewed))?;
     let audit = start_audit(gateway, &reviewed)?;
     let mut session_unknown = false;
     let result = match &reviewed.request {
@@ -702,6 +710,11 @@ pub async fn run(gateway: &Gateway, reviewed: ReviewedOperation, typed: &str) ->
     } else {
         result
     };
+    if result.is_ok() && session_unknown {
+        sink.outcome(crate::audit_sink::Outcome::Unknown, Some("session-ended"))?;
+    } else {
+        sink.finish(&result)?;
+    }
     finish_audit(
         &audit,
         if result.is_ok() && session_unknown {
@@ -739,6 +752,7 @@ pub async fn run_forward(
             result.map_err(|_| "Forward target verification timed out")??
         }
     };
+    let sink = crate::audit_sink::intent(audit_event(gateway, &reviewed))?;
     let audit = start_audit(gateway, &reviewed)?;
     let result = forward(
         api,
@@ -753,6 +767,7 @@ pub async fn run_forward(
         },
     )
     .await;
+    sink.finish(&result)?;
     finish_audit(
         &audit,
         if result.is_ok() {
@@ -762,6 +777,14 @@ pub async fn run_forward(
         },
     )?;
     result
+}
+/// Audit-sink event for a reviewed Pod session, forward or file copy. Session
+/// start is the intent and session end the outcome; input and output are
+/// never recorded.
+pub fn audit_event(gateway: &Gateway, reviewed: &ReviewedOperation) -> crate::audit_sink::Event {
+    crate::audit_sink::Event::new(reviewed.request.name(), &gateway.context, &gateway.server)
+        .target(&reviewed.namespace, "pods", &reviewed.pod, &reviewed.uid)
+        .review(&reviewed.summary)
 }
 fn connection_error(error: kube::Error) -> String {
     crate::errors::explain(

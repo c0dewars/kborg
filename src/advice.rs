@@ -958,7 +958,7 @@ pub async fn prepare(object: &Value, options: Options) -> Result<PreparedAdvice>
 pub async fn run(
     prepared: PreparedAdvice,
     confirmation: &str,
-    mut cancel: Option<tokio::sync::oneshot::Receiver<()>>,
+    cancel: Option<tokio::sync::oneshot::Receiver<()>>,
 ) -> Result<AdviceOutput> {
     if confirmation != prepared.confirmation()
         || prepared.created.elapsed() > Duration::from_secs(300)
@@ -967,6 +967,26 @@ pub async fn run(
             "Copilot transfer approval expired or exact host/account confirmation changed".into(),
         );
     }
+    let audit = crate::audit_sink::intent(audit_event(&prepared))?;
+    let result = run_approved(prepared, cancel).await;
+    audit.finish(&result)?;
+    result
+}
+/// Audit-sink event for a reviewed Copilot transfer: the provider host and the
+/// hash of the exact bytes sent. Neither the bundle nor the answer is recorded.
+pub fn audit_event(prepared: &PreparedAdvice) -> crate::audit_sink::Event {
+    let action = match prepared.request {
+        Request::Diagnose => "copilot-diagnose",
+        Request::Screen => "copilot-screen",
+    };
+    crate::audit_sink::Event::new(action, "", &prepared.options.host)
+        .target("", "copilot", &prepared.account, "")
+        .review(&prepared.preview().unwrap_or_default())
+}
+async fn run_approved(
+    prepared: PreparedAdvice,
+    mut cancel: Option<tokio::sync::oneshot::Receiver<()>>,
+) -> Result<AdviceOutput> {
     let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     struct Guard(

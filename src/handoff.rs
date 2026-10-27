@@ -313,15 +313,38 @@ fn run_bounded(
         return Err("tool review expired; prepare a new review".into());
     }
     revalidate(&prepared)?;
+    let audit = crate::audit_sink::intent(audit_event(&prepared))?;
     #[cfg(unix)]
-    {
-        supervise(prepared, budget, limit)
-    }
+    let result = supervise(prepared, budget, limit);
     #[cfg(not(unix))]
-    {
+    let result: Result<Outcome> = {
         let _ = (prepared, budget, limit);
         Err("external tool views require verified process-group cleanup; unsupported on this platform".into())
+    };
+    match &result {
+        Ok(outcome) if !outcome.success => {
+            audit.outcome(crate::audit_sink::Outcome::Failed, Some("tool-exit"))?
+        }
+        _ => audit.finish(&result)?,
     }
+    result
+}
+/// Audit-sink event for a reviewed tool, extension or plugin run: the tool's
+/// file name and the hash of the review and exact stdin transfer. Neither the
+/// input nor the output is recorded.
+pub fn audit_event(prepared: &Prepared) -> crate::audit_sink::Event {
+    let name = prepared
+        .executable
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    crate::audit_sink::Event::new("tool-run", "", "")
+        .target("", "tool", &name, &format!("{:016x}", prepared.identifier))
+        .review(&format!(
+            "{}\n{}",
+            prepared.summary(),
+            prepared.input_preview()
+        ))
 }
 
 /// A private (0700) temporary directory removed on drop.

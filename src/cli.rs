@@ -704,8 +704,29 @@ pub fn run_args(args: Vec<String>) -> Result<()> {
     let cmd = opts.command.first().map(String::as_str).unwrap_or("ui");
     match cmd {
         "audit" => {
+            if opts.command.get(1).map(String::as_str) == Some("verify") {
+                let files: Vec<PathBuf> = opts.command[2..].iter().map(PathBuf::from).collect();
+                let verified = crate::audit_sink::verify(&files)?;
+                if opts.json {
+                    print_json(
+                        &serde_json::json!({"ok":true,"records":verified.records,"first_prev":verified.first_prev,"last_sha256":verified.last_hash}),
+                    )?;
+                } else {
+                    outputln!(
+                        "OK: {} records, chain intact{}. Last record SHA-256 {}",
+                        verified.records,
+                        if verified.first_prev == crate::audit_sink::GENESIS {
+                            " from the first record"
+                        } else {
+                            " (starts after a rotation; pass older files first to check them too)"
+                        },
+                        verified.last_hash
+                    );
+                }
+                return Ok(());
+            }
             if opts.command.as_slice() != ["audit", "pending"] {
-                return Err("usage: audit pending [--json]".into());
+                return Err("usage: audit pending [--json] | audit verify FILE [FILE...]".into());
             }
             let records = crate::audit::pending()?;
             print_json(&serde_json::to_value(records).map_err(|_| "audit encoding failed")?)?;

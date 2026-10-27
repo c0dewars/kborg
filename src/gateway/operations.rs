@@ -147,6 +147,29 @@ impl Gateway {
         typed: &str,
     ) -> Result<String> {
         self.yaml_edit_access()?;
+        if typed != prepared.confirmation() {
+            return Err("confirmation must exactly match namespace/name".into());
+        }
+        let draft = &prepared.draft;
+        let event = crate::audit_sink::Event::new("yaml-edit", &self.context, &self.server)
+            .target(
+                draft.namespace(),
+                &draft.resource(),
+                draft.name(),
+                draft.original["metadata"]["uid"].as_str().unwrap_or(""),
+            )
+            .review(prepared.summary());
+        let audit = crate::audit_sink::intent(event)?;
+        let result = self.execute_yaml_approved(prepared, typed).await;
+        audit.finish(&result)?;
+        result
+    }
+    async fn execute_yaml_approved(
+        &mut self,
+        prepared: crate::manifest_edit::PreparedYaml,
+        typed: &str,
+    ) -> Result<String> {
+        self.yaml_edit_access()?;
         if prepared.draft.session != self.session
             || prepared.created.elapsed() > Duration::from_secs(60)
         {
@@ -576,7 +599,32 @@ impl Gateway {
             }
         }
     }
-    pub async fn execute(&mut self, prepared: Prepared, mut approval: Approval) -> Result<String> {
+    /// Audit-sink event for a change to one reviewed target.
+    pub(crate) fn audit_event(
+        &self,
+        action: &str,
+        target: &Target,
+        review: &str,
+    ) -> crate::audit_sink::Event {
+        crate::audit_sink::Event::new(action, &self.context, &self.server)
+            .target(
+                &target.namespace,
+                &target.resource,
+                &target.name,
+                &target.uid,
+            )
+            .review(review)
+    }
+    pub async fn execute(&mut self, prepared: Prepared, approval: Approval) -> Result<String> {
+        self.execute_reviewed(prepared, approval, None).await
+    }
+    /// `batch_review` is the batch's review text when this is one batch target.
+    pub(super) async fn execute_reviewed(
+        &mut self,
+        prepared: Prepared,
+        mut approval: Approval,
+        batch_review: Option<&str>,
+    ) -> Result<String> {
         if prepared.target != prepared.reviewed_target
             || prepared.action != prepared.reviewed_action
             || prepared.summary != prepared.reviewed_summary
@@ -591,6 +639,20 @@ impl Gateway {
             return Err("session changed; review again".into());
         }
         approval.consume(&prepared.target, &prepared.action)?;
+        let action = match batch_review {
+            Some(_) => format!("batch-{}", prepared.action.operation_name()),
+            None => prepared.action.operation_name().to_owned(),
+        };
+        let audit = crate::audit_sink::intent(self.audit_event(
+            &action,
+            &prepared.target,
+            batch_review.unwrap_or(&prepared.summary),
+        ))?;
+        let result = self.execute_approved(prepared).await;
+        audit.finish(&result)?;
+        result
+    }
+    async fn execute_approved(&mut self, prepared: Prepared) -> Result<String> {
         if self.is_demo() {
             match prepared.action {
                 Action::Delete | Action::Kill => self

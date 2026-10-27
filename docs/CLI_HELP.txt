@@ -62,6 +62,7 @@ KBorg — Kubernetes operations, under your control (kborg --version for the ver
   kborg scan RESOURCE NAME | ns  Image vulnerability scan with trivy or grype from PATH [--json]
   kborg cp-to POD CONTAINER LOCAL /PATH     Reviewed copy of one file (or --recursive directory); never replaces
   kborg audit pending             Uncertain local outcomes; never auto-retries
+  kborg audit verify FILE...      Check an audit_file hash chain (oldest rotated file first)
   kborg config init|validate FILE Strict schema-1 JSON configuration
   kborg completions bash|zsh|fish|powershell   Static completion script
   kborg auth-helper review --executable ABS [--env NAME=VALUE] --output POLICY

@@ -135,6 +135,25 @@ pub async fn start(
     prepared: Prepared,
     typed: &str,
 ) -> Result<crate::ops::ReviewedOperation> {
+    if typed != prepared.confirmation() {
+        return Err("debug approval expired or the confirmation differs".into());
+    }
+    let audit = crate::audit_sink::intent(audit_event(gateway, &prepared))?;
+    let result = start_approved(gateway, prepared, typed).await;
+    audit.finish(&result)?;
+    result
+}
+/// Audit-sink event for adding the reviewed ephemeral debug container.
+pub fn audit_event(gateway: &Gateway, prepared: &Prepared) -> crate::audit_sink::Event {
+    crate::audit_sink::Event::new("debug-container-add", &gateway.context, &gateway.server)
+        .target(&prepared.namespace, "pods", &prepared.pod, &prepared.uid)
+        .review(&prepared.summary)
+}
+async fn start_approved(
+    gateway: &Gateway,
+    prepared: Prepared,
+    typed: &str,
+) -> Result<crate::ops::ReviewedOperation> {
     if typed != prepared.confirmation()
         || prepared.created.elapsed() > Duration::from_secs(60)
         || prepared.session != gateway.operation_session()

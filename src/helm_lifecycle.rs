@@ -3107,6 +3107,55 @@ pub async fn run(
     if typed != prepared.confirmation() {
         return Err("confirmation must exactly match namespace/release".into());
     }
+    let audit = crate::audit_sink::intent(audit_event(gateway, &prepared))?;
+    let result = run_approved(gateway, prepared, typed, cancel).await;
+    match &result {
+        Ok(outcome) if outcome.uncertain => {
+            audit.outcome(crate::audit_sink::Outcome::Unknown, Some("uncertain"))?
+        }
+        Ok(outcome) if !outcome.success => {
+            audit.outcome(crate::audit_sink::Outcome::Failed, Some("helm-failed"))?
+        }
+        _ => audit.finish(&result)?,
+    }
+    result
+}
+/// Audit-sink event for a reviewed Helm lifecycle action on one release.
+pub fn audit_event(gateway: &Gateway, prepared: &Prepared) -> crate::audit_sink::Event {
+    let bootstrap = schema_request(&prepared.request);
+    crate::audit_sink::Event::new(
+        &format!("helm-{}", prepared.request.name()),
+        &gateway.context,
+        &gateway.server,
+    )
+    .target(
+        if bootstrap {
+            ""
+        } else {
+            &prepared.options.namespace
+        },
+        if bootstrap {
+            "customresourcedefinitions"
+        } else {
+            "helm-releases"
+        },
+        &prepared.options.release,
+        prepared
+            .selected
+            .as_ref()
+            .map_or("", |release| release.uid.as_str()),
+    )
+    .review(&prepared.summary)
+}
+async fn run_approved(
+    gateway: &Gateway,
+    prepared: Prepared,
+    typed: &str,
+    cancel: Option<tokio::sync::oneshot::Receiver<()>>,
+) -> Result<Outcome> {
+    if typed != prepared.confirmation() {
+        return Err("confirmation must exactly match namespace/release".into());
+    }
     if gateway.helm_lifecycle_session()? != prepared.session
         || prepared.created.elapsed() > REVIEW_LIFETIME
     {

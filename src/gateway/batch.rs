@@ -332,7 +332,10 @@ impl Gateway {
         let mut items = batch.items.into_iter();
         while let Some(prepared) = items.next() {
             let target = label(&prepared);
-            match self.execute_batch_item(&resource, prepared).await {
+            match self
+                .execute_batch_item(&resource, prepared, &batch.summary)
+                .await
+            {
                 Ok(_) => report.succeeded.push(target),
                 Err(error) => {
                     report.failed = Some((target, error));
@@ -343,7 +346,12 @@ impl Gateway {
         }
         Ok(report)
     }
-    async fn execute_batch_item(&mut self, resource: &str, prepared: Prepared) -> Result<String> {
+    async fn execute_batch_item(
+        &mut self,
+        resource: &str,
+        prepared: Prepared,
+        review: &str,
+    ) -> Result<String> {
         let target = &prepared.target;
         let current = tokio::time::timeout(
             OPERATION_BUDGET,
@@ -364,7 +372,8 @@ impl Gateway {
             prepared.action.clone(),
             &format!("{}/{}", target.namespace, target.name),
         )?;
-        self.execute(prepared, approval).await
+        self.execute_reviewed(prepared, approval, Some(review))
+            .await
     }
 }
 
