@@ -4,7 +4,7 @@ fn event(name: &str) -> Event {
     Event::new(
         "scale",
         "prod",
-        "https://admin:pw@api.example.com:6443/path?x=1",
+        "https://userinfo-canary:pw@api.example.com:6443/path?x=1",
     )
     .target("shop", "deployments.apps", name, "uid-1")
     .review("REVIEW TEXT")
@@ -51,7 +51,13 @@ fn records_carry_identity_review_hash_and_outcome_only() -> Result<()> {
     assert_eq!(outcome["outcome"], "failed");
     assert_eq!(outcome["error_class"], "forbidden");
     let raw = capture.raw();
-    for canary in ["SECRET_TOKEN_CANARY", "REVIEW TEXT", "admin", "pw@"] {
+    // Distinctive markers: an OS user such as "runneradmin" is recorded.
+    for canary in [
+        "SECRET_TOKEN_CANARY",
+        "REVIEW TEXT",
+        "userinfo-canary",
+        "pw@",
+    ] {
         assert!(!raw.contains(canary), "{canary} leaked");
     }
     Ok(())
