@@ -298,6 +298,8 @@ Details: [SECURITY.md](SECURITY.md), the [release-next review](docs/RELEASE_NEXT
 |---|---|
 | [Testing guide](docs/TESTING.md) | For colleagues trying a release candidate: install, tour, what to report |
 | [Dashboard](docs/DASHBOARD.md) | Health meanings, freshness, cross-cluster tail, card controls |
+| [Saved selections](docs/SAVED_SELECTIONS.md) | Saved context groups, scopes and workload focus |
+| [WSL](docs/WSL.md) | Running on Windows through WSL2 with Docker Desktop Kubernetes |
 | [k9s compatibility](docs/K9S_COMPATIBILITY.md) | Commands, keys and differences |
 | [Operations](docs/OPERATIONS.md) | Configuration, install, update, rollback, recovery |
 | [YAML editing](docs/YAML_EDITING.md) · [v1 operations](docs/MAC_V1_OPERATIONS.md) | Reviewed edits, node maintenance |
