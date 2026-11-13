@@ -86,7 +86,7 @@ pub(super) fn demo_objects() -> Vec<Value> {
         object(
             "Node",
             "demo-node",
-            json!({"conditions":[{"type":"Ready","status":"True"}],"capacity":{"cpu":"4","memory":"8Gi"},"allocatable":{"cpu":"3500m","memory":"7Gi"}}),
+            json!({"conditions":[{"type":"Ready","status":"True"}],"capacity":{"cpu":"4","memory":"8Gi","pods":"110"},"allocatable":{"cpu":"3500m","memory":"7Gi","pods":"110"},"addresses":[{"type":"InternalIP","address":"192.0.2.10"},{"type":"Hostname","address":"demo-node"}],"nodeInfo":{"architecture":"arm64","kubeletVersion":"v1.36.1","osImage":"Demo Linux 24.04","kernelVersion":"6.8.0-demo","containerRuntimeVersion":"containerd://2.1.0"}}),
             json!({"unschedulable":false}),
         ),
         object("Role", "viewer", json!({}), json!({})),
@@ -179,6 +179,9 @@ pub(super) fn demo_objects() -> Vec<Value> {
         }
         if object["kind"] == "ConfigMap" {
             object["data"] = json!({"endpoint":"synthetic-example"});
+        }
+        if object["kind"] == "Node" {
+            object["metadata"]["labels"] = json!({"node-role.kubernetes.io/control-plane":""});
         }
     }
     objects.extend(demo_scale_pods(&object));

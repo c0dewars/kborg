@@ -51,8 +51,10 @@ _INCOMPLETE = re.compile(rb"\x1b(?:\][^\x07]*|[P^_].*|\[[0-9;?<>= -/]*|[()])?$",
 
 
 class Session:
-    def __init__(self, binary, frames_dir, extra_args=(), copilot_account=None, connection_tour=False):
+    def __init__(self, binary, frames_dir, extra_args=(), copilot_account=None, connection_tour=False,
+                 extra_env=None, prefix="frame"):
         self.frames_dir = frames_dir
+        self.prefix = prefix
         self.copilot_account = copilot_account
         self.caption = ""
         self.frames = []  # (png path, duration ms)
@@ -66,6 +68,7 @@ class Session:
             "XDG_STATE_HOME": str(home / "state"), "XDG_CACHE_HOME": str(home / "cache"),
             "KUBECONFIG": str(home / "no-kubeconfig"),
         }
+        env.update(extra_env or {})
         if connection_tour:
             config = home / "no-kubeconfig"
             config.write_text(json.dumps({
@@ -149,7 +152,7 @@ class Session:
             path, duration, _, caption = self.frames[-1]
             self.frames[-1] = (path, duration + duration_ms, text, caption)
             return
-        path = self.frames_dir / f"frame-{len(self.frames):03d}.png"
+        path = self.frames_dir / f"{self.prefix}-{len(self.frames):03d}.png"
         self.screen.png(path)
         self.frames.append((path, duration_ms, text, self.caption))
 
@@ -292,98 +295,107 @@ def tour(session):
 
     s.wait(r"api-7d4f9", 30)
     s.soft_wait(r"METRICS [0-9]+ measured", 15)
-    step("Browse every resource with k9s keys and commands", 2600)
-    s.keys(b"j", 0.25)
-    step("Live tables: health, restarts, CPU and memory", 1600)
-    s.keys(b"/", 0.3)
-    s.caption = "/ filters with regex, !inverse, -f fuzzy or -l labels"
-    s.type("worker", 90)
-    s.keys(b"\r", 0.4)
-    step(s.caption, 2000)
+    step("k9s keys, with context, cluster and usage always in view", 2800)
+    s.keys(b"j", 0.3)
+    step("Failing rows are red, in every theme", 2200)
+    s.keys(b"?", 0.5)
+    step("? lists the keys for the view you are in", 3200)
     s.keys(b"\x1b", 0.4)
-    s.keys(b"\x1a", 0.4)
-    step("Ctrl-Z shows only what needs attention", 2200)
-    s.keys(b"\x1a", 0.4)
-    s.keys(b"N", 0.2)
-    s.keys(b"N", 0.4)
-    step("Sort by any column; press again to reverse", 1800)
-    s.keys(b"N", 0.3)
     if s.copilot_account:
         ask_copilot(s)
-    s.keys(b"d", 0.5)
-    s.soft_wait(r"OVERVIEW|DESCRIBE|Overview")
-    step("d describes, y shows YAML, always redacted", 2200)
+    s.keys(b"y", 0.6)
+    s.soft_wait(r"REDACTED INSPECTION")
+    s.keys(b"/", 0.3)
+    s.caption = "/ searches inside YAML, JSON and describe"
+    s.type("name", 90)
+    s.keys(b"\r", 0.5)
+    s.soft_wait(r"matching")
+    step(s.caption, 2600)
+    s.keys(b"\x1b", 0.3)
     s.keys(b"\x1b", 0.4)
+    s.keys(b"k", 0.3)
     s.keys(b"l", 0.4)
     s.soft_wait(r"LOGS")
     s.drain(1.2)
-    step("l follows logs: search, error and warning filters, time ranges", 2600)
+    step("l follows logs: filters, time ranges, export", 2400)
     s.keys(b"\x1b", 0.4)
-    command(":lint", r"LINT", 2800, ":lint finds misconfigurations, read-only")
-    s.keys(b"\x1b", 0.4)
-    command(":metrics", r"METRICS", 600, "Live charts: :metrics then g")
-    s.keys(b"g", 0.4)
-    s.drain(25.0)  # a few more samples (the demo series steps every refresh)
-    step("Live charts: CPU and memory over time, % of request and limit", 3000)
-    s.keys(b"\x1b", 0.4)
-    command(":deploy", r"deployments", 1200, "Review before changing; server dry-run where supported")
+    command(":nodes", r"ROLE", 2800, "Nodes with the k9s columns: role, version, CPU and memory use")
+    command(":deploy", r"deployments", 1000, "Every change is reviewed before it runs")
     s.keys(b"s", 0.5)
     s.type("3", 120)
     s.keys(b"\r", 0.6)
     s.soft_wait(r"Type |REVIEW|DEMO")
-    step("Review before changing; server dry-run where supported", 3200)
+    step("Every change is reviewed before it runs", 3200)
     s.keys(b"\x1b", 0.4)
-    s.keys(b"\x1b", 0.4)
-    command(":secrets", r"(?i)secret", 1200, ":secrets: masked YAML, reveal one key for 30 s")
+    command(":secrets", r"(?i)secret", 1000, ":secrets: values stay masked until you reveal one")
     s.keys(b"y", 0.6)
     s.soft_wait(r"hidden")
-    step(":secrets: masked YAML, reveal one key for 30 s", 2800)
+    step(":secrets: values stay masked until you reveal one", 2400)
     s.keys(b"\x1b", 0.4)
     s.keys(b"\x1b", 0.4)
     command(":pods", r"api-7d4f9", 400)
+    command(":lint", r"LINT", 2400, ":lint finds misconfigurations")
+    s.keys(b"\x1b", 0.4)
     s.keys(b"D", 0.4)
     s.soft_wait(r"CONTEXT OVERVIEW", 10)
     s.drain(1.0)
-    step("Dashboard for up to nine clusters", 2800)
-    s.drain(32.0)  # trend charts need samples 15 s apart
-    s.keys(b"G", 0.6)
-    step("G: trend charts for the focused cluster", 2600)
+    step("One dashboard for up to nine clusters", 3000)
     s.keys(b"\x1b", 0.4)
     s.keys(b"\x1b", 0.4)
     command(":pods", r"api-7d4f9", 400)
-    command(":xray po", r"(?i)xray|relationship", 2400, "Relationships: :xray links workloads, Pods and Services")
-    s.keys(b"\x1b", 0.4)
-    command(":subjects", r"RBAC SUBJECTS", 2600, "RBAC subjects and bindings: inspect who can do what")
-    s.keys(b"\x1b", 0.4)
-    command(":helm", r"(?i)helm", 2800, "Helm releases, history and reviewed lifecycle actions")
-    s.keys(b"\x1b", 0.4)
-    command(":nodes", r"(?i)nodes", 1200, "Node health, metrics and maintenance workflows")
-    s.keys(b"?", 0.4)
-    step("Node actions: review cordon, drain or shell before execution", 2600)
-    s.keys(b"\x1b", 0.4)
-    command(":pods", r"api-7d4f9", 500)
     s.keys(b"\x10", 0.4)
+    s.caption = "Ctrl-P finds every action, command and recent object"
     s.type("shell", 90)
-    step("Ctrl-P discovers actions: shell, forward, copy, debug and more", 2800)
+    step(s.caption, 2600)
     s.keys(b"\x1b", 0.4)
-    command(":copilot setup", r"COPILOT SETUP", 3200, "Copilot setup explains login, prerequisites and platform availability")
+    command(":themes", r"(?i)theme", 2400, "20 themes with live preview; every key and column is yours to change")
     s.keys(b"\x1b", 0.4)
-    command(":themes", r"(?i)theme", 900, ":themes previews palettes; this tour stays in Catppuccin Mocha")
-    # Keep the requested Mocha palette throughout the recording.
-    s.frame(2400)
-    s.keys(b"\x1b", 0.4)
-    s.keys(b"?", 0.5)
-    step("? opens help for the screen you are on", 2400)
-    s.keys(b"\x1b", 0.4)
-    command(":keymap", r"(?i)keymap|action", 2600, ":keymap: every key, remappable in keymap.yaml")
-    s.keys(b"\x1b", 0.4)
-    step("KBorg: fast, safe, yours to customize", 2600)
+    quit_session(s)
+
+
+def quit_session(s):
     s.keys(b":", 0.2)
     s.keys(b"q", 0.2)
     s.keys(b"\r", 0.5)
     deadline = time.monotonic() + 5
     while s.proc.poll() is None and time.monotonic() < deadline:
         s.drain(0.1)
+
+
+SCALE_PODS = 20000
+
+
+def scale_scene(session):
+    """The performance scene: the same binary with 20,000 synthetic Pods."""
+    s = session
+    s.wait(r"scale-0000", 30)
+    s.soft_wait(rf"{SCALE_PODS + 2} Pods")
+    s.caption = f"{SCALE_PODS:,} Pods: on screen in under half a second"
+    s.drain(0.6)
+    s.frame(2600)
+    s.caption = f"Paging through {SCALE_PODS:,} rows"
+    for _ in range(14):
+        s.keys(b"\x1b[6~", 0.08)
+        s.frame(110)
+    s.frame(900)
+    s.keys(b"/", 0.3)
+    s.caption = f"Filter {SCALE_PODS:,} rows as you type"
+    s.type("scale-1777", 130)
+    s.keys(b"\r", 0.5)
+    s.frame(2200)
+    s.keys(b"\x1b", 0.4)
+    s.caption = f"Sort {SCALE_PODS:,} rows at a key press"
+    # N sorts by name; pressed again it reverses. Stop on the descending order.
+    for _ in range(2):
+        if "NAMEv" in s.screen.text():
+            break
+        s.keys(b"N", 0.4)
+    s.soft_wait(r"NAMEv")
+    s.keys(b"\x1b[H", 0.4)
+    s.frame(2400)
+    s.caption = "KBorg: fast, reviewed, yours to shape"
+    s.frame(3000)
+    quit_session(s)
 
 
 def captioned(image, caption):
@@ -458,11 +470,22 @@ def main():
             policy = args.copilot_policy.resolve(strict=True)
             account = json.loads(policy.read_text())["gh_cli"]["account"]
             extra += ["--copilot-policy", str(policy), "--allow-copilot-screen"]
+        for old in frames_dir.glob("scale-*.png"):
+            old.unlink()
         session = Session(binary, frames_dir, extra, account, args.connection_tour)
         try:
             (connection_tour if args.connection_tour else tour if args.tour else record)(session)
         finally:
             session.close()
+        if args.tour:
+            # The tour ends on the same binary holding 20,000 synthetic Pods.
+            scale = Session(binary, frames_dir, extra, extra_env={"KBORG_DEMO_SCALE": str(SCALE_PODS)},
+                            prefix="scale")
+            try:
+                scale_scene(scale)
+            finally:
+                scale.close()
+            session.frames += scale.frames
         total = assemble(session.frames, args.out, args.scale)
     size = args.out.stat().st_size
     manifest = {
@@ -471,7 +494,7 @@ def main():
         "frames": len(session.frames), "duration_seconds": total / 1000,
         "gif_bytes": size, "gif_sha256": hashlib.sha256(args.out.read_bytes()).hexdigest(),
         "captions": list(dict.fromkeys(frame[3] for frame in session.frames)),
-        "scope": "Synthetic feature-family tour. Operation previews are not live acceptance; no cluster, auth helper, scanner, shell or model request is used without --copilot-policy.",
+        "scope": "Synthetic feature tour, then the same binary with 20,000 synthetic Pods (KBORG_DEMO_SCALE). Operation previews are not live acceptance; no cluster, auth helper, scanner, shell or model request is used without --copilot-policy.",
     }
     args.out.with_suffix(".json").write_text(json.dumps(manifest, indent=2) + "\n")
     print(f"{args.out}: {len(session.frames)} frames, {total / 1000:.1f} s, {size / 2**20:.2f} MiB")

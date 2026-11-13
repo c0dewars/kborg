@@ -4,140 +4,62 @@
     <img src="assets/kborg-logo.png" alt="KBorg" width="360">
   </picture>
   <h3>Every cluster at a glance. Every change reviewed.</h3>
-  <p>A fast Kubernetes terminal workspace with k9s muscle memory, a k10s-style multi-cluster dashboard, and reviewed operational workflows.</p>
+  <p>A fast Kubernetes terminal UI with k9s keys, a multi-cluster dashboard and a review before every change.</p>
   <p>
     <a href="#install">Install</a> ·
-    <a href="#run">Run</a> ·
-    <a href="#keys-for-k9s-users">Keys</a> ·
-    <a href="#copilot-advice-optional">Copilot setup</a> ·
-    <a href="docs/ROADMAP.md">Roadmap</a> ·
-    <a href="docs/REMAINING_WORK.md">Feature status</a>
+    <a href="#quick-start">Quick start</a> ·
+    <a href="#keys">Keys</a> ·
+    <a href="#make-it-yours">Customize</a> ·
+    <a href="#copilot-optional">Copilot</a> ·
+    <a href="#documentation">Docs</a>
   </p>
   <p>
-    <img alt="Release 0.4.0" src="https://img.shields.io/badge/release-0.4.0-FF7A1A">
-    <img alt="Preview 0.5.0-rc.5" src="https://img.shields.io/badge/preview-0.5.0--rc.5-FFA41B">
+    <img alt="Release 0.5.0" src="https://img.shields.io/badge/release-0.5.0-FF7A1A">
     <img alt="Rust" src="https://img.shields.io/badge/built%20with-Rust-0FA968">
     <img alt="Windows, macOS and Linux" src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-0B1220">
     <img alt="Apache 2.0" src="https://img.shields.io/badge/license-Apache%202.0-3BE08A">
   </p>
 </div>
 
-![KBorg feature tour in demo mode: k9s-style browsing, filters, the errors-only view, sorting, describe, logs, :lint, live metrics charts, a reviewed scale, masked Secret YAML, the multi-cluster dashboard and its trend charts, live theme preview, per-screen help and the remappable keymap](docs/screenshots/tour.gif)
+![KBorg tour: browsing Pods and Nodes, the keys for each view, search inside YAML, logs, a reviewed scale, the multi-cluster dashboard and 20,000 Pods filtered as you type](docs/screenshots/tour.gif)
 
-<p align="center"><sub>Catppuccin Mocha feature tour recorded in <code>kborg demo</code>: synthetic data, no cluster or credentials. Operational screens are previews, not real changes. <a href="docs/FEATURE_TOUR.md">Coverage and reproduction</a>; regenerate with <code>scripts/make-demo-gif.py --tour --binary PATH</code>.</sub></p>
-
-![KBorg dashboard on a live Docker Desktop cluster: Pod health, Node usage, degraded workloads and restart hotspots](docs/screenshots/dashboard-health.png)
+<p align="center"><sub>Recorded from the real binary in <code>kborg demo</code>: sample data, no cluster needed. <a href="docs/FEATURE_TOUR.md">How it was made</a>.</sub></p>
 
 ## Why KBorg
 
-- **You already know the keys.** `:pods`, `:deploy`, `/filter`, `l` logs, `s` shell, Ctrl-D delete — k9s navigation, commands, aliases and `hotkeys.yaml` work the way you expect.
-- **See all your clusters at once.** Up to nine clusters side by side: Pod health, restarts, OOM kills, Node readiness and CPU/memory, degraded Deployments and StatefulSets, and recent warnings, each updating independently.
-- **Follow one workload across every cluster.** Pick Deployments from any cluster and tail them together in one pane, merged in timestamp order and tagged by cluster.
-- **Works out of the box, like k9s.** No flags to learn: shell, logs, edits, apply, port forwards, node shell, Helm, Secrets and scans are all on. Your kubeconfig works as it does in kubectl, including aws/gcloud/kubelogin exec helpers, impersonation and proxies.
-- **Review changes before applying them.** Operations show their target and effect; supported Kubernetes mutations also use server dry-run. `y` or Enter confirms, `n` or Esc cancels. Shells, forwards and other connection subresources have no server dry-run. Use `--read-only` when you only want to look, and company profiles for stricter controls.
-- **Discover Copilot from inside the app.** `:ask` opens a question or a visible setup/status screen; `:copilot setup` explains the next step. Contained inference currently works on **macOS ARM64** with the supported runtime and an entitled GitHub account. Windows/Linux browsing works independently; contained AI is not yet available there. [Setup and platform limits](docs/COPILOT_INTEGRATION.md).
-- **Measured speed and resource use.** Recorded side-by-side tests cover first data, 5,000 live objects, CPU, memory and network traffic ([methods and results](docs/PERFORMANCE_COMPARISON.md)). These are source/environment-specific measurements, not a guarantee for every cluster. The manual CI performance gate checks new builds.
-- **Designed for modern terminals.** 20 hand-tuned themes that meet WCAG AA contrast everywhere they're drawn (plus your terminal's own palette), 24-bit color with graceful fallback, and a quiet layout with contextual key hints.
-- **Make it yours.** Like an Omarchy desktop, everything is data you control: remap any key (`keymap.yaml`), restyle the UI (`ui.yaml`: borders, header, density, colors, chart style), choose columns per resource (`views.yaml`), add hotkeys and aliases. `?` always shows the keys for the screen you're on, with your bindings.
-- **See trends, not just snapshots.** Live CPU and memory charts per Pod or Node, and trend charts for every cluster on the dashboard.
-
-## Features
-
-| Area | What you get |
-|---|---|
-| **Browse** | 35 built-in resource types, CRDs via discovery, context/namespace switching, regex/fuzzy/label filters, sorting, redacted describe/YAML/JSON, live watches |
-| **Dashboard** | 1–9 clusters, full-screen focus, Pod health, restart hotspots, OOM evidence, Node readiness + CPU/memory, degraded workloads, Pod and non-Pod warning events, warning → exact Pod Events drilldown |
-| **Logs** | Container, workload and selector logs; merged multi-container streams; live rollout following (`:logs-live`); cross-cluster workload tail; time ranges, search, error/warning filters, export |
-| **Operate** | Scale, restart, rollback, delete, force kill, reviewed batches on marked rows (up to 50), CronJob trigger and suspend/resume, YAML spec editing (in-app or `$EDITOR`), server-side apply of local manifests, image/resource forms, cordon/uncordon/drain, node shell, ephemeral debug containers, port forwards, shell/attach as a full terminal (vim, top, less; Ctrl-] returns), file and directory copy — each reviewed first, confirmed with one key |
-| **Errors** | Actionable guidance for common Kubernetes, network and kubeconfig errors: RBAC, TLS, DNS, timeout, conflict, admission and quota; RBAC guidance includes a scoped `kubectl auth can-i` command |
-| **Check** | `:lint` misconfiguration report, `:scan` image vulnerability scan through your Trivy or Grype, Ctrl-Z errors-only view, `:pulses` health, `:xray` relationships, busiest Nodes on dashboard cards, port-forward benchmark |
-| **Helm** | Release browsing and history; reviewed install, upgrade, rollback, uninstall and tests for packaged and OCI charts with optional OpenPGP/Sigstore verification |
-| **Secrets** | Key listing and masked YAML/describe (`y`/`d`: values shown as sizes, TLS subject/expiry, registry hostnames); reveal one value for 30 seconds; never exported or copied |
-| **Metrics & charts** | Pod/Node CPU and memory tables with exact values and request/limit comparisons; live charts (`g` in `:metrics`) with units and % of request, limit or allocatable; dashboard trend charts (`G`) and 15-minute sparklines; braille, block or ASCII rendering |
-| **Copilot** | Minimized diagnostic preview, `:ask` about the current screen, exact account approval, contained native runtime (macOS ARM64) |
-| **Workspace** | Saved context groups and scopes, remembered dashboard (`kborg dashboard`), k9s-format `views.yaml` columns, sort by any column, recent namespaces on `1`–`9`, custom aliases and k9s-format hotkeys, every key remappable on every screen (`keymap.yaml`, `?` help per screen, `:keymap`), Ctrl-P command palette, UI styling (`ui.yaml`), reviewed extensions and k9s plugins with `$VARIABLES` and shortcuts (`:ext`, `kborg extensions import-k9s`), 20 themes plus custom palettes, shell completions |
-
-![Cross-cluster tail: two clusters' checkout services merged in timestamp order](docs/screenshots/cross-cluster-tail.png)
+- **You already know the keys.** `:pods`, `:deploy`, `/` to filter, `l` logs, `s` shell, `d` describe, Ctrl-D delete. k9s commands, aliases, `views.yaml`, `hotkeys.yaml` and plugins work the way you expect.
+- **It is fast.** First data in 0.06 s where k9s takes 0.69 s, about a quarter of its memory on the same cluster, and an 18 MB binary. Moving through 20,000 Pods takes the same 8 ms per key as 5,000. [How this was measured](#performance).
+- **Every cluster at once.** A dashboard of up to nine clusters side by side: Pod health, restarts, OOM kills, Node usage, degraded workloads and recent warnings. Tail one workload across all of them in a single pane.
+- **Nothing changes without a review.** Scale, delete, edit, apply, drain: each shows exactly what it will do, checks it with a server dry run where Kubernetes supports one, and waits for `y`. `--read-only` turns changes off entirely.
+- **Works out of the box.** No flags to learn. Your kubeconfig works as it does in kubectl, including `aws`, `gcloud` and `kubelogin` helpers. KBorg shows the context it is about to connect to and asks first.
+- **Yours to shape.** 20 themes, every key remappable, columns per resource, per-cluster settings such as a red `PROD` badge, all in small YAML files that apply the moment you save.
 
 ## Install
 
-**Requirements:** Windows, macOS or Linux, an existing kubeconfig, and an interactive terminal. Truecolor is preferred; 256/16-color and monochrome output are supported. Some external-tool and AI integrations remain Unix/macOS-specific; see [feature status](docs/IMPLEMENTATION_STATUS.md). Building from source needs Rust (the pinned toolchain installs automatically through `rustup`) and on macOS the command-line developer tools (`xcode-select --install`).
-
-### Windows
-
-Extract the Windows ZIP matching your CPU, open Windows Terminal or PowerShell in that directory, and run `./kborg.exe`. Keep the CLI/login environment that configured your kubeconfig; no separate KBorg token setup is required. Add the extracted directory to PATH if you want to run `kborg` from any folder. Native Windows packages and their build evidence are available in the manually dispatched [Actions builds](https://github.com/c0dewars/kborg/actions/workflows/ci.yml); download the artifact for your exact source/architecture.
-
-### With Homebrew (macOS and Linux)
+**macOS and Linux (Homebrew)**
 
 ```sh
 brew install c0dewars/tap/kborg
 ```
 
-The formula builds KBorg from the tagged source with Homebrew's Rust and installs bash, zsh and fish completions. Upgrade with `brew upgrade kborg`.
-
-### Try the 0.5.0 preview
+**Debian, Ubuntu, Fedora, RHEL** — download the package for your CPU from the [latest release](https://github.com/c0dewars/kborg/releases/latest):
 
 ```sh
-cargo install --locked --git https://github.com/c0dewars/kborg --tag v0.5.0-rc.5
+sudo apt install ./kborg_0.5.0_amd64.deb      # Debian / Ubuntu
+sudo dnf install ./kborg-0.5.0-1.x86_64.rpm   # Fedora / RHEL
 ```
 
-The tag is the published RC snapshot, the same version Homebrew installs. To test changes made since, use `--branch release/next` instead of `--tag v0.5.0-rc.5`. The [testing guide](docs/TESTING.md) has a 15-minute tour and what to report.
+**Windows** — download the ZIP for your CPU from the [latest release](https://github.com/c0dewars/kborg/releases/latest), extract it and run `kborg.exe` from Windows Terminal or PowerShell.
 
-### From source
+**Any platform, from source** (needs Rust):
 
 ```sh
-git clone https://github.com/c0dewars/kborg.git
-cd kborg
-cargo build --release --locked
+cargo install --locked --git https://github.com/c0dewars/kborg --tag v0.5.0
 ```
 
-Put the binary on your `PATH`:
+Release archives exist for macOS, Linux and Windows on x86_64 and ARM64. Every file is signed; see [verify a download](#verify-a-download). Shell completions: `kborg completions zsh|bash|fish|powershell`.
 
-```sh
-mkdir -p ~/.local/bin
-cp target/release/kborg ~/.local/bin/
-kborg --version
-```
-
-Add shell completions (zsh shown; `bash`, `fish` and `powershell` also work):
-
-```sh
-kborg completions zsh > ~/.zfunc/_kborg
-```
-
-### From a release archive
-
-Download the archive for your OS and CPU (for example `kborg-0.4.0-aarch64-apple-darwin.tar.gz`), get its SHA-256 through a trusted channel, and compare before extracting:
-
-```sh
-shasum -a 256 kborg-0.4.0-aarch64-apple-darwin.tar.gz
-tar -xzf kborg-0.4.0-aarch64-apple-darwin.tar.gz
-```
-
-Releases built by the signed release workflow carry a Sigstore bundle (`FILE.sigstore.json`) and GitHub build provenance for every asset. Verify before installing:
-
-```sh
-gh attestation verify kborg-0.6.0-aarch64-apple-darwin.tar.gz --repo c0dewars/kborg
-cosign verify-blob kborg-0.6.0-aarch64-apple-darwin.tar.gz \
-  --bundle kborg-0.6.0-aarch64-apple-darwin.tar.gz.sigstore.json \
-  --certificate-identity-regexp '^https://github\.com/c0dewars/kborg/\.github/workflows/release\.yml@refs/tags/v' \
-  --certificate-oidc-issuer https://token.actions.githubusercontent.com
-```
-
-Releases up to 0.5.0-rc.3 are unsigned. See [Release process](docs/RELEASE_PROCESS.md#verify-a-release-asset) for details and [Operations](docs/OPERATIONS.md) for updates and rollback.
-
-### Debian/Ubuntu (.deb) and Fedora/RHEL (.rpm)
-
-```sh
-sudo apt install ./kborg_0.5.0.rc.5_amd64.deb      # Debian / Ubuntu
-sudo dnf install ./kborg-0.5.0.rc.5-1.x86_64.rpm   # Fedora / RHEL-compatible
-```
-
-Both install `/usr/bin/kborg` and bash, zsh and fish completions, and need glibc 2.39 or newer. CI builds the .deb; the .rpm is built from `packaging/rpm/kborg.spec`. See [Operations](docs/OPERATIONS.md#install-from-a-deb-or-rpm).
-
-## Run
-
-These instructions describe 0.5.0-rc.5, the version Homebrew and the `v0.5.0-rc.5` tag install.
+## Quick start
 
 Try it without a cluster:
 
@@ -145,176 +67,157 @@ Try it without a cluster:
 kborg demo
 ```
 
-Use the cluster you already configured with your company CLI (for example `orbit-use`), kubectl or a cloud login tool. Run both commands in the same terminal when that tool sets `KUBECONFIG`:
+Then open the cluster your kubeconfig already points at, or name a context:
 
 ```sh
-# Run your usual company login/context command first, then:
 kborg
-# Or select an existing context explicitly:
 kborg --context prod-eu
 ```
 
-KBorg shows the **context name, cluster and namespace** from the existing kubeconfig before connecting. Press **Enter/Y for Yes**, **N for No** to choose another existing context, or **Esc** to exit. Type to filter the context list; Enter reviews the selection. No API request or credential helper runs before Yes. KBorg does not rewrite the context saved by your company CLI and does not ask you to copy tokens.
+KBorg shows the context, cluster and namespace and asks before it connects. From there:
 
-![KBorg connection confirmation in Catppuccin Mocha: current context, No opens the context picker, selected context review](docs/screenshots/connect.gif)
+- `:` opens the command prompt (`:deploy`, `:nodes`, `:ns payments`), and `?` lists the keys for the view in front of you.
+- `kborg --contexts prod-eu,prod-us,staging` opens the dashboard; `kborg dashboard` brings the last one back.
+- `kborg --read-only` only looks. `kborg doctor` checks your terminal, kubeconfig and cluster access and says what to fix.
 
-If your session has expired, run your usual login tool again and reopen KBorg. A configured credential helper is reused automatically after consent; VPN, cluster permissions and provider login still need to be valid.
+![KBorg dashboard on a live cluster: Pod health, Node usage, degraded workloads and restart hotspots](docs/screenshots/dashboard-health.png)
 
-The operator default enables available workflows; platform/tool prerequisites still apply: `l` logs, `s` shell, `e` edit, `s` scale, Ctrl-D delete, `F` port forward, `:apply FILE`, `:cp-from`, `s` on a Node for a node shell, `:debug`, `:helm`, `:secrets` and `:scan` (with Trivy or Grype on your PATH). Every change shows a review; `y`/Enter applies, `n`/Esc cancels.
+## What you can do
 
-Open the multi-cluster dashboard. KBorg remembers it, so next time `kborg dashboard` brings it straight back:
-
-```sh
-kborg --contexts prod-eu,prod-us,staging
-kborg dashboard
-```
-
-Just looking? `kborg --read-only` turns every change off. Something not working? `kborg doctor` checks your terminal, tools, kubeconfig authentication and cluster access, and says what to fix.
-
-**For companies:** an operator `--config` file can switch any capability off (`"allow_node_shell": false`), force read-only (`"profile": "read-only"`) or require typed confirmations (`"strict_confirmations": true`). See [Operations](docs/OPERATIONS.md).
-
-KBorg reuses your kubeconfig and its configured authentication: the current context unless you pass `--context`, every file in `$KUBECONFIG` merged (first definition wins), exec helpers such as `aws eks get-token`, `gke-gcloud-auth-plugin` and `kubelogin`, impersonation, `proxy-url` and `insecure-skip-tls-verify`. kubectl, Helm, Python and an AI account are not needed for browsing. Server-side RBAC and admission always have the final say.
-
-## Keys for k9s users
-
-| Key / command | Action |
+| Area | What you get |
 |---|---|
-| `:pods` `:deploy` `:svc` `:nodes` … | Open a resource table (k9s aliases, CRDs and `:apps/v1/deployments` work) |
-| `:ctx` `:ns`, `:pods @CTX`, `:pods NS` | Switch context or namespace |
-| `/` `/!` `/-f` `/-l` | Regex, inverse, fuzzy, label-selector filter |
-| `Enter` `d` `y` | Drill down, describe, YAML |
-| `l` `p` | Logs, previous logs |
-| `s` `a` `F` `f` | Shell, attach, new port forward, forward list |
-| `s` `r` on workloads | Scale, restart |
-| `e` | Edit YAML spec (Ctrl-E opens `$EDITOR`) |
-| Ctrl-D, Ctrl-K | Reviewed delete, reviewed force kill |
-| `Space` then Ctrl-D / `r` / `s` | Mark rows, then one reviewed batch delete, restart or CronJob suspend/resume (max 50; type e.g. `delete 7 objects`) |
-| `c` `u` `r` on Nodes | Cordon, uncordon, drain |
-| `:secrets`, `x`, `y` | Secret keys, reveal one value, masked YAML |
-| `:helm`, `:pulses`, `:xray`, `:lint` | Releases, health, relationships, misconfigurations |
-| `s` on Nodes, `:apply FILE`, `:dir` then `a` | Node shell, reviewed apply of a manifest |
-| `:cp-from` `:cp-to` (`-r`) | Copy files or directories to and from the selected Pod |
-| `:pf` then `b`, `:bench` | Benchmark a port forward |
-| `:ext NAME`, `hotkeys.yaml` | Run a registered extension; bind keys like k9s |
-| `t` `s` on CronJobs, `:rollback [REV]` | Trigger now, suspend/resume; roll back a workload |
-| `:debug [CONTAINER]` | Ephemeral debug container in the selected Pod |
-| Ctrl-Z, Ctrl-W, `1`–`9` | Errors only, wide columns, recent namespaces |
-| `N` `A` `S` `R` (again to reverse), `:sort COL` | Sort by any column; `views.yaml` sets columns |
-| `:subjects` `:users` `:groups`, `:can` | RBAC subjects with their roles; one subject's bindings and rules |
-| `:ask QUESTION`, `:explain`, `:copilot setup`, `:copilot status` | Ask about the current screen (`f` on an answer follows up), explain the status-line error, connect/sign in or inspect AI availability |
-| `D` / `kborg dashboard` | Dashboard |
-| Dashboard `1`–`9`, `w`, `L`, `t`, `G` | Focus (again = full screen), select warning, Pod logs, cross-cluster tail, trend charts |
-| `:metrics` then `g` | Live CPU and memory chart for the selected Pod or Node |
-| `?`, `:keymap` | Keys for the screen you're on (Tab: every screen); every action and its key |
-| Ctrl-P | Command palette (KBorg extension): fuzzy search the current screen's actions with their keys, `:` commands, resource kinds, recent contexts, namespaces and objects; Enter runs it like the key, with the same reviews |
+| **Browse** | Every resource type, including CRDs. Context and namespace switching, regex, fuzzy and label filters, sort by any column, live updates. Failing rows are red and pending rows yellow in every theme. |
+| **Inspect** | Describe, YAML and JSON with secrets masked and `/` search inside the text. k9s-style columns per resource (Nodes: role, version, taints, CPU and memory usage), or your own. |
+| **Logs** | Container, workload and label-selector logs, merged streams, time ranges, filters, export, and one tail across several clusters. |
+| **Operate** | Scale, restart, roll back, delete, edit YAML, apply manifests, port-forward, shell and attach as a full terminal, copy files, cordon and drain Nodes, node shell, debug containers, CronJob trigger. One reviewed batch for up to 50 marked rows. |
+| **Dashboard** | One to nine clusters with health, restarts, OOM evidence, Node usage, degraded workloads, warnings and trend charts. |
+| **Check** | `:lint` for misconfigurations, `:scan` for image vulnerabilities through your Trivy or Grype, an errors-only view, `:pulses` and `:xray`. |
+| **Helm** | Browse releases and history; reviewed install, upgrade, rollback, uninstall and tests, with optional signature verification. |
+| **Secrets** | Key names and masked YAML; reveal one value for 30 seconds. Values are never exported or copied. |
+| **Metrics** | CPU and memory per Pod and Node, usage against requests and limits, live charts. Needs [metrics-server](https://github.com/kubernetes-sigs/metrics-server#installation); without it KBorg shows `-`, never zero. |
+| **Errors** | Messages that say what failed, why and what to do next, down to the exact `kubectl auth can-i` check for a permission problem. |
 
-The bottom row always shows the keys that work for what's selected and the flags you started with. The [k9s compatibility map](docs/K9S_COMPATIBILITY.md) documents every command and the few deliberate differences.
+![Cross-cluster tail: two clusters' checkout services merged in timestamp order](docs/screenshots/cross-cluster-tail.png)
 
-## Metrics (CPU and memory)
+## Keys
 
-CPU/memory columns, `:metrics` and the dashboard's Node usage need the Kubernetes Metrics API (metrics-server). Check a cluster:
+`?` always shows the keys for the view you are in, with your own bindings. The ones you will use most:
 
-```sh
-kubectl --context docker-desktop top nodes
-kborg --context docker-desktop metrics nodes
-```
+| Key or command | Does |
+|---|---|
+| `:pods` `:deploy` `:svc` `:nodes` … | Open a resource table (k9s aliases and CRDs work) |
+| `:ctx`, `:ns`, `0`, `1`–`9` | Switch context or namespace; all namespaces; recent namespaces |
+| `/` | Filter rows (`/!` inverse, `/-f` fuzzy, `/-l` label selector) |
+| `Enter`, `d`, `y` | Drill down, describe, YAML; `/` then `n` / `N` searches inside |
+| `l`, `p` | Logs, previous logs |
+| `s`, `a`, `F` | Shell, attach, port-forward |
+| `s`, `r` on workloads | Scale, restart |
+| `e` | Edit the YAML spec |
+| Ctrl-D, Ctrl-K | Delete, force kill |
+| `Space` | Mark rows for one batch delete, restart or suspend |
+| `c`, `u`, `r` on Nodes | Cordon, uncordon, drain |
+| `N` `A` `S` `R` `C` `M`, `:sort COLUMN` | Sort by name, age, status, readiness, CPU, memory, or any column |
+| Ctrl-Z, Ctrl-W | Only rows that need attention; wide columns |
+| `D`, `kborg dashboard` | Dashboard |
+| `:helm`, `:secrets`, `:lint`, `:scan`, `:metrics` | Releases, Secrets, checks, scans, metrics |
+| Ctrl-P | Command palette: fuzzy search every action, command and recent object |
+| Ctrl-G | Ask Copilot about the screen ([optional](#copilot-optional)) |
 
-If `kubectl top` fails, install a provider:
+The [k9s compatibility map](docs/K9S_COMPATIBILITY.md) lists every command and the few deliberate differences.
 
-- **Docker Desktop:** the pinned, TLS-verified helper in [Docker Desktop metrics](docs/DESKTOP_METRICS.md).
-- **minikube:** `minikube addons enable metrics-server`, then wait a minute for samples. The addon uses `--kubelet-insecure-tls`, fine for a disposable local cluster only.
-- **Other clusters:** upstream [metrics-server](https://github.com/kubernetes-sigs/metrics-server#installation).
+## Performance
 
-Without a provider KBorg keeps working and shows `-` or `metrics UNAVAILABLE`, never zeros.
+Speed is a design goal, and the numbers below are measured, not estimated.
 
-## Themes
+| Measured on a local cluster | KBorg | k9s |
+|---|---|---|
+| Time to first data | **0.06 s** | 0.69 s |
+| Memory, 1,000 objects | **28 MiB** | 118 MiB |
+| Memory, 5,000 objects with churn | **71 MiB** | 174 MiB |
+| CPU, 5,000 objects with churn | **2.8 %** | 6.8 % |
+| Binary size | **18 MB** | 140 MB |
 
-![All built-in themes rendered by KBorg](docs/screenshots/themes.png)
-
-KBorg greets you with a short animated logo that decrypts out of glyph noise, catches a light beam and fades into your workspace. Any key skips it; `kborg startup preview` replays it, and `kborg startup off`, `--no-splash` or `KBORG_NO_SPLASH=1` turn it off.
-
-Pick a theme with `:themes` (live preview) or `--theme catppuccin-mocha` (used throughout the feature-tour GIF). Every fixed built-in theme is tested for 4.5:1 contrast on each surface the UI paints, including dashboard cards and selected rows. Create your own with `kborg theme new my-theme --base rose-pine`; see the [theme guide](docs/themes.md). `NO_COLOR` and `--color=never` turn styling off.
-
-To style and lay out the UI to your taste, run `kborg ui init` and edit the generated `ui.yaml`: borders (rounded, square, ASCII or none), a compact header, hidden key hints, zebra rows, column separators, long ages, local log timestamps, dashboard card columns and per-role color overrides on top of any theme. It is data only and validated; `:ui reload` applies changes live. Every option is listed in the [ui.yaml reference](docs/themes.md#uiyaml).
+In KBorg's own scale test, a key press redraws in about 8 ms with 5,000 or with 20,000 Pods in the table, and filtering 20,000 Pods takes 0.4 s. These come from one Apple M2 Pro against local clusters; expect different absolute numbers on yours. [Method and full results](docs/PERFORMANCE_COMPARISON.md) · [the regression gate in CI](docs/PERFORMANCE.md).
 
 ## Make it yours
 
-Everything below lives in KBorg's configuration directory (macOS `~/Library/Application Support/KBorg`, Linux `~/.config/kborg`, or `KBORG_CONFIG_DIR`). All files are data only, strictly validated and bounded; a broken file shows a notice and KBorg falls back to its defaults.
-
-Saved changes apply live, within about a second, without `:ui reload`: `ui.yaml`, the theme choice and your custom theme file, `keymap.yaml`, `hotkeys.yaml`, `aliases.yaml`, `views.yaml`, plugin registrations and the current context's `contexts/NAME.yaml`. A file that fails validation or the trust checks (symlink, size, writable by other users) is refused: the last good settings stay and the status line names the file, the line or field and the next step. Key changes wait until an open dialog, such as a typed approval, closes. Turn it off with `reload: false` in `ui.yaml` or `KBORG_CONFIG_RELOAD=off`.
+Everything lives in KBorg's configuration folder (macOS `~/Library/Application Support/KBorg`, Linux `~/.config/kborg`, or `KBORG_CONFIG_DIR`) as plain data files. Saving one applies it within a second; a mistake keeps the last good settings and tells you the line.
 
 | File | Controls |
 |---|---|
-| `ui.yaml` | Borders, header and hint rows, compact mode, table density, zebra rows, separators, markers, age format, color overrides, chart style, dashboard layout (`kborg ui init`, `:ui reload`) — [reference](docs/themes.md#uiyaml) |
-| `keymap.yaml` | Any key on any screen; Enter, Esc and review confirmations stay fixed — [format](docs/K9S_COMPATIBILITY.md#custom-keymap) |
-| `views.yaml` | Columns and default sort per resource, including `TITLE:.json.path` columns (k9s format) — [format](docs/K9S_COMPATIBILITY.md#custom-views-columns-and-sort) |
-| `hotkeys.yaml`, `aliases.yaml` | Keys and names that run commands (k9s format) |
-| `contexts/NAME.yaml` | Per-context namespace, view, theme, header badge (e.g. a red PROD), read-only and strict confirmations; `:ctx-config` edits it — [reference](docs/themes.md#per-context-settings) |
-| Themes | 20 built-ins, live preview in `:themes`, `kborg theme new` for your own |
+| Themes | 20 built in with live preview (`:themes`), each tested for readable contrast; `kborg theme new` for your own — [guide](docs/themes.md) |
+| `ui.yaml` | Header style, borders, density, colors, charts, dashboard layout (`kborg ui init`) — [reference](docs/themes.md#uiyaml) |
+| `keymap.yaml` | Any key on any screen — [format](docs/K9S_COMPATIBILITY.md#custom-keymap) |
+| `views.yaml` | Columns and sort per resource, by predefined name (`ROLE`, `%CPU`, `QOS`) or any `TITLE:.json.path`. `kborg views init` writes the defaults to edit; `:columns` lists what is available — [format](docs/K9S_COMPATIBILITY.md#custom-views-columns-and-sort) |
+| `hotkeys.yaml`, `aliases.yaml`, plugins | Your own keys, command names and k9s plugins |
+| `contexts/NAME.yaml` | Per-cluster namespace, view, theme, header badge, read-only or typed confirmations (`:ctx-config`) — [reference](docs/themes.md#per-context-settings) |
 
-## Terminals
+![All built-in themes rendered by KBorg](docs/screenshots/themes.png)
 
-KBorg detects color support from the environment and works without terminfo.
+## Copilot (optional)
 
-| Terminal | Color |
-|---|---|
-| Ghostty, kitty, WezTerm, Alacritty, iTerm2, VS Code, Windows Terminal | 24-bit |
-| macOS Terminal.app, tmux, screen | 256 colors (24-bit when `COLORTERM=truecolor` is passed through) |
-| Linux console, plain `xterm` | 16 colors with ASCII fallback |
-
-**Unicode:** in a UTF-8 locale, object names, logs, YAML and describe text show real glyphs: Japanese and other wide characters and emoji (including ZWJ families and flags) take two cells, combining accents none, and columns stay aligned. Truncation never cuts a character in half. Control, bidi and invisible format characters are still removed. Without a UTF-8 locale, or with `text: ascii` in `ui.yaml`, non-ASCII characters are drawn as `?`. Approval screens always show non-ASCII as `\u{...}` escapes so look-alike characters can be told apart.
-
-**Ghostty:** run `kborg` from any Ghostty window, or open a dedicated one:
+KBorg can ask GitHub Copilot about what is on your screen. It needs the Copilot CLI and a Copilot plan, and it is entirely optional.
 
 ```sh
-open -na Ghostty.app --args -e "$HOME/.local/bin/kborg" --context docker-desktop
+kborg copilot setup
 ```
 
-Ghostty's shortcuts use Cmd on macOS, so Ctrl-D/K/S/R reach KBorg, and `c` copies names through OSC 52. Over SSH KBorg still recognizes `TERM=xterm-ghostty` as 24-bit. Match your Ghostty theme with the same KBorg theme (for example `--theme catppuccin-mocha`), or use `--theme terminal` for Ghostty's own palette.
+Setup finds your installed `copilot` and `gh`, reuses the account `gh` is signed in with, and takes about a minute. Then Ctrl-G (or `:ask QUESTION`) asks about the view in front, `f` on an answer asks a follow-up, and `:copilot` sends a minimized diagnostic for the selected object.
 
-## Copilot advice (optional)
+Before anything is sent you see the exact text and approve it. Answers are advice only; KBorg never runs what Copilot suggests. Copilot itself runs in a sandbox that can reach only GitHub.
 
-Start with **`:ask`** in the app. If Copilot is not ready, KBorg shows setup/status instead of silently waiting. **`:copilot setup`** opens the same guidance; press **S** to run interactive setup and return to KBorg. Choose GitHub.com or your company `TENANT.ghe.com` domain, then use GitHub's one-time code and browser link if login is needed. The CLI equivalents are `kborg copilot setup` and `kborg copilot status`.
+**Answers inside KBorg currently work on Apple Silicon Macs only.** On other platforms setup completes the GitHub sign-in and says so. [Setup, enterprise hosts and limits](docs/COPILOT_INTEGRATION.md).
 
-Setup discovers the supported Copilot runtime and GitHub CLI, asks which host/account to use, and can open GitHub's browser login. It saves the reviewed policy for future sessions. You do not copy a token or hand-write a policy for the ordinary setup flow. A Copilot entitlement is still required; setup does not purchase one or send cluster data.
+## For teams
 
-**Contained inference is currently macOS ARM64 only.** Windows/Linux/Intel macOS can complete GitHub account login but explicitly show that it does not enable unsupported in-app answers. On supported Apple Silicon, setup also validates the runtime and saves the policy. Earlier GitHub.com inference has historical acceptance evidence; the new device-login wizard still needs live account acceptance. GHE.com and GHES 3.22+ are implemented but still need real tenant validation. See [Copilot setup and limits](docs/COPILOT_INTEGRATION.md).
+- **Policy in one file.** An operator `--config` can switch off any capability (`"allow_node_shell": false`), force read-only or require typed confirmations. It can only take capabilities away. [Operations](docs/OPERATIONS.md)
+- **Per-cluster safety.** Mark production read-only or give it a red badge with `contexts/NAME.yaml`.
+- **Audit trail.** Every change can be written to a hash-chained file or syslog for your SIEM, and `kborg audit verify` detects tampering. [Audit sink](docs/OPERATIONS.md#audit-sink-for-a-siem)
+- **Signed releases.** Every release file carries a Sigstore signature and GitHub build provenance.
 
-`:copilot` previews a minimized status bundle for the selected resource. `:ask QUESTION` instead uses the visible screen, which can contain names, events or log lines. Both show the exact transfer and account before sending. Each screen capture is used once; revealed Secret values are hidden before capture. Answers are advisory and are never executed automatically.
+### Verify a download
 
-## Security model
+```sh
+gh attestation verify kborg-0.5.0-aarch64-apple-darwin.tar.gz --repo c0dewars/kborg
+```
 
-- Everything is on by default, as in k9s; `--read-only` turns changes off, and an operator `--config` can switch off any capability (exec, attach, port forward, file copy, apply, node shell, debug containers, scanning, node maintenance, YAML edit, force kill, Secret reveal, Helm writes, external editor, extensions, Copilot screen questions) or require typed confirmations.
-- Supported object mutations use server dry-run and identity/version checks. Every operation family has its documented review and audit boundary; connect subresources cannot provide the same dry-run or UID-precondition guarantees.
-- Known sensitive fields are masked; Secret values stay hidden until you reveal one key for 30 seconds. No telemetry.
-- Dashboard and log-pane connections strip all write and interactive capabilities.
-- The manually dispatched CI runs `cargo-deny` for dependency advisories, licenses and sources. Read source-specific results rather than treating an old scan as a permanent guarantee.
+`cosign verify-blob` and the checksum file work too; see [Release process](docs/RELEASE_PROCESS.md#verify-a-release-asset).
 
-Details: [SECURITY.md](SECURITY.md), the [release-next review](docs/RELEASE_NEXT_REVIEW.md), and [remaining production gates](docs/REMAINING_WORK.md).
+## Security
+
+- Every change shows a review first; supported changes are dry-run on the server and tied to the exact object version you reviewed.
+- Known sensitive fields are masked, Secret values stay hidden until you reveal one, and nothing is exported or copied.
+- Dashboard and log connections have every write capability removed.
+- No telemetry.
+
+KBorg has had internal security reviews but no independent audit. Details and limits: [SECURITY.md](SECURITY.md).
+
+## Requirements
+
+- Windows, macOS or Linux with a kubeconfig, and Kubernetes 1.34 or newer.
+- Any modern terminal. Ghostty, kitty, WezTerm, Alacritty, iTerm2, VS Code and Windows Terminal get 24-bit color; Terminal.app, tmux and screen get 256 colors; plain consoles fall back to 16 colors and ASCII.
+- The header's key hints and one-item-per-line layout need a 100x24 terminal; smaller ones get a compact header.
+
+Good to know: the macOS release binaries are signed but not yet notarized, so macOS may ask you to confirm the first run of a downloaded binary. The Homebrew install builds from source and is not affected.
 
 ## Documentation
 
 | Guide | Contents |
 |---|---|
-| [Testing guide](docs/TESTING.md) | For colleagues trying a release candidate: install, tour, what to report |
-| [Dashboard](docs/DASHBOARD.md) | Health meanings, freshness, cross-cluster tail, card controls |
-| [Saved selections](docs/SAVED_SELECTIONS.md) | Saved context groups, scopes and workload focus |
-| [WSL](docs/WSL.md) | Running on Windows through WSL2 with Docker Desktop Kubernetes |
-| [k9s compatibility](docs/K9S_COMPATIBILITY.md) | Commands, keys and differences |
-| [Operations](docs/OPERATIONS.md) | Configuration, install, update, rollback, recovery |
-| [YAML editing](docs/YAML_EDITING.md) · [v1 operations](docs/MAC_V1_OPERATIONS.md) | Reviewed edits, node maintenance |
-| [Helm lifecycle](docs/HELM_LIFECYCLE.md) | Supported chart workflows |
-| [Copilot](docs/COPILOT_INTEGRATION.md) | Account setup, enterprise deployments, containment |
-| [Roadmap](docs/ROADMAP.md) | Planned performance, security, feature, UI and UX work with measurable targets |
+| [Release notes](docs/RELEASE_NOTES.md) | What is new |
+| [k9s compatibility](docs/K9S_COMPATIBILITY.md) | Commands, keys, views, hotkeys, plugins and differences |
+| [Themes and ui.yaml](docs/themes.md) | Themes, layout, per-cluster settings |
+| [Dashboard](docs/DASHBOARD.md) · [Saved selections](docs/SAVED_SELECTIONS.md) | Health meanings, cross-cluster tail, saved groups |
+| [Operations](docs/OPERATIONS.md) | Install, update, team configuration, audit sink, recovery |
+| [YAML editing](docs/YAML_EDITING.md) · [Helm](docs/HELM_LIFECYCLE.md) | Reviewed edits and chart workflows |
+| [Copilot](docs/COPILOT_INTEGRATION.md) | Setup, enterprise hosts, what is sent, containment |
+| [Performance](docs/PERFORMANCE_COMPARISON.md) | Measurements against k9s and k10s |
 | [CLI help](docs/CLI_HELP.txt) · [CLI output](docs/CLI_OUTPUT.md) | Scripting with `--json` |
-| [Hardening acceptance](docs/MAC_V1_HARDENING_ACCEPTANCE.md) | Soak, terminal and security evidence |
-| [Performance comparison](docs/PERFORMANCE_COMPARISON.md) | Memory, CPU and API traffic vs k9s and k10s |
-| [Remaining work](docs/REMAINING_WORK.md) | What's done, partial and planned |
-
-**0.5.0-rc.5** in testing (Homebrew and signed release assets): see the [release notes](docs/RELEASE_NOTES.md) for per-context settings, an audit sink for SIEMs, Copilot follow-ups, apply, node shell, debug containers, file and directory copy, bulk actions, image scanning, `:lint`, live charts, masked Secret YAML and full keymap and UI customization. CI builds and tests Linux, macOS and Windows (x86_64 and ARM). Packages up to 0.5.0-rc.3 are unsigned; 0.5.0-rc.4 is the first signed, attested release. An organizational pilot is the open release gate.
+| [Windows through WSL](docs/WSL.md) · [Docker Desktop metrics](docs/DESKTOP_METRICS.md) | Platform notes |
+| [Roadmap](docs/ROADMAP.md) · [Feature status](docs/REMAINING_WORK.md) | What is planned and what is not done yet |
 
 ## Credits
 
-Navigation follows [k9s](https://github.com/derailed/k9s); the dashboard is inspired by [k10s](https://github.com/mpiorowski/k10s); palettes draw on [Omarchy](https://omarchy.org/themes/) and the upstream theme authors in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+Navigation follows [k9s](https://github.com/derailed/k9s); the dashboard is inspired by [k10s](https://github.com/mpiorowski/k10s); palettes draw on [Omarchy](https://omarchy.org/themes/) and the theme authors listed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 Licensed under [Apache 2.0](LICENSE).
