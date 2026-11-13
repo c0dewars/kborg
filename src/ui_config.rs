@@ -126,9 +126,31 @@ pub enum Timestamps {
     Local,
 }
 
+/// How the resource table's header is laid out.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum HeaderStyle {
+    /// k9s-style block: one item per line, recent namespaces and key hints
+    /// in columns. Needs a 100x24 terminal; smaller ones get `Bar`.
+    #[default]
+    Block,
+    /// Three single rows: title bar, CTX / NS / API line and summary, with
+    /// the key hints on the bottom row.
+    Bar,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct Header {
+    /// `block` (k9s-style, default) or `bar` (three compact rows).
+    pub style: HeaderStyle,
+    /// Block style: Kubernetes version and cluster CPU/MEM % of allocatable.
+    /// Reads Nodes and node metrics every 15 seconds.
+    pub usage: bool,
+    /// Block style: recent namespaces with their number keys.
+    pub namespaces: bool,
+    /// Block style: the KBORG logo at the right edge of wide terminals.
+    pub logo: bool,
     /// The top bar with the KBORG badge and view title.
     pub show: bool,
     /// Context / namespace / API server line. When false it is folded into the
@@ -143,6 +165,10 @@ pub struct Header {
 impl Default for Header {
     fn default() -> Self {
         Self {
+            style: HeaderStyle::Block,
+            usage: true,
+            namespaces: true,
+            logo: true,
             show: true,
             identity: true,
             summary: true,
@@ -332,6 +358,8 @@ impl Default for UiConfig {
 /// Rows the resource table view gives to chrome, derived from `header`/`hints`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Chrome {
+    /// First of the five info rows of the k9s-style block, when it is shown.
+    pub block: Option<u16>,
     pub header: Option<u16>,
     /// `None` when the identity line is folded into the header bar.
     pub identity: Option<u16>,
@@ -357,12 +385,44 @@ impl UiConfig {
         let identity = take(separate_identity);
         let summary = take(header.summary);
         Chrome {
+            block: None,
             header: header_row,
             identity,
             summary,
             top: next,
             bottom: 1 + u16::from(!header.compact) + u16::from(self.hints.show),
         }
+    }
+    /// Smallest terminal the k9s-style block is drawn in.
+    pub const BLOCK_MIN: (u16, u16) = (100, 24);
+    /// Info rows in the block.
+    pub const BLOCK_ROWS: u16 = 5;
+    /// The k9s-style block for a `width` x `height` terminal, or `None` when
+    /// ui.yaml asks for the bar (`style: bar`, `compact`, a hidden title bar
+    /// or identity line) or the terminal is too small. Rows: title bar, blank,
+    /// five info rows, blank, summary. Below the table only the status line
+    /// remains; `prompt` keeps two more rows for the command or filter prompt.
+    pub fn block_chrome(&self, width: u16, height: u16, prompt: bool) -> Option<Chrome> {
+        let header = &self.header;
+        if header.style != HeaderStyle::Block
+            || !header.show
+            || !header.identity
+            || header.compact
+            || width < Self::BLOCK_MIN.0
+            || height < Self::BLOCK_MIN.1
+        {
+            return None;
+        }
+        let block = 2;
+        let after = block + Self::BLOCK_ROWS + 1;
+        Some(Chrome {
+            block: Some(block),
+            header: Some(0),
+            identity: None,
+            summary: header.summary.then_some(after),
+            top: after + u16::from(header.summary),
+            bottom: if prompt { 3 } else { 1 },
+        })
     }
     /// A panel's top-border title.
     pub fn panel_title(&self, title: &str, focused: bool) -> String {
@@ -623,6 +683,10 @@ borders: auto
 panel_title: marker
 
 header:
+  style: block      # block (k9s-style: one item per line, keys in columns) | bar (three compact rows)
+  usage: true       # block: Kubernetes version and cluster CPU/MEM %; reads Nodes and node metrics every 15 s
+  namespaces: true  # block: recent namespaces with their number keys
+  logo: true        # block: KBORG logo at the right edge of wide terminals
   show: true        # top bar with the KBORG badge and view title
   identity: true    # CTX / NS / API line; false folds it into the top bar
   summary: true     # freshness, counts, health and sort bar
@@ -685,6 +749,7 @@ mod tests {
         assert_eq!(
             chrome,
             Chrome {
+                block: None,
                 header: Some(0),
                 identity: Some(1),
                 summary: Some(2),
@@ -731,6 +796,7 @@ mod tests {
         assert_eq!(
             config.chrome(),
             Chrome {
+                block: None,
                 header: Some(0),
                 identity: None,
                 summary: None,

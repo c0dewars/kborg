@@ -205,7 +205,7 @@ def lifecycle_session(binary, args, captures):
                     "print('\\nKBORG_PTY_RESULT '+json.dumps({'status':status,'cpu':usage.ru_utime+usage.ru_stime,'rss':usage.ru_maxrss}),flush=True); "
                     "sys.stdin.readline(); sys.exit(status)")
         # Exercise denial and typed-review paths explicitly; operator defaults enable these capabilities.
-        policy = Path(temporary) / "operator.json"
+        policy = Path(temporary).resolve() / "operator.json"
         policy.write_text(json.dumps({"schema_version": 1, "strict_confirmations": True, "allow_helm_hooks": False, "allow_helm_crds": False}))
         process = subprocess.Popen([sys.executable, "-c", launcher, str(binary), "--config", str(policy), "--demo", "--theme", "catppuccin-mocha", "--write", "--allow-helm", "--allow-helm-write", "--helm-tool", "/demo/helm", "--allow-logs", "--no-splash", "--no-mouse", "--color=always"], stdin=slave, stdout=slave, stderr=slave, env=environment, preexec_fn=child_setup)
         screen = Screen(120, 32)
@@ -227,7 +227,7 @@ def lifecycle_session(binary, args, captures):
                     screen.feed(data)
         def keys(value, expected=None):
             idle_deadline=time.monotonic()+6
-            while ("LOADING" in screen.text().splitlines()[2] or "Request in progress" in screen.text().splitlines()[-1]) and time.monotonic()<idle_deadline:
+            while (any("LOADING" in line for line in screen.text().splitlines()[:9]) or "Request in progress" in screen.text().splitlines()[-1]) and time.monotonic()<idle_deadline:
                 drain(.1)
             os.write(master, value)
             deadline = time.monotonic()+6
@@ -354,7 +354,7 @@ def extension_form_session(binary, args, captures):
         def setup():
             os.setsid()
             fcntl.ioctl(0,termios.TIOCSCTTY,0)
-        policy = Path(temporary) / "operator.json"
+        policy = Path(temporary).resolve() / "operator.json"
         policy.write_text(json.dumps({"schema_version": 1, "strict_confirmations": True}))
         process=subprocess.Popen([str(binary),"--config",str(policy),"--demo","--theme","catppuccin-mocha","--write","--allow-helm","--allow-helm-write","--allow-helm-hooks","--allow-helm-crds","--helm-tool","/demo/helm","--no-splash","--no-mouse","--color=always"],stdin=slave,stdout=slave,stderr=slave,env=environment,preexec_fn=setup)
         screen=Screen(120,32)
@@ -545,7 +545,7 @@ def main():
 
         def keys(value, wait=.5):
             deadline=time.monotonic()+6
-            while ("LOADING" in screen.text().splitlines()[2] or "Request in progress" in screen.text().splitlines()[-1]) and time.monotonic()<deadline:
+            while (any("LOADING" in line for line in screen.text().splitlines()[:9]) or "Request in progress" in screen.text().splitlines()[-1]) and time.monotonic()<deadline:
                 drain(.1)
             os.write(master, value)
             drain(wait)

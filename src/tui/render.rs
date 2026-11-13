@@ -206,20 +206,17 @@ pub(super) fn table_hints(app: &App) -> Vec<(String, &'static str)> {
     push(&mut hints, "yaml", "yaml");
     push(&mut hints, "filter", "filter");
     push(&mut hints, "command", "command");
+    // Shown once Copilot is connected, so the header stays quiet otherwise.
+    if app.options.copilot_policy.is_some()
+        && app.options.allow_copilot_screen
+        && crate::copilot_setup::supported()
+    {
+        push(&mut hints, "ask", "ask Copilot");
+    }
     if write && connection.allow_yaml_edit {
         push(&mut hints, "edit", "edit");
     }
-    let deletable = matches!(
-        kind.as_str(),
-        "pods"
-            | "deployments.apps"
-            | "statefulsets.apps"
-            | "daemonsets.apps"
-            | "services"
-            | "jobs.batch"
-            | "cronjobs.batch"
-    );
-    if write && deletable {
+    if write && keyhelp::deletable(&kind) {
         push(
             &mut hints,
             "delete",
@@ -766,6 +763,15 @@ fn render_frame(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
     };
     let bg = color("background");
     let fg = color("text");
+    let themed = app.options.color && !t.terminal;
+    // Error and pending colors also show in the host-palette theme, which
+    // otherwise leaves every color to the terminal: plain ANSI red and yellow.
+    let signal = |role: &str| match role {
+        _ if themed => t.get(role).color(),
+        "danger" if app.options.color => Color::AnsiValue(1),
+        "warning" if app.options.color => Color::AnsiValue(3),
+        _ => Color::Reset,
+    };
     queue!(out, cursor::Hide).map_err(|_| "draw failed")?;
     // Surfaces are derived from the selected palette, so every theme keeps its
     // identity and existing terminal-depth/NO_COLOR handling remains central.
@@ -808,14 +814,9 @@ fn render_frame(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
     } else {
         Color::Reset
     };
-    // The dashboard keeps its own fixed layout; ui.yaml chrome rows apply to
-    // the resource table view.
-    let dashboard = matches!(app.modal, Modal::LiveOverview(..));
-    let chrome = if dashboard {
-        crate::ui_config::UiConfig::default().chrome()
-    } else {
-        app.ui.chrome()
-    };
+    // The dashboard keeps its own fixed layout; the k9s-style block and the
+    // ui.yaml chrome rows apply to the resource table view.
+    let chrome = app.chrome(w, h);
     let mode_color = if app.options.connection.writable && !app.options.connection.demo {
         color("warning")
     } else {
@@ -909,7 +910,7 @@ fn render_frame(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
     };
     match (chrome.header, chrome.identity) {
         // Folded identity: context, namespace and mode share the header bar.
-        (Some(y), None) => {
+        (Some(y), None) if chrome.block.is_none() => {
             let mode_x = w.saturating_sub(mode_width + help_width);
             let identity_x = 10 + badge_width;
             spans(
@@ -922,7 +923,7 @@ fn render_frame(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
             .map_err(|_| "draw failed")?;
             mode_chip(out, mode_x, y, surface).map_err(|_| "draw failed")?;
         }
-        (Some(y), Some(_)) if w >= 64 => {
+        (Some(y), _) if w >= 64 => {
             cell(
                 out,
                 9 + badge_width,
@@ -945,6 +946,14 @@ fn render_frame(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
     }
     if let Modal::LiveOverview(dashboard) = &app.modal {
         return dashboard_ui::render(app, dashboard, w, h, out);
+    }
+    if let (Some(y), Some(block)) = (chrome.header, chrome.block) {
+        // The block has no identity row: the mode chip sits on the title bar.
+        mode_chip(out, w - mode_width - help_width, y, surface).map_err(|_| "draw failed")?;
+        for y in [block - 1, block + crate::ui_config::UiConfig::BLOCK_ROWS] {
+            row(out, y, w, "", fg, bg).map_err(|_| "draw failed")?;
+        }
+        header_block::render(app, out, w, block, &color).map_err(|_| "draw failed")?;
     }
     if let Some(y) = chrome.identity {
         row(out, y, w, "", fg, bg).map_err(|_| "draw failed")?;
@@ -1005,14 +1014,7 @@ fn render_frame(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
         "CACHED"
     };
     let visible = app.visible();
-    let healthy = visible
-        .iter()
-        .filter(|object| health(object) == Health::Healthy)
-        .count();
-    let attention = visible
-        .iter()
-        .filter(|object| health(object) == Health::Attention)
-        .count();
+    let (healthy, attention) = app.health_counts();
     let resource = app
         .kinds
         .get(app.kind_index)
@@ -1104,6 +1106,14 @@ fn render_frame(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
             "accent",
         ));
     }
+    let measured_kind = matches!(app.kind().as_str(), "pods" | "nodes");
+    if chrome.block.is_some() && measured_kind {
+        // The block centers the table title, so the metrics note sits here.
+        bands.push((
+            format!("   {}", app.table_metrics.label(Instant::now())),
+            "muted",
+        ));
+    }
     if let Some(y) = chrome.summary {
         row(out, y, w, "", fg, bg).map_err(|_| "draw failed")?;
         let items = bands
@@ -1116,13 +1126,16 @@ fn render_frame(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
         spans(out, 1, y, w, &items).map_err(|_| "draw failed")?;
     }
     let style = &app.ui.table;
-    let layout = Layout::for_ui(w, h, &app.ui);
+    let layout = Layout::for_chrome(w, h, &chrome, &app.ui);
     let height = layout.table_rows();
     {
         let rect = layout.table;
-        let title = format!(
-            "{} [{}/{}]{}",
-            app.kind(),
+        let namespaced = app
+            .kinds
+            .get(app.kind_index)
+            .is_some_and(|kind| kind.namespaced);
+        let position = format!(
+            "[{}/{}]{}",
             if visible.is_empty() {
                 0
             } else {
@@ -1131,37 +1144,66 @@ fn render_frame(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
             visible.len(),
             if !filtered { "" } else { " FILTERED" }
         );
-        // The kind and position lead in the accent color; the metrics note
-        // after them is secondary and stays muted.
-        let main = title;
-        let title = if w >= 90 && matches!(app.kind().as_str(), "pods" | "nodes") {
-            format!("{main} | {}", app.table_metrics.label(Instant::now()))
-        } else {
-            main.clone()
-        };
         panel(out, rect, "", false, border, bg, &app.ui).map_err(|_| "draw failed")?;
-        let title = app.ui.inline_title(&title);
-        let marker = app.ui.inline_title("X");
-        let lead = format!("{}{main}", &marker[..marker.find('X').unwrap_or(0)]);
-        let width = text_cells(&title).min(rect.width - 2);
-        cell(out, rect.x + 1, rect.y, width, &title, color("muted"), bg)
+        if chrome.block.is_some() {
+            // Like k9s: kind(namespace)[position], centered in the border.
+            let scope = if namespaced {
+                format!("({})", header_block::namespace_label(&app.namespace))
+            } else {
+                String::new()
+            };
+            let title = app
+                .ui
+                .inline_title(&format!("{}{scope}{position}", app.kind()));
+            let width = text_cells(&title).min(rect.width - 2);
+            // A plain top edge first: `panel` leaves room for a left title.
+            let horizontal = app.ui.borders.glyphs()[4];
+            queue!(
+                out,
+                cursor::MoveTo(rect.x + 1, rect.y),
+                themes::ForegroundColor(border),
+                themes::BackgroundColor(bg),
+                style::Print(horizontal.repeat(usize::from(rect.width - 2)))
+            )
             .map_err(|_| "draw failed")?;
-        if text_cells(&lead) <= width {
             cell(
                 out,
-                rect.x + 1,
+                rect.x + 1 + (rect.width - 2 - width) / 2,
                 rect.y,
-                text_cells(&lead),
-                &lead,
+                width,
+                &title,
                 color("accent"),
                 bg,
             )
             .map_err(|_| "draw failed")?;
+        } else {
+            // The kind and position lead in the accent color; the metrics note
+            // after them is secondary and stays muted.
+            let main = format!("{} {position}", app.kind());
+            let title = if w >= 90 && measured_kind {
+                format!("{main} | {}", app.table_metrics.label(Instant::now()))
+            } else {
+                main.clone()
+            };
+            let title = app.ui.inline_title(&title);
+            let marker = app.ui.inline_title("X");
+            let lead = format!("{}{main}", &marker[..marker.find('X').unwrap_or(0)]);
+            let width = text_cells(&title).min(rect.width - 2);
+            cell(out, rect.x + 1, rect.y, width, &title, color("muted"), bg)
+                .map_err(|_| "draw failed")?;
+            if text_cells(&lead) <= width {
+                cell(
+                    out,
+                    rect.x + 1,
+                    rect.y,
+                    text_cells(&lead),
+                    &lead,
+                    color("accent"),
+                    bg,
+                )
+                .map_err(|_| "draw failed")?;
+            }
         }
-        let namespaced = app
-            .kinds
-            .get(app.kind_index)
-            .is_some_and(|kind| kind.namespaced);
         let column_width = usize::from(rect.width - 5);
         let view = app.current_view();
         let custom: &[crate::views::ColumnSpec] = view.map_or(&[], |view| view.columns.as_slice());
@@ -1239,17 +1281,22 @@ fn render_frame(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
                 bg
             };
             let status = summary(object);
-            let unhealthy = [
-                "Failed",
-                "Error",
-                "Crash",
-                "BackOff",
-                "NotReady",
-                "Terminating",
-                "Pending",
-            ]
-            .iter()
-            .any(|needle| status.contains(needle));
+            // Errors paint the whole row red and pending rows yellow, in
+            // every theme; on the cursor row the color becomes the background.
+            let severity = severity(object);
+            let (row_fg, row_bg) = match (selected, severity) {
+                (true, Some(severity)) if themed => {
+                    let background = t.get(severity.role());
+                    (
+                        crate::context_config::Badge::foreground(background).color(),
+                        background.color(),
+                    )
+                }
+                (true, Some(severity)) => (signal(severity.role()), row_bg),
+                (true, None) => (color("selection_text"), color("selection_background")),
+                (false, Some(severity)) => (signal(severity.role()), row_bg),
+                (false, None) => (fg, row_bg),
+            };
             cell(
                 out,
                 rect.x + 1,
@@ -1268,40 +1315,24 @@ fn render_frame(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
                         style
                     )
                 ),
-                if selected {
-                    color("selection_text")
-                } else {
-                    fg
-                },
-                if selected {
-                    color("selection_background")
-                } else {
-                    row_bg
-                },
+                row_fg,
+                row_bg,
             )
             .map_err(|_| "draw failed")?;
-            if marked {
-                // The mark glyph in the mark color, also on the cursor row.
+            if marked && !selected && severity.is_none() {
+                // The mark glyph in the mark color.
                 cell(
                     out,
                     rect.x + 2,
                     y,
                     1,
                     &style.mark().to_string(),
-                    if selected {
-                        color("selection_text")
-                    } else {
-                        color("warning")
-                    },
-                    if selected {
-                        color("selection_background")
-                    } else {
-                        row_bg
-                    },
+                    color("warning"),
+                    row_bg,
                 )
                 .map_err(|_| "draw failed")?;
             }
-            if !selected {
+            if !selected && severity.is_none() {
                 let mut x = rect.x + 4;
                 for (column, width) in &cols {
                     if matches!(column, Column::Status) {
@@ -1311,9 +1342,7 @@ fn render_frame(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
                             y,
                             *width as u16,
                             &status,
-                            if unhealthy {
-                                color("warning")
-                            } else if health(object) == Health::Healthy {
+                            if health(object) == Health::Healthy {
                                 color("success")
                             } else {
                                 color("muted")
@@ -1390,7 +1419,8 @@ fn render_frame(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
         row(out, y, w, "", color("muted"), bg).map_err(|_| "draw failed")?;
     }
     match &app.modal {
-        Modal::None if app.ui.hints.show => {
+        // The block lists the keys itself; the bar keeps them on the last row.
+        Modal::None if app.ui.hints.show && chrome.block.is_none() => {
             key_hints(
                 out,
                 h - 1,
@@ -1631,7 +1661,7 @@ fn render_frame(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
                 Modal::Follow(view)=>view.render_with(usize::from(rect.width.saturating_sub(2)),height,app.ui.local_time()),
                 Modal::Overview(object, offset) => {
                     let wrapped = wrap_text(
-                        &format!("{}{}",overview_text(object, &app.context),app.table_metrics.usage(object,Instant::now()).map(|usage|format!("\n\nMEASURED USAGE\nCPU {}m | Memory {}B ({})\nTimestamp {} | Window {}\nBound UID {} | {}",crate::metrics::format_millicores(usage.cpu_nanocores),usage.memory_bytes,crate::metrics::format_memory(usage.memory_bytes),usage.timestamp,usage.window,usage.identity_uid,if usage.identity_verified{"Metrics API UID verified"}else{"Metrics API UID absent; entire sample window checked against current object creation"})).unwrap_or_default()),
+                        &doc_search::overview_document(app, object),
                         usize::from(rect.width.saturating_sub(2)),
                     );
                     wrapped
@@ -1755,6 +1785,8 @@ fn render_frame(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
                 Modal::None => vec![],
                 Modal::Filter(..) => vec![],
             };
+            let document = doc_search::document_text(app, modal);
+            let searchable = document.is_some();
             for (index, line) in lines.iter().take(height).enumerate() {
                 let selected = line.starts_with(" > ");
                 let heading = helm_heading(line);
@@ -1804,6 +1836,32 @@ fn render_frame(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
                     line_bg,
                 )
                 .map_err(|_| "draw failed")?;
+                // Search matches: the top line is the current one.
+                if searchable {
+                    for (start, end) in doc_search::matches(line, app.doc_search.query()) {
+                        let x = rect.x + 1 + text_cells(&line[..start]);
+                        let found = &line[start..end];
+                        let width =
+                            text_cells(found).min((rect.x + rect.width - 1).saturating_sub(x));
+                        let (match_fg, match_bg) = match (themed, index == 0) {
+                            (true, true) => {
+                                (color("selection_text"), color("selection_background"))
+                            }
+                            (true, false) => (color("background"), color("warning")),
+                            (false, _) => (Color::AnsiValue(0), signal("warning")),
+                        };
+                        cell(
+                            out,
+                            x,
+                            rect.y + 1 + index as u16,
+                            width,
+                            found,
+                            match_fg,
+                            match_bg,
+                        )
+                        .map_err(|_| "draw failed")?;
+                    }
+                }
             }
             if matches!(modal, Modal::Metrics(..)) && app.metrics_chart {
                 let inner = Rect {
@@ -1889,6 +1947,16 @@ fn render_frame(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
             } else {
                 "Esc close | Enter select | arrows / j k | PgUp PgDown scroll"
             };
+            // Document views search with `/`; an open search owns the row.
+            let search_hint = document.map(|text| {
+                let wrapped = wrap_text(&text, usize::from(rect.width.saturating_sub(2)));
+                let all: Vec<&str> = wrapped.lines().collect();
+                let top = all.len().saturating_sub(lines.len());
+                app.doc_search
+                    .hint(&all, top)
+                    .unwrap_or_else(|| format!("/ search | {hints}"))
+            });
+            let hints = search_hint.as_deref().unwrap_or(hints);
             if matches!(modal, Modal::HelmForm(..)) {
                 let hints = keyhelp::helm_form_hints(app, w);
                 key_hints(

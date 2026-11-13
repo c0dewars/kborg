@@ -31,7 +31,7 @@ pub fn status_text(explicit: Option<&Path>) -> String {
             Ok(options) => format!("Copilot connection saved\n\nHost: {}\nAccount: {}\nModel: {}\n\nUse :ask QUESTION from the screen you want help with, or :copilot for minimized selected-resource diagnostics. Every transfer is reviewed first; answers never execute commands. Credentials and containment are rechecked for each request. A saved policy does not prove an active subscription or enterprise entitlement.\n\nS runs setup / verifies the saved connection. Esc returns.", options.host, options.gh_cli.as_ref().map(|gh|gh.account.as_str()).unwrap_or("dedicated credential"), options.model),
             Err(error) => format!("Copilot connection needs attention\n\n{}\n\nS opens setup. Setup can repair or change the connection after review, retaining a private backup. Esc returns.", safety::safe_text(&error, 4096)),
         },
-        None => "Connect GitHub Copilot\n\nPress S to start guided setup, or run `kborg copilot setup` in a terminal.\n\nKBorg finds your installed Copilot and GitHub CLIs, lets you choose github.com or TENANT.ghe.com, and reuses a stored GitHub account. If you are not signed in, it offers GitHub's browser login. No token copying or JSON editing is required.\n\nThe currently validated contained runtime is native Copilot 1.0.91 on Apple Silicon. A compatible official installation and a Copilot entitlement are required. You approve the exact installed executables before they run; KBorg pins them and writes the connection locally. No cluster data is sent during setup.\n\nS: start setup | Esc: return".into(),
+        None => "Connect GitHub Copilot\n\nPress S to start guided setup, or run `kborg copilot setup` in a terminal.\n\nAlready use the Copilot CLI? Setup takes about a minute: KBorg finds your installed Copilot (an npm install works; it uses the native binary inside it) and GitHub CLIs, lets you choose github.com or TENANT.ghe.com, and reuses the account `gh` is signed in with. If you are not signed in, it offers GitHub's browser login. No token copying or JSON editing is required.\n\nThe currently validated contained runtime is native Copilot 1.0.91 on Apple Silicon. A compatible official installation and a Copilot entitlement are required. You approve the exact installed executables before they run; KBorg pins them and writes the connection locally. No cluster data is sent during setup.\n\nS: start setup | Esc: return".into(),
     }
 }
 fn input(label: &str, default: &str) -> Result<String> {
@@ -78,6 +78,21 @@ fn executable(name: &str) -> Result<PathBuf> {
             None
         }
     });
+    // `npm install -g @github/copilot` puts a Node loader on PATH; the native
+    // binary it starts is inside the same installation.
+    let found = match found {
+        Some(loader) if name == "copilot" => match npm_native(&loader) {
+            Some(native) => {
+                println!(
+                    "Found the native Copilot binary inside the npm installation:\n  {}",
+                    safety::safe_text(&native.display().to_string(), 512)
+                );
+                Some(native)
+            }
+            None => Some(loader),
+        },
+        found => found,
+    };
     let default = found
         .as_ref()
         .map(|path| path.to_string_lossy().into_owned())
@@ -93,6 +108,40 @@ fn executable(name: &str) -> Result<PathBuf> {
         .map_err(|_| format!("Cannot find {name}; install it and run setup again"))?;
     safety::checked_path(&path)?;
     Ok(path)
+}
+/// The native binary of an npm-installed Copilot CLI, given the `copilot`
+/// found on PATH (the package's `npm-loader.js`, often through a symlink).
+/// npm keeps it in the platform package `@github/copilot-<os>-<arch>`, nested
+/// under the main package or hoisted next to it.
+fn npm_native(found: &Path) -> Option<PathBuf> {
+    let loader = found.canonicalize().ok()?;
+    if loader.file_name()? != "npm-loader.js" {
+        return None;
+    }
+    let package = loader.parent()?;
+    let os = match std::env::consts::OS {
+        "macos" => "darwin",
+        "windows" => "win32",
+        other => other,
+    };
+    let arch = match std::env::consts::ARCH {
+        "aarch64" => "arm64",
+        "x86_64" => "x64",
+        other => other,
+    };
+    let platform = format!("copilot-{os}-{arch}");
+    let binary = if cfg!(windows) {
+        "copilot.exe"
+    } else {
+        "copilot"
+    };
+    [
+        package.join("node_modules/@github").join(&platform),
+        package.parent()?.join(&platform),
+    ]
+    .into_iter()
+    .map(|directory| directory.join(binary))
+    .find(|candidate| candidate.is_file())
 }
 fn gh_config() -> Result<PathBuf> {
     let path = if let Some(path) = std::env::var_os("GH_CONFIG_DIR") {
@@ -479,6 +528,42 @@ pub fn interactive() -> Result<Outcome> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
+    #[test]
+    fn npm_installs_resolve_to_the_native_binary_they_start() -> Result<()> {
+        let root = std::env::temp_dir()
+            .canonicalize()
+            .map_err(|_| "temp dir")?
+            .join(format!("kborg-npm-native-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let package = root.join("lib/node_modules/@github/copilot");
+        let os = if cfg!(target_os = "macos") {
+            "darwin"
+        } else {
+            std::env::consts::OS
+        };
+        let arch = match std::env::consts::ARCH {
+            "aarch64" => "arm64",
+            "x86_64" => "x64",
+            other => other,
+        };
+        let nested = package.join(format!("node_modules/@github/copilot-{os}-{arch}"));
+        std::fs::create_dir_all(&nested).map_err(|_| "mkdir")?;
+        std::fs::create_dir_all(root.join("bin")).map_err(|_| "mkdir")?;
+        std::fs::write(package.join("npm-loader.js"), "#!/usr/bin/env node\n")
+            .map_err(|_| "write")?;
+        std::fs::write(nested.join("copilot"), b"native").map_err(|_| "write")?;
+        // PATH holds a symlink to the loader, as npm creates it.
+        let link = root.join("bin/copilot");
+        std::os::unix::fs::symlink(package.join("npm-loader.js"), &link).map_err(|_| "symlink")?;
+        assert_eq!(npm_native(&link), Some(nested.join("copilot")));
+        // A native install, or a loader without its platform package, is left alone.
+        assert_eq!(npm_native(&nested.join("copilot")), None);
+        std::fs::remove_file(nested.join("copilot")).map_err(|_| "remove")?;
+        assert_eq!(npm_native(&link), None);
+        let _ = std::fs::remove_dir_all(&root);
+        Ok(())
+    }
     #[test]
     fn account_discovery_never_returns_tokens_and_stays_host_bound() {
         let data = serde_json::json!({"github.com":{"user":"owner","oauth_token":"SECRET","users":{"owner":{"oauth_token":"SECRET"},"second":{},"bad name":{}}},"other.ghe.com":{"user":"other"}});

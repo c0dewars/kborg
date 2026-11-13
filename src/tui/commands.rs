@@ -90,6 +90,7 @@ impl App {
                 if let Some(sort) = sort { self.set_sort(sort); } else { self.status = "Sort: name | namespace | status | restarts | age | ready | cpu | memory".into(); }
             }
             ("themes", []) => self.theme_picker()?,
+            ("columns" | "cols", []) => self.show_columns(),
             ("ctx-config", []) => self.edit_context_settings(),
             ("ui", [action]) if action == "reload" => self.reload_ui()?,
             ("overview", []) => self.modal = Modal::Input(OVERVIEW_CONTEXTS_LABEL, self.context.clone()),
@@ -816,6 +817,55 @@ impl App {
         self.ask_status = (self.sticky_status || self.status.contains(crate::errors::NEXT))
             .then(|| self.status.clone());
     }
+    /// `:columns`: the columns of this table, every predefined column and
+    /// how to change them.
+    fn show_columns(&mut self) {
+        let kind = self.kind();
+        let (source, current) = match self.current_view() {
+            Some(view) => {
+                let own = self.kinds.get(self.kind_index).is_some_and(|kind| {
+                    crate::views::find(&self.views, &kind.group, &kind.version, &kind.plural)
+                        .is_some()
+                });
+                let titles: Vec<String> = view
+                    .columns
+                    .iter()
+                    .filter(|spec| !spec.hidden)
+                    .map(|spec| format!("{}{}", spec.title, if spec.wide { "|W" } else { "" }))
+                    .collect();
+                (
+                    if own { "your views.yaml" } else { "built-in" },
+                    titles.join(" "),
+                )
+            }
+            None => (
+                "built-in, fitted to the terminal width",
+                "NAMESPACE NAME READY STATUS RSTS AGE (Pods and Nodes: CPU MEM; Pods: NODE IP)"
+                    .to_owned(),
+            ),
+        };
+        let mut text = format!(
+            "COLUMNS OF {}\n  {current}\n  Source: {source}. |W columns show in wide mode ({}).\n\nPREDEFINED COLUMNS (use the name alone in views.yaml)\n  NAMESPACE NAME READY STATUS RSTS AGE NODE IP CPU MEM LABELS IMAGES\n",
+            kind.to_ascii_uppercase(),
+            self.keymap
+                .primary("toggle.wide")
+                .unwrap_or_else(|| "unbound".into()),
+        );
+        for (title, about) in crate::views::predefined() {
+            text.push_str(&format!("  {title:<14} {about}\n"));
+        }
+        let path = safety::config_dir()
+            .map(|dir| dir.join("views.yaml").display().to_string())
+            .unwrap_or_else(|_| "views.yaml in the KBorg config folder".into());
+        text.push_str(&format!(
+            "\nCHANGE THEM\n  1. Run `kborg views init` once: it writes the built-in columns to\n     {}\n  2. Edit the list for a resource, for example:\n       views:\n         v1/nodes:\n           columns: [NAME, STATUS, ROLE, VERSION, '%CPU', '%MEM', ZONE:.metadata.labels['topology.kubernetes.io/zone'], AGE]\n  3. Save. KBorg applies the file within a second; a mistake keeps the last good columns and names the line.\n\n  Any field works as TITLE:.json.path. Attributes after |: W wide only, H hidden, N numeric sort, T age of a timestamp.\n  :sort COLUMN sorts by any column shown.",
+            safety::safe_text(&path, 300)
+        ));
+        let previous = std::mem::replace(&mut self.modal, Modal::Detail(text, 0));
+        if !matches!(previous, Modal::None | Modal::Input(..)) {
+            self.push_subview(previous);
+        }
+    }
     fn copilot_notice(&mut self, title: &str, text: &str) {
         self.modal = Modal::AdviceDocument(title.into(), text.into(), 0);
         self.status = "Copilot: nothing sent. See the open dialog for the next step.".into();
@@ -831,7 +881,20 @@ impl App {
             self.copilot_notice("COPILOT DISABLED", "Screen questions are disabled by the operator configuration (allow_copilot_screen: false). Ask your administrator to enable them if permitted. Login cannot override this policy. Nothing was sent. Esc returns.");
             return;
         }
-        let text = crate::copilot_setup::status_text(self.options.copilot_policy.as_deref());
+        let mut text = crate::copilot_setup::status_text(self.options.copilot_policy.as_deref());
+        if crate::copilot_setup::supported() {
+            // The user's own keys, so the guidance matches a remapped keymap.
+            let key = |action: &str| {
+                self.keymap
+                    .primary(action)
+                    .unwrap_or_else(|| "(unbound)".into())
+            };
+            text.push_str(&format!(
+                "\n\nKEYS AND COMMANDS\n  {:<10} :ask QUESTION   Ask about the screen in front (tables, describe, YAML, logs, dashboard)\n  {:<10} :explain        Explain the error on the status line (bind a key: explain in keymap.yaml)\n  f          on an answer   Ask a follow-up about the same screen\n  :copilot                  Minimized diagnostics for the selected object\n  :copilot setup | status   Connect, change account or check the connection\nEvery request shows exactly what is sent and waits for your approval.",
+                key("ask"),
+                key("explain"),
+            ));
+        }
         self.copilot_notice(crate::copilot_setup::TITLE, &text);
     }
     pub(super) fn finish_copilot_setup(&mut self, result: Result<crate::copilot_setup::Outcome>) {
@@ -1202,7 +1265,10 @@ impl App {
         // Background refreshes (metrics) and the dashboard, which opens its
         // own connections, never hold the busy gate: user requests queue
         // behind them in the worker instead of being refused.
-        let background = matches!(&task, Task::Metrics(..) | Task::Overview(..));
+        let background = matches!(
+            &task,
+            Task::Metrics(..) | Task::HeaderInfo(..) | Task::Overview(..)
+        );
         if self.busy && !background && !matches!(&task, Task::Connect(_)) {
             self.status = "Busy; wait for the current request.".into();
             return;

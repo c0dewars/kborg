@@ -135,7 +135,6 @@ fn find_default_tools(opts: &mut Options) {
 /// Check everything KBorg needs, report each step with a next step, and only
 /// then try the cluster, so one failure never hides the rest.
 fn doctor(opts: &Options) -> Result<()> {
-    let ok = |found: bool| if found { "ok" } else { "missing" };
     outputln!("KBorg {}", env!("CARGO_PKG_VERSION"));
     outputln!(
         "mode: {}{}",
@@ -169,7 +168,7 @@ fn doctor(opts: &Options) -> Result<()> {
         }
     );
     outputln!(
-        "tools: helm {} | scanner {} | copilot policy {}",
+        "tools: helm {} | scanner {} | copilot {}",
         opts.helm_tool
             .as_ref()
             .map_or("not found (Helm installs need helm on PATH)".into(), |p| {
@@ -179,7 +178,13 @@ fn doctor(opts: &Options) -> Result<()> {
             "not found (:scan needs trivy or grype on PATH)".into(),
             |p| safety::safe_text(&p.to_string_lossy(), 200)
         ),
-        ok(opts.copilot_policy.is_some())
+        if opts.copilot_policy.is_some() {
+            "connected (:ask in KBorg)"
+        } else if crate::copilot_setup::supported() {
+            "not connected (run `kborg copilot setup`; it finds an installed Copilot CLI and your gh login)"
+        } else {
+            "answers in KBorg are not available on this platform yet"
+        }
     );
     if opts.connection.demo {
         outputln!("cluster: demo sample data");
@@ -845,6 +850,17 @@ pub fn run_args(args: Vec<String>) -> Result<()> {
                     outputln!("TRUNCATED directory listing; select a narrower path");
                 }
             }
+            return Ok(());
+        }
+        "views" => {
+            if opts.command.as_slice() != ["views", "init"] {
+                return Err("usage: views init".into());
+            }
+            let path = crate::views::init()?;
+            outputln!(
+                "Wrote {} with the built-in columns. Edit it; a running KBorg applies it within a second.",
+                safety::safe_text(&path.display().to_string(), 512)
+            );
             return Ok(());
         }
         "ui" if opts.command.len() > 1 => {

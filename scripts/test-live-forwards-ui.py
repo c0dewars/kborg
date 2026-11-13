@@ -142,7 +142,7 @@ def main():
                 while time.monotonic() < until:
                     drain()
                     text = screen.text()
-                    if "LOADING" not in text.splitlines()[2] and "Request in progress" not in text.splitlines()[-1]:
+                    if not any("LOADING" in line for line in text.splitlines()[:9]) and "Request in progress" not in text.splitlines()[-1]:
                         drain(.3)
                         return
                 raise RuntimeError("Forward UI did not become idle")

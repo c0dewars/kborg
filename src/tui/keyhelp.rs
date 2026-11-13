@@ -173,21 +173,214 @@ fn entry(action: &Action, keys: &[Key], custom: bool, with_kind: bool) -> String
     format!("  {:<16} {description}{marker}", keymap::label(keys))
 }
 
-fn section(app: &App, scope: Scope, class: Option<u8>, out: &mut Vec<String>) {
+fn section(app: &App, scope: Scope, out: &mut Vec<String>) {
     out.push(scope.title().to_owned());
-    let mut entries: Vec<_> = app
-        .keymap
-        .entries(scope)
-        .filter(|(action, _, _)| class.is_none_or(|class| action.kinds & class != 0))
-        .collect();
-    // For one resource kind, its kind-specific actions come first.
-    if class.is_some() {
-        entries.sort_by_key(|(action, _, _)| action.kinds == keymap::ANY);
-    }
-    for (action, keys, custom) in entries {
-        out.push(entry(action, keys, custom, class.is_none()));
+    for (action, keys, custom) in app.keymap.entries(scope) {
+        out.push(entry(action, keys, custom, true));
     }
     out.push(String::new());
+}
+
+/// The resource table's actions as context help groups them. Every table
+/// action is listed once; `table_help_groups_cover_every_table_action` checks it.
+pub(super) const TABLE_GROUPS: &[(&str, &[&str])] = &[
+    (
+        "ACTIONS ON THE SELECTED",
+        &[
+            "drilldown",
+            "logs",
+            "logs.previous",
+            "shell",
+            "exec",
+            "attach",
+            "forward",
+            "node.show",
+            "node.shell",
+            "cordon",
+            "uncordon",
+            "drain",
+            "scale",
+            "restart",
+            "trigger",
+            "suspend",
+            "edit",
+            "resources",
+            "delete",
+            "kill",
+            "scan",
+        ],
+    ),
+    (
+        "LOOK AT IT",
+        &[
+            "describe",
+            "yaml",
+            "json",
+            "metrics",
+            "copy.name",
+            "copy.namespace",
+        ],
+    ),
+    (
+        "FIND AND SORT",
+        &[
+            "filter",
+            "toggle.faults",
+            "sort.name",
+            "sort.age",
+            "sort.status",
+            "sort.ready",
+            "sort.cpu",
+            "sort.memory",
+            "toggle.wide",
+        ],
+    ),
+    (
+        "SEVERAL ROWS AT ONCE",
+        &["mark", "mark.range", "marks.clear"],
+    ),
+    (
+        "NAMESPACES AND OTHER VIEWS",
+        &[
+            "ns.all",
+            "ns.recent",
+            "warp",
+            "prompt",
+            "aliases",
+            "view.back",
+            "view.forward",
+            "view.last",
+            "dashboard",
+            "forwards",
+            "selection.save",
+            "selection.open",
+            "snapshot",
+        ],
+    ),
+    (
+        "MOVE AND REFRESH",
+        &[
+            "down",
+            "up",
+            "page.down",
+            "page.up",
+            "top",
+            "bottom",
+            "back",
+            "refresh",
+            "refresh.r",
+            "quit",
+        ],
+    ),
+];
+
+/// Kinds a reviewed deletion exists for.
+pub(super) fn deletable(kind: &str) -> bool {
+    matches!(
+        kind,
+        "pods"
+            | "deployments.apps"
+            | "statefulsets.apps"
+            | "daemonsets.apps"
+            | "services"
+            | "jobs.batch"
+            | "cronjobs.batch"
+    )
+}
+
+/// What Enter opens for a kind, or `None` when it opens nothing.
+fn drilldown_label(kind: &str) -> Option<&'static str> {
+    match kind {
+        "pods" => Some("Containers of the selected Pod"),
+        "nodes" => Some("Pods on the selected Node"),
+        "namespaces" => Some("Pods in the selected namespace"),
+        kind if supports_group_logs(kind) => Some("Pods of the selected object"),
+        _ => None,
+    }
+}
+
+/// Whether a table action does anything for the kind in front: context help
+/// lists only these. The key itself may still be bound (and say why not).
+fn applies(app: &App, action: &Action) -> bool {
+    let kind = app.kind();
+    let kind = kind.as_str();
+    if action.kinds & keymap::kind_class(kind) == 0 {
+        return false;
+    }
+    let namespaced = app
+        .kinds
+        .get(app.kind_index)
+        .is_none_or(|kind| kind.namespaced);
+    let logs = kind == "pods" || supports_group_logs(kind);
+    match action.name {
+        "drilldown" => drilldown_label(kind).is_some(),
+        "logs" | "logs.previous" => logs,
+        "exec" | "attach" | "forward" | "kill" => kind == "pods",
+        "scan" => logs,
+        "scale" => matches!(kind, "deployments.apps" | "statefulsets.apps"),
+        "resources" => crate::edit::supports_resource(kind),
+        "edit" => namespaced && kind != "secrets",
+        "delete" => deletable(kind),
+        "metrics" | "sort.cpu" | "sort.memory" => matches!(kind, "pods" | "nodes"),
+        "copy.namespace" | "warp" => namespaced,
+        "toggle.wide" => kind == "pods" || app.current_view().is_some(),
+        _ => true,
+    }
+}
+
+/// Context help for the resource table: the actions that apply to this kind,
+/// grouped by what they are for, with a note where this session cannot run one.
+fn table_sections(app: &App, out: &mut Vec<String>) {
+    let entries: Vec<_> = app.keymap.entries(Scope::Table).collect();
+    let kind = app.kind();
+    let one = app.kinds.get(app.kind_index).map_or_else(
+        || "OBJECT".to_owned(),
+        |kind| kind.kind.to_ascii_uppercase(),
+    );
+    let grouped = |name: &str| TABLE_GROUPS.iter().any(|(_, names)| names.contains(&name));
+    let line = |action: &Action, keys: &[Key], custom: bool, out: &mut Vec<String>| {
+        let mut text = entry(action, keys, custom, false);
+        if action.name == "drilldown"
+            && let Some(label) = drilldown_label(&kind)
+        {
+            text = format!("  {:<16} {label} (fixed)", keymap::label(keys));
+        }
+        if let Some(reason) = app.palette_off_reason(action) {
+            text.push_str(&format!("  [{reason}]"));
+        }
+        out.push(text);
+    };
+    for (index, (title, names)) in TABLE_GROUPS.iter().enumerate() {
+        let rows: Vec<_> = names
+            .iter()
+            .filter_map(|name| entries.iter().find(|(action, _, _)| action.name == *name))
+            .filter(|(action, _, _)| applies(app, action))
+            .collect();
+        if rows.is_empty() {
+            continue;
+        }
+        out.push(if index == 0 {
+            format!("{title} {one}")
+        } else {
+            (*title).to_owned()
+        });
+        for (action, keys, custom) in rows {
+            line(action, keys, *custom, out);
+        }
+        out.push(String::new());
+    }
+    // An action added to the registry without a group still shows.
+    let rest: Vec<_> = entries
+        .iter()
+        .filter(|(action, _, _)| !grouped(action.name) && applies(app, action))
+        .collect();
+    if !rest.is_empty() {
+        out.push("MORE".to_owned());
+        for (action, keys, custom) in rest {
+            line(action, keys, *custom, out);
+        }
+        out.push(String::new());
+    }
 }
 
 fn hotkeys(app: &App, out: &mut Vec<String>) {
@@ -245,13 +438,23 @@ fn help_lines(app: &App, view: &HelpView) -> Vec<String> {
                 out.push(format!("KEYS FOR {}", view.scope.title()));
             }
             out.push(String::new());
-            let class = crate::keymap::kind_class(&app.kind());
             for scope in view.scope.layers().iter().rev() {
-                section(
-                    app,
-                    *scope,
-                    (*scope == Scope::Table).then_some(class),
-                    &mut out,
+                if *scope == Scope::Table {
+                    table_sections(app, &mut out);
+                } else {
+                    section(app, *scope, &mut out);
+                }
+            }
+            if matches!(view.scope, Scope::Detail | Scope::Overview | Scope::Metrics) {
+                out.extend(
+                    [
+                        "SEARCH THE TEXT (fixed keys)",
+                        "  /                Search what is shown; ignores case",
+                        "  n / N            Next / previous match",
+                        "  Esc              Clear the search, then close the view",
+                        "",
+                    ]
+                    .map(str::to_owned),
                 );
             }
             if view.scope == Scope::Table {
@@ -265,7 +468,7 @@ fn help_lines(app: &App, view: &HelpView) -> Vec<String> {
             out.push("EVERY KEY (your current bindings)".into());
             out.push(String::new());
             for scope in Scope::ALL {
-                section(app, scope, None, &mut out);
+                section(app, scope, &mut out);
             }
             hotkeys(app, &mut out);
             out.extend(app.plugin_help(None));

@@ -158,10 +158,10 @@ def run(binary, helm, kubeconfig, context, namespace, test_chart, updated_crd_ch
             capture(f"live-ui-{action}-result",["HELM OPERATION SUCCEEDED"])
 
         try:
-            wait("CTX ", timeout=30)
+            wait("sort: ", timeout=30)
             wait("NAME", timeout=30)
             idle_deadline = time.monotonic()+30
-            while ("LOADING" in screen.text().splitlines()[2]
+            while (any("LOADING" in line for line in screen.text().splitlines()[:9])
                    or "Request in progress" in screen.text().splitlines()[-1]):
                 if time.monotonic() > idle_deadline:
                     raise RuntimeError("Completion UI startup did not become idle; diagnostics suppressed")

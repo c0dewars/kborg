@@ -70,6 +70,11 @@ impl App {
                 "Operation in progress; wait for the result before navigating or quitting.".into();
             return Ok(false);
         }
+        // Document views: `/` search, n/N between matches, Esc clears. While
+        // the search is typed, every key belongs to it, `:` and `?` included.
+        if self.document_search_key(code) {
+            return Ok(false);
+        }
         if code == KeyCode::Char(':')
             && !matches!(self.modal, Modal::None)
             && palette::command_prompt_allowed(&self.modal)
@@ -1668,6 +1673,22 @@ impl App {
         {
             self.open_palette();
             return Ok(false);
+        }
+        // Copilot keys work wherever the command prompt does: they capture
+        // the screen in front, exactly like `:ask` and `:explain`.
+        if palette::command_prompt_allowed(&self.modal)
+            && let Some(key) = crate::keymap::Key::from_event(code, modifiers)
+        {
+            for (action, command) in [("ask", "ask"), ("explain", "explain")] {
+                if self.keymap.matches(action, key) {
+                    self.capture_ask_screen();
+                    let modal = std::mem::replace(&mut self.modal, Modal::None);
+                    if !matches!(modal, Modal::None) {
+                        self.push_subview(modal);
+                    }
+                    return self.command(command);
+                }
+            }
         }
         // Plugin keys are bound only where no action's effective key, hotkey
         // or reserved key uses them, so they are checked before remapping

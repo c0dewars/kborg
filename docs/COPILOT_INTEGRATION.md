@@ -13,6 +13,20 @@ kborg copilot status
 kborg copilot setup
 ```
 
+**Already use the Copilot CLI?** Setup takes about a minute and asks for nothing you have to look up. It finds `copilot` and `gh` on your PATH and proposes them; with the standard npm install (`npm install -g @github/copilot`) it uses the native binary inside the package (`node_modules/@github/copilot-darwin-arm64/copilot`), because the `copilot` on PATH is a Node loader. It then lists the accounts `gh` is signed in with, checks the runtime and sandbox without making a model request, and saves the connection after you confirm. The connection pins the exact binaries, so after upgrading `copilot` or `gh` KBorg says the connection needs attention and **S** repairs it.
+
+Once connected:
+
+| Key or command | Does |
+|---|---|
+| Ctrl-G or `:ask QUESTION` | Asks about the screen in front: tables, describe, YAML, logs, the dashboard. The header shows `<Ctrl-G> ask Copilot`. |
+| `f` on an answer | Asks a follow-up about the same screen. |
+| `:explain` | Asks about the error on the status line. Unbound by default; bind `explain` in `keymap.yaml`. |
+| `:copilot` | Minimized diagnostics for the selected object. |
+| `:copilot status` | Shows the connection and these keys with your own bindings. |
+
+Every request shows exactly what is sent and waits for your approval. `kborg doctor` reports whether Copilot is connected.
+
 The wizard discovers `gh`, lets you select the GitHub host/account and offers browser login if needed. On supported macOS ARM64 it also discovers and validates the native Copilot runtime, then writes the pinned policy after review. On other platforms it completes account sign-in only and says that in-app inference remains unavailable. No token copying or manual JSON is required for that path. Setup makes no model request and sends no Kubernetes data. An entitled account, the supported runtime and working network are prerequisites.
 
 **Windows, Linux and Intel macOS:** the contained inference runtime is not implemented for these platforms. KBorg explains this before offering account-only login; a successful login alone does not enable containment. Browsing Kubernetes does not depend on Copilot. Do not bypass the policy or copy cluster credentials into another AI tool to work around this limit.
@@ -31,6 +45,7 @@ The JSON examples below are advanced/manual configuration for administrators, no
 - **Explain an error:** `:explain` asks Copilot about the error or warning that was on the status line when you pressed `:`. It sends a fixed question, the status message and the screen, through the same review. With no error on the status line it sends nothing.
 - **Prompt injection:** the fixed instruction tells the model to treat screen text and earlier answers as data. A hostile log line can still try to steer the answer, so answers are advice only and are never executed.
 - **Demo mode:** `kborg demo` screens are synthetic, so `:ask` can send them, which is a safe way to try the feature with your account.
+- **Live validation (2026-11-12):** on macOS ARM64 with an npm-installed Copilot CLI 1.0.91 and a `gh` account on GitHub.com, setup completed with the discovered binaries, a question about the synthetic demo Pods screen was answered in 19 s, and a follow-up carrying the first answer was reviewed and answered in 19 s. Enterprise tenants remain unvalidated.
 - **Historical validation:** the [2026-10-23 acceptance report](TRUST_MIGRATION_ACCEPTANCE.md) records a GitHub.com backend test with a selected stored `gh` account and a synthetic public bundle. Its source-specific evidence does not validate the new release/next device-login wizard: live OAuth/account acceptance and enterprise tenant acceptance remain open.
 
 The instruction and payload are written together to the CLI's stdin. They are not passed with `-p`, which would put the payload in the process argument list, and the pinned CLI ignores stdin when `-p` is present. The review's exact payload is that stdin text.

@@ -73,7 +73,7 @@ def _scale_scenario(count):
     return {"args": DEMO_ARGS, "first": r"scale-0000", "env": {"KBORG_DEMO_SCALE": str(count)},
             "latency": True,
             "steps": [[f"/{target}\\r", r"\[1/1\] FILTERED"],
-                      ["\\x1b", r"pods \[\d+/\d{4,}\]"],
+                      ["\\x1b", r"pods(?: |\(\S+\))\[\d+/\d{4,}\]"],
                       # Selection stays on target; descending puts `after` above it.
                       ["N", after + r".*\n.*" + target]],
             "step_metrics": ["filter_seconds", "clear_filter_seconds", "sort_seconds"]}

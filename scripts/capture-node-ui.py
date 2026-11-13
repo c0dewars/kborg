@@ -86,7 +86,7 @@ def main():
             captures.append({"name": name, "path": str(path.resolve()), "width": 120, "height": 34})
 
         try:
-            keys(expected="CTX ")
+            keys(expected="sort: ")
             keys(b":nodes\r", args.node)
             capture("nodes")
             keys(b":cordon\r", "REVIEW CHANGES / approval required")

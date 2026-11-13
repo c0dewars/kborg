@@ -4,6 +4,7 @@ KBorg — Kubernetes operations, under your control (kborg --version for the ver
   kborg demo                     Offline sample cluster; no credentials
   kborg startup on|off|preview   Startup animation preference, or play it now
   kborg ui init|validate         Write a commented ui.yaml (never replaces) / check it
+  kborg views init               Write views.yaml with the built-in table columns to edit (never replaces)
   kborg contexts                 List contexts without connecting
   kborg overview CONTEXT...       Snapshots 1..100; --follow watches up to 4 contexts
   kborg doctor                   Check terminal, tools, kubeconfig auth and cluster access, with next steps

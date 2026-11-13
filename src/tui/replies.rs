@@ -28,7 +28,10 @@ impl App {
             let command_result = self.command_epoch == Some(epoch)
                 && !matches!(
                     &reply,
-                    Reply::Metrics(..) | Reply::Overview(..) | Reply::ScanOutcome(..)
+                    Reply::Metrics(..)
+                        | Reply::HeaderInfo(..)
+                        | Reply::Overview(..)
+                        | Reply::ScanOutcome(..)
                 );
             let write_result = command_result && self.write_inflight;
             if command_result {
@@ -183,6 +186,11 @@ impl App {
                     self.push_subview(previous);
                     self.status = "Review the local export; Enter saves, Esc cancels.".into();
                 }
+                Reply::HeaderInfo(info) => {
+                    if let Some(info) = info {
+                        self.header.apply(info);
+                    }
+                }
                 Reply::Connected(c, s, n, k) => {
                     if self.connected_context_settings(&c) {
                         continue;
@@ -193,6 +201,7 @@ impl App {
                         .or_else(|| self.desired_resource.take())
                         .unwrap_or_else(|| self.kind());
                     self.connecting_epoch = None;
+                    self.header.reset();
                     self.context = c;
                     self.server = s;
                     if !self.namespace_override {

@@ -84,6 +84,8 @@ fn harness() -> Harness {
             plugins: Default::default(),
             keymap: Default::default(),
             faults_only: false,
+            doc_search: doc_search::DocSearch::default(),
+            header: header_block::State::default(),
             ask_screen: None,
             ask_status: None,
             ask_thread: None,
@@ -133,6 +135,7 @@ fn harness() -> Harness {
             table_metrics: Default::default(),
             items_generation: 0,
             visible_cache: Default::default(),
+            health_cache: Default::default(),
             metrics_resources: false,
             metrics_chart: false,
             overview: None,
@@ -1462,8 +1465,15 @@ fn responsive_frames_preserve_identity_mode_and_bounds() {
             {
                 let frame = screen(&app, width, height);
                 assert!(frame[..2].join(" ").contains("READ ONLY"));
-                assert!(frame[1].contains("CTX test  |  NS test"));
-                assert!(frame[3].starts_with(['+', '╭']));
+                if app.ui.block_chrome(width, height, false).is_some() {
+                    // The k9s-style block: one identity item per line.
+                    assert!(frame[2].starts_with(" Context    test"), "{}", frame[2]);
+                    assert!(frame[5].starts_with(" Namespace  test"), "{}", frame[5]);
+                    assert!(frame[9].starts_with(['+', '╭']));
+                } else {
+                    assert!(frame[1].contains("CTX test  |  NS test"));
+                    assert!(frame[3].starts_with(['+', '╭']));
+                }
             }
         }
     }
@@ -1772,7 +1782,8 @@ fn resource_table_uses_every_column_and_mouse_never_changes_resource() {
         MouseEvent {
             kind: MouseEventKind::Down(crossterm::event::MouseButton::Left),
             column: 3,
-            row: 6,
+            // The second table row: border, column header, first row.
+            row: app.layout(120, 32).table.y + 3,
             modifiers: KeyModifiers::NONE,
         },
         120,
@@ -2560,6 +2571,10 @@ fn table_hints_show_only_actions_that_work_for_this_kind_and_session() -> Result
     app.options.connection.allow_node_maintenance = true;
     assert!(table_hints(&app).contains(&("c".to_owned(), "cordon")));
     app.modal = Modal::None;
+    // The block lists the keys in its columns; the bar on the last row.
+    let frame = screen(&app, 120, 24);
+    assert!(hint_shown(&frame, "?", "all keys") && hint_shown(&frame, "c", "cordon"));
+    app.ui.header.style = crate::ui_config::HeaderStyle::Bar;
     let bottom = screen(&app, 120, 24).pop().unwrap_or_default();
     assert!(bottom.contains(" ?  all keys") && bottom.contains(" c  cordon"));
     Ok(())
@@ -3503,6 +3518,9 @@ fn remapped_table_keys_run_their_action_and_the_old_key_stops() -> Result<()> {
     assert!(!help.contains("Node: "), "only Pod table keys: {help}");
     app.key(KeyCode::Esc)?;
     assert!(matches!(app.modal, Modal::None));
+    let frame = screen(&app, 120, 24);
+    assert!(hint_shown(&frame, "F1", "all keys"), "{}", frame.join("\n"));
+    app.ui.header.style = crate::ui_config::HeaderStyle::Bar;
     let bottom = screen(&app, 120, 24).pop().unwrap_or_default();
     assert!(bottom.contains(" F1  all keys"), "{bottom}");
     Ok(())
@@ -5326,17 +5344,30 @@ fn summary_counts_marked_rows_and_identity_keeps_its_labels() {
     let (mut app, _replies, _commands) = harness();
     app.desired_resource = Some("deployments.apps".into());
     app.items = shared(marked_deployments());
-    let frame = screen(&app, 120, 24);
-    assert!(!frame[2].contains("marked"), "{}", frame[2]);
-    app.marks.insert("uid-api".into());
-    app.marks.insert("uid-web".into());
-    let frame = screen(&app, 120, 24);
-    assert!(frame[2].contains("2 marked"), "{}", frame[2]);
-    assert!(
-        frame[1].starts_with(" CTX test  |  NS test"),
-        "{}",
-        frame[1]
-    );
+    // Both header layouts carry the count on their summary row.
+    for style in [
+        crate::ui_config::HeaderStyle::Block,
+        crate::ui_config::HeaderStyle::Bar,
+    ] {
+        app.ui.header.style = style;
+        app.marks.clear();
+        let summary = usize::from(app.chrome(120, 24).summary.unwrap_or(0));
+        let frame = screen(&app, 120, 24);
+        assert!(!frame[summary].contains("marked"), "{}", frame[summary]);
+        app.marks.insert("uid-api".into());
+        app.marks.insert("uid-web".into());
+        let frame = screen(&app, 120, 24);
+        assert!(frame[summary].contains("2 marked"), "{}", frame[summary]);
+        if style == crate::ui_config::HeaderStyle::Bar {
+            assert!(
+                frame[1].starts_with(" CTX test  |  NS test"),
+                "{}",
+                frame[1]
+            );
+        } else {
+            assert!(frame[5].starts_with(" Namespace  test"), "{}", frame[5]);
+        }
+    }
 }
 #[test]
 fn list_views_watch_metadata_unless_a_column_needs_more() {
@@ -5638,5 +5669,511 @@ fn ask_from_filtered_logs_adds_the_selected_lines() -> Result<()> {
     assert!(captured.contains("100 of 100 matching lines"), "{captured}");
     assert!(captured.contains("line-0 ERROR") && captured.contains("line-297 ERROR"));
     assert!(!captured.contains("line-1 ok"));
+    Ok(())
+}
+
+/// A `<key> label` hint in the header block, whatever the column padding.
+fn hint_shown(frame: &[String], key: &str, label: &str) -> bool {
+    let key = format!("<{key}>");
+    frame.iter().any(|line| {
+        line.match_indices(&key)
+            .any(|(at, _)| line[at + key.len()..].trim_start().starts_with(label))
+    })
+}
+
+/// The k9s-style header block: one item per line, namespaces and keys in
+/// columns, the centered table title and only the status line below.
+#[test]
+fn header_block_shows_identity_namespaces_keys_and_centered_title() {
+    let (mut app, _replies, _commands) = harness();
+    app.items = shared(ui_pods());
+    app.header.apply(HeaderInfo {
+        cluster: "netmic-test".into(),
+        user: "bruno@netmic".into(),
+        version: Some("v1.35.0".into()),
+        usage: Some((Some(10), Some(92))),
+    });
+    let frame = screen(&app, 160, 30);
+    assert!(
+        frame[0].contains("KBORG") && frame[0].contains("Pods") && frame[0].contains("READ ONLY")
+    );
+    assert!(frame[1].trim().is_empty() && frame[7].trim().is_empty());
+    assert!(frame[2].starts_with(" Context    test"), "{}", frame[2]);
+    assert!(
+        frame[3].starts_with(" Cluster    netmic-test"),
+        "{}",
+        frame[3]
+    );
+    assert!(
+        frame[4].starts_with(" User       bruno@netmic"),
+        "{}",
+        frame[4]
+    );
+    assert!(frame[5].starts_with(" Namespace  test"), "{}", frame[5]);
+    assert!(
+        frame[6].starts_with(" K8s        v1.35.0   CPU 10%   MEM 92%"),
+        "{}",
+        frame[6]
+    );
+    assert!(hint_shown(&frame, "0", "all"), "{}", frame[2]);
+    assert!(hint_shown(&frame, "?", "all keys") && hint_shown(&frame, ":", "command"));
+    assert!(
+        frame[2].contains(r" _  _____  ___  ___  ___"),
+        "logo: {}",
+        frame[2]
+    );
+    assert!(frame[8].contains("healthy") && frame[8].contains("sort: name"));
+    // kind(namespace)[position], centered in the table's top border.
+    let title = "pods(test)[1/";
+    let at = frame[9].find(title).unwrap_or(0);
+    assert!(at > 40 && frame[9].starts_with(['+', '╭']), "{}", frame[9]);
+    // Below the table: the status line only.
+    assert!(frame[28].starts_with(['+', '╰']), "{}", frame[28]);
+    assert!(!frame[29].contains("all keys"));
+    // All namespaces read as `all`; cluster-scoped kinds have no scope.
+    app.namespace = "*".into();
+    let frame = screen(&app, 160, 30);
+    assert!(frame[5].starts_with(" Namespace  all") && frame[9].contains("pods(all)["));
+    // Unknown values and a cluster without metrics.
+    app.header.reset();
+    app.header.apply(HeaderInfo {
+        usage: Some((None, None)),
+        ..HeaderInfo::default()
+    });
+    let frame = screen(&app, 160, 30);
+    assert!(frame[3].starts_with(" Cluster    -"), "{}", frame[3]);
+    assert!(frame[6].contains("CPU n/a   MEM n/a"), "{}", frame[6]);
+    app.ui.header.usage = false;
+    assert!(!screen(&app, 160, 30)[6].contains("K8s"));
+}
+
+#[test]
+fn header_block_yields_to_the_bar_when_small_configured_or_in_other_views() -> Result<()> {
+    let (mut app, _replies, _commands) = harness();
+    app.items = shared(ui_pods());
+    let block = |app: &App, w, h| screen(app, w, h)[2].starts_with(" Context ");
+    assert!(block(&app, 100, 24) && block(&app, 200, 60));
+    // Too narrow or too short: the three-row bar.
+    for (w, h) in [(99, 40), (120, 23), (80, 24)] {
+        let frame = screen(&app, w, h);
+        assert!(
+            frame[1].contains("CTX test") && !block(&app, w, h),
+            "{w}x{h}"
+        );
+    }
+    // ui.yaml: style bar, or the compact header.
+    app.ui = crate::ui_config::parse("header:\n  style: bar\n")?;
+    assert!(screen(&app, 160, 40)[1].contains("CTX test"));
+    app.ui = crate::ui_config::parse("header:\n  compact: true\n")?;
+    assert!(screen(&app, 160, 40)[0].contains("CTX test"));
+    app.ui = crate::ui_config::UiConfig::default();
+    // Detail views keep the bar, and with it their full height.
+    app.modal = Modal::Detail("kind: Pod\nmetadata:\n  name: api".into(), 0);
+    let frame = screen(&app, 160, 40);
+    assert!(frame[1].contains("CTX test") && frame[3].contains("REDACTED INSPECTION"));
+    // The command prompt keeps the block and takes two rows from the table.
+    app.modal = Modal::None;
+    let rows = app.layout(160, 40).table_rows();
+    app.modal = Modal::Input("Command", "po".into());
+    assert_eq!(app.layout(160, 40).table_rows(), rows - 2);
+    let frame = screen(&app, 160, 40);
+    assert!(frame[2].starts_with(" Context ") && frame[39].starts_with(':'));
+    Ok(())
+}
+
+#[test]
+fn error_rows_are_red_and_pending_rows_yellow() {
+    let pod = |phase: &str, waiting: Option<&str>, ready: bool| {
+        let state = match waiting {
+            Some(reason) => serde_json::json!({"waiting":{"reason":reason}}),
+            None => serde_json::json!({"running":{}}),
+        };
+        serde_json::json!({"kind":"Pod","metadata":{"name":"p","namespace":"test","uid":"u"},"spec":{"containers":[{"name":"app"}]},"status":{"phase":phase,"containerStatuses":[{"name":"app","ready":ready,"restartCount":0,"state":state}]}})
+    };
+    for reason in [
+        "CrashLoopBackOff",
+        "ImagePullBackOff",
+        "ErrImagePull",
+        "CreateContainerConfigError",
+        "CreateContainerError",
+        "InvalidImageName",
+    ] {
+        assert_eq!(
+            severity(&pod("Pending", Some(reason), false)),
+            Some(Severity::Error),
+            "{reason}"
+        );
+    }
+    assert_eq!(severity(&pod("Failed", None, false)), Some(Severity::Error));
+    assert_eq!(
+        severity(&pod("Pending", Some("ContainerCreating"), false)),
+        Some(Severity::Pending)
+    );
+    // Running but not ready reads NotReady: red, as in k9s.
+    assert_eq!(
+        severity(&pod("Running", None, false)),
+        Some(Severity::Error)
+    );
+    assert_eq!(severity(&pod("Running", None, true)), None);
+    let node = |ready: &str| serde_json::json!({"kind":"Node","metadata":{"name":"n"},"status":{"conditions":[{"type":"Ready","status":ready}]}});
+    assert_eq!(severity(&node("False")), Some(Severity::Error));
+    assert_eq!(severity(&node("True")), None);
+    assert_eq!(
+        (Severity::Error.role(), Severity::Pending.role()),
+        ("danger", "warning")
+    );
+}
+
+/// Error rows read on every surface a row can have, in every built-in theme:
+/// the plain background, a zebra stripe and a marked row.
+#[test]
+fn error_and_pending_rows_are_legible_in_every_theme() {
+    for theme in themes::builtins() {
+        let surfaces = [
+            theme.get("background"),
+            blend(theme.get("background"), theme.get("text"), 3),
+            mark_background(&theme),
+        ];
+        for role in ["danger", "warning"] {
+            for surface in surfaces {
+                let ratio = themes::contrast(theme.get(role), surface);
+                assert!(ratio >= 4.5, "{} {role}: {ratio:.2}", theme.id);
+            }
+            // On the cursor row the color is the background.
+            let background = theme.get(role);
+            let text = crate::context_config::Badge::foreground(background);
+            assert!(
+                themes::contrast(text, background) >= 4.5,
+                "{} {role}",
+                theme.id
+            );
+        }
+    }
+}
+
+#[test]
+fn document_search_finds_jumps_wraps_and_clears() -> Result<()> {
+    let (mut app, _replies, _commands) = harness();
+    let text = (0..60)
+        .map(|n| match n {
+            5 => "  name: api".to_owned(),
+            20 => "  nodeName: worker-2".to_owned(),
+            41 => "  hostname: API-7".to_owned(),
+            n => format!("  field{n}: value"),
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    app.modal = Modal::Detail(text, 0);
+    let offset = |app: &App| match &app.modal {
+        Modal::Detail(_, offset) => *offset,
+        _ => usize::MAX,
+    };
+    let hint = |app: &App| screen(app, 100, 30)[28].clone();
+    assert!(hint(&app).starts_with("/ search | "), "{}", hint(&app));
+    // While typing, every key belongs to the search, `:` and `?` included.
+    app.key(KeyCode::Char('/'))?;
+    type_text(&mut app, "x:?")?;
+    assert!(matches!(app.modal, Modal::Detail(..)));
+    assert!(hint(&app).starts_with("Search > x:?_"), "{}", hint(&app));
+    app.key(KeyCode::Esc)?;
+    assert!(
+        matches!(app.modal, Modal::Detail(..)),
+        "Esc cancels the typing only"
+    );
+    // Case-insensitive; Enter jumps to the first match, n and N wrap around.
+    app.key(KeyCode::Char('/'))?;
+    type_text(&mut app, "NAME")?;
+    app.key(KeyCode::Enter)?;
+    assert_eq!(offset(&app), 5);
+    assert!(
+        hint(&app).starts_with("/name   line 1 of 3 matching"),
+        "{}",
+        hint(&app)
+    );
+    app.key(KeyCode::Char('n'))?;
+    assert_eq!(offset(&app), 20);
+    app.key(KeyCode::Char('n'))?;
+    assert_eq!(offset(&app), 41);
+    app.key(KeyCode::Char('n'))?;
+    assert_eq!(offset(&app), 5, "wraps to the first match");
+    app.key(KeyCode::Char('N'))?;
+    assert_eq!(offset(&app), 41, "wraps to the last match");
+    // Esc clears the search first, then closes the view.
+    app.key(KeyCode::Esc)?;
+    assert!(matches!(app.modal, Modal::Detail(..)));
+    assert!(hint(&app).starts_with("/ search | "));
+    app.key(KeyCode::Char('/'))?;
+    type_text(&mut app, "absent")?;
+    app.key(KeyCode::Enter)?;
+    assert_eq!(app.status, "No match for absent.");
+    assert_eq!(offset(&app), 41, "no match keeps the position");
+    app.key(KeyCode::Esc)?;
+    assert!(matches!(app.modal, Modal::None));
+    Ok(())
+}
+
+#[test]
+fn document_search_covers_overview_and_leaves_the_table_filter_alone() -> Result<()> {
+    let (mut app, _replies, _commands) = harness();
+    app.items = shared(ui_pods());
+    // In the table `/` is still the row filter.
+    app.key(KeyCode::Char('/'))?;
+    assert!(matches!(app.modal, Modal::Filter(..)));
+    app.key(KeyCode::Esc)?;
+    let object = (*app.items[0]).clone();
+    app.modal = Modal::Overview(Box::new(object), 0);
+    app.key(KeyCode::Char('/'))?;
+    type_text(&mut app, "namespace")?;
+    app.key(KeyCode::Enter)?;
+    assert!(matches!(app.modal, Modal::Overview(..)));
+    assert!(
+        screen(&app, 100, 30)[28].starts_with("/namespace   line 1 of"),
+        "{}",
+        screen(&app, 100, 30)[28]
+    );
+    assert_eq!(
+        doc_search::matches("Name: nameX", "name"),
+        vec![(0, 4), (6, 10)]
+    );
+    assert!(doc_search::matches("anything", "").is_empty());
+    Ok(())
+}
+
+fn show_kind(app: &mut App, plural: &str) {
+    app.kind_index = app
+        .kinds
+        .iter()
+        .position(|kind| kind.plural == plural)
+        .unwrap_or(0);
+    app.desired_resource = None;
+}
+fn context_help(app: &mut App) -> Result<String> {
+    app.modal = Modal::None;
+    app.key(KeyCode::Char('?'))?;
+    let Modal::Help(view) = &app.modal else {
+        return Err("help did not open".into());
+    };
+    let help = keyhelp::help_body(app, view);
+    app.modal = Modal::None;
+    Ok(help)
+}
+
+/// `?` lists what applies to the kind in front, grouped by purpose.
+#[test]
+fn context_help_shows_only_the_actions_of_the_kind_in_front() -> Result<()> {
+    let (mut app, _replies, _commands) = harness();
+    app.options.connection.writable = true;
+    app.options.connection.logs = true;
+    app.items = shared(ui_pods());
+    let pods = context_help(&mut app)?;
+    assert!(pods.starts_with("KEYS FOR THE PODS TABLE"), "{pods}");
+    for expected in [
+        "ACTIONS ON THE SELECTED POD",
+        "Containers of the selected Pod",
+        "Follow logs",
+        "Shell into the selected Pod",
+        "New loopback port-forward",
+        "LOOK AT IT",
+        "FIND AND SORT",
+        "SEVERAL ROWS AT ONCE",
+        "NAMESPACES AND OTHER VIEWS",
+        "MOVE AND REFRESH",
+        "EVERYWHERE",
+    ] {
+        assert!(pods.contains(expected), "{expected}: {pods}");
+    }
+    assert!(
+        !pods.contains("cordon") && !pods.contains("Scale a"),
+        "{pods}"
+    );
+    assert!(!pods.contains("(--"), "no stale flag reminders: {pods}");
+
+    show_kind(&mut app, "nodes");
+    let nodes = context_help(&mut app)?;
+    assert!(nodes.contains("ACTIONS ON THE SELECTED NODE"), "{nodes}");
+    for expected in ["Pods on the selected Node", "Review cordon", "Review drain"] {
+        assert!(nodes.contains(expected), "{expected}: {nodes}");
+    }
+    for absent in [
+        "Follow logs",
+        "port-forward",
+        "Attach",
+        "Copy namespace",
+        "YAML spec editor",
+        "Reviewed deletion",
+    ] {
+        assert!(
+            !nodes.contains(absent),
+            "{absent} is not a Node action: {nodes}"
+        );
+    }
+
+    show_kind(&mut app, "deployments");
+    let deployments = context_help(&mut app)?;
+    for expected in [
+        "ACTIONS ON THE SELECTED DEPLOYMENT",
+        "Scale a Deployment",
+        "Reviewed rollout restart",
+        "Follow logs",
+    ] {
+        assert!(deployments.contains(expected), "{expected}: {deployments}");
+    }
+    assert!(
+        !deployments.contains("zero-grace Pod kill"),
+        "{deployments}"
+    );
+
+    // A read-only session says so next to the actions it cannot run.
+    app.options.connection.writable = false;
+    let read_only = context_help(&mut app)?;
+    assert!(
+        read_only
+            .lines()
+            .any(|line| line.contains("Scale a Deployment") && line.contains("[read-only mode]")),
+        "{read_only}"
+    );
+
+    // Document views explain their search keys.
+    app.modal = Modal::Detail("kind: Pod".into(), 0);
+    app.key(KeyCode::Char('?'))?;
+    let Modal::Help(view) = &app.modal else {
+        return Err("help did not open".into());
+    };
+    let detail = keyhelp::help_body(&app, view);
+    assert!(
+        detail.contains("SEARCH THE TEXT") && detail.contains("n / N"),
+        "{detail}"
+    );
+    Ok(())
+}
+
+#[test]
+fn table_help_groups_cover_every_table_action() {
+    let grouped: Vec<&str> = keyhelp::TABLE_GROUPS
+        .iter()
+        .flat_map(|(_, names)| names.iter().copied())
+        .collect();
+    for action in crate::keymap::ACTIONS {
+        if action.scope == crate::keymap::Scope::Table {
+            assert_eq!(
+                grouped.iter().filter(|name| **name == action.name).count(),
+                1,
+                "{} must be in exactly one help group",
+                action.name
+            );
+        }
+    }
+    for name in grouped {
+        assert!(
+            crate::keymap::ACTIONS
+                .iter()
+                .any(|action| action.name == name && action.scope == crate::keymap::Scope::Table),
+            "{name} is not a table action"
+        );
+    }
+}
+
+fn node(name: &str) -> Value {
+    serde_json::json!({"kind":"Node","metadata":{"name":name,"uid":format!("uid-{name}"),"creationTimestamp":"2026-10-10T07:00:00Z","labels":{"node-role.kubernetes.io/control-plane":""}},"spec":{"taints":[{"key":"a"},{"key":"b"}]},"status":{"conditions":[{"type":"Ready","status":"True"}],"allocatable":{"cpu":"4","memory":"8Gi","pods":"110"},"addresses":[{"type":"InternalIP","address":"10.0.0.7"},{"type":"Hostname","address":name}],"nodeInfo":{"architecture":"arm64","kubeletVersion":"v1.35.0","osImage":"Ubuntu 24.04","kernelVersion":"6.8.0"}}})
+}
+
+/// Nodes get the k9s columns without a views.yaml; views.yaml still wins.
+#[test]
+fn nodes_show_the_k9s_columns_and_views_yaml_overrides_them() -> Result<()> {
+    let (mut app, _replies, _commands) = harness();
+    show_kind(&mut app, "nodes");
+    app.items = shared(vec![node("worker-1")]);
+    let frame = screen(&app, 180, 30).join("\n");
+    for title in [
+        "NAME", "STATUS", "ROLE", "ARCH", "TAINTS", "VERSION", "CPU(m)", "%CPU", "CPU/A", "MEM",
+        "%MEM", "MEM/A", "AGE",
+    ] {
+        assert!(frame.contains(title), "{title}: {frame}");
+    }
+    for value in ["control-plane", "arm64", "v1.35.0", "4000", "8192"] {
+        assert!(frame.contains(value), "{value}: {frame}");
+    }
+    assert!(!frame.contains("OS-IMAGE"), "wide-only columns stay hidden");
+    app.wide = true;
+    let wide = screen(&app, 220, 30).join("\n");
+    assert!(
+        wide.contains("OS-IMAGE") && wide.contains("Ubuntu 24.04"),
+        "{wide}"
+    );
+    assert!(
+        wide.contains("INTERNAL-IP") && wide.contains("10.0.0.7"),
+        "{wide}"
+    );
+    // Too narrow for everything: columns drop from the right, AGE last of all.
+    app.wide = false;
+    let narrow = screen(&app, 100, 30).join("\n");
+    assert!(
+        narrow.contains("AGE") && narrow.contains("ROLE"),
+        "{narrow}"
+    );
+    assert!(!narrow.contains("MEM/A"), "{narrow}");
+    // Usage percentages need the metrics sample; without one they read n/a.
+    assert!(frame.contains("n/a"), "{frame}");
+    // views.yaml replaces the built-in columns for its resource.
+    app.views =
+        crate::views::parse("views:\n  v1/nodes:\n    columns: [NAME, KERNEL, PODS-MAX]\n")?;
+    let custom = screen(&app, 180, 30).join("\n");
+    assert!(custom.contains("KERNEL") && custom.contains("6.8.0") && custom.contains("110"));
+    assert!(!custom.contains("TAINTS"), "{custom}");
+    // :columns explains what is shown and how to change it.
+    app.command("columns")?;
+    assert!(
+        matches!(&app.modal, Modal::Detail(text, _) if text.contains("COLUMNS OF NODES") && text.contains("your views.yaml") && text.contains("kborg views init") && text.contains("%CPU/R"))
+    );
+    Ok(())
+}
+
+#[test]
+fn summary_counts_follow_the_rows_after_a_refresh() {
+    let (mut app, _replies, _commands) = harness();
+    app.items = shared(ui_pods());
+    let summary = |app: &App| screen(app, 120, 24)[8].clone();
+    assert!(summary(&app).contains("2 healthy"), "{}", summary(&app));
+    // The counts are cached per row set: new rows, a filter or the faults
+    // view each give a new set.
+    let mut failing = ui_pods();
+    failing[0]["status"]["containerStatuses"][0]["state"] =
+        serde_json::json!({"waiting":{"reason":"CrashLoopBackOff"}});
+    failing[0]["status"]["containerStatuses"][0]["ready"] = serde_json::json!(false);
+    app.items = shared(failing);
+    app.items_generation += 1;
+    assert!(
+        summary(&app).contains("1 healthy") && summary(&app).contains("1 needs attention"),
+        "{}",
+        summary(&app)
+    );
+    app.filter = "web".into();
+    assert!(summary(&app).contains("1 healthy") && summary(&app).contains("0 need attention"));
+}
+
+#[test]
+fn copilot_key_asks_about_the_view_in_front() -> Result<()> {
+    let (mut app, _replies, _commands) = harness();
+    app.items = shared(ui_pods());
+    app.modal = Modal::Detail("kind: Pod\nmetadata:\n  name: api".into(), 0);
+    app.key_event(KeyCode::Char('g'), KeyModifiers::CONTROL)?;
+    // The harness's operator policy turns screen questions off: the key
+    // reached the :ask path, which explains that instead of sending.
+    assert!(
+        matches!(&app.modal, Modal::AdviceDocument(title, ..) if title == "COPILOT DISABLED"),
+        "Ctrl-G did not reach :ask"
+    );
+    app.key(KeyCode::Esc)?;
+    assert!(
+        matches!(app.modal, Modal::Detail(..)),
+        "Esc returns to the view"
+    );
+    // The hint appears only once Copilot is connected.
+    app.modal = Modal::None;
+    assert!(
+        !table_hints(&app)
+            .iter()
+            .any(|(_, label)| *label == "ask Copilot")
+    );
     Ok(())
 }

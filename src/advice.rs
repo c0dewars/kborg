@@ -233,7 +233,7 @@ fn fingerprint(path: &Path) -> Result<(u64, String)> {
             | [0xbe, 0xba, 0xfe, 0xca]
             | [0xbf, 0xba, 0xfe, 0xca]
     ) {
-        return Err("Copilot advice preflight requires a native Mach-O executable, not a script or npm symlink".into());
+        return Err("Copilot needs the native executable, not a script or npm loader. Next: run setup again and accept the binary it finds inside the npm installation (node_modules/@github/copilot-darwin-arm64/copilot), or install the Copilot CLI with Homebrew".into());
     }
     let after = file.metadata().map_err(|_| "cannot recheck native SDK")?;
     if bytes != before.len()

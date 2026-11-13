@@ -282,6 +282,52 @@ async fn list(gateway: &Gateway, key: &str, ns: &str) -> std::result::Result<Val
     }
 }
 
+/// Summed allocatable (CPU nanocores, memory bytes) of every Node, for the
+/// table header's usage line. It needs full Node objects, so callers keep the
+/// result for minutes; `None` when Nodes cannot be read or the list is cut.
+pub async fn allocatable(gateway: &Gateway) -> Option<(Option<u64>, Option<u64>)> {
+    let list = list(gateway, "nodes", "*").await.ok()?;
+    let (_, _, cpu, memory) = node_counts(items(&list));
+    Some((cpu, memory))
+}
+
+/// Cluster CPU and memory usage as percentages of `allocatable`: one small
+/// Metrics API read. `None` where the Metrics API cannot be read or is cut.
+pub async fn usage(
+    gateway: &Gateway,
+    allocatable: Option<(Option<u64>, Option<u64>)>,
+) -> (Option<u64>, Option<u64>) {
+    let Some((cpu, memory)) = allocatable else {
+        return (None, None);
+    };
+    let snapshot = if gateway.is_demo() {
+        // The fixed first sample: the header must not advance the demo
+        // sequence that the metrics table and charts step through.
+        metrics::demo(metrics::MetricsScope::Nodes, "*")
+    } else {
+        match tokio::time::timeout(
+            READ_BUDGET,
+            metrics::collect(gateway, metrics::MetricsScope::Nodes, "*"),
+        )
+        .await
+        {
+            Ok(snapshot) => snapshot,
+            Err(_) => return (None, None),
+        }
+    };
+    match snapshot {
+        Ok(snapshot) if !snapshot.truncated => {
+            let used_cpu = snapshot.items.iter().map(|row| row.cpu_nanocores).sum();
+            let used_memory = snapshot.items.iter().map(|row| row.memory_bytes).sum();
+            (
+                cpu.and_then(|cpu| percent(used_cpu, cpu)),
+                memory.and_then(|memory| percent(used_memory, memory)),
+            )
+        }
+        _ => (None, None),
+    }
+}
+
 /// One bounded poll. Nodes are cluster-scoped and commonly denied to
 /// namespace-scoped identities; that is reported, not hidden.
 pub async fn collect(gateway: &Gateway, namespace: &str) -> InfraSummary {

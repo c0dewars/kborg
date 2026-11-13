@@ -69,9 +69,9 @@ def run(binary, environment, argv, namespace, release, chart, screenshots):
         captures.append({'name': name, 'path': str(path.resolve()), 'width':120, 'height':34})
 
     try:
-        keys(expected='CTX ')
+        keys(expected='sort: ')
         for _ in range(100):
-            if 'LOADING' not in screen.text().splitlines()[2] and 'Request in progress' not in screen.text().splitlines()[-1]:
+            if not any('LOADING' in line for line in screen.text().splitlines()[:9]) and 'Request in progress' not in screen.text().splitlines()[-1]:
                 break
             drain(.1)
         keys(b':helm-crds-migrate\r', 'MIGRATE CRD STORAGE')
