@@ -47,10 +47,14 @@ The file is data only: at most 16 KiB, one document, no anchors, aliases, merge 
 | `splash` | unset, `true`, `false` | Startup animation. Unset keeps the `kborg startup on\|off` preference; `--no-splash` still turns it off. |
 | `borders` | `auto`, `rounded`, `square`, `ascii`, `none` | Panel frames. `auto` uses rounded glyphs in UTF-8 locales and ASCII otherwise. `none` draws blank frames and keeps the layout. |
 | `panel_title` | `marker`, `plain`, `bracketed` | ` > TITLE ` (the marker shows focus), ` TITLE `, or `[ TITLE ]`. Used by panels, the table and modal frames. |
-| `header.show` | `true`, `false` | Top bar with the KBORG badge, view title and `?`. |
+| `header.style` | `block`, `bar` | `block` is the k9s-style header of the resource table: Context, Cluster, User, Namespace and Kubernetes version one per line, recent namespaces and key hints in columns, the table title centered and only the status line below the table. It needs a 100x24 terminal; smaller ones, and every detail view, review and the dashboard, use `bar`: the three single rows described below with the key hints on the last row. |
+| `header.usage` | `true`, `false` | Block: the `K8s` line with the Kubernetes version and cluster CPU and MEM as a percentage of allocatable. Reads the Node list every five minutes and node metrics every 15 seconds; shows `n/a` without metrics-server or Node access. |
+| `header.namespaces` | `true`, `false` | Block: recent namespaces with the number keys that switch to them. |
+| `header.logo` | `true`, `false` | Block: the KBORG logo at the right edge, only when no other column needs the room. |
+| `header.show` | `true`, `false` | Top bar with the KBORG badge, view title and `?`. `false` also selects the bar layout. |
 | `header.identity` | `true`, `false` | `CTX \| NS \| API` line. `false` folds it into the top bar. It can only be hidden while `header.show` is true: context, namespace and mode always stay visible. |
 | `header.summary` | `true`, `false` | Freshness, counts, health and sort bar. |
-| `header.compact` | `false`, `true` | Folds the identity line into the top bar and drops the spare row above the hints, so the table gets two more rows. |
+| `header.compact` | `false`, `true` | Bar layout with the identity line folded into the top bar and no spare row above the hints: the most table rows. |
 | `hints.show` | `true`, `false` | The resource table's bottom key-hint row. The table grows into it when hidden; `?` still opens the full keymap. |
 | `hints.key_role`, `hints.text_role` | `accent`, `muted` | Palette roles for the shortcut keys and their labels. |
 | `table.density` | `normal`, `relaxed` | `relaxed` leaves a blank line between rows. |

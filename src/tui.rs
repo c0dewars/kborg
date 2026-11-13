@@ -29,7 +29,9 @@ mod connection_prompt;
 mod context_settings;
 #[path = "ui_dashboard.rs"]
 mod dashboard_ui;
+mod doc_search;
 mod format;
+mod header_block;
 #[path = "ui_helm.rs"]
 mod helm_ui;
 mod keyhelp;
@@ -289,6 +291,10 @@ struct App {
     /// Ctrl-Z: show only objects that need attention (k9s faults view).
     faults_only: bool,
     /// The screen as it was when the command prompt opened, for `:ask`.
+    /// `/` search in the open describe, YAML, JSON or other document view.
+    doc_search: doc_search::DocSearch,
+    /// Cluster, user, version and usage shown by the k9s-style header block.
+    header: header_block::State,
     ask_screen: Option<String>,
     /// The status line when the screen was captured, for `:explain`.
     ask_status: Option<String>,
@@ -356,6 +362,8 @@ struct App {
     items_generation: u64,
     /// Memoized filter-and-sort order of `items`, keyed by a fingerprint.
     visible_cache: std::cell::RefCell<Option<(u64, std::rc::Rc<Vec<usize>>)>>,
+    /// (fingerprint, (healthy, attention)) of the visible rows.
+    health_cache: std::cell::RefCell<Option<(u64, (usize, usize))>>,
     metrics_resources: bool,
     /// `g` in :metrics: chart the selected Pod or Node instead of the text view.
     metrics_chart: bool,
@@ -406,7 +414,7 @@ impl App {
         if !matches!(self.modal, Modal::None) {
             return;
         }
-        let layout = Layout::for_ui(width, height, &self.ui);
+        let layout = self.layout(width, height);
         match mouse.kind {
             MouseEventKind::ScrollDown => {
                 self.selected = (self.selected + 1).min(self.visible().len().saturating_sub(1));
@@ -448,8 +456,41 @@ impl App {
     /// and builds one sort key per object, so the result is memoized against
     /// the filter, sort and the items generation.
     fn visible_order(&self) -> std::rc::Rc<Vec<usize>> {
-        use std::hash::{Hash, Hasher};
         let metrics_sort = matches!(self.sort, Sort::Cpu | Sort::Memory);
+        let fingerprint = self.visible_fingerprint();
+        if !metrics_sort
+            && let Some((key, order)) = &*self.visible_cache.borrow()
+            && *key == fingerprint
+        {
+            return order.clone();
+        }
+        self.sorted_order(fingerprint, metrics_sort)
+    }
+    /// (healthy, needing attention) among the visible rows, for the summary
+    /// line. Classifying an object builds its status text, so the counts are
+    /// memoized like the row order instead of recomputed on every frame.
+    fn health_counts(&self) -> (usize, usize) {
+        let fingerprint = self.visible_fingerprint();
+        if let Some((key, counts)) = *self.health_cache.borrow()
+            && key == fingerprint
+        {
+            return counts;
+        }
+        let mut counts = (0, 0);
+        for &index in self.visible_order().iter() {
+            match self.items.get(index).map(|object| health(object)) {
+                Some(Health::Healthy) => counts.0 += 1,
+                Some(Health::Attention) => counts.1 += 1,
+                _ => {}
+            }
+        }
+        *self.health_cache.borrow_mut() = Some((fingerprint, counts));
+        counts
+    }
+    /// Identifies the filtered, sorted row set: filter, sort and the items
+    /// generation.
+    fn visible_fingerprint(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         self.filter.hash(&mut hasher);
         self.faults_only.hash(&mut hasher);
@@ -462,13 +503,9 @@ impl App {
         self.items_generation.hash(&mut hasher);
         (self.items.as_ptr() as usize).hash(&mut hasher);
         self.items.len().hash(&mut hasher);
-        let fingerprint = hasher.finish();
-        if !metrics_sort
-            && let Some((key, order)) = &*self.visible_cache.borrow()
-            && *key == fingerprint
-        {
-            return order.clone();
-        }
+        hasher.finish()
+    }
+    fn sorted_order(&self, fingerprint: u64, metrics_sort: bool) -> std::rc::Rc<Vec<usize>> {
         let filter = nav::Filter::parse(&self.filter);
         let match_all = self.filter.is_empty() && filter.is_ok();
         let mut order: Vec<usize> = (0..self.items.len())
@@ -537,7 +574,7 @@ impl App {
         let needs_more = self.current_view().is_some_and(|view| {
             view.columns.iter().any(|spec| match &spec.path {
                 Some(path) => !crate::views::metadata_path(path),
-                None => spec.title == "IMAGES",
+                None => spec.title == "IMAGES" || spec.computed.is_some(),
             })
         });
         if needs_more {
@@ -546,10 +583,12 @@ impl App {
             crate::watch::Projection::Metadata
         }
     }
-    /// The configured view for the current resource, if any.
+    /// The view for the current resource: views.yaml first, then the
+    /// built-in k9s-style columns for the kinds that have them.
     fn current_view(&self) -> Option<&crate::views::View> {
         let kind = self.kinds.get(self.kind_index)?;
-        crate::views::find(&self.views, &kind.group, &kind.version, &kind.plural)
+        let find = |views| crate::views::find(views, &kind.group, &kind.version, &kind.plural);
+        find(&self.views).or_else(|| find(crate::views::builtin()))
     }
     /// Text of the column titled `title` for sorting by any column.
     fn column_text(&self, object: &Value, title: &str) -> String {
@@ -557,9 +596,10 @@ impl App {
         if let Some(spec) = self
             .current_view()
             .and_then(|view| view.columns.iter().find(|spec| spec.title == title))
-            && spec.path.is_some()
+            && (spec.path.is_some() || spec.computed.is_some())
         {
-            return format::custom_value(spec, object, now);
+            let usage = self.table_metrics.usage(object, Instant::now());
+            return format::custom_value(spec, object, now, usage);
         }
         format::builtin_column(title).map_or_else(String::new, |column| column.value(object, now))
     }
@@ -950,6 +990,8 @@ pub fn run(mut options: Options) -> Result<()> {
         plugins,
         keymap,
         faults_only: false,
+        doc_search: doc_search::DocSearch::default(),
+        header: header_block::State::default(),
         ask_screen: None,
         ask_status: None,
         ask_thread: None,
@@ -999,6 +1041,7 @@ pub fn run(mut options: Options) -> Result<()> {
         table_metrics: Default::default(),
         items_generation: 0,
         visible_cache: Default::default(),
+        health_cache: Default::default(),
         metrics_resources: false,
         metrics_chart: false,
         overview: None,
@@ -1253,6 +1296,9 @@ pub fn run(mut options: Options) -> Result<()> {
                 .is_none_or(|last| last.elapsed() >= Duration::from_secs(15))
         {
             app.refresh_table_metrics();
+            dirty = true;
+        }
+        if app.poll_header_info() {
             dirty = true;
         }
         if app.poll_config(Instant::now()) {

@@ -94,6 +94,9 @@ pub struct Gateway {
     client: Option<Client>,
     pub context: String,
     pub server: String,
+    /// The kubeconfig cluster and user entry names of the context (display only).
+    pub cluster: String,
+    pub user: String,
     pub namespace: String,
     session: String,
     policy: Policy,
@@ -140,6 +143,8 @@ impl Gateway {
                 client: None,
                 context: "demo".into(),
                 server: "offline sample data".into(),
+                cluster: "demo".into(),
+                user: "demo".into(),
                 namespace,
                 session: "demo".into(),
                 policy: Policy {
@@ -186,6 +191,8 @@ impl Gateway {
             .and_then(|c| c.context.as_ref())
             .ok_or("Context not found in kubeconfig. Next: list contexts with `kubectl config get-contexts` and pass --context NAME")?
             .clone();
+        let cluster_name = context.cluster.clone();
+        let user_name = context.user.clone().unwrap_or_default();
         let cluster = raw
             .clusters
             .iter()
@@ -325,6 +332,8 @@ impl Gateway {
             session: format!("{name}:{serial}"),
             context: name,
             server,
+            cluster: cluster_name,
+            user: user_name,
             namespace,
             policy: Policy {
                 writable: options.writable,
@@ -354,6 +363,18 @@ impl Gateway {
     }
     pub fn is_demo(&self) -> bool {
         self.client.is_none()
+    }
+    /// The API server's version (`/version` gitVersion) for display; `None`
+    /// when it cannot be read.
+    pub async fn server_version(&self) -> Option<String> {
+        let Some(client) = &self.client else {
+            return Some("demo".into());
+        };
+        client
+            .apiserver_version()
+            .await
+            .ok()
+            .map(|info| info.git_version)
     }
     pub(crate) fn helm_reader(&self, namespace: &str) -> Result<crate::helm::Reader> {
         if !self.allow_helm {
@@ -402,6 +423,8 @@ impl Gateway {
             client: Some(client),
             context: "test".into(),
             server: "https://example.test".into(),
+            cluster: "test".into(),
+            user: "test".into(),
             namespace: namespace.into(),
             session: "test".into(),
             policy: Policy { writable: false },

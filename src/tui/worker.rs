@@ -6,6 +6,9 @@ pub(super) enum Task {
     List(String, String, String, String),
     Watch(String, String, String, String, crate::watch::Projection),
     Metrics(crate::metrics::MetricsScope, String, bool),
+    /// Header block data: cluster and user names, and on request the
+    /// Kubernetes version and cluster CPU/MEM usage. Background, like Metrics.
+    HeaderInfo(bool, bool),
     Inspect(String, String, String),
     Drill(String, String, String),
     Get(String, String, String),
@@ -106,8 +109,19 @@ pub(super) enum Task {
     BatchPrepare(Box<crate::gateway::BatchRequest>),
     BatchExecute(Box<crate::gateway::PreparedBatch>, String),
 }
+/// What the k9s-style header block shows beyond context and namespace.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(super) struct HeaderInfo {
+    pub(super) cluster: String,
+    pub(super) user: String,
+    /// `None` when not requested or unavailable.
+    pub(super) version: Option<String>,
+    /// Cluster (CPU %, memory %) of allocatable; `None` when not requested.
+    pub(super) usage: Option<(Option<u64>, Option<u64>)>,
+}
 pub(super) enum Reply {
     Connected(String, String, String, Vec<Kind>),
+    HeaderInfo(Option<HeaderInfo>),
     Items(Value),
     Detail(String),
     ScanPrepared(Result<Box<crate::scan::Plan>>),
@@ -543,6 +557,8 @@ pub(super) fn worker() -> Worker {
         rt.block_on(async move {
             let mut gateway: Option<Gateway> = None;
             let mut watch_job: Option<tokio::task::JoinHandle<()>> = None;
+            // Summed Node allocatable for the header's usage line, with its read time.
+            let mut header_allocatable = None;
             while let Some((epoch, task)) = commands.recv().await {
                 if matches!(&task, Task::Connect(_) | Task::Watch(..) | Task::List(..)) {
                     if let Some(job) = watch_job.take() { job.abort(); }
@@ -551,6 +567,7 @@ pub(super) fn worker() -> Worker {
                 let reply = match task {
                     Task::Connect(options) => {
                         gateway = None;
+                        header_allocatable = None;
                         match tokio::time::timeout(Duration::from_secs(15), Gateway::connect(options)).await {
                             Ok(Ok(g)) => {
                                 let reply = Reply::Connected(g.context.clone(), g.server.clone(), g.namespace.clone(), g.kinds.clone());
@@ -582,6 +599,24 @@ pub(super) fn worker() -> Worker {
                             }
                         }
                     }
+                    Task::HeaderInfo(version, usage) => Reply::HeaderInfo(match gateway.as_ref() {
+                        Some(g) => {
+                            let mut info = HeaderInfo { cluster: g.cluster.clone(), user: g.user.clone(), ..HeaderInfo::default() };
+                            if version {
+                                info.version = tokio::time::timeout(Duration::from_secs(5), g.server_version()).await.ok().flatten();
+                            }
+                            if usage {
+                                // Allocatable changes rarely and needs the full Node list:
+                                // read it every five minutes, usage on every request.
+                                if header_allocatable.as_ref().is_none_or(|(read, _): &(std::time::Instant, _)| read.elapsed() >= Duration::from_secs(300)) {
+                                    header_allocatable = Some((std::time::Instant::now(), crate::cluster_health::allocatable(g).await));
+                                }
+                                info.usage = Some(crate::cluster_health::usage(g, header_allocatable.as_ref().and_then(|(_, total)| *total)).await);
+                            }
+                            Some(info)
+                        }
+                        None => None,
+                    }),
                     Task::Metrics(scope, n, include_resources) => {
                         let result = if let Some(g) = gateway.as_ref() {
                             let future = async { if include_resources { crate::metrics::collect_with_allocations(g,scope,&n).await } else { crate::metrics::collect(g,scope,&n).await } };
@@ -880,7 +915,7 @@ pub(super) fn worker() -> Worker {
                                         Reply::Prepared(Box::new(prepared))
                                     },
                                     Task::Execute(p,a) => Reply::Notice(g.execute(*p,a).await?),
-                                    Task::YamlPrepare(..) | Task::YamlExecute(..) | Task::ApplyPrepare(..) | Task::ApplyExecute(..) | Task::NodeShellPrepare(..) | Task::NodeShellStart(..) | Task::DebugPrepare(..) | Task::DebugStart(..) | Task::ScanPrepare(..) | Task::ScanRun(..) | Task::Bench(..) | Task::NodeExecute(..) | Task::DashboardLogs(..) | Task::DashboardWorkloads(..) | Task::DashboardTail(..) | Task::Overview(..) | Task::Connect(_) | Task::Watch(..) | Task::Metrics(..) | Task::RunSession(..) | Task::RunForward(..) | Task::Directory(_) | Task::Manifest(_) | Task::Helm(..) | Task::HelmPrepare(..) | Task::HelmExecute(..) | Task::AskPrepare(..) | Task::AdvicePrepare(..) | Task::AdviceExecute(..) | Task::BatchPrepare(..) | Task::BatchExecute(..) => return Err("invalid worker task".into()),
+                                    Task::YamlPrepare(..) | Task::YamlExecute(..) | Task::ApplyPrepare(..) | Task::ApplyExecute(..) | Task::NodeShellPrepare(..) | Task::NodeShellStart(..) | Task::DebugPrepare(..) | Task::DebugStart(..) | Task::ScanPrepare(..) | Task::ScanRun(..) | Task::Bench(..) | Task::NodeExecute(..) | Task::DashboardLogs(..) | Task::DashboardWorkloads(..) | Task::DashboardTail(..) | Task::Overview(..) | Task::Connect(_) | Task::Watch(..) | Task::Metrics(..) | Task::HeaderInfo(..) | Task::RunSession(..) | Task::RunForward(..) | Task::Directory(_) | Task::Manifest(_) | Task::Helm(..) | Task::HelmPrepare(..) | Task::HelmExecute(..) | Task::AskPrepare(..) | Task::AdvicePrepare(..) | Task::AdviceExecute(..) | Task::BatchPrepare(..) | Task::BatchExecute(..) => return Err("invalid worker task".into()),
                                 })
                             };
                             match tokio::time::timeout(Duration::from_secs(25), future).await {

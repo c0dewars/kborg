@@ -61,7 +61,7 @@ def main():
         try:
             keys(expected="api-7d4f9")
             end=time.monotonic()+8
-            while ("LOADING" in screen.text().splitlines()[2] or "Request in progress" in screen.text().splitlines()[-1]) and time.monotonic()<end:drain()
+            while (any("LOADING" in line for line in screen.text().splitlines()[:9]) or "Request in progress" in screen.text().splitlines()[-1]) and time.monotonic()<end:drain()
             capture("resources")
             keys(b":helm\r","HELM / releases")
             capture("helm-releases")

@@ -166,10 +166,10 @@ def run(binary, helm, kubeconfig, context, namespace, chart1, chart2,
 
         try:
             # Startup discovery and the first list are asynchronous.
-            wait("CTX ", timeout=30)
+            wait("sort: ", timeout=30)
             wait("NAME", timeout=30)
             startup_deadline = time.monotonic() + 30
-            while ("LOADING" in screen.text().splitlines()[2]
+            while (any("LOADING" in line for line in screen.text().splitlines()[:9])
                    or "Request in progress" in screen.text().splitlines()[-1]):
                 if time.monotonic() > startup_deadline:
                     raise RuntimeError("Live UI startup did not become idle; output suppressed")

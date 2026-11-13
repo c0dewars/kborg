@@ -151,17 +151,70 @@ pub(super) enum Health {
     Attention,
     Neutral,
 }
+/// How a table row that needs attention is painted.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Severity {
+    /// Failing: the whole row is red (the theme's `danger`).
+    Error,
+    /// Starting, stopping or rolling out: yellow (the theme's `warning`).
+    Pending,
+}
+impl Severity {
+    pub(super) fn role(self) -> &'static str {
+        match self {
+            Self::Error => "danger",
+            Self::Pending => "warning",
+        }
+    }
+}
+/// Red for objects that report a failure (CrashLoopBackOff, Error, Failed,
+/// ImagePullBackOff, ErrImagePull, CreateContainerConfigError, OOMKilled,
+/// Evicted, NotReady, Unknown, ...), yellow for the rest that need attention
+/// (Pending, ContainerCreating, Terminating, not yet ready, rolling out).
+pub(super) fn severity(object: &Value) -> Option<Severity> {
+    let status = summary(object);
+    let starting = ["ContainerCreating", "PodInitializing", "Init:"]
+        .iter()
+        .any(|needle| status.contains(needle));
+    if health(object) != Health::Attention && !starting {
+        return None;
+    }
+    let failing = [
+        "Failed",
+        "Err",
+        "Crash",
+        "BackOff",
+        "NotReady",
+        "Unknown",
+        "OOMKilled",
+        "Evicted",
+        "Invalid",
+        "DeadlineExceeded",
+        "Lost",
+    ]
+    .iter()
+    .any(|needle| status.contains(needle));
+    Some(if failing {
+        Severity::Error
+    } else {
+        Severity::Pending
+    })
+}
 pub(super) fn health(object: &Value) -> Health {
     let status = summary(object);
+    // "Err" covers Error, ErrImagePull and ErrImageNeverPull.
     if [
         "Failed",
-        "Error",
+        "Err",
         "Crash",
         "BackOff",
         "NotReady",
         "Pending",
         "Unknown",
         "Terminating",
+        "OOMKilled",
+        "Evicted",
+        "Invalid",
     ]
     .iter()
     .any(|needle| status.contains(needle))
@@ -400,7 +453,7 @@ pub(super) fn resource_label(kind: &Kind) -> String {
 }
 /// Command reference shown under every generated key section in `?` help.
 /// Keys are not listed here: they come from the keymap registry.
-pub(super) const COMMAND_HELP: &str = "NAVIGATE LIKE K9S\n  :pod :pods :po           Singular, plural or discovered short name\n  :pod NAMESPACE          Resource in namespace; all means all namespaces\n  :pod /api|web           Resource plus regex filter\n  :pod app=api,tier=web    Server-side label selector\n  :pod @CONTEXT           Switch context; context names retain their case\n  :ctx / :ctx NAME        Context picker (Pod view) / direct switch (same view)\n  :ns / :ns NAME          Namespace picker / direct switch (Pod view)\n  :aliases                Resource alias and hotkey picker; Enter navigates\n  :pulses / :pu           Read-only cluster health snapshot\n  :xray po|svc|dp [NS]    Ownership and service relationship snapshot\n  :screendump / :sd       Browse saved redacted resource snapshots\n  :can u:NAME             Read-only RBAC subject view\n  :dir PATH               Browse local manifests; a reviews an apply\n  :helm [NAMESPACE]       Native release metadata\n  :history RELEASE        Selected release revision history\n  :keymap [TEXT] / :keys  Every action, its keys and view (filterable)\n  :q :q! :qa :Q :quit     Quit (in-flight mutations must finish)\n\nFILTER SYNTAX\n  /PATTERN                Case-insensitive regex over namespace/name/status\n  /!PATTERN               Inverse regex\n  /-f PATTERN             Fuzzy subsequence match\n  /-l LABEL_SELECTOR      Apply server-side label selector on Enter\n\nRESOURCE COMMANDS\n  :sort COLUMN [asc|desc] Sort by any header column; sort keys again reverse\n  :faults                 Only objects that need attention (same as the faults key)\n  :export                 Save the selected resource's redacted YAML\n  :discover               Refresh API discovery\n  :cp-from [-r] PATH [L]  Reviewed copy of a Pod file or directory\n  :cp-to [-r] LOCAL PATH  Reviewed copy to a new Pod file or directory; never replaces\n  :apply FILE / :dir a    Dry-run, diff and reviewed server-side apply\n  :ext [NAME]             Run a registered extension or k9s plugin on the selection\n  :debug [CONTAINER]      Reviewed ephemeral debug container and shell\n  :pf / :bench N C [PATH] Forward list / benchmark the selected loopback forward\n  :lint / :popeye         Read-only misconfiguration check for the namespace\n  :scan / :scan ns        Scan selected or namespace images (trivy/grype on PATH)\n  :rollback [REV]         Reviewed rollback of a Deployment/StatefulSet/DaemonSet\n  :trigger                Trigger a Job from the selected CronJob (reviewed)\n  :edit-container         Focused container image/resource editor\n  :kill                   Reviewed zero-grace Pod kill\n  :cordon :uncordon :drain Reviewed node maintenance\n  CPU/MEM snapshots refresh every 15s while the table is visible; - means\n  unknown, never zero. ~ indicates Metrics API omitted UID; creation checked.\n  Table CPU/MEM labels are rounded; describe or :metrics shows exact quantities.\n\nHELM AND LOGS\n  Helm Enter / r          Release revision history\n  History Enter / v       Explicit selected revision stored values\n  Helm i / u / t / c      Install / upgrade / test / separately install chart CRDs\n  History r / Ctrl-D      Rollback selected revision / uninstall current release\n  Helm d / m / y          Metadata / resource identities / metadata YAML\n  Helm Ctrl-R / /         Refresh / filter; Esc returns to previous view\n  Sources: local .tgz or explicit OCI :TAG / @sha256:DIGEST.\n  --helm-keyring requires native Helm provenance verification during prepare.\n  :helm-crds prepares create-only Namespaced CRDs, retained on uninstall.\n  :helm-test runs stored tests; :helm-crds-upgrade reviews schema changes.\n  :helm-crds-delete is explicit, checks live instances and needs stronger approval.\n  :helm-crds-migrate reviews storage rewrites; controller proof gates finalization.\n  :copilot advice on the selection; shows what is sent first.\n  :ask [QUESTION] asks Copilot about the screen behind the prompt; shows the exact text first.\n  f on an answer asks a follow-up about the same screen (reviewed again).\n  :explain asks Copilot about the error on the status line, with the screen.\n  :logs LABEL_SELECTOR    Explicit namespace-scoped multi-Pod log capture\n  Group reloads keep the same Pod UIDs; close and reopen to capture new Pods.\n  :logs-live [SELECTOR]   Opt in to announced Pod joins/departures (10s refresh)\n  Pod logs honor the default-container annotation, otherwise merge multiple\n  ordinary containers. Each merged line carries a namespace/Pod/container.\n\nKBORG COMMANDS\n  :actions                Discover actions with capability reasons\n  :scale :image :restart  Explicit reviewed workload operations\n  :metrics [resources]    Metrics / opt into requests-limit comparisons\n  :overview               Dashboard of up to nine explicit contexts\n  :themes                 Theme preview and custom palette creation\n  :ctx-config             Edit this context's settings in $EDITOR (theme, badge, read-only)\n\nCUSTOMIZE\n  keymap.yaml remaps any action above except fixed keys; hotkeys.yaml binds\n  Shift-0..9, Alt, F1..F12 or free Ctrl keys to commands; aliases.yaml adds\n  command names; views.yaml sets columns. All live in the KBorg config folder.\n\nLIMITS AND SAFETY\n  Context, namespace and mode remain visible; DEMO is sample data.\n  STALE and TRUNCATED indicate incomplete data. Regex uses bounded Rust regex\n  syntax; look-around and backreferences are unavailable.\n  :secrets lists key names; x reveals one\n  key for 30s; y/d show masked YAML (values as sizes). Values are never\n  exported, copied or kept after Esc.\n  The YAML editor edits existing namespaced non-Secret spec fields.\n  Hidden values, metadata and status are preserved.\n  Helm values are stored overrides with\n  known fields redacted; custom keys can remain confidential. Complete\n  review is mandatory for lifecycle changes. Raw storage, chart files and notes are excluded.\n  Marked rows change together only through one batch review: delete, restart\n  or CronJob suspend/resume, at most 50 objects of one kind, each dry-run and\n  policy-checked and approved with y/Enter; it stops at the first failure.\n  Every change shows a review first: y/Enter applies, n/Esc cancels.\n  --read-only browses without changes; an operator --config can switch features off.\n  Esc, Enter, Ctrl-C and review confirmations can never be remapped.";
+pub(super) const COMMAND_HELP: &str = "NAVIGATE LIKE K9S\n  :pod :pods :po           Singular, plural or discovered short name\n  :pod NAMESPACE          Resource in namespace; all means all namespaces\n  :pod /api|web           Resource plus regex filter\n  :pod app=api,tier=web    Server-side label selector\n  :pod @CONTEXT           Switch context; context names retain their case\n  :ctx / :ctx NAME        Context picker (Pod view) / direct switch (same view)\n  :ns / :ns NAME          Namespace picker / direct switch (Pod view)\n  :aliases                Resource alias and hotkey picker; Enter navigates\n  :pulses / :pu           Read-only cluster health snapshot\n  :xray po|svc|dp [NS]    Ownership and service relationship snapshot\n  :screendump / :sd       Browse saved redacted resource snapshots\n  :can u:NAME             Read-only RBAC subject view\n  :dir PATH               Browse local manifests; a reviews an apply\n  :helm [NAMESPACE]       Native release metadata\n  :history RELEASE        Selected release revision history\n  :keymap [TEXT] / :keys  Every action, its keys and view (filterable)\n  :q :q! :qa :Q :quit     Quit (in-flight mutations must finish)\n\nFILTER SYNTAX\n  /PATTERN                Case-insensitive regex over namespace/name/status\n  /!PATTERN               Inverse regex\n  /-f PATTERN             Fuzzy subsequence match\n  /-l LABEL_SELECTOR      Apply server-side label selector on Enter\n\nRESOURCE COMMANDS\n  :sort COLUMN [asc|desc] Sort by any header column; sort keys again reverse\n  :faults                 Only objects that need attention (same as the faults key)\n  :export                 Save the selected resource's redacted YAML\n  :discover               Refresh API discovery\n  :cp-from [-r] PATH [L]  Reviewed copy of a Pod file or directory\n  :cp-to [-r] LOCAL PATH  Reviewed copy to a new Pod file or directory; never replaces\n  :apply FILE / :dir a    Dry-run, diff and reviewed server-side apply\n  :ext [NAME]             Run a registered extension or k9s plugin on the selection\n  :debug [CONTAINER]      Reviewed ephemeral debug container and shell\n  :pf / :bench N C [PATH] Forward list / benchmark the selected loopback forward\n  :lint / :popeye         Read-only misconfiguration check for the namespace\n  :scan / :scan ns        Scan selected or namespace images (trivy/grype on PATH)\n  :rollback [REV]         Reviewed rollback of a Deployment/StatefulSet/DaemonSet\n  :trigger                Trigger a Job from the selected CronJob (reviewed)\n  :edit-container         Focused container image/resource editor\n  :kill                   Reviewed zero-grace Pod kill\n  :cordon :uncordon :drain Reviewed node maintenance\n  CPU/MEM snapshots refresh every 15s while the table is visible; - means\n  unknown, never zero. ~ indicates Metrics API omitted UID; creation checked.\n  Table CPU/MEM labels are rounded; describe or :metrics shows exact quantities.\n\nHELM AND LOGS\n  Helm Enter / r          Release revision history\n  History Enter / v       Explicit selected revision stored values\n  Helm i / u / t / c      Install / upgrade / test / separately install chart CRDs\n  History r / Ctrl-D      Rollback selected revision / uninstall current release\n  Helm d / m / y          Metadata / resource identities / metadata YAML\n  Helm Ctrl-R / /         Refresh / filter; Esc returns to previous view\n  Sources: local .tgz or explicit OCI :TAG / @sha256:DIGEST.\n  --helm-keyring requires native Helm provenance verification during prepare.\n  :helm-crds prepares create-only Namespaced CRDs, retained on uninstall.\n  :helm-test runs stored tests; :helm-crds-upgrade reviews schema changes.\n  :helm-crds-delete is explicit, checks live instances and needs stronger approval.\n  :helm-crds-migrate reviews storage rewrites; controller proof gates finalization.\n  :copilot advice on the selection; shows what is sent first.\n  :ask [QUESTION] asks Copilot about the screen behind the prompt; shows the exact text first.\n  Ctrl-G asks from any view; f on an answer asks a follow-up (reviewed again).\n  :explain asks Copilot about the error on the status line, with the screen.\n  :logs LABEL_SELECTOR    Explicit namespace-scoped multi-Pod log capture\n  Group reloads keep the same Pod UIDs; close and reopen to capture new Pods.\n  :logs-live [SELECTOR]   Opt in to announced Pod joins/departures (10s refresh)\n  Pod logs honor the default-container annotation, otherwise merge multiple\n  ordinary containers. Each merged line carries a namespace/Pod/container.\n\nDESCRIBE, YAML AND JSON\n  /TEXT then n / N        Search the text shown, ignoring case; Esc clears\n\nKBORG COMMANDS\n  :actions                Discover actions with capability reasons\n  :scale :image :restart  Explicit reviewed workload operations\n  :metrics [resources]    Metrics / opt into requests-limit comparisons\n  :overview               Dashboard of up to nine explicit contexts\n  :themes                 Theme preview and custom palette creation\n  :columns                This table's columns, predefined columns and how to change them\n  :ctx-config             Edit this context's settings in $EDITOR (theme, badge, read-only)\n\nCUSTOMIZE\n  keymap.yaml remaps any action above except fixed keys; hotkeys.yaml binds\n  Shift-0..9, Alt, F1..F12 or free Ctrl keys to commands; aliases.yaml adds\n  command names; views.yaml sets columns. All live in the KBorg config folder.\n\nLIMITS AND SAFETY\n  Context, namespace and mode remain visible; DEMO is sample data.\n  STALE and TRUNCATED indicate incomplete data. Regex uses bounded Rust regex\n  syntax; look-around and backreferences are unavailable.\n  :secrets lists key names; x reveals one\n  key for 30s; y/d show masked YAML (values as sizes). Values are never\n  exported, copied or kept after Esc.\n  The YAML editor edits existing namespaced non-Secret spec fields.\n  Hidden values, metadata and status are preserved.\n  Helm values are stored overrides with\n  known fields redacted; custom keys can remain confidential. Complete\n  review is mandatory for lifecycle changes. Raw storage, chart files and notes are excluded.\n  Marked rows change together only through one batch review: delete, restart\n  or CronJob suspend/resume, at most 50 objects of one kind, each dry-run and\n  policy-checked and approved with y/Enter; it stops at the first failure.\n  Every change shows a review first: y/Enter applies, n/Esc cancels.\n  --read-only browses without changes; an operator --config can switch features off.\n  Esc, Enter, Ctrl-C and review confirmations can never be remapped.";
 
 #[derive(Clone, Copy, Debug)]
 pub(super) struct Rect {
@@ -418,11 +471,16 @@ pub(super) struct Layout {
 impl Layout {
     #[cfg(test)]
     pub(super) fn new(width: u16, height: u16) -> Self {
-        Self::for_ui(width, height, &crate::ui_config::UiConfig::default())
+        let ui = crate::ui_config::UiConfig::default();
+        Self::for_chrome(width, height, &ui.chrome(), &ui)
     }
-    /// The resource table below and above the chrome rows ui.yaml keeps.
-    pub(super) fn for_ui(width: u16, height: u16, ui: &crate::ui_config::UiConfig) -> Self {
-        let chrome = ui.chrome();
+    /// The resource table between the chrome rows of the frame drawn.
+    pub(super) fn for_chrome(
+        width: u16,
+        height: u16,
+        chrome: &crate::ui_config::Chrome,
+        ui: &crate::ui_config::UiConfig,
+    ) -> Self {
         Self {
             table: Rect {
                 x: 0,
@@ -503,12 +561,16 @@ pub(super) fn view_columns(
         .enumerate()
         .filter(|(_, spec)| !spec.hidden && (wide || !spec.wide))
         .filter_map(|(index, spec)| {
-            let column = match &spec.path {
-                Some(_) => Column::Custom(u8::try_from(index).ok()?),
-                None => builtin_column(&spec.title)?,
+            let column = if spec.path.is_some() || spec.computed.is_some() {
+                Column::Custom(u8::try_from(index).ok()?)
+            } else {
+                builtin_column(&spec.title)?
             };
             let width = match column {
-                Column::Custom(_) => (spec.title.len() + 2).clamp(20, 32),
+                Column::Custom(_) => spec
+                    .width
+                    .map_or_else(|| (spec.title.len() + 2).clamp(20, 32), usize::from)
+                    .max(spec.title.len() + 1),
                 other => default_width(other),
             };
             Some((column, width))
@@ -524,10 +586,13 @@ pub(super) fn view_columns(
         columns.iter().map(|(_, w)| w).sum::<usize>() + columns.len().saturating_sub(1)
     };
     while used(&columns) + 12 > width && columns.len() > 1 {
-        let Some(last) = columns
-            .iter()
-            .rposition(|(column, _)| !matches!(column, Column::Name))
-        else {
+        // Drop from the right, but AGE (conventionally last) goes last of all.
+        let droppable = |keep_age: bool| {
+            columns.iter().rposition(|(column, _)| {
+                !matches!(column, Column::Name) && !(keep_age && matches!(column, Column::Age))
+            })
+        };
+        let Some(last) = droppable(true).or_else(|| droppable(false)) else {
             break;
         };
         columns.remove(last);
@@ -569,8 +634,21 @@ fn images(object: &Value) -> String {
         .collect::<Vec<_>>()
         .join(",")
 }
-/// A custom column's value; `|T` columns show the age of a timestamp.
-pub(super) fn custom_value(spec: &crate::views::ColumnSpec, object: &Value, now: i64) -> String {
+/// A custom or predefined column's value; `|T` columns show the age of a
+/// timestamp. `usage` feeds the predefined usage percentages.
+pub(super) fn custom_value(
+    spec: &crate::views::ColumnSpec,
+    object: &Value,
+    now: i64,
+    usage: Option<&table_metrics::Usage>,
+) -> String {
+    if let Some(computed) = spec.computed {
+        return crate::views::computed_value(
+            computed,
+            object,
+            usage.map(|usage| (usage.cpu_nanocores, usage.memory_bytes)),
+        );
+    }
     let values = spec
         .path
         .as_deref()
@@ -723,7 +801,7 @@ pub(super) fn table_line_custom(
             let text = match column {
                 Column::Custom(index) => custom
                     .get(usize::from(*index))
-                    .map_or_else(|| "-".into(), |spec| custom_value(spec, object, now)),
+                    .map_or_else(|| "-".into(), |spec| custom_value(spec, object, now, usage)),
                 Column::Age => age_styled(object, now, style.long_age()),
                 _ => {
                     return table_line_with_metrics(&[(*column, *width)], Some(object), now, usage);
@@ -807,15 +885,15 @@ pub(super) fn identity_spans(
 }
 /// Background of marked table rows: a tint of the theme's warning hue, so a
 /// mark reads differently from the accent-based cursor row. Each theme gets
-/// the strongest tint (up to 18%) that keeps text, status and mark colors at
-/// 4.5:1; low-contrast palettes get a lighter tint.
+/// the strongest tint (up to 18%) that keeps text, status, error-row and mark
+/// colors at 4.5:1; low-contrast palettes get a lighter tint.
 pub(super) fn mark_background(theme: &themes::Theme) -> themes::Rgb {
     let tint = |percent| blend(theme.get("background"), theme.get("warning"), percent);
     (2..=18)
         .rev()
         .map(tint)
         .find(|mark| {
-            ["text", "success", "warning"]
+            ["text", "success", "warning", "danger"]
                 .iter()
                 .all(|role| themes::contrast(theme.get(role), *mark) >= 4.5)
         })

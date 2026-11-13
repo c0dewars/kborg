@@ -143,9 +143,23 @@ views:
     columns: [NAME, READY, IMAGES, AGE]
 ```
 
-Keys can be `v1/pods`, `apps/v1/deployments`, `deployments.apps` or `deployments`. Built-in columns: `NAMESPACE`, `NAME`, `READY`, `STATUS`, `RSTS`, `AGE`, `NODE`, `IP`, `CPU`, `MEM`, `LABELS`, `IMAGES`. A custom column is `TITLE:.json.path`: dotted fields, `[N]` indexes, `[*]` for every element and `['key.with.dots']`. Attributes after `|`: `W` shows the column only in wide mode (Ctrl-W), `H` hides it, `N` sorts it numerically, `T` shows a timestamp as an age. Paths are only read, never evaluated as code; bounds are 64 KiB, 128 views and 24 columns per view. Columns that don't fit are dropped from the right; NAME always stays.
+Without a `views.yaml`, KBorg already shows the k9s columns for Nodes (NAME, STATUS, ROLE, ARCH, TAINTS, VERSION, CPU, %CPU, CPU/A, MEM, %MEM, MEM/A, AGE; wide mode adds OS-IMAGE, KERNEL, INTERNAL-IP, EXTERNAL-IP, LABELS), Deployments, StatefulSets, DaemonSets, Services, Jobs, CronJobs, PersistentVolumeClaims and Ingresses. Pods keep a width-aware default (CPU, MEM, NODE and IP appear as the terminal widens). `kborg views init` writes those built-in columns as a `views.yaml` to edit (it never replaces a file), and `:columns` in KBorg shows the current table's columns, every predefined column and how to change them. k9s's `PODS` count per Node is not available yet; `PODS-MAX` shows the Node's pod capacity.
 
-For ConfigMaps, ServiceAccounts, RBAC objects and other kinds whose built-in columns need only metadata, KBorg downloads only object metadata. A custom column whose path reads anything other than `.metadata.name`, `.namespace`, `.uid`, `.resourceVersion`, `.creationTimestamp`, `.deletionTimestamp` or `.labels` (or the built-in `IMAGES` column) makes that resource use full objects again, so every k9s path keeps working.
+Predefined columns are used by name alone:
+
+| For | Names |
+|---|---|
+| Any table | `NAMESPACE` `NAME` `READY` `STATUS` `RSTS` `AGE` `NODE` `IP` `CPU` `MEM` `LABELS` `IMAGES` |
+| Nodes | `ROLE` `ARCH` `TAINTS` `VERSION` `OS-IMAGE` `KERNEL` `RUNTIME` `INTERNAL-IP` `EXTERNAL-IP` `PODS-MAX` `%CPU` `%MEM` `CPU/A` `MEM/A` |
+| Pods | `%CPU/R` `%CPU/L` `%MEM/R` `%MEM/L` (usage against summed requests or limits; `n/a` when a container sets none) `QOS` `SA` `HOST-IP` |
+| Workloads | `UP-TO-DATE` `AVAILABLE` `DESIRED` `CURRENT` `COMPLETIONS` `SUCCEEDED` `SCHEDULE` `SUSPEND` `LAST-SCHEDULE` |
+| Other | `TYPE` `CLUSTER-IP` `PORTS` `CAPACITY` `VOLUME` `STORAGECLASS` `DATA` `CLASS` `HOSTS` |
+
+The usage percentages come from the metrics sample the table already refreshes every 15 seconds, so they add no requests. When a table is too narrow, columns are dropped from the right and `AGE` is dropped last.
+
+Keys can be `v1/pods`, `apps/v1/deployments`, `deployments.apps` or `deployments`. A custom column is `TITLE:.json.path`: dotted fields, `[N]` indexes, `[*]` for every element and `['key.with.dots']`. Attributes after `|`: `W` shows the column only in wide mode (Ctrl-W), `H` hides it, `N` sorts it numerically, `T` shows a timestamp as an age. Paths are only read, never evaluated as code; bounds are 64 KiB, 128 views and 24 columns per view. Columns that don't fit are dropped from the right; NAME always stays.
+
+For ConfigMaps, ServiceAccounts, RBAC objects and other kinds whose built-in columns need only metadata, KBorg downloads only object metadata. A custom column whose path reads anything other than `.metadata.name`, `.namespace`, `.uid`, `.resourceVersion`, `.creationTimestamp`, `.deletionTimestamp` or `.labels` (or the built-in `IMAGES` column, or a computed column such as `DATA`) makes that resource use full objects again, so every k9s path keeps working.
 
 Sorting: `N` `A` `S` `R` `C` `M` sort by name, age, status, readiness, CPU and memory, and pressing the same key again reverses the order. `:sort COLUMN [asc|desc]` sorts by any column in the header, including custom ones. The header marks the sorted column with `^` (ascending) or `v` (descending). A view's `sortColumn` applies when you open that resource.
 

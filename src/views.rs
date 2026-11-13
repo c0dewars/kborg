@@ -30,11 +30,335 @@ pub enum Segment {
     All,
 }
 
+/// A predefined column whose value is worked out from the object (and, for
+/// usage columns, the table's metrics sample) instead of read from one path.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Computed {
+    /// Node roles from the `node-role.kubernetes.io/*` labels.
+    Role,
+    /// Number of Node taints.
+    Taints,
+    /// Node address of type InternalIP / ExternalIP.
+    InternalIp,
+    ExternalIp,
+    /// Node usage as a percentage of the Node's own allocatable.
+    PercentCpu,
+    PercentMemory,
+    /// Node allocatable CPU in millicores / memory in Mi.
+    CpuAllocatable,
+    MemoryAllocatable,
+    /// Pod usage as a percentage of its containers' summed requests / limits.
+    PercentCpuRequest,
+    PercentCpuLimit,
+    PercentMemoryRequest,
+    PercentMemoryLimit,
+    /// Number of data keys in a ConfigMap or Secret.
+    DataKeys,
+}
+
+/// Predefined columns usable by bare title in views.yaml, beyond the table's
+/// own NAMESPACE, NAME, READY, STATUS, RSTS, AGE, NODE, IP, CPU, MEM, LABELS
+/// and IMAGES: (title, value, width, numeric, what it shows).
+enum Source {
+    Path(&'static str),
+    Computed(Computed),
+}
+const PREDEFINED: &[(&str, Source, u8, bool, &str)] = &[
+    // Nodes (the k9s node columns).
+    (
+        "ROLE",
+        Source::Computed(Computed::Role),
+        14,
+        false,
+        "Node roles",
+    ),
+    (
+        "ARCH",
+        Source::Path(".status.nodeInfo.architecture"),
+        6,
+        false,
+        "Node CPU architecture",
+    ),
+    (
+        "TAINTS",
+        Source::Computed(Computed::Taints),
+        6,
+        true,
+        "Number of Node taints",
+    ),
+    (
+        "VERSION",
+        Source::Path(".status.nodeInfo.kubeletVersion"),
+        15,
+        false,
+        "Kubelet version",
+    ),
+    (
+        "OS-IMAGE",
+        Source::Path(".status.nodeInfo.osImage"),
+        26,
+        false,
+        "Node operating system",
+    ),
+    (
+        "KERNEL",
+        Source::Path(".status.nodeInfo.kernelVersion"),
+        24,
+        false,
+        "Node kernel version",
+    ),
+    (
+        "RUNTIME",
+        Source::Path(".status.nodeInfo.containerRuntimeVersion"),
+        22,
+        false,
+        "Container runtime",
+    ),
+    (
+        "INTERNAL-IP",
+        Source::Computed(Computed::InternalIp),
+        15,
+        false,
+        "Node internal address",
+    ),
+    (
+        "EXTERNAL-IP",
+        Source::Computed(Computed::ExternalIp),
+        15,
+        false,
+        "Node external address",
+    ),
+    (
+        "PODS-MAX",
+        Source::Path(".status.allocatable.pods"),
+        8,
+        true,
+        "Pods the Node can run (allocatable)",
+    ),
+    (
+        "%CPU",
+        Source::Computed(Computed::PercentCpu),
+        5,
+        true,
+        "Node CPU usage / allocatable",
+    ),
+    (
+        "%MEM",
+        Source::Computed(Computed::PercentMemory),
+        5,
+        true,
+        "Node memory usage / allocatable",
+    ),
+    (
+        "CPU/A",
+        Source::Computed(Computed::CpuAllocatable),
+        7,
+        true,
+        "Node allocatable CPU (m)",
+    ),
+    (
+        "MEM/A",
+        Source::Computed(Computed::MemoryAllocatable),
+        8,
+        true,
+        "Node allocatable memory (Mi)",
+    ),
+    // Pods.
+    (
+        "%CPU/R",
+        Source::Computed(Computed::PercentCpuRequest),
+        6,
+        true,
+        "Pod CPU usage / requests",
+    ),
+    (
+        "%CPU/L",
+        Source::Computed(Computed::PercentCpuLimit),
+        6,
+        true,
+        "Pod CPU usage / limits",
+    ),
+    (
+        "%MEM/R",
+        Source::Computed(Computed::PercentMemoryRequest),
+        6,
+        true,
+        "Pod memory usage / requests",
+    ),
+    (
+        "%MEM/L",
+        Source::Computed(Computed::PercentMemoryLimit),
+        6,
+        true,
+        "Pod memory usage / limits",
+    ),
+    (
+        "QOS",
+        Source::Path(".status.qosClass"),
+        10,
+        false,
+        "Pod QoS class",
+    ),
+    (
+        "SA",
+        Source::Path(".spec.serviceAccountName"),
+        20,
+        false,
+        "Pod service account",
+    ),
+    (
+        "HOST-IP",
+        Source::Path(".status.hostIP"),
+        15,
+        false,
+        "IP of the Pod's Node",
+    ),
+    // Workloads.
+    (
+        "UP-TO-DATE",
+        Source::Path(".status.updatedReplicas"),
+        10,
+        true,
+        "Updated replicas",
+    ),
+    (
+        "AVAILABLE",
+        Source::Path(".status.availableReplicas"),
+        9,
+        true,
+        "Available replicas",
+    ),
+    (
+        "DESIRED",
+        Source::Path(".status.desiredNumberScheduled"),
+        7,
+        true,
+        "DaemonSet Pods wanted",
+    ),
+    (
+        "CURRENT",
+        Source::Path(".status.currentNumberScheduled"),
+        7,
+        true,
+        "DaemonSet Pods scheduled",
+    ),
+    (
+        "COMPLETIONS",
+        Source::Path(".spec.completions"),
+        11,
+        true,
+        "Job completions wanted",
+    ),
+    (
+        "SUCCEEDED",
+        Source::Path(".status.succeeded"),
+        9,
+        true,
+        "Job Pods succeeded",
+    ),
+    (
+        "SCHEDULE",
+        Source::Path(".spec.schedule"),
+        16,
+        false,
+        "CronJob schedule",
+    ),
+    (
+        "SUSPEND",
+        Source::Path(".spec.suspend"),
+        7,
+        false,
+        "CronJob suspended",
+    ),
+    (
+        "LAST-SCHEDULE",
+        Source::Path(".status.lastScheduleTime"),
+        13,
+        false,
+        "CronJob last run (add |T for an age)",
+    ),
+    // Services, storage and configuration.
+    (
+        "TYPE",
+        Source::Path(".spec.type"),
+        13,
+        false,
+        "Service type",
+    ),
+    (
+        "CLUSTER-IP",
+        Source::Path(".spec.clusterIP"),
+        15,
+        false,
+        "Service cluster IP",
+    ),
+    (
+        "PORTS",
+        Source::Path(".spec.ports[*].port"),
+        16,
+        false,
+        "Service ports",
+    ),
+    (
+        "CAPACITY",
+        Source::Path(".spec.resources.requests.storage"),
+        9,
+        false,
+        "PersistentVolumeClaim size",
+    ),
+    (
+        "VOLUME",
+        Source::Path(".spec.volumeName"),
+        24,
+        false,
+        "Bound PersistentVolume",
+    ),
+    (
+        "STORAGECLASS",
+        Source::Path(".spec.storageClassName"),
+        16,
+        false,
+        "Storage class",
+    ),
+    (
+        "DATA",
+        Source::Computed(Computed::DataKeys),
+        5,
+        true,
+        "Number of keys in a ConfigMap",
+    ),
+    (
+        "CLASS",
+        Source::Path(".spec.ingressClassName"),
+        12,
+        false,
+        "Ingress class",
+    ),
+    (
+        "HOSTS",
+        Source::Path(".spec.rules[*].host"),
+        30,
+        false,
+        "Ingress hosts",
+    ),
+];
+
+/// Titles and descriptions of every predefined column, for `:columns`.
+pub fn predefined() -> impl Iterator<Item = (&'static str, &'static str)> {
+    PREDEFINED
+        .iter()
+        .map(|(title, _, _, _, about)| (*title, *about))
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ColumnSpec {
     pub title: String,
-    /// `None` for a built-in column named by `title`.
+    /// `None` for a built-in or computed column named by `title`.
     pub path: Option<Vec<Segment>>,
+    /// A predefined computed column.
+    pub computed: Option<Computed>,
+    /// Column width in cells; `None` sizes it from the title.
+    pub width: Option<u8>,
     /// `|W`: shown only in wide mode (Ctrl-W).
     pub wide: bool,
     /// `|H`: hidden.
@@ -186,12 +510,28 @@ fn parse_column(text: &str) -> Result<ColumnSpec> {
         ));
     }
     let attributes = attributes.to_ascii_uppercase();
+    let title = title.to_ascii_uppercase();
+    // A bare title that names a predefined column takes its value from it.
+    let known = PREDEFINED
+        .iter()
+        .find(|(name, ..)| path.is_none() && *name == title);
+    let (path, computed, width, numeric) = match known {
+        Some((_, Source::Path(text), width, numeric, _)) => {
+            (Some(parse_path(text)?), None, Some(*width), *numeric)
+        }
+        Some((_, Source::Computed(computed), width, numeric, _)) => {
+            (None, Some(*computed), Some(*width), *numeric)
+        }
+        None => (path, None, None, false),
+    };
     Ok(ColumnSpec {
-        title: title.to_ascii_uppercase(),
+        title,
         path,
+        computed,
+        width,
         wide: attributes.contains('W'),
         hidden: attributes.contains('H'),
-        numeric: attributes.contains('N'),
+        numeric: numeric || attributes.contains('N'),
         time: attributes.contains('T'),
     })
 }
@@ -249,6 +589,159 @@ pub fn parse(text: &str) -> Result<Views> {
 
 pub fn load() -> Result<Views> {
     load_from(&safety::config_dir()?.join("views.yaml"))
+}
+
+/// The columns KBorg shows without a views.yaml, in views.yaml's own format:
+/// the k9s columns for the kinds listed. `kborg views init` writes this text
+/// as a starting file. Pods keep the table's own width-aware default.
+pub const BUILTIN: &str = "\
+# KBorg table columns (k9s views.yaml format). Edit, save, and a running KBorg
+# applies the file within a second. Delete a resource to get its default back.
+#
+# A column is a predefined name, or TITLE:.json.path for any field. Attributes
+# follow a |: W shown only in wide mode (Ctrl-W), H hidden, N numeric sort,
+# T timestamp shown as an age. Example: ZONE:.metadata.labels['topology.kubernetes.io/zone']|W
+#
+# Predefined names: NAMESPACE NAME READY STATUS RSTS AGE NODE IP CPU MEM LABELS IMAGES
+#   Nodes: ROLE ARCH TAINTS VERSION OS-IMAGE KERNEL RUNTIME INTERNAL-IP EXTERNAL-IP
+#          PODS-MAX %CPU %MEM CPU/A MEM/A
+#   Pods: %CPU/R %CPU/L %MEM/R %MEM/L QOS SA HOST-IP
+#   Workloads: UP-TO-DATE AVAILABLE DESIRED CURRENT COMPLETIONS SUCCEEDED SCHEDULE SUSPEND LAST-SCHEDULE
+#   Other: TYPE CLUSTER-IP PORTS CAPACITY VOLUME STORAGECLASS DATA CLASS HOSTS
+# :columns in KBorg lists them with what each shows.
+views:
+  v1/nodes:
+    columns: [NAME, STATUS, ROLE, ARCH, TAINTS, VERSION, CPU, '%CPU', CPU/A, MEM, '%MEM', MEM/A, 'OS-IMAGE|W', 'KERNEL|W', 'INTERNAL-IP|W', 'EXTERNAL-IP|W', 'LABELS|W', AGE]
+  apps/v1/deployments:
+    columns: [NAMESPACE, NAME, READY, UP-TO-DATE, AVAILABLE, STATUS, 'IMAGES|W', 'LABELS|W', AGE]
+  apps/v1/statefulsets:
+    columns: [NAMESPACE, NAME, READY, STATUS, 'IMAGES|W', 'LABELS|W', AGE]
+  apps/v1/daemonsets:
+    columns: [NAMESPACE, NAME, DESIRED, CURRENT, READY, STATUS, 'IMAGES|W', 'LABELS|W', AGE]
+  v1/services:
+    columns: [NAMESPACE, NAME, TYPE, CLUSTER-IP, PORTS, 'LABELS|W', AGE]
+  batch/v1/jobs:
+    columns: [NAMESPACE, NAME, COMPLETIONS, SUCCEEDED, STATUS, 'IMAGES|W', AGE]
+  batch/v1/cronjobs:
+    columns: [NAMESPACE, NAME, SCHEDULE, SUSPEND, 'LAST-SCHEDULE|T', STATUS, AGE]
+  v1/persistentvolumeclaims:
+    columns: [NAMESPACE, NAME, STATUS, VOLUME, CAPACITY, STORAGECLASS, AGE]
+  networking.k8s.io/v1/ingresses:
+    columns: [NAMESPACE, NAME, CLASS, HOSTS, AGE]
+";
+
+/// The built-in views, parsed once.
+pub fn builtin() -> &'static Views {
+    static VIEWS: std::sync::OnceLock<Views> = std::sync::OnceLock::new();
+    VIEWS.get_or_init(|| parse(BUILTIN).unwrap_or_default())
+}
+
+/// Write the built-in columns as a starting views.yaml; never replaces a file.
+pub fn init() -> Result<std::path::PathBuf> {
+    let path = safety::config_dir()?.join("views.yaml");
+    safety::write_new(&path, BUILTIN.as_bytes())
+        .map_err(|_| format!("{} already exists or cannot be created", path.display()))?;
+    Ok(path)
+}
+
+fn quantity(value: &Value, parse: fn(&str) -> Result<(u64, bool)>) -> Option<u64> {
+    parse(value.as_str()?).ok().map(|(amount, _)| amount)
+}
+
+/// Sum of a resource across a Pod's ordinary containers; `None` when any
+/// container leaves it unset, as a percentage of a partial sum would mislead.
+fn pod_total(object: &Value, bound: &str, resource: &str) -> Option<u64> {
+    let parse = if resource == "cpu" {
+        crate::metrics::normalize_cpu_quantity
+    } else {
+        crate::metrics::normalize_memory_quantity
+    };
+    let containers = object["spec"]["containers"].as_array()?;
+    if containers.is_empty() {
+        return None;
+    }
+    containers.iter().try_fold(0u64, |total, container| {
+        total.checked_add(quantity(&container["resources"][bound][resource], parse)?)
+    })
+}
+
+fn percent(used: Option<u64>, of: Option<u64>) -> String {
+    match (used, of) {
+        (Some(used), Some(of)) if of > 0 => ((u128::from(used) * 100) / u128::from(of)).to_string(),
+        _ => "n/a".into(),
+    }
+}
+
+/// The value of a computed column. `usage` is the object's metrics sample as
+/// (CPU nanocores, memory bytes), when the table has one.
+pub fn computed_value(computed: Computed, object: &Value, usage: Option<(u64, u64)>) -> String {
+    let cpu = usage.map(|(cpu, _)| cpu);
+    let memory = usage.map(|(_, memory)| memory);
+    let allocatable = |resource: &str| {
+        quantity(
+            &object["status"]["allocatable"][resource],
+            if resource == "cpu" {
+                crate::metrics::normalize_cpu_quantity
+            } else {
+                crate::metrics::normalize_memory_quantity
+            },
+        )
+    };
+    let address = |kind: &str| {
+        object["status"]["addresses"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|address| address["type"] == kind)
+            .and_then(|address| address["address"].as_str())
+            .unwrap_or("-")
+            .to_owned()
+    };
+    match computed {
+        Computed::Role => {
+            let mut roles: Vec<&str> = object["metadata"]["labels"]
+                .as_object()
+                .into_iter()
+                .flatten()
+                .filter_map(|(key, value)| {
+                    key.strip_prefix("node-role.kubernetes.io/").or_else(|| {
+                        (key == "kubernetes.io/role")
+                            .then(|| value.as_str())
+                            .flatten()
+                    })
+                })
+                .filter(|role| !role.is_empty())
+                .collect();
+            roles.sort_unstable();
+            roles.dedup();
+            if roles.is_empty() {
+                "-".into()
+            } else {
+                roles.join(",")
+            }
+        }
+        Computed::Taints => object["spec"]["taints"]
+            .as_array()
+            .map_or(0, Vec::len)
+            .to_string(),
+        Computed::InternalIp => address("InternalIP"),
+        Computed::ExternalIp => address("ExternalIP"),
+        Computed::PercentCpu => percent(cpu, allocatable("cpu")),
+        Computed::PercentMemory => percent(memory, allocatable("memory")),
+        Computed::CpuAllocatable => {
+            allocatable("cpu").map_or_else(|| "-".into(), |nano| (nano / 1_000_000).to_string())
+        }
+        Computed::MemoryAllocatable => allocatable("memory")
+            .map_or_else(|| "-".into(), |bytes| (bytes / (1024 * 1024)).to_string()),
+        Computed::PercentCpuRequest => percent(cpu, pod_total(object, "requests", "cpu")),
+        Computed::PercentCpuLimit => percent(cpu, pod_total(object, "limits", "cpu")),
+        Computed::PercentMemoryRequest => percent(memory, pod_total(object, "requests", "memory")),
+        Computed::PercentMemoryLimit => percent(memory, pod_total(object, "limits", "memory")),
+        Computed::DataKeys => {
+            let count = |field: &str| object[field].as_object().map_or(0, serde_json::Map::len);
+            (count("data") + count("binaryData")).to_string()
+        }
+    }
 }
 
 /// Load from an explicit path (live reload watches the config folder).
@@ -337,6 +830,126 @@ mod tests {
         ] {
             assert!(!metadata_path(&parse_path(path)?), "{path}");
         }
+        Ok(())
+    }
+    #[test]
+    fn predefined_columns_resolve_by_name_and_compute_their_values() -> Result<()> {
+        let views = parse(
+            "views:\n  v1/nodes:\n    columns: [NAME, ROLE, VERSION, '%CPU', 'OS-IMAGE|W', UNKNOWN-NAME, ZONE:.metadata.labels.zone]\n",
+        )?;
+        let columns = &views["v1/nodes"].columns;
+        assert_eq!(columns[1].computed, Some(Computed::Role));
+        assert_eq!(columns[1].width, Some(14));
+        assert!(columns[2].path.is_some() && columns[2].computed.is_none());
+        assert!(
+            columns[3].numeric,
+            "predefined numeric columns sort as numbers"
+        );
+        assert!(columns[4].wide && columns[4].path.is_some());
+        // An unknown bare name stays a (hidden) built-in lookup, as before.
+        assert!(columns[5].path.is_none() && columns[5].computed.is_none());
+        assert!(
+            columns[6].width.is_none(),
+            "custom paths size from their title"
+        );
+
+        let node = json!({"metadata":{"labels":{"node-role.kubernetes.io/worker":"","kubernetes.io/role":"agent"}},"spec":{"taints":[{"key":"x"}]},"status":{"allocatable":{"cpu":"2","memory":"4Gi"},"addresses":[{"type":"ExternalIP","address":"203.0.113.9"}]}});
+        let usage = Some((500_000_000, 1024 * 1024 * 1024));
+        assert_eq!(computed_value(Computed::Role, &node, None), "agent,worker");
+        assert_eq!(computed_value(Computed::Taints, &node, None), "1");
+        assert_eq!(
+            computed_value(Computed::ExternalIp, &node, None),
+            "203.0.113.9"
+        );
+        assert_eq!(computed_value(Computed::InternalIp, &node, None), "-");
+        assert_eq!(computed_value(Computed::PercentCpu, &node, usage), "25");
+        assert_eq!(computed_value(Computed::PercentMemory, &node, usage), "25");
+        assert_eq!(computed_value(Computed::PercentCpu, &node, None), "n/a");
+        assert_eq!(
+            computed_value(Computed::CpuAllocatable, &node, None),
+            "2000"
+        );
+        assert_eq!(
+            computed_value(Computed::MemoryAllocatable, &node, None),
+            "4096"
+        );
+        assert_eq!(computed_value(Computed::Role, &json!({}), None), "-");
+
+        let pod = json!({"spec":{"containers":[
+            {"resources":{"requests":{"cpu":"250m","memory":"256Mi"},"limits":{"cpu":"1"}}},
+            {"resources":{"requests":{"cpu":"250m","memory":"256Mi"},"limits":{"cpu":"1"}}}]}});
+        assert_eq!(
+            computed_value(Computed::PercentCpuRequest, &pod, usage),
+            "100"
+        );
+        assert_eq!(computed_value(Computed::PercentCpuLimit, &pod, usage), "25");
+        assert_eq!(
+            computed_value(Computed::PercentMemoryRequest, &pod, usage),
+            "200"
+        );
+        // One container without a memory limit: no honest percentage.
+        assert_eq!(
+            computed_value(Computed::PercentMemoryLimit, &pod, usage),
+            "n/a"
+        );
+        assert_eq!(
+            computed_value(Computed::DataKeys, &json!({"data":{"a":"1","b":"2"}}), None),
+            "2"
+        );
+        Ok(())
+    }
+    #[test]
+    fn built_in_views_parse_and_name_only_known_columns() -> Result<()> {
+        let views = parse(BUILTIN)?;
+        assert_eq!(&views, builtin());
+        let nodes = find(&views, "", "v1", "nodes").ok_or("nodes view")?;
+        for title in [
+            "ROLE",
+            "ARCH",
+            "TAINTS",
+            "VERSION",
+            "%CPU",
+            "CPU/A",
+            "%MEM",
+            "MEM/A",
+            "OS-IMAGE",
+            "KERNEL",
+            "INTERNAL-IP",
+            "EXTERNAL-IP",
+        ] {
+            assert!(
+                nodes.columns.iter().any(|spec| spec.title == title),
+                "{title}"
+            );
+        }
+        const TABLE: [&str; 12] = [
+            "NAMESPACE",
+            "NAME",
+            "READY",
+            "STATUS",
+            "RSTS",
+            "AGE",
+            "NODE",
+            "IP",
+            "CPU",
+            "MEM",
+            "LABELS",
+            "IMAGES",
+        ];
+        for (resource, view) in &views {
+            for spec in &view.columns {
+                assert!(
+                    spec.path.is_some()
+                        || spec.computed.is_some()
+                        || TABLE.contains(&spec.title.as_str()),
+                    "{resource}: {} is not a known column",
+                    spec.title
+                );
+            }
+        }
+        // ConfigMaps keep their metadata-only rows: no built-in view reads their data.
+        assert!(find(&views, "", "v1", "configmaps").is_none());
+        assert!(predefined().count() >= 35);
         Ok(())
     }
 }
