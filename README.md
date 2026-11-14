@@ -28,7 +28,7 @@
 ## Why KBorg
 
 - **You already know the keys.** `:pods`, `:deploy`, `/` to filter, `l` logs, `s` shell, `d` describe, Ctrl-D delete. k9s commands, aliases, `views.yaml`, `hotkeys.yaml` and plugins work the way you expect.
-- **It is fast.** First data in 0.06 s where k9s takes 0.69 s, about a quarter of its memory on the same cluster, and an 18 MB binary. Moving through 20,000 Pods takes the same 8 ms per key as 5,000. [How this was measured](#performance).
+- **It is fast.** First data in 0.06 s where k9s takes 0.69 s, about a quarter of its memory on the same cluster, and a 13 MB binary. Moving through 20,000 Pods takes the same 8 ms per key as 5,000. [How this was measured](#performance).
 - **Every cluster at once.** A dashboard of up to nine clusters side by side: Pod health, restarts, OOM kills, Node usage, degraded workloads and recent warnings. Tail one workload across all of them in a single pane.
 - **Nothing changes without a review.** Scale, delete, edit, apply, drain: each shows exactly what it will do, checks it with a server dry run where Kubernetes supports one, and waits for `y`. `--read-only` turns changes off entirely.
 - **Works out of the box.** No flags to learn. Your kubeconfig works as it does in kubectl, including `aws`, `gcloud` and `kubelogin` helpers. KBorg shows the context it is about to connect to and asks first.
@@ -116,7 +116,9 @@ KBorg shows the context, cluster and namespace and asks before it connects. From
 | Ctrl-D, Ctrl-K | Delete, force kill |
 | `Space` | Mark rows for one batch delete, restart or suspend |
 | `c`, `u`, `r` on Nodes | Cordon, uncordon, drain |
-| `N` `A` `S` `R` `C` `M`, `:sort COLUMN` | Sort by name, age, status, readiness, CPU, memory, or any column |
+| `N` `A` `S` `R` `T` `P` `C` `M`, `:sort COLUMN` | Sort by name, age, status, readiness, restarts, namespace, CPU, memory, or any column |
+| `Shift-Left` `Shift-Right`, `Shift-Up` `Shift-Down` | Move the sort to the next column; sort it ascending or descending. A click on a column title does the same |
+| Mouse | Click a row, a column title, a key hint in the header or a footer button; double-click opens a row; the wheel scrolls. `Ctrl-Y` (copy mode) hands the mouse back to the terminal to select text |
 | Ctrl-Z, Ctrl-W | Only rows that need attention; wide columns |
 | `D`, `kborg dashboard` | Dashboard |
 | `:helm`, `:secrets`, `:lint`, `:scan`, `:metrics` | Releases, Secrets, checks, scans, metrics |
@@ -135,7 +137,7 @@ Speed is a design goal, and the numbers below are measured, not estimated.
 | Memory, 1,000 objects | **28 MiB** | 118 MiB |
 | Memory, 5,000 objects with churn | **71 MiB** | 174 MiB |
 | CPU, 5,000 objects with churn | **2.8 %** | 6.8 % |
-| Binary size | **18 MB** | 140 MB |
+| Binary size | **13 MB** | 140 MB |
 
 In KBorg's own scale test, a key press redraws in about 8 ms with 5,000 or with 20,000 Pods in the table, and filtering 20,000 Pods takes 0.4 s. These come from one Apple M2 Pro against local clusters; expect different absolute numbers on yours. [Method and full results](docs/PERFORMANCE_COMPARISON.md) · [the regression gate in CI](docs/PERFORMANCE.md).
 

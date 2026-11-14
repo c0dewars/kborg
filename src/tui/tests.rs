@@ -95,6 +95,9 @@ fn harness() -> Harness {
             wide: false,
             sort_desc: false,
             sort_column: None,
+            clicks: std::cell::RefCell::new(Vec::new()),
+            copy_mode: false,
+            last_click: None,
             recent: Default::default(),
             last_scope: (String::new(), String::new(), usize::MAX),
             known_namespaces: vec![],
@@ -135,6 +138,8 @@ fn harness() -> Harness {
             table_metrics: Default::default(),
             items_generation: 0,
             visible_cache: Default::default(),
+            sorted_cache: Default::default(),
+            filter_text: Default::default(),
             health_cache: Default::default(),
             metrics_resources: false,
             metrics_chart: false,
@@ -1507,14 +1512,15 @@ fn resize_reflows_details_and_confirmation_cannot_approve_hidden_review() {
         })
         .collect();
     assert!(displayed.starts_with(&text));
-    assert!(confirmation_fits("Short review", "test/api", 80, 24));
+    assert!(confirmation_fits("Short review", "test/api", 80, 24, 3));
     assert!(!confirmation_fits(
         &"long review ".repeat(30),
         "test/api",
         28,
-        12
+        12,
+        3
     ));
-    assert!(!confirmation_fits("Review", "test/api", 20, 8));
+    assert!(!confirmation_fits("Review", "test/api", 20, 8, 3));
     app.modal = Modal::Metrics("CPU: |.-#|\nMEM: |--#|".into(), 0);
     assert!(screen(&app, 60, 12).join("\n").contains("CPU: |.-#|"));
     app.modal = Modal::Containers(
@@ -1778,17 +1784,9 @@ fn resource_table_uses_every_column_and_mouse_never_changes_resource() {
         let frame = screen(&app, w, h).join("\n");
         assert!(!frame.contains("RESOURCES [Tab]") && !frame.contains("WORKLOADS"));
     }
-    app.mouse(
-        MouseEvent {
-            kind: MouseEventKind::Down(crossterm::event::MouseButton::Left),
-            column: 3,
-            // The second table row: border, column header, first row.
-            row: app.layout(120, 32).table.y + 3,
-            modifiers: KeyModifiers::NONE,
-        },
-        120,
-        32,
-    );
+    // The second table row: border, column header, first row.
+    let row = app.layout(120, 32).table.y + 3;
+    assert_eq!(click(&mut app, 3, row, 120, 32), Ok(false));
     assert_eq!(app.selected, 1);
     assert_eq!(app.kind(), "pods");
     app.selector = "app=api".into();
@@ -1799,6 +1797,249 @@ fn resource_table_uses_every_column_and_mouse_never_changes_resource() {
     let frame = screen(&app, 120, 24).join("\n");
     assert!(frame.contains("FILTERED") && frame.contains("FIELD:spec.nodeName=worker-a"));
     assert!(screen(&app, 28, 10).join("\n").contains("FILTERED"));
+}
+fn mouse_event(kind: MouseEventKind, column: u16, row: u16) -> MouseEvent {
+    MouseEvent {
+        kind,
+        column,
+        row,
+        modifiers: KeyModifiers::NONE,
+    }
+}
+fn click(app: &mut App, column: u16, row: u16, width: u16, height: u16) -> Result<bool> {
+    app.mouse(
+        mouse_event(
+            MouseEventKind::Down(crossterm::event::MouseButton::Left),
+            column,
+            row,
+        ),
+        width,
+        height,
+    )
+}
+/// (column, row) of the first cell of `text` in a drawn frame.
+fn find_on_screen(app: &App, width: u16, height: u16, text: &str) -> Option<(u16, u16)> {
+    screen(app, width, height)
+        .iter()
+        .enumerate()
+        .find_map(|(row, line)| {
+            line.find(text)
+                .map(|at| (line[..at].chars().count() as u16, row as u16))
+        })
+}
+#[test]
+fn sort_column_moves_with_shift_arrows_letters_and_header_clicks() -> Result<()> {
+    let (mut app, _replies, _commands) = harness();
+    app.items = shared(vec![object("a"), object("b")]);
+    let (w, h) = (120, 32);
+    let titles: Vec<String> = table_columns(&app, usize::from(app.layout(w, h).table.width - 5))
+        .into_iter()
+        .map(|(column, _)| column.title().to_owned())
+        .collect();
+    assert!(titles.len() >= 4, "{titles:?}");
+    let start = titles
+        .iter()
+        .position(|title| title == "NAME")
+        .ok_or("no NAME column")?;
+    assert_eq!(app.sort_title(), "NAME");
+    // Shift-Right and Shift-Left walk the columns as drawn and wrap around.
+    app.sort_step(true, w, h);
+    let next = &titles[(start + 1) % titles.len()];
+    assert!(
+        column_matches(
+            builtin_column(next).ok_or("column")?,
+            next,
+            &app.sort_title()
+        ),
+        "{} after NAME, got {}",
+        next,
+        app.sort_title()
+    );
+    assert!(!app.sort_desc);
+    app.sort_step(false, w, h);
+    assert_eq!(app.sort_title(), "NAME");
+    for _ in 0..titles.len() {
+        app.sort_step(true, w, h);
+    }
+    assert_eq!(app.sort_title(), "NAME", "a full turn comes back");
+    // The keys themselves, through the keymap.
+    app.key_event(KeyCode::Right, KeyModifiers::SHIFT)?;
+    assert_ne!(app.sort_title(), "NAME");
+    app.key_event(KeyCode::Down, KeyModifiers::SHIFT)?;
+    assert!(app.sort_desc, "Shift-Down sorts descending");
+    let column = app.sort_title();
+    app.key_event(KeyCode::Up, KeyModifiers::SHIFT)?;
+    assert!(!app.sort_desc && app.sort_title() == column);
+    // k9s letters: Shift-T restarts, Shift-P namespace, Shift-A age.
+    app.key(KeyCode::Char('T'))?;
+    assert_eq!(app.sort, Sort::Restarts);
+    app.key(KeyCode::Char('P'))?;
+    assert_eq!(app.sort, Sort::Namespace);
+    app.key(KeyCode::Char('A'))?;
+    assert_eq!(app.sort, Sort::Age);
+    app.key(KeyCode::Char('O'))?;
+    assert_eq!(app.sort_title(), "NODE");
+    // A click on a column title sorts by it; a second click reverses.
+    let (x, y) = find_on_screen(&app, w, h, "STATUS").ok_or("STATUS title not drawn")?;
+    click(&mut app, x + 1, y, w, h)?;
+    assert_eq!(app.sort, Sort::Status);
+    assert!(app.sort_column.is_none() && !app.sort_desc);
+    screen(&app, w, h);
+    click(&mut app, x + 1, y, w, h)?;
+    assert!(app.sort == Sort::Status && app.sort_desc);
+    // The header marks the sorted column.
+    assert!(screen(&app, w, h).join("\n").contains("STATUSv"));
+    // Under an open view the titles are not buttons.
+    app.modal = Modal::Detail("text".into(), 0);
+    screen(&app, w, h);
+    click(&mut app, x + 1, y, w, h)?;
+    assert!(app.sort == Sort::Status && app.sort_desc);
+    Ok(())
+}
+#[test]
+fn header_hints_and_view_footers_are_buttons() -> Result<()> {
+    let (mut app, _replies, _commands) = harness();
+    app.items = shared(vec![object("a"), object("b")]);
+    let (w, h) = (130, 36);
+    // The command hint in the header opens the prompt, like its key.
+    let (x, y) = find_on_screen(&app, w, h, "<:>").ok_or("command hint not drawn")?;
+    click(&mut app, x + 5, y, w, h)?;
+    assert!(matches!(app.modal, Modal::Input("Command", _)));
+    // While text is typed, a letter hint is not pressed for a click.
+    let (x, y) = find_on_screen(&app, w, h, "<d>").ok_or("describe hint not drawn")?;
+    click(&mut app, x, y, w, h)?;
+    assert!(matches!(&app.modal, Modal::Input("Command", text) if text.is_empty()));
+    // A view's footer: Esc closes it, the wheel scrolls it.
+    app.modal = Modal::Detail((0..200).map(|n| format!("line {n}\n")).collect(), 0);
+    screen(&app, w, h);
+    for _ in 0..2 {
+        app.mouse(mouse_event(MouseEventKind::ScrollDown, 10, 20), w, h)?;
+    }
+    assert!(matches!(app.modal, Modal::Detail(_, offset) if offset > 0));
+    // The footer is the row above the last one.
+    let footer = &screen(&app, w, h)[usize::from(h) - 2];
+    let x = footer.find("Esc close").ok_or("footer not drawn")? as u16;
+    click(&mut app, x + 2, h - 2, w, h)?;
+    assert!(matches!(app.modal, Modal::None), "{footer}");
+    // Hint rows: every segment that starts with its key is a button.
+    app.clicks.borrow_mut().clear();
+    app.add_hint_clicks(7, "y/Enter execute | n/Esc cancel");
+    app.add_hint_clicks(
+        8,
+        "PgUp/PgDown read all changes  Type target  Enter apply  Esc back",
+    );
+    use crate::keymap::Key;
+    assert_eq!(
+        app.click_at(3, 7),
+        Some(ClickAction::Keys(vec![Key::Char('y'), Key::Enter]))
+    );
+    assert_eq!(
+        app.click_at(20, 7),
+        Some(ClickAction::Keys(vec![Key::Char('n'), Key::Esc]))
+    );
+    assert_eq!(app.click_at(16, 7), None, "the separator is not a button");
+    assert_eq!(
+        app.click_at(0, 8),
+        Some(ClickAction::Keys(vec![Key::PageUp, Key::PageDown]))
+    );
+    assert_eq!(app.click_at(33, 8), None, "\"Type target\" names no key");
+    assert_eq!(
+        app.click_at(46, 8),
+        Some(ClickAction::Keys(vec![Key::Enter]))
+    );
+    assert_eq!(app.click_at(60, 8), Some(ClickAction::Keys(vec![Key::Esc])));
+    // In a typed (strict) review the click presses Enter, never the letter.
+    app.modal = Modal::Input("Command", String::new());
+    assert!(!app.letters_are_actions());
+    app.modal = Modal::None;
+    assert!(app.letters_are_actions());
+    // Context help lists the new sort keys and copy mode.
+    let help = context_help(&mut app)?;
+    for expected in [
+        "Sort by restarts",
+        "Sort by the next column to the right",
+        "Sort the current column descending",
+        "Copy mode",
+    ] {
+        assert!(help.contains(expected), "{expected}: {help}");
+    }
+    // Destructive actions are told apart.
+    for label in ["delete", "delete all marked", "kill", "drain", "uninstall"] {
+        assert!(header_block::risky(label), "{label}");
+    }
+    for label in ["describe", "logs", "edit", "dashboard", "scale"] {
+        assert!(!header_block::risky(label), "{label}");
+    }
+    Ok(())
+}
+#[test]
+fn double_click_opens_a_row_and_copy_mode_releases_the_mouse() -> Result<()> {
+    let (mut app, _replies, mut commands) = harness();
+    app.items = shared(vec![object("a"), object("b")]);
+    let (w, h) = (120, 32);
+    let row = app.layout(w, h).table.y + 3;
+    click(&mut app, 3, row, w, h)?;
+    assert!(app.selected == 1 && matches!(app.modal, Modal::None));
+    assert!(commands.try_recv().is_err(), "one click only selects");
+    click(&mut app, 3, row, w, h)?;
+    assert!(
+        !matches!(app.modal, Modal::None) || commands.try_recv().is_ok(),
+        "the second click opens the row like Enter"
+    );
+    // Copy mode: nothing to release when the mouse was never captured.
+    app.modal = Modal::None;
+    assert!(!app.mouse_captured());
+    app.key_event(KeyCode::Char('y'), KeyModifiers::CONTROL)?;
+    assert!(
+        !app.copy_mode && app.status.contains("not captured"),
+        "{}",
+        app.status
+    );
+    app.command("mouse")?;
+    assert!(!app.copy_mode);
+    app.options.mouse = true;
+    assert!(app.mouse_captured());
+    app.copy_mode = true;
+    assert!(!app.mouse_captured());
+    assert!(screen(&app, w, h).join("\n").contains("COPY MODE"));
+    Ok(())
+}
+#[test]
+fn filter_and_sort_caches_follow_the_filter_the_sort_and_the_items() {
+    let (mut app, _replies, _commands) = harness();
+    let names = |app: &App| -> Vec<String> {
+        app.visible()
+            .iter()
+            .map(|object| object["metadata"]["name"].as_str().unwrap_or("").to_owned())
+            .collect()
+    };
+    app.items = shared(["delta", "alpha", "charlie", "bravo"].map(object).to_vec());
+    app.items_generation += 1;
+    assert_eq!(names(&app), ["alpha", "bravo", "charlie", "delta"]);
+    // Typing a filter narrows the cached order; it keeps the sort.
+    app.filter = "a".into();
+    assert_eq!(names(&app), ["alpha", "bravo", "charlie", "delta"]);
+    app.filter = "al|br".into();
+    assert_eq!(names(&app), ["alpha", "bravo"]);
+    assert!(app.filter_text.borrow().is_some() && app.sorted_cache.borrow().is_some());
+    app.sort_desc = true;
+    assert_eq!(names(&app), ["bravo", "alpha"]);
+    app.sort_desc = false;
+    app.filter = "!al".into();
+    assert_eq!(names(&app), ["bravo", "charlie", "delta"]);
+    // New items: both caches are rebuilt for the new generation.
+    app.items = shared(["zulu", "alpha", "albert"].map(object).to_vec());
+    app.items_generation += 1;
+    app.filter = "al".into();
+    assert_eq!(names(&app), ["albert", "alpha"]);
+    // Clearing the filter gives the cached text back.
+    app.filter.clear();
+    assert_eq!(names(&app), ["albert", "alpha", "zulu"]);
+    assert!(app.filter_text.borrow().is_none());
+    // Pressing the sort key again reverses the cached order.
+    app.set_sort(Sort::Name);
+    assert!(app.sort_desc);
+    assert_eq!(names(&app), ["zulu", "alpha", "albert"]);
 }
 #[test]
 fn full_width_frame_shows_health_and_centered_actions_without_clear() {
@@ -1814,7 +2055,7 @@ fn full_width_frame_shows_health_and_centered_actions_without_clear() {
     assert!(render(&app, 120, 32, &mut output).is_ok());
     assert!(!output.windows(4).any(|window| window == b"\x1b[2J"));
     app.modal = Modal::Picker("Actions", app.action_menu(), 0);
-    let rect = modal_rect(&app.modal, 120, 32);
+    let rect = modal_rect(&app.modal, 120, 32, app.view_top(120, 32));
     assert!(rect.x > 0 && rect.y > 3 && rect.width < 120);
     let frame = screen(&app, 120, 32).join("\n");
     assert!(frame.contains("[OFF]") && frame.contains("Interactive pod shell"));
@@ -2833,7 +3074,7 @@ fn overview_input_enforces_byte_boundary_and_keeps_active_tail_visible() {
     let text = format!("{},ACTIVE-TAIL", "a".repeat(155));
     app.modal = Modal::Input(OVERVIEW_CONTEXTS_LABEL, text.clone());
     for (width, height) in [(28, 10), (48, 12), (80, 24), (120, 32)] {
-        let rect = modal_rect(&app.modal, width, height);
+        let rect = modal_rect(&app.modal, width, height, app.view_top(width, height));
         let lines = input_lines(
             OVERVIEW_CONTEXTS_LABEL,
             &text,
@@ -3025,13 +3266,14 @@ fn mutation_and_session_reviews_never_approve_lossy_unicode_or_overflow() -> Res
     assert!(displayed.is_ascii());
     assert!(displayed.contains("\\u{6771}\\u{4eac}\\\\u{e9}"));
     assert!(displayed.contains("\\u{e9}"));
-    assert!(!confirmation_fits(summary, "test/api", 28, 10));
-    assert!(confirmation_fits(summary, "test/api", 120, 40));
+    assert!(!confirmation_fits(summary, "test/api", 28, 10, 3));
+    assert!(confirmation_fits(summary, "test/api", 120, 40, 9));
     assert!(!confirmation_fits(
         &"é".repeat(200_000),
         "test/api",
         65535,
-        65535
+        65535,
+        9
     ));
     // Real data cell rendering cannot silently replace the escaped characters.
     assert_eq!(display(&displayed, displayed.len()), displayed);
@@ -5748,7 +5990,7 @@ fn header_block_shows_identity_namespaces_keys_and_centered_title() {
 }
 
 #[test]
-fn header_block_yields_to_the_bar_when_small_configured_or_in_other_views() -> Result<()> {
+fn header_block_stays_on_every_view_and_yields_to_the_bar_when_small_or_configured() -> Result<()> {
     let (mut app, _replies, _commands) = harness();
     app.items = shared(ui_pods());
     let block = |app: &App, w, h| screen(app, w, h)[2].starts_with(" Context ");
@@ -5767,10 +6009,77 @@ fn header_block_yields_to_the_bar_when_small_configured_or_in_other_views() -> R
     app.ui = crate::ui_config::parse("header:\n  compact: true\n")?;
     assert!(screen(&app, 160, 40)[0].contains("CTX test"));
     app.ui = crate::ui_config::UiConfig::default();
-    // Detail views keep the bar, and with it their full height.
+    // Every view keeps the block: its panel opens below it, and the hints
+    // and the middle column describe the view in front.
     app.modal = Modal::Detail("kind: Pod\nmetadata:\n  name: api".into(), 0);
     let frame = screen(&app, 160, 40);
+    assert!(frame[2].starts_with(" Context    test"), "{}", frame[2]);
+    assert!(
+        frame[2].contains("View") && frame[2].contains("Pod / details"),
+        "{}",
+        frame[2]
+    );
+    assert!(frame[9].contains("REDACTED INSPECTION"), "{}", frame[9]);
+    assert!(hint_shown(&frame, "/", "search") && hint_shown(&frame, "q", "close"));
+    assert!(hint_shown(&frame, "Esc", "back") && !hint_shown(&frame, "0", "all"));
+    assert!(
+        !hint_shown(&frame, "l", "logs"),
+        "table actions are not offered here"
+    );
+    let top = app.view_top(160, 40);
+    let rect = modal_rect(&app.modal, 160, 40, top);
+    assert_eq!((top, rect.y, rect.height), (9, 9, 28));
+    // The review fit check counts the rows the view really has.
+    let review = "line\n".repeat(26);
+    assert!(confirmation_fits(&review, "test/api", 160, 40, 3));
+    assert!(!confirmation_fits(&review, "test/api", 160, 40, top));
+    // A small terminal keeps the bar for views too.
+    let frame = screen(&app, 80, 24);
     assert!(frame[1].contains("CTX test") && frame[3].contains("REDACTED INSPECTION"));
+    assert_eq!(modal_rect(&app.modal, 80, 24, app.view_top(80, 24)).y, 3);
+    // Logs name their Pod in the block; full-screen logs take its rows back.
+    app.log_target = Some(LogTarget {
+        namespace: "test".into(),
+        pod: "api".into(),
+        container: Some("app".into()),
+        uid: "uid-api".into(),
+        previous: false,
+        follow: true,
+        all: false,
+        dynamic: false,
+        membership: None,
+    });
+    let mut view =
+        crate::ui_logs::LogView::new("INFO started".into(), crate::logs::ReadOptions::default());
+    app.modal = Modal::Follow(Box::new(crate::ui_logs::LogView::new(
+        "INFO started".into(),
+        crate::logs::ReadOptions::default(),
+    )));
+    let frame = screen(&app, 160, 40);
+    assert!(
+        frame[3].contains("Pod") && frame[3].contains("test/api"),
+        "{}",
+        frame[3]
+    );
+    assert!(
+        frame[4].contains("Container") && frame[4].contains("app"),
+        "{}",
+        frame[4]
+    );
+    assert!(
+        hint_shown(&frame, "e", "errors") && frame[9].contains("LOGS"),
+        "{}",
+        frame[9]
+    );
+    view.fullscreen = true;
+    app.modal = Modal::Follow(Box::new(view));
+    let frame = screen(&app, 160, 40);
+    assert!(
+        !frame[2].starts_with(" Context") && frame[2].contains("LOGS"),
+        "{}",
+        frame[2]
+    );
+    app.log_target = None;
     // The command prompt keeps the block and takes two rows from the table.
     app.modal = Modal::None;
     let rows = app.layout(160, 40).table_rows();
@@ -5991,7 +6300,14 @@ fn context_help_shows_only_the_actions_of_the_kind_in_front() -> Result<()> {
     show_kind(&mut app, "nodes");
     let nodes = context_help(&mut app)?;
     assert!(nodes.contains("ACTIONS ON THE SELECTED NODE"), "{nodes}");
-    for expected in ["Pods on the selected Node", "Review cordon", "Review drain"] {
+    // Nodes are cluster-scoped: edit and delete are offered there too.
+    for expected in [
+        "Pods on the selected Node",
+        "Review cordon",
+        "Review drain",
+        "YAML editor",
+        "Reviewed deletion",
+    ] {
         assert!(nodes.contains(expected), "{expected}: {nodes}");
     }
     for absent in [
@@ -5999,8 +6315,7 @@ fn context_help_shows_only_the_actions_of_the_kind_in_front() -> Result<()> {
         "port-forward",
         "Attach",
         "Copy namespace",
-        "YAML spec editor",
-        "Reviewed deletion",
+        "Scale a",
     ] {
         assert!(
             !nodes.contains(absent),

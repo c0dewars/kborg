@@ -19,7 +19,7 @@ KBorg — Kubernetes operations, under your control (kborg --version for the ver
   kborg list RESOURCE             Bounded resource table; --json for pipelines
   kborg get RESOURCE NAME         Redacted JSON; --yaml for YAML inspection
   kborg yaml-template RESOURCE NAME   Safe editable spec template with UID/version
-  kborg yaml-edit RESOURCE NAME FILE  Reviewed spec patch
+  kborg yaml-edit RESOURCE NAME FILE  Reviewed patch (fields, labels, annotations)
   kborg view RESOURCE NAME --interactive  Native searchable JSON/YAML pager
   kborg view RESOURCE NAME --tool ABS [--tool-arg ARG]  Reviewed tool view
   kborg logs POD [CONTAINER]      Optional --follow or --previous
@@ -41,20 +41,20 @@ KBorg — Kubernetes operations, under your control (kborg --version for the ver
   kborg helm test RELEASE                       Run reviewed stored test hooks
   kborg helm rollback RELEASE REVISION           Reviewed stored revision rollback
   kborg helm uninstall RELEASE                  Reviewed release/resource deletion
-  kborg scale [RESOURCE] NAME REPLICAS   Deployment/StatefulSet scale (0..20)
+  kborg scale [RESOURCE] NAME REPLICAS   Deployment/StatefulSet scale (0..10000)
   kborg restart [RESOURCE] NAME    Guarded Deployment/StatefulSet/DaemonSet restart
   kborg set-image [RESOURCE] NAME CONTAINER IMAGE   Reviewed image change
   kborg set-resources [RESOURCE] NAME CONTAINER CPU_REQ MEM_REQ CPU_LIMIT MEM_LIMIT
-  kborg delete RESOURCE NAME      Guarded deletion; no force
+  kborg delete RESOURCE NAME      Reviewed deletion of any kind; no force
   kborg kill POD                  Reviewed zero-grace Pod kill
   kborg trigger|suspend|resume CRONJOB   Run a CronJob now, or pause/resume its schedule
   kborg rollback [RESOURCE] NAME [REV]   Reviewed rollback to a previous revision
   kborg cordon NODE               Review and disable node scheduling
   kborg uncordon NODE             Review and enable node scheduling
-  kborg drain NODE [SECONDS]      Reviewed eviction; default 120s, maximum 300s
+  kborg drain NODE [SECONDS]      Reviewed eviction; default 600s, maximum 3600s
   kborg exec POD CONTAINER -- COMMAND [ARG...]   Reviewed exec; --interactive enables stdin/TTY
   kborg attach POD CONTAINER      Output-only; --interactive enables stdin/TTY
-  kborg forward POD LOCAL REMOTE SECONDS   Loopback only, up to 300 seconds
+  kborg forward POD LOCAL REMOTE SECONDS   Loopback only, up to 43200 seconds (12h)
   kborg cp-from POD CONTAINER /PATH LOCAL   Reviewed copy of one file (or --recursive directory) to a new local path
   kborg apply FILE.yaml           Reviewed server-side apply (dry run, diff, no force)
   kborg node-shell NODE           Reviewed privileged Pod + nsenter root shell; deleted after
@@ -80,7 +80,7 @@ KBorg — Kubernetes operations, under your control (kborg --version for the ver
 Options (put KBorg flags before exec's -- separator):
   --context NAME     --namespace NAME / -n NAME (all or "*" for every namespace)
   --kubeconfig FILE  --read-only (no changes)   --config FILE (operator restrictions)
-  --interactive     --session-seconds 1..3600    --log-seconds 1..86400
+  --interactive     --session-seconds 1..43200   --log-seconds 1..86400
   --session-escape KEY  Local key that ends a full-TTY session (default ctrl-])
   --metrics-resources  --selector LABELS / -l LABELS (ui/list/watch/logs)
   --tail 1..2000      --since-seconds 1..86400   --head (logs only)
@@ -112,7 +112,7 @@ Helm install/upgrade needs a context with a static token or client certificate,
 because the helm binary receives those credentials.
 Interactive exec/attach sessions are a full TTY like kubectl exec -it (vim, top,
 less work): the remote program controls your terminal, unfiltered. Ctrl-] (or
---session-escape KEY) disconnects; resizes are forwarded; 1..3600s, 16MiB output/
+--session-escape KEY) disconnects; resizes are forwarded; 1..43200s, 16MiB output/
 8MiB input; terminal modes are reset on return. Follow defaults 1h; rolling
 display 256KiB/2000 lines, 64MiB wire cap and per-second flood limits.
 

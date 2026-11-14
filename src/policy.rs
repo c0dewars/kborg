@@ -62,6 +62,18 @@ pub struct Target {
     pub version: String,
 }
 
+impl Target {
+    /// What a typed confirmation must equal: `namespace/name`, or the name
+    /// alone for a cluster-scoped object.
+    pub fn confirmation(&self) -> String {
+        if self.namespace.is_empty() {
+            self.name.clone()
+        } else {
+            format!("{}/{}", self.namespace, self.name)
+        }
+    }
+}
+
 pub struct Approval {
     target: Target,
     action: Action,
@@ -69,30 +81,67 @@ pub struct Approval {
     consumed: bool,
 }
 
+/// Most replicas a reviewed scale may ask for.
+pub const MAX_REPLICAS: i32 = 10_000;
+
+pub fn system_namespace(namespace: &str) -> bool {
+    ["kube-system", "kube-public", "kube-node-lease"].contains(&namespace)
+}
+
 #[derive(Clone)]
 pub struct Policy {
     pub writable: bool,
+    /// Changes in kube-system, kube-public and kube-node-lease
+    /// (operator config `allow_system_namespaces`).
+    pub system_namespaces: bool,
+    /// Changes to cluster-scoped objects such as Nodes, Namespaces and
+    /// ClusterRoles (operator config `allow_cluster_scoped`).
+    pub cluster_scoped: bool,
+}
+impl Policy {
+    /// The restrictive policy: no system namespaces, no cluster-scoped objects.
+    pub fn strict(writable: bool) -> Self {
+        Self {
+            writable,
+            system_namespaces: false,
+            cluster_scoped: false,
+        }
+    }
+    /// Whether the target's scope is open to changes at all.
+    pub fn scope(&self, namespace: &str) -> Result<()> {
+        if namespace.is_empty() {
+            if !self.cluster_scoped {
+                return Err(
+                    "cluster-scoped changes are off (operator config allow_cluster_scoped: false)"
+                        .into(),
+                );
+            }
+        } else if system_namespace(namespace) && !self.system_namespaces {
+            return Err(
+                "system-namespace changes are off (operator config allow_system_namespaces: false)"
+                    .into(),
+            );
+        }
+        Ok(())
+    }
 }
 
 impl Policy {
     pub fn check(&self, target: &Target, action: &Action) -> Result<()> {
         if !self.writable {
-            return Err("READ ONLY: mutations are disabled; opt in with --write".into());
+            return Err(
+                "READ ONLY: changes are off in this session (--read-only or operator config)"
+                    .into(),
+            );
         }
-        if target.namespace.is_empty()
-            || target.namespace == "kube-system"
-            || target.namespace == "kube-public"
-            || target.namespace == "kube-node-lease"
-        {
-            return Err("cluster-scoped and system-namespace mutations are disabled".into());
-        }
+        self.scope(&target.namespace)?;
         if target.uid.is_empty() || target.version.is_empty() {
             return Err("target has no UID/resourceVersion".into());
         }
         match action {
             Action::Scale(n)
                 if ["deployments", "statefulsets"].contains(&target.resource.as_str())
-                    && (0..=20).contains(n) =>
+                    && (0..=MAX_REPLICAS).contains(n) =>
             {
                 Ok(())
             }
@@ -116,20 +165,8 @@ impl Policy {
             {
                 Ok(())
             }
-            Action::Delete
-                if [
-                    "pods",
-                    "deployments",
-                    "statefulsets",
-                    "daemonsets",
-                    "cronjobs",
-                    "services",
-                    "jobs",
-                ]
-                .contains(&target.resource.as_str()) =>
-            {
-                Ok(())
-            }
+            // Any kind can be deleted after its review, as in kubectl and k9s.
+            Action::Delete => Ok(()),
             Action::Kill if target.resource == "pods" => Ok(()),
             Action::Trigger | Action::Suspend(_) if target.resource == "cronjobs" => Ok(()),
             Action::Rollback(revision)
@@ -139,14 +176,17 @@ impl Policy {
             {
                 Ok(())
             }
-            _ => Err("operation family is disabled by policy (scale range: 0..20)".into()),
+            _ => Err(format!(
+                "this action is not available for {} (scale range: 0..{MAX_REPLICAS})",
+                target.resource
+            )),
         }
     }
 }
 
 impl Approval {
     pub fn confirm(target: Target, action: Action, typed: &str) -> Result<Self> {
-        if typed != format!("{}/{}", target.namespace, target.name) {
+        if typed != target.confirmation() {
             return Err("confirmation must exactly match namespace/name".into());
         }
         Ok(Self {
@@ -177,10 +217,14 @@ mod tests {
     #[test]
     fn workload_operations_respect_family_write_and_namespace_boundaries() {
         let mut target = target();
-        let mut policy = Policy { writable: true };
+        let mut policy = Policy::strict(true);
         target.resource = "statefulsets".into();
         assert!(policy.check(&target, &Action::Scale(0)).is_ok());
-        assert!(policy.check(&target, &Action::Scale(21)).is_err());
+        assert!(
+            policy
+                .check(&target, &Action::Scale(MAX_REPLICAS + 1))
+                .is_err()
+        );
         for resource in ["deployments", "statefulsets", "daemonsets"] {
             target.resource = resource.into();
             assert!(policy.check(&target, &Action::Restart).is_ok());
@@ -206,7 +250,7 @@ mod tests {
                 resources: None,
             },
         };
-        let policy = Policy { writable: true };
+        let policy = Policy::strict(true);
         for resource in ["deployments", "statefulsets", "daemonsets", "cronjobs"] {
             let mut target = target();
             target.resource = resource.into();
@@ -262,11 +306,7 @@ mod tests {
                 image: "private/image:tag".into(),
             },
         ] {
-            assert!(
-                Policy { writable: false }
-                    .check(&target(), &action)
-                    .is_err()
-            );
+            assert!(Policy::strict(false).check(&target(), &action).is_err());
         }
     }
     #[test]
@@ -300,10 +340,47 @@ mod tests {
         );
     }
     #[test]
-    fn restricts_scope_and_scale() {
-        let p = Policy { writable: true };
+    fn open_policy_reaches_system_namespaces_and_cluster_objects() {
+        let open = Policy {
+            writable: true,
+            system_namespaces: true,
+            cluster_scoped: true,
+        };
+        let strict = Policy::strict(true);
         let mut t = target();
-        assert!(p.check(&t, &Action::Scale(21)).is_err());
+        // Delete is for every kind; workload actions are not.
+        t.resource = "configmaps".into();
+        assert!(strict.check(&t, &Action::Delete).is_ok());
+        assert!(strict.check(&t, &Action::Restart).is_err());
+        t.namespace = "kube-system".into();
+        assert!(open.check(&t, &Action::Delete).is_ok());
+        assert!(
+            strict
+                .check(&t, &Action::Delete)
+                .is_err_and(|error| error.contains("allow_system_namespaces"))
+        );
+        // A cluster-scoped object has no namespace and is confirmed by name.
+        t.namespace.clear();
+        t.resource = "nodes".into();
+        assert!(open.check(&t, &Action::Delete).is_ok());
+        assert!(
+            strict
+                .check(&t, &Action::Delete)
+                .is_err_and(|error| error.contains("allow_cluster_scoped"))
+        );
+        assert_eq!(t.confirmation(), "app");
+        assert!(Approval::confirm(t.clone(), Action::Delete, "app").is_ok());
+        assert!(Approval::confirm(t, Action::Delete, "/app").is_err());
+        // Read-only wins over everything.
+        let mut read_only = open;
+        read_only.writable = false;
+        assert!(read_only.check(&target(), &Action::Delete).is_err());
+    }
+    #[test]
+    fn restricts_scope_and_scale() {
+        let p = Policy::strict(true);
+        let mut t = target();
+        assert!(p.check(&t, &Action::Scale(MAX_REPLICAS + 1)).is_err());
         t.namespace = "kube-system".into();
         assert!(p.check(&t, &Action::Restart).is_err());
     }

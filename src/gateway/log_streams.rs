@@ -72,7 +72,7 @@ impl Gateway {
         let options = options.validate()?;
         let read_options = read_options.validate()?;
         if !self.logs {
-            return Err("logs may contain sensitive data; opt in with --allow-logs".into());
+            return Err("logs are off in this session (operator config allow_logs: false)".into());
         }
         if !safety::valid_id(ns)
             || name.is_empty()
@@ -173,7 +173,7 @@ impl Gateway {
             return Err("invalid log container".into());
         }
         if !self.logs {
-            return Err("logs may contain sensitive data; opt in with --allow-logs".into());
+            return Err("logs are off in this session (operator config allow_logs: false)".into());
         }
         if self.is_demo() {
             if !self.demo.iter().any(|v| {
@@ -207,7 +207,7 @@ impl Gateway {
     ) -> Result<String> {
         let read_options = read_options.validate()?;
         if !self.logs {
-            return Err("logs may contain sensitive data; opt in with --allow-logs".into());
+            return Err("logs are off in this session (operator config allow_logs: false)".into());
         }
         crate::logs::validate_merge_target(ns, name, uid)?;
         let feed = if self.is_demo() {
@@ -235,7 +235,7 @@ impl Gateway {
         let options = options.validate()?;
         let read_options = read_options.validate()?;
         if !self.logs {
-            return Err("logs may contain sensitive data; opt in with --allow-logs".into());
+            return Err("logs are off in this session (operator config allow_logs: false)".into());
         }
         crate::logs::validate_merge_target(ns, name, uid)?;
         if self.is_demo() {
@@ -280,7 +280,7 @@ impl Gateway {
     ) -> Result<crate::logs::LogMembership> {
         use crate::logs::{LogMembership, LogParent, PodLogSelection};
         if !self.logs {
-            return Err("logs may contain sensitive data; opt in with --allow-logs".into());
+            return Err("logs are off in this session (operator config allow_logs: false)".into());
         }
         if !safety::valid_id(namespace) {
             return Err("workload logs require one concrete namespace".into());
@@ -550,7 +550,7 @@ impl Gateway {
         read: crate::logs::ReadOptions,
     ) -> Result<crate::logs::MergedLogFeed> {
         if !self.logs {
-            return Err("logs may contain sensitive data; opt in with --allow-logs".into());
+            return Err("logs are off in this session (operator config allow_logs: false)".into());
         }
         membership.verify_connection(&self.session)?;
         if self.is_demo() {

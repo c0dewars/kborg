@@ -261,7 +261,7 @@ CI requires format, clippy with reviewed exceptions, tests, dependency vulnerabi
 |---|---|---|
 | `sanitizer` | `safety::safe_text`, `safe_lines`, `review_text`, `review_display` | no control/bidi/zero-width output, bounded, idempotent; review text is exact or refused; review display is ASCII and reversible |
 | `kubeconfig` | kubeconfig text (`gateway::parse_config_text`) | names bounded, plain, unique across YAML documents; file references resolved |
-| `manifest` | local manifest parse, `flatten`, `body` (apply) | no Secret survives; ≤16 objects; body keeps the file's namespace or the default only when unset; protected namespaces refused |
+| `manifest` | local manifest parse, `flatten`, `body` (apply) | no Secret survives; ≤64 objects; body keeps the file's namespace or the default only when unset; system namespaces and cluster-scoped objects follow the policy (strict in the fuzz target) |
 | `archive` | strict tar extraction (file copy) | nothing written outside the new directory, no links or special files, private modes, counts match, failure leaves nothing |
 | `k9s_views`, `k9s_hotkeys`, `k9s_aliases`, `k9s_plugins` | k9s `views.yaml`, `hotkeys.yaml`, `aliases.yaml`, `plugins.yaml` import | bounded, plain text; shortcuts round-trip; aliases expand within limits; every suggested register line is one shell-quoted argv |
 | `keymap`, `ui_config` | `keymap.yaml`, `ui.yaml` | keys round-trip through their names; errors are plain text |

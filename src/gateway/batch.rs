@@ -20,7 +20,11 @@ pub struct BatchTarget {
 }
 impl BatchTarget {
     fn label(&self) -> String {
-        format!("{}/{}", self.namespace, self.name)
+        if self.namespace.is_empty() {
+            self.name.clone()
+        } else {
+            format!("{}/{}", self.namespace, self.name)
+        }
     }
 }
 
@@ -141,16 +145,8 @@ pub fn batch_confirmation(action: &Action, count: usize) -> String {
 /// Whether `action` may run as a batch on the table resource `resource`.
 pub fn batch_supported(resource: &str, action: &Action) -> bool {
     match action {
-        Action::Delete => matches!(
-            resource,
-            "pods"
-                | "deployments.apps"
-                | "statefulsets.apps"
-                | "daemonsets.apps"
-                | "services"
-                | "jobs.batch"
-                | "cronjobs.batch"
-        ),
+        // Any kind; Secrets stay out because KBorg never reads them here.
+        Action::Delete => resource != "secrets",
         Action::Restart => matches!(
             resource,
             "deployments.apps" | "statefulsets.apps" | "daemonsets.apps"
@@ -370,7 +366,7 @@ impl Gateway {
         let approval = Approval::confirm(
             target.clone(),
             prepared.action.clone(),
-            &format!("{}/{}", target.namespace, target.name),
+            &target.confirmation(),
         )?;
         self.execute_reviewed(prepared, approval, Some(review))
             .await
@@ -474,7 +470,10 @@ mod tests {
         assert!(check_batch(&request("pods", Action::Restart, 2)).is_err());
         assert!(check_batch(&request("deployments.apps", Action::Suspend(true), 2)).is_err());
         assert!(check_batch(&request("cronjobs.batch", Action::Suspend(false), 2)).is_ok());
-        assert!(check_batch(&request("configmaps", Action::Delete, 2)).is_err());
+        // Delete covers every kind except Secrets, which are never read here.
+        assert!(check_batch(&request("configmaps", Action::Delete, 2)).is_ok());
+        assert!(check_batch(&request("nodes", Action::Delete, 2)).is_ok());
+        assert!(check_batch(&request("secrets", Action::Delete, 2)).is_err());
         assert!(check_batch(&request("deployments.apps", Action::Scale(2), 2)).is_err());
         assert!(check_batch(&request("deployments.apps", Action::Kill, 2)).is_err());
         let mut duplicate = request("deployments.apps", Action::Delete, 2);

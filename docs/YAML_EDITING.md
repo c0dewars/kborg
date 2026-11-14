@@ -27,13 +27,19 @@ identity and outcome, not manifest content.
 
 ## Scope
 
-This edits `spec` on existing namespaced, non-Secret resources. Deployments,
-StatefulSets, DaemonSets, CronJobs, Services, and suitable discovered custom
-resources are supported, subject to Kubernetes immutability and admission rules.
-It does not create resources or edit ConfigMap data, Secrets, RBAC objects without
-a `spec`, cluster resources, system namespaces, terminating objects or resources
-with recognized Argo CD / Flux ownership markers. Use `:edit-container` for the
-smaller existing image/resource-budget editor.
+This edits existing non-Secret resources of any kind, namespaced or
+cluster-scoped: every top-level field except `apiVersion`, `kind` and `status`
+(`spec`, RBAC `rules` and `subjects`, StorageClass `parameters`, ...), plus
+`metadata.labels` and `metadata.annotations`. Kubernetes immutability and
+admission rules still apply. A cluster-scoped object is confirmed by its name
+alone. It does not create resources, and it does not edit Secrets, terminating
+objects or resources with recognized Argo CD / Flux ownership markers. Fields
+KBorg hides stay read-only: ConfigMap `data`, existing annotations and
+container `env` values appear as `[REDACTED]` and are preserved untouched (new
+annotations can be added where an object has none). The operator config can
+switch off changes in system namespaces (`allow_system_namespaces: false`) and
+to cluster-scoped objects (`allow_cluster_scoped: false`). Use
+`:edit-container` for the smaller existing image/resource-budget editor.
 
 The document is an editable projection backed by the private original object.
 It is never used as a replacement manifest. Known sensitive fields appear as

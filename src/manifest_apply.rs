@@ -10,7 +10,7 @@ use crate::{Result, gateway::Kind, safety};
 use serde_json::{Map, Value};
 use std::time::Instant;
 
-pub const MAX_OBJECTS: usize = 16;
+pub const MAX_OBJECTS: usize = 64;
 pub const FIELD_MANAGER: &str = "kborg";
 const MAX_DIFF_LINES: usize = 120;
 /// Server-owned or identity fields that never count as reviewed changes.
@@ -24,7 +24,13 @@ const IGNORED: &[&str] = &[
     "/status",
 ];
 /// Kinds that change who can do what; the review calls them out.
-const PRIVILEGE_KINDS: &[&str] = &["Role", "RoleBinding", "ServiceAccount"];
+const PRIVILEGE_KINDS: &[&str] = &[
+    "Role",
+    "RoleBinding",
+    "ServiceAccount",
+    "ClusterRole",
+    "ClusterRoleBinding",
+];
 
 pub struct Planned {
     pub(crate) kind: Kind,
@@ -37,12 +43,12 @@ pub struct Planned {
 }
 impl Planned {
     pub fn label(&self) -> String {
-        format!(
-            "{} {}/{}",
-            self.kind.kind.to_ascii_lowercase(),
-            self.namespace,
-            self.name
-        )
+        let kind = self.kind.kind.to_ascii_lowercase();
+        if self.namespace.is_empty() {
+            format!("{kind} {}", self.name)
+        } else {
+            format!("{kind} {}/{}", self.namespace, self.name)
+        }
     }
 }
 
@@ -135,13 +141,8 @@ pub fn body(
     document: &Value,
     kind: &Kind,
     default_namespace: &str,
+    policy: &crate::policy::Policy,
 ) -> Result<(String, String, Value)> {
-    if !kind.namespaced {
-        return Err(format!(
-            "{} is cluster-scoped; apply supports namespaced objects only",
-            kind.kind
-        ));
-    }
     if kind.kind == "Secret" {
         return Err("Secret documents are not applied".into());
     }
@@ -163,7 +164,9 @@ pub fn body(
     {
         return Err("metadata.name must be a lowercase DNS name".into());
     }
+    // A cluster-scoped object has no namespace: the empty string from here on.
     let namespace = match metadata.get("namespace").filter(|value| !value.is_null()) {
+        _ if !kind.namespaced => "",
         Some(Value::String(namespace)) => namespace.as_str(),
         Some(_) => return Err(format!("{name}: metadata.namespace must be a string")),
         None if default_namespace != "*" && !default_namespace.is_empty() => default_namespace,
@@ -173,14 +176,15 @@ pub fn body(
             ));
         }
     };
-    if !safety::valid_id(namespace)
-        || ["kube-system", "kube-public", "kube-node-lease"].contains(&namespace)
-    {
+    if kind.namespaced && !safety::valid_id(namespace) {
         return Err(format!(
-            "namespace {} is invalid or protected",
+            "namespace {} is invalid",
             safety::safe_text(namespace, 63)
         ));
     }
+    policy
+        .scope(namespace)
+        .map_err(|error| format!("{} {name}: {error}", kind.kind))?;
     crate::edit::check_gitops(document)?;
     let mut body = document.clone();
     let object = body.as_object_mut().ok_or("object must be a mapping")?;
@@ -196,7 +200,11 @@ pub fn body(
         ] {
             metadata.remove(field);
         }
-        metadata.insert("namespace".into(), Value::String(namespace.into()));
+        if kind.namespaced {
+            metadata.insert("namespace".into(), Value::String(namespace.into()));
+        } else {
+            metadata.remove("namespace");
+        }
     }
     Ok((namespace.into(), name.into(), body))
 }
@@ -293,7 +301,11 @@ pub fn diff(live: Option<&Value>, result: &Value) -> Vec<String> {
 pub fn privilege_note(kind: &Kind) -> Option<&'static str> {
     PRIVILEGE_KINDS
         .contains(&kind.kind.as_str())
-        .then_some("  ! changes who may act in this namespace")
+        .then_some(if kind.namespaced {
+            "  ! changes who may act in this namespace: check every rule and subject"
+        } else {
+            "  ! changes who may act in the whole cluster: check every rule and subject"
+        })
 }
 
 #[cfg(test)]
@@ -319,7 +331,7 @@ mod tests {
         let kinds = kinds();
         let doc = json!({"apiVersion":"apps/v1","kind":"Deployment","metadata":{"name":"web","resourceVersion":"9","uid":"x"},"spec":{"replicas":2},"status":{"ready":1}});
         let kind = kind_for(&kinds, &doc)?;
-        let (ns, name, body) = body(&doc, kind, "shop")?;
+        let (ns, name, body) = body(&doc, kind, "shop", &strict())?;
         assert_eq!((ns.as_str(), name.as_str()), ("shop", "web"));
         assert_eq!(
             body,
@@ -367,7 +379,7 @@ mod tests {
         }
         let doc =
             json!({"apiVersion":"v1","kind":"ConfigMap","metadata":{"name":"x","namespace":null}});
-        let (ns, _, _) = body(&doc, kind_for(&kinds, &doc)?, "shop")?;
+        let (ns, _, _) = body(&doc, kind_for(&kinds, &doc)?, "shop", &strict())?;
         assert_eq!(ns, "shop");
         Ok(())
     }
@@ -375,13 +387,55 @@ mod tests {
     fn invalid_namespace_error_does_not_echo_terminal_controls() -> Result<()> {
         let kinds = kinds();
         let hostile = json!({"apiVersion":"v1","kind":"ConfigMap","metadata":{"name":"x","namespace":"a\u{1b}]52;c;x\u{7}"}});
-        let error = body(&hostile, kind_for(&kinds, &hostile)?, "shop").err();
+        let error = body(&hostile, kind_for(&kinds, &hostile)?, "shop", &strict()).err();
         assert!(error.is_some_and(|error| !error.contains(['\u{1b}', '\u{7}'])));
+        Ok(())
+    }
+    fn strict() -> crate::policy::Policy {
+        crate::policy::Policy::strict(true)
+    }
+    #[test]
+    fn cluster_scoped_and_system_namespace_objects_follow_the_policy() -> Result<()> {
+        let kinds = kinds();
+        let open = crate::policy::Policy {
+            writable: true,
+            system_namespaces: true,
+            cluster_scoped: true,
+        };
+        // A cluster-scoped object carries no namespace, even if the file sets one.
+        let doc = json!({"apiVersion":"v1","kind":"Namespace","metadata":{"name":"team-a","namespace":"ignored"}});
+        let kind = kind_for(&kinds, &doc)?;
+        let (ns, name, applied) = body(&doc, kind, "shop", &open)?;
+        assert_eq!((ns.as_str(), name.as_str()), ("", "team-a"));
+        assert_eq!(
+            applied,
+            json!({"apiVersion":"v1","kind":"Namespace","metadata":{"name":"team-a"}})
+        );
+        assert!(
+            body(&doc, kind, "shop", &strict())
+                .is_err_and(|error| error.contains("allow_cluster_scoped"))
+        );
+        let doc = json!({"apiVersion":"v1","kind":"ConfigMap","metadata":{"name":"x","namespace":"kube-system"}});
+        let kind = kind_for(&kinds, &doc)?;
+        assert_eq!(body(&doc, kind, "shop", &open)?.0, "kube-system");
+        assert!(
+            body(&doc, kind, "shop", &strict())
+                .is_err_and(|error| error.contains("allow_system_namespaces"))
+        );
+        let planned = Planned {
+            kind: kind_for(&kinds, &json!({"apiVersion":"v1","kind":"Namespace"}))?.clone(),
+            namespace: String::new(),
+            name: "team-a".into(),
+            body: Value::Null,
+            live: None,
+        };
+        assert_eq!(planned.label(), "namespace team-a");
+        assert!(privilege_note(&planned.kind).is_none());
         Ok(())
     }
     fn body_err(kinds: &[Kind], doc: Value, ns: &str) -> bool {
         kind_for(kinds, &doc)
-            .and_then(|kind| body(&doc, kind, ns))
+            .and_then(|kind| body(&doc, kind, ns, &strict()))
             .is_err()
     }
     #[test]

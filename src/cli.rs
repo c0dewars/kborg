@@ -101,6 +101,8 @@ pub(crate) fn enable_everything(opts: &mut Options) {
     c.allow_yaml_edit = true;
     c.allow_apply = true;
     c.allow_force_kill = true;
+    c.allow_system_namespaces = true;
+    c.allow_cluster_scoped = true;
     c.allow_secret_reveal = true;
     opts.allow_tools = true;
     opts.allow_extensions = true;
@@ -436,8 +438,11 @@ fn parse(args: Vec<String>) -> Result<Options> {
                     .ok_or("--session-seconds needs a value")?
                     .parse()
                     .map_err(|_| "invalid session duration")?;
-                if !(1..=3600).contains(&opts.session_seconds) {
-                    return Err("session duration must be 1..3600 seconds".into());
+                if crate::session::validate_lifetime(opts.session_seconds).is_err() {
+                    return Err(format!(
+                        "session duration must be 1..{} seconds",
+                        crate::session::MAX_LIFETIME
+                    ));
                 }
             }
             "--session-escape" => crate::session::set_escape(crate::session::parse_escape(
@@ -924,7 +929,9 @@ pub fn run_args(args: Vec<String>) -> Result<()> {
             || !io::stdin().is_terminal()
             || !io::stdout().is_terminal())
     {
-        return Err("view requires --interactive or --allow-tools, and a terminal".into());
+        return Err(
+            "view needs a terminal (--interactive, or an external tool with --tool)".into(),
+        );
     }
     if cmd == "doctor" {
         return doctor(&opts);
@@ -956,9 +963,9 @@ pub fn run_args(args: Vec<String>) -> Result<()> {
                 outputln!("{}", crate::insights::xray(&gateway, &args[0], &ns).await?);
             },
             "cordon"|"uncordon"|"drain" => {
-                if args.is_empty() || args.len()>2 || (cmd!="drain" && args.len()!=1) {return Err("usage: cordon NODE | uncordon NODE | drain NODE [SECONDS] --write --allow-node-maintenance".into());}
+                if args.is_empty() || args.len()>2 || (cmd!="drain" && args.len()!=1) {return Err("usage: cordon NODE | uncordon NODE | drain NODE [SECONDS]".into());}
                 if !io::stdin().is_terminal() || !io::stdout().is_terminal() {return Err("node maintenance requires interactive terminal approval".into());}
-                let request=match cmd {"cordon"=>crate::node_maintenance::Request::Cordon,"uncordon"=>crate::node_maintenance::Request::Uncordon,_=>crate::node_maintenance::Request::Drain{seconds:args.get(1).map(|s|s.parse::<u16>().map_err(|_|"invalid drain duration")).transpose()?.unwrap_or(120)}};
+                let request=match cmd {"cordon"=>crate::node_maintenance::Request::Cordon,"uncordon"=>crate::node_maintenance::Request::Uncordon,_=>crate::node_maintenance::Request::Drain{seconds:args.get(1).map(|s|s.parse::<u16>().map_err(|_|"invalid drain duration")).transpose()?.unwrap_or(600)}};
                 let reviewed=crate::node_maintenance::prepare(&gateway,&args[0],request).await?;
                 outputln!("{}",reviewed.summary()); output!("> ");io::stdout().flush().map_err(|_|"output failed")?;
                 let mut input=String::new();use std::io::BufRead;io::stdin().lock().take(322).read_line(&mut input).map_err(|_|"input failed")?;
@@ -974,7 +981,7 @@ pub fn run_args(args: Vec<String>) -> Result<()> {
             },
             "scan" => {
                 let usage="usage: scan RESOURCE NAME | scan ns [-n NAMESPACE] --scanner ABS_PATH --allow-scan [--json]";
-                let (Some(scanner),true)=(opts.scanner.clone(),opts.allow_scan) else {return Err("image scanning requires --scanner ABS_PATH (Trivy or Grype) and --allow-scan".into());};
+                let (Some(scanner),true)=(opts.scanner.clone(),opts.allow_scan) else {return Err("image scanning needs Trivy or Grype (on PATH or --scanner ABS_PATH) and is off when the operator config says allow_scan: false".into());};
                 if gateway.is_demo() {return Err("image scanning is disabled in demo mode".into());}
                 if !io::stdin().is_terminal() {return Err("scan requires interactive confirmation on a terminal".into());}
                 let target=match args {
@@ -1002,7 +1009,7 @@ pub fn run_args(args: Vec<String>) -> Result<()> {
                 else {output!("{}",crate::scan::report_text(&report));}
             },
             "debug" => {
-                if args.is_empty() || args.len()>2 {return Err("usage: debug POD [TARGET_CONTAINER] --write --allow-debug [--node-shell-image IMAGE]".into());}
+                if args.is_empty() || args.len()>2 {return Err("usage: debug POD [TARGET_CONTAINER] [--node-shell-image IMAGE]".into());}
                 if !io::stdin().is_terminal() || !io::stdout().is_terminal() {return Err("debug requires interactive terminal approval".into());}
                 let prepared=crate::debug_container::prepare(&gateway,&ns,&args[0],args.get(1).map(String::as_str),&opts.node_shell_image,opts.session_seconds).await?;
                 outputln!("{}",safety::review_display(prepared.summary())?); output!("> ");io::stdout().flush().map_err(|_|"output failed")?;
@@ -1013,7 +1020,7 @@ pub fn run_args(args: Vec<String>) -> Result<()> {
                 outputln!("{}",crate::ops::run(&gateway,reviewed,&typed).await?);
             },
             "node-shell" => {
-                if args.len()!=1 {return Err("usage: node-shell NODE --write --allow-node-shell [-n NAMESPACE] [--node-shell-image IMAGE]".into());}
+                if args.len()!=1 {return Err("usage: node-shell NODE [-n NAMESPACE] [--node-shell-image IMAGE]".into());}
                 if !io::stdin().is_terminal() || !io::stdout().is_terminal() {return Err("node shell requires interactive terminal approval".into());}
                 let namespace=if ns=="*"||ns.is_empty(){"default".to_owned()}else{ns.clone()};
                 let prepared=crate::node_shell::prepare(&gateway,&args[0],&namespace,&opts.node_shell_image,opts.session_seconds).await?;
@@ -1025,7 +1032,7 @@ pub fn run_args(args: Vec<String>) -> Result<()> {
                 outputln!("{}",crate::ops::run(&gateway,reviewed,&typed).await?);
             },
             "apply" => {
-                if args.len()!=1 {return Err("usage: apply FILE.yaml --write --allow-apply [-n NAMESPACE]".into());}
+                if args.len()!=1 {return Err("usage: apply FILE.yaml [-n NAMESPACE]".into());}
                 if !io::stdin().is_terminal() || !io::stdout().is_terminal() {return Err("apply requires interactive terminal approval".into());}
                 let prepared=tokio::time::timeout(Duration::from_secs(120),gateway.prepare_apply(std::path::Path::new(&args[0]),&ns)).await.map_err(|_|"apply review timed out")??;
                 outputln!("{}",safety::review_display(prepared.summary())?); output!("> ");io::stdout().flush().map_err(|_|"output failed")?;
@@ -1035,15 +1042,15 @@ pub fn run_args(args: Vec<String>) -> Result<()> {
             "exec"|"attach"|"forward"|"cp-from"|"cp-to" => {
                 if !io::stdin().is_terminal() || !io::stdout().is_terminal() {return Err("subresource operations require interactive terminal approval".into());}
                 let request=match cmd {
-                    "exec"=>{if args.len()<3{return Err("usage: exec POD CONTAINER -- COMMAND [ARG...] --write --allow-exec (put flags before --)".into());}
+                    "exec"=>{if args.len()<3{return Err("usage: exec POD CONTAINER -- COMMAND [ARG...] (put flags before --)".into());}
                     if opts.interactive {crate::ops::Request::InteractiveExec{container:args[1].clone(),argv:args[2..].to_vec(),seconds:opts.session_seconds}} else {crate::ops::Request::Exec{container:args[1].clone(),argv:args[2..].to_vec()}}},
-                    "cp-from"=>{if args.len()!=4{return Err("usage: cp-from POD CONTAINER /CONTAINER/FILE LOCAL_FILE_OR_DIR --write --allow-file-copy".into());}
+                    "cp-from"=>{if args.len()!=4{return Err("usage: cp-from POD CONTAINER /CONTAINER/FILE LOCAL_FILE_OR_DIR".into());}
                     crate::ops::Request::CopyFrom{container:args[1].clone(),remote:args[2].clone(),local:std::path::PathBuf::from(&args[3]),recursive:opts.recursive}},
-                    "cp-to"=>{if args.len()!=4{return Err("usage: cp-to POD CONTAINER LOCAL_FILE /CONTAINER/FILE --write --allow-file-copy".into());}
+                    "cp-to"=>{if args.len()!=4{return Err("usage: cp-to POD CONTAINER LOCAL_FILE /CONTAINER/FILE".into());}
                     crate::ops::Request::CopyTo{container:args[1].clone(),upload:if opts.recursive {crate::file_copy::read_upload_dir(std::path::Path::new(&args[2]))?} else {crate::file_copy::read_upload(std::path::Path::new(&args[2]))?},remote:args[3].clone()}},
-                    "attach"=>{if args.len()!=2{return Err("usage: attach POD CONTAINER --write --allow-attach (bounded output only)".into());}
+                    "attach"=>{if args.len()!=2{return Err("usage: attach POD CONTAINER (bounded output only)".into());}
                     if opts.interactive {crate::ops::Request::InteractiveAttach{container:args[1].clone(),seconds:opts.session_seconds}} else {crate::ops::Request::Attach{container:args[1].clone()}}},
-                    _=>{if args.len()!=4{return Err("usage: forward POD LOCAL_PORT REMOTE_PORT SECONDS --write --allow-forward".into());}
+                    _=>{if args.len()!=4{return Err("usage: forward POD LOCAL_PORT REMOTE_PORT SECONDS".into());}
                     crate::ops::Request::PortForward{local_port:args[1].parse().map_err(|_|"invalid local port")?,remote_port:args[2].parse().map_err(|_|"invalid remote port")?,seconds:args[3].parse().map_err(|_|"invalid duration")?}},
                 };
                 let reviewed=tokio::time::timeout(Duration::from_secs(15),crate::ops::prepare(&gateway,&ns,&args[0],request)).await.map_err(|_|"operation review timed out")??;
@@ -1087,7 +1094,7 @@ if value["truncated"]==true {eprintln!("TRUNCATED: limit reached; narrow namespa
                     return Ok(());
                 }
                 if args.len() < 4 || args[2] != "--tool" {
-                    return Err("usage: view RESOURCE NAME --tool ABSOLUTE_PATH [--tool-arg ARG] --allow-tools [--yaml]".into());
+                    return Err("usage: view RESOURCE NAME --tool ABSOLUTE_PATH [--tool-arg ARG] [--yaml]".into());
                 }
                 let mut argv = Vec::new();
                 for pair in args[4..].chunks(2) {
@@ -1112,7 +1119,7 @@ if value["truncated"]==true {eprintln!("TRUNCATED: limit reached; narrow namespa
             },
             "yaml-template" | "yaml-edit" => {
                 let needed = if cmd == "yaml-template" { 2 } else { 3 };
-                if args.len() != needed { return Err("usage: yaml-template RESOURCE NAME | yaml-edit RESOURCE NAME FILE --write --allow-yaml-edit".into()); }
+                if args.len() != needed { return Err("usage: yaml-template RESOURCE NAME | yaml-edit RESOURCE NAME FILE".into()); }
                 if cmd == "yaml-edit" && (!io::stdin().is_terminal() || !io::stdout().is_terminal()) { return Err("YAML writes require interactive terminal confirmation".into()); }
                 let draft = tokio::time::timeout(Duration::from_secs(15), gateway.yaml_draft(&args[0], &ns, &args[1])).await.map_err(|_| "YAML read timed out")??;
                 if cmd == "yaml-template" { output!("{}", draft.text()); }
@@ -1130,17 +1137,17 @@ if value["truncated"]==true {eprintln!("TRUNCATED: limit reached; narrow namespa
             "scale"|"restart"|"delete"|"kill"|"set-image"|"set-resources"|"trigger"|"suspend"|"resume"|"rollback"=>{
                 if !io::stdin().is_terminal() || !io::stdout().is_terminal(){return Err("noninteractive writes are disabled; use the interactive TUI or terminal confirmation".into());}
                 let (resource,name,action)=match cmd {
-                    "set-image"=>{let (resource,args)=write_args(args,3,"set-image [RESOURCE] NAME CONTAINER IMAGE --write")?;(resource,args[0].as_str(),Action::SetImage{container:args[1].clone(),image:args[2].clone()})},
-                    "set-resources"=>{let (resource,args)=write_args(args,6,"set-resources [RESOURCE] NAME CONTAINER CPU_REQUEST MEMORY_REQUEST CPU_LIMIT MEMORY_LIMIT --write")?;(resource,args[0].as_str(),Action::SetResources{container:args[1].clone(),resources:crate::edit::ResourceEdit{cpu_request:args[2].clone(),memory_request:args[3].clone(),cpu_limit:args[4].clone(),memory_limit:args[5].clone()}})},
-                    "scale"=>{let (resource,args)=write_args(args,2,"scale [RESOURCE] NAME REPLICAS --write")?;(resource,args[0].as_str(),Action::Scale(args[1].parse().map_err(|_|"invalid replicas")?))},
-                    "restart"=>{let (resource,args)=write_args(args,1,"restart [RESOURCE] NAME --write")?;(resource,args[0].as_str(),Action::Restart)},
+                    "set-image"=>{let (resource,args)=write_args(args,3,"set-image [RESOURCE] NAME CONTAINER IMAGE")?;(resource,args[0].as_str(),Action::SetImage{container:args[1].clone(),image:args[2].clone()})},
+                    "set-resources"=>{let (resource,args)=write_args(args,6,"set-resources [RESOURCE] NAME CONTAINER CPU_REQUEST MEMORY_REQUEST CPU_LIMIT MEMORY_LIMIT")?;(resource,args[0].as_str(),Action::SetResources{container:args[1].clone(),resources:crate::edit::ResourceEdit{cpu_request:args[2].clone(),memory_request:args[3].clone(),cpu_limit:args[4].clone(),memory_limit:args[5].clone()}})},
+                    "scale"=>{let (resource,args)=write_args(args,2,"scale [RESOURCE] NAME REPLICAS")?;(resource,args[0].as_str(),Action::Scale(args[1].parse().map_err(|_|"invalid replicas")?))},
+                    "restart"=>{let (resource,args)=write_args(args,1,"restart [RESOURCE] NAME")?;(resource,args[0].as_str(),Action::Restart)},
                     "trigger"|"suspend"|"resume"=>{if args.len()!=1{return Err(format!("usage: {cmd} CRONJOB --write"));}("cronjobs",args[0].as_str(),match cmd {"trigger"=>Action::Trigger,"suspend"=>Action::Suspend(true),_=>Action::Suspend(false)})},
                     "rollback"=>{
                         let (resource,rest)=match args.len() {1|2 if args[0].parse::<u64>().is_err() && !["deployments","statefulsets","daemonsets","deploy","sts","ds"].contains(&args[0].as_str()) => ("deployments",args), 2|3 => (args[0].as_str(),&args[1..]), _ => return Err("usage: rollback [RESOURCE] NAME [REVISION] --write".into())};
                         let revision=rest.get(1).map(|r|r.parse::<u64>().map_err(|_|"invalid revision")).transpose()?;
                         (resource,rest[0].as_str(),Action::Rollback(revision))
                     },
-                    "kill"=>{if args.len()!=1{return Err("usage: kill POD --write --allow-force-kill".into());}("pods",args[0].as_str(),Action::Kill)},
+                    "kill"=>{if args.len()!=1{return Err("usage: kill POD".into());}("pods",args[0].as_str(),Action::Kill)},
                     _=>{if args.len()!=2{return Err("usage: delete <resource> <name> --write".into());}(args[0].as_str(),args[1].as_str(),Action::Delete)},
                 };
                 let prepared=tokio::time::timeout(Duration::from_secs(15),gateway.prepare(resource,&ns,name,action)).await.map_err(|_|"dry-run timed out")??;
@@ -1174,7 +1181,9 @@ impl LogCommand {
             return Ok(Self::Selector);
         }
         if args.is_empty() || args.len() > 2 {
-            return Err("usage: logs POD [CONTAINER] | logs RESOURCE/NAME | logs --selector LABELS; requires --allow-logs".into());
+            return Err(
+                "usage: logs POD [CONTAINER] | logs RESOURCE/NAME | logs --selector LABELS".into(),
+            );
         }
         let (resource, name) = args[0].split_once('/').unwrap_or(("pods", &args[0]));
         if name.len() > 253 || !name.split('.').all(safety::valid_id) {
@@ -1579,7 +1588,7 @@ impl HelmCommand {
         )
     }
     fn parse(command: &str, args: &[String]) -> Result<Self> {
-        let usage = "usage: helm [list] | helm history RELEASE | helm detail|resources|values RELEASE REVISION | helm install|upgrade|crds|crds-upgrade|crds-delete|crds-migrate RELEASE CHART.tgz_OR_OCI | helm rollback RELEASE REVISION | helm uninstall|test RELEASE (lifecycle requires --write --allow-helm --allow-helm-write --helm-tool ABS; schema actions need --allow-helm-crds; test needs --allow-helm-hooks)";
+        let usage = "usage: helm [list] | helm history RELEASE | helm detail|resources|values RELEASE REVISION | helm install|upgrade|crds|crds-upgrade|crds-delete|crds-migrate RELEASE CHART.tgz_OR_OCI | helm rollback RELEASE REVISION | helm uninstall|test RELEASE (lifecycle needs helm on PATH or --helm-tool ABS; off with --read-only or by operator config)";
         let name = |name: &String| {
             if crate::helm::valid_release_name(name) {
                 Ok(name.clone())
@@ -1887,7 +1896,7 @@ fn extensions_command(opts: &Options) -> Result<()> {
         },
         Some("run") if args.len()==4 && !opts.json => {
             if !opts.allow_extensions || !opts.allow_tools || !io::stdin().is_terminal() || !io::stdout().is_terminal() {
-                return Err("extensions run requires --allow-extensions --allow-tools and interactive whole-input review".into());
+                return Err("extensions run needs an interactive terminal for the whole-input review, and is off when the operator config says allow_extensions or allow_tools: false".into());
             }
             let registered=crate::extensions::load(&args[1])?;
             let (object,context,resource)=runtime()?.block_on(async {
@@ -2074,7 +2083,7 @@ mod tests {
         let error = run_args(vec!["--demo".into(), "scan".into(), "ns".into()])
             .err()
             .unwrap_or_default();
-        assert!(error.contains("--allow-scan"), "{error}");
+        assert!(error.contains("allow_scan"), "{error}");
         Ok(())
     }
 

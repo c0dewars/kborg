@@ -693,7 +693,7 @@ fn failure_detail(stderr: &[u8]) -> String {
 /// Runs the reviewed plan once. Blocking: call from a worker thread.
 pub fn run(plan: Plan, confirmation: &str, allowed: bool, control: &Control) -> Result<Report> {
     if !allowed {
-        return Err("image scanning requires --scanner ABS_PATH and --allow-scan".into());
+        return Err("image scanning needs trivy or grype (on PATH or --scanner ABS_PATH) and is off when the operator config says allow_scan: false".into());
     }
     if confirmation != CONFIRMATION {
         return Err("scan canceled; type scan or press Enter to approve".into());

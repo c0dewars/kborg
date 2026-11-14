@@ -175,7 +175,7 @@ pub fn validate_request(namespace: &str, name: &str, key: &str) -> Result<()> {
 }
 
 /// Generic resource reads, lists and YAML refuse Secrets with this pointer.
-pub const GENERIC_REFUSAL: &str = "Secrets are excluded from generic views; use :secrets (--allow-secret-reveal) for a masked YAML view and one-key reveal";
+pub const GENERIC_REFUSAL: &str = "Secrets are excluded from generic views; use :secrets for a masked YAML view and one-key reveal";
 
 /// Whether a resource argument names Secrets (`secrets`, `secret`, `sec`,
 /// `Secret`, `v1/secrets`, `secrets.`...).

@@ -232,6 +232,26 @@ enum SortKey {
     Descending(std::cmp::Reverse<u64>),
     Usage(std::cmp::Reverse<Option<u64>>),
 }
+/// What a left click on a region of the screen does.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum ClickAction {
+    /// Press a key, as if typed: the first alternative the view takes.
+    Keys(Vec<crate::keymap::Key>),
+    /// Sort the table by this column title; again reverses.
+    Sort(String),
+}
+#[derive(Clone, Debug)]
+struct Click {
+    x: u16,
+    y: u16,
+    width: u16,
+    action: ClickAction,
+}
+/// (items generation, allocation address, length): what `filter_text` was built from.
+type FilterTextKey = (u64, usize, usize);
+/// Two clicks on one row within this time open it, like Enter.
+const DOUBLE_CLICK: Duration = Duration::from_millis(400);
+
 #[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
 enum Sort {
     #[default]
@@ -312,6 +332,12 @@ struct App {
     sort_desc: bool,
     /// Sort by a column outside `Sort`, by its title (custom or NODE/IP/…).
     sort_column: Option<String>,
+    /// What a left click does, per region of the frame drawn last.
+    clicks: std::cell::RefCell<Vec<Click>>,
+    /// Copy mode: the mouse is released so the terminal can select text.
+    copy_mode: bool,
+    /// Time and screen row of the last row click, to tell a double click.
+    last_click: Option<(Instant, u16)>,
     /// Recently used namespaces and contexts for digit favorites and :ctx.
     recent: crate::favorites::Recent,
     /// Last (context, namespace, kind) seen by `sync_scope`.
@@ -362,6 +388,12 @@ struct App {
     items_generation: u64,
     /// Memoized filter-and-sort order of `items`, keyed by a fingerprint.
     visible_cache: std::cell::RefCell<Option<(u64, std::rc::Rc<Vec<usize>>)>>,
+    /// Every item in sort order, before the filter (see `sorted_all`).
+    sorted_cache: std::cell::RefCell<Option<(u64, std::rc::Rc<Vec<usize>>)>>,
+    /// The text a filter matches per item ("namespace name status"), for the
+    /// items as they are now. Building it reads every object, so it is kept
+    /// while a filter is typed: each further key costs only the matching.
+    filter_text: std::cell::RefCell<Option<(FilterTextKey, std::rc::Rc<Vec<String>>)>>,
     /// (fingerprint, (healthy, attention)) of the visible rows.
     health_cache: std::cell::RefCell<Option<(u64, (usize, usize))>>,
     metrics_resources: bool,
@@ -395,24 +427,147 @@ impl App {
             .and_then(|_| stdout.flush())
             .map_err(|_| "clipboard request failed".into())
     }
-    fn mouse(&mut self, mouse: MouseEvent, width: u16, height: u16) {
+    /// Registers a clickable region of the frame being drawn.
+    fn add_click(&self, x: u16, y: u16, width: u16, action: ClickAction) {
+        if width > 0 {
+            self.clicks.borrow_mut().push(Click {
+                x,
+                y,
+                width,
+                action,
+            });
+        }
+    }
+    /// A region that presses a key written as in a hint: `d`, `Ctrl-D`,
+    /// or alternatives such as `y/Enter`.
+    fn add_key_click(&self, x: u16, y: u16, width: u16, shortcut: &str) {
+        let keys: Vec<_> = if shortcut == "/" {
+            vec![crate::keymap::Key::Char('/')]
+        } else {
+            shortcut
+                .split('/')
+                .filter_map(crate::keymap::Key::parse)
+                .collect()
+        };
+        if !keys.is_empty() {
+            self.add_click(x, y, width, ClickAction::Keys(keys));
+        }
+    }
+    /// Makes the keys named in a hint row clickable. Segments are separated
+    /// by ` | ` or two spaces and start with their key: `y/Enter execute`.
+    fn add_hint_clicks(&self, y: u16, text: &str) {
+        let mut x = 0u16;
+        for segment in text.split(" | ").flat_map(|part| {
+            // Keep the separators' widths so columns stay exact.
+            let mut pieces = Vec::new();
+            let mut rest = part;
+            while let Some(at) = rest.find("  ") {
+                pieces.push((&rest[..at], 2u16));
+                rest = rest[at + 2..].trim_start_matches(' ');
+            }
+            pieces.push((rest, 3u16));
+            pieces
+        }) {
+            let (segment, separator) = segment;
+            let lead = text_cells(segment) - text_cells(segment.trim_start());
+            let body = segment.trim();
+            if let Some(shortcut) = body.split_whitespace().next()
+                && body.contains(' ')
+            {
+                self.add_key_click(x + lead, y, text_cells(body), shortcut);
+            }
+            x = x.saturating_add(text_cells(segment) + separator);
+        }
+    }
+    fn click_at(&self, column: u16, row: u16) -> Option<ClickAction> {
+        self.clicks
+            .borrow()
+            .iter()
+            .rev()
+            .find(|click| {
+                click.y == row && column >= click.x && column < click.x.saturating_add(click.width)
+            })
+            .map(|click| click.action.clone())
+    }
+    /// True where a letter is an action, not text being typed.
+    fn letters_are_actions(&self) -> bool {
+        if self.doc_search.typing() {
+            return false;
+        }
+        palette::command_prompt_allowed(&self.modal)
+            || (!review_ui::strict()
+                && matches!(
+                    self.modal,
+                    Modal::Confirm(..)
+                        | Modal::SessionConfirm(..)
+                        | Modal::WriteReview(..)
+                        | Modal::HelmReview(..)
+                        | Modal::AdviceReview(..)
+                ))
+    }
+    /// A mouse event; `true` quits, like a key.
+    fn mouse(&mut self, mouse: MouseEvent, width: u16, height: u16) -> Result<bool> {
+        let left = matches!(
+            mouse.kind,
+            MouseEventKind::Down(crossterm::event::MouseButton::Left)
+        );
         if matches!(self.modal, Modal::None | Modal::LiveOverview(..))
-            && !self.write_inflight
             && mouse.row == 0
             && (self.ui.header.show || matches!(self.modal, Modal::LiveOverview(..)))
-            && matches!(
-                mouse.kind,
-                MouseEventKind::Down(crossterm::event::MouseButton::Left)
-            )
+            && left
             && topbar::help_at(width, mouse.column)
         {
             if let Err(error) = self.press_help() {
                 self.status = error;
             }
-            return;
+            return Ok(false);
+        }
+        // The palette owns the keyboard while it is open.
+        if self.palette.is_some() {
+            return Ok(false);
+        }
+        if left && let Some(action) = self.click_at(mouse.column, mouse.row) {
+            match action {
+                ClickAction::Sort(title) => {
+                    if matches!(self.modal, Modal::None) {
+                        self.sort_by_title(&title, None);
+                    }
+                    return Ok(false);
+                }
+                ClickAction::Keys(keys) => {
+                    // Where letters are typed text, only Enter, Esc and
+                    // Ctrl keys are pressed for a click.
+                    let letters = self.letters_are_actions();
+                    let Some(key) = keys
+                        .into_iter()
+                        .find(|key| letters || !matches!(key, crate::keymap::Key::Char(_)))
+                    else {
+                        return Ok(false);
+                    };
+                    let (code, modifiers) = key.event();
+                    return self.key_event(code, modifiers);
+                }
+            }
+        }
+        if matches!(self.modal, Modal::LiveOverview(..)) {
+            return Ok(false);
         }
         if !matches!(self.modal, Modal::None) {
-            return;
+            // The wheel scrolls the view in front, three lines a notch.
+            let code = match mouse.kind {
+                MouseEventKind::ScrollDown => KeyCode::Down,
+                MouseEventKind::ScrollUp => KeyCode::Up,
+                _ => return Ok(false),
+            };
+            if matches!(self.modal, Modal::Input(..) | Modal::Filter(..)) {
+                return Ok(false);
+            }
+            for _ in 0..3 {
+                if self.key_event(code, KeyModifiers::NONE)? {
+                    return Ok(true);
+                }
+            }
+            return Ok(false);
         }
         let layout = self.layout(width, height);
         match mouse.kind {
@@ -429,13 +584,58 @@ impl App {
                     .saturating_sub(layout.table_rows().saturating_sub(1));
                 let line = mouse.row - layout.table.y - 2;
                 if !line.is_multiple_of(layout.step.max(1)) {
-                    return;
+                    return Ok(false);
                 }
-                self.selected = (start + usize::from(line / layout.step.max(1)))
-                    .min(self.visible().len().saturating_sub(1));
+                let row = start + usize::from(line / layout.step.max(1));
+                if row >= self.visible().len() {
+                    return Ok(false);
+                }
+                self.selected = row;
+                // A second click on the same row opens it, like Enter.
+                let again = left
+                    && self
+                        .last_click
+                        .is_some_and(|(at, row)| row == mouse.row && at.elapsed() <= DOUBLE_CLICK);
+                self.last_click = (left && !again).then(|| (Instant::now(), mouse.row));
+                if again {
+                    return self.key_event(KeyCode::Enter, KeyModifiers::NONE);
+                }
             }
             _ => {}
         }
+        Ok(false)
+    }
+    /// Copy mode releases the mouse so the terminal's own selection works;
+    /// the same key (or `:mouse`) takes it back.
+    fn toggle_copy_mode(&mut self) {
+        if !self.options.mouse {
+            self.status = "The mouse is not captured in this session; select text as usual.".into();
+            return;
+        }
+        self.copy_mode = !self.copy_mode;
+        let key = self
+            .keymap
+            .primary("copy.mode")
+            .unwrap_or_else(|| ":mouse".into());
+        let result = if self.copy_mode {
+            execute!(io::stdout(), DisableMouseCapture)
+        } else {
+            execute!(io::stdout(), EnableMouseCapture)
+        };
+        self.status = if result.is_err() {
+            self.copy_mode = !self.copy_mode;
+            "The terminal refused the mouse mode change.".into()
+        } else if self.copy_mode {
+            format!(
+                "COPY MODE: select text with the mouse and copy it. {key} returns the mouse to KBorg."
+            )
+        } else {
+            "Copy mode off: clicks and the wheel work in KBorg again.".into()
+        };
+    }
+    /// Whether KBorg holds the mouse now.
+    fn mouse_captured(&self) -> bool {
+        self.options.mouse && !self.copy_mode
     }
     fn kind(&self) -> String {
         if let Some(resource) = &self.desired_resource {
@@ -505,22 +705,26 @@ impl App {
         self.items.len().hash(&mut hasher);
         hasher.finish()
     }
-    fn sorted_order(&self, fingerprint: u64, metrics_sort: bool) -> std::rc::Rc<Vec<usize>> {
-        let filter = nav::Filter::parse(&self.filter);
-        let match_all = self.filter.is_empty() && filter.is_ok();
-        let mut order: Vec<usize> = (0..self.items.len())
-            .filter(|&index| {
-                !self.faults_only || crate::workload_actions::faulty(&self.items[index])
-            })
-            .filter(|&index| {
-                match_all || {
-                    let object = &self.items[index];
-                    let text =
-                        format!("{} {} {}", namespace(object), name(object), summary(object));
-                    filter.as_ref().is_ok_and(|filter| filter.matches(&text))
-                }
-            })
-            .collect();
+    /// All item indices in the current sort order, ascending. Cached per
+    /// items generation and sort; CPU/memory sorts follow live samples and
+    /// are computed every time.
+    fn sorted_all(&self, metrics_sort: bool) -> std::rc::Rc<Vec<usize>> {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        self.sort_column.hash(&mut hasher);
+        self.kind_index.hash(&mut hasher);
+        (self.sort as u8).hash(&mut hasher);
+        self.items_generation.hash(&mut hasher);
+        (self.items.as_ptr() as usize).hash(&mut hasher);
+        self.items.len().hash(&mut hasher);
+        let key = hasher.finish();
+        if !metrics_sort
+            && let Some((cached, order)) = &*self.sorted_cache.borrow()
+            && *cached == key
+        {
+            return order.clone();
+        }
+        let mut order: Vec<usize> = (0..self.items.len()).collect();
         order.sort_by_cached_key(|&index| {
             let object = &self.items[index];
             let usage = |pick: fn(&table_metrics::Usage) -> u64| {
@@ -557,6 +761,61 @@ impl App {
                 name(object).to_owned(),
             )
         });
+        let order = std::rc::Rc::new(order);
+        if !metrics_sort {
+            *self.sorted_cache.borrow_mut() = Some((key, order.clone()));
+        }
+        order
+    }
+    /// The filter text of every item, built once per items generation.
+    fn filter_texts(&self) -> std::rc::Rc<Vec<String>> {
+        let key = (
+            self.items_generation,
+            self.items.as_ptr() as usize,
+            self.items.len(),
+        );
+        if let Some((cached, texts)) = &*self.filter_text.borrow()
+            && *cached == key
+        {
+            return texts.clone();
+        }
+        let texts = std::rc::Rc::new(
+            self.items
+                .iter()
+                .map(|object| format!("{} {} {}", namespace(object), name(object), summary(object)))
+                .collect::<Vec<_>>(),
+        );
+        *self.filter_text.borrow_mut() = Some((key, texts.clone()));
+        texts
+    }
+    fn sorted_order(&self, fingerprint: u64, metrics_sort: bool) -> std::rc::Rc<Vec<usize>> {
+        let filter = nav::Filter::parse(&self.filter);
+        let match_all = self.filter.is_empty() && filter.is_ok();
+        // No filter: nothing to match, and the cached text is given back.
+        let texts = if match_all {
+            self.filter_text.borrow_mut().take();
+            None
+        } else {
+            Some(self.filter_texts())
+        };
+        // Every item in sort order first (kept while the items and the sort
+        // stay the same), then the filter: typing a filter never sorts again.
+        let mut order: Vec<usize> = self
+            .sorted_all(metrics_sort)
+            .iter()
+            .copied()
+            .filter(|&index| {
+                !self.faults_only || crate::workload_actions::faulty(&self.items[index])
+            })
+            .filter(|&index| {
+                match_all
+                    || texts.as_ref().is_some_and(|texts| {
+                        filter
+                            .as_ref()
+                            .is_ok_and(|filter| filter.matches(&texts[index]))
+                    })
+            })
+            .collect();
         if self.sort_desc {
             order.reverse();
         }
@@ -628,6 +887,51 @@ impl App {
             self.namespace.clone(),
             self.kind_index,
         );
+    }
+    /// The title of the column the table is sorted by.
+    fn sort_title(&self) -> String {
+        self.sort_column.clone().unwrap_or_else(|| {
+            match self.sort {
+                Sort::Name => "NAME",
+                Sort::Namespace => "NAMESPACE",
+                Sort::Status => "STATUS",
+                Sort::Restarts => "RSTS",
+                Sort::Age => "AGE",
+                Sort::Ready => "READY",
+                Sort::Cpu => "CPU",
+                Sort::Memory => "MEM",
+            }
+            .into()
+        })
+    }
+    /// Sort by the column right (or left) of the current sort column, as
+    /// the table shows them now; wraps around at the ends.
+    fn sort_step(&mut self, forward: bool, width: u16, height: u16) {
+        let rect = self.layout(width, height).table;
+        let custom: Vec<crate::views::ColumnSpec> = self
+            .current_view()
+            .map(|view| view.columns.clone())
+            .unwrap_or_default();
+        let columns = table_columns(self, usize::from(rect.width.saturating_sub(5)));
+        if columns.is_empty() {
+            return;
+        }
+        let current = self.sort_title();
+        let at = columns.iter().position(|(column, _)| {
+            column_matches(*column, column_title(*column, &custom), &current)
+        });
+        let next = match at {
+            Some(at) if forward => (at + 1) % columns.len(),
+            Some(at) => (at + columns.len() - 1) % columns.len(),
+            None => 0,
+        };
+        let title = column_title(columns[next].0, &custom).to_owned();
+        self.sort_by_title(&title, Some(false));
+    }
+    /// Keep the sort column and set its direction.
+    fn sort_direction(&mut self, descending: bool) {
+        let title = self.sort_title();
+        self.sort_by_title(&title, Some(descending));
     }
     /// Sort by any column title; `None` order toggles when already sorted by it.
     fn sort_by_title(&mut self, title: &str, descending: Option<bool>) {
@@ -1001,6 +1305,9 @@ pub fn run(mut options: Options) -> Result<()> {
         wide: false,
         sort_desc: false,
         sort_column: None,
+        clicks: std::cell::RefCell::new(Vec::new()),
+        copy_mode: false,
+        last_click: None,
         recent: crate::favorites::load(),
         last_scope: (String::new(), String::new(), usize::MAX),
         known_namespaces: vec![],
@@ -1041,6 +1348,8 @@ pub fn run(mut options: Options) -> Result<()> {
         table_metrics: Default::default(),
         items_generation: 0,
         visible_cache: Default::default(),
+        sorted_cache: Default::default(),
+        filter_text: Default::default(),
         health_cache: Default::default(),
         metrics_resources: false,
         metrics_chart: false,
@@ -1143,7 +1452,7 @@ pub fn run(mut options: Options) -> Result<()> {
         if std::mem::take(&mut app.pending_copilot_setup) {
             drop(terminal_guard.take());
             let setup = crate::copilot_setup::interactive();
-            terminal_guard = Some(Terminal::enter(app.options.mouse)?);
+            terminal_guard = Some(Terminal::enter(app.mouse_captured())?);
             app.finish_copilot_setup(setup);
             draw(&mut app)?;
             continue;
@@ -1155,7 +1464,7 @@ pub fn run(mut options: Options) -> Result<()> {
             drop(terminal_guard.take());
             let result =
                 crate::external_editor::edit(&text, crate::manifest_edit::MAX_DOCUMENT as u64);
-            terminal_guard = Some(Terminal::enter(app.options.mouse)?);
+            terminal_guard = Some(Terminal::enter(app.mouse_captured())?);
             if let Modal::YamlEditor(editor) = &mut app.modal {
                 app.status = match result.and_then(|edited| editor.replace_text(&edited)) {
                     Ok(()) => {
@@ -1171,7 +1480,7 @@ pub fn run(mut options: Options) -> Result<()> {
                 Ok((context, text)) => {
                     drop(terminal_guard.take());
                     let result = crate::external_editor::edit(&text, 4096);
-                    terminal_guard = Some(Terminal::enter(app.options.mouse)?);
+                    terminal_guard = Some(Terminal::enter(app.mouse_captured())?);
                     app.finish_context_edit(&context, result);
                 }
                 Err(error) => app.status = error,
@@ -1182,7 +1491,7 @@ pub fn run(mut options: Options) -> Result<()> {
             drop(terminal_guard.take());
             let allowed = app.options.allow_extensions && app.options.allow_tools;
             let result = crate::handoff::run(*prepared, &typed, allowed);
-            terminal_guard = Some(Terminal::enter(app.options.mouse)?);
+            terminal_guard = Some(Terminal::enter(app.mouse_captured())?);
             app.modal = Modal::Detail(
                 match result {
                     Ok(outcome) => format!(
@@ -1225,7 +1534,7 @@ pub fn run(mut options: Options) -> Result<()> {
                     std::thread::sleep(Duration::from_millis(50));
                 }
             }
-            terminal_guard = Some(Terminal::enter(app.options.mouse)?);
+            terminal_guard = Some(Terminal::enter(app.mouse_captured())?);
             app.refresh = true;
             dirty = true;
         }
@@ -1359,12 +1668,18 @@ pub fn run(mut options: Options) -> Result<()> {
                     }
                 }
                 Event::Resize(_, _) => dirty = true,
+                // Pointer movement alone changes nothing on screen.
                 Event::Mouse(mouse)
-                    if matches!(app.modal, Modal::None | Modal::LiveOverview(..))
-                        && !app.write_inflight =>
+                    if !app.write_inflight
+                        && !matches!(
+                            mouse.kind,
+                            MouseEventKind::Moved | MouseEventKind::Drag(_)
+                        ) =>
                 {
                     let (w, h) = terminal::size().map_err(|_| "terminal size failed")?;
-                    app.mouse(mouse, w, h);
+                    if app.mouse(mouse, w, h)? {
+                        break;
+                    }
                     dirty = true;
                 }
                 _ => {}

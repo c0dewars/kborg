@@ -217,7 +217,7 @@ pub fn hooks_from_manifests(
 fn hook_plan(all: Vec<Hook>, operation: Operation, allow: bool) -> Result<HookPlan> {
     if !all.is_empty() && !allow {
         return Err(
-            "chart contains hooks; explicitly enable --allow-helm-hooks and review their effects"
+            "chart contains hooks and Helm hooks are off in this session (operator config allow_helm_hooks: false)"
                 .into(),
         );
     }
@@ -471,7 +471,7 @@ pub fn crds(manifests: &str, allow: bool) -> Result<CrdPlan> {
         .collect::<Result<Vec<_>>>()?;
     if !definitions.is_empty() && !allow {
         return Err(
-            "CRDs require explicit --allow-helm-crds and a separate create-only review".into(),
+            "CRDs need a separate create-only review, and Helm CRD actions are off in this session (operator config allow_helm_crds: false)".into(),
         );
     }
     definitions.sort_by(|a, b| a.name.cmp(&b.name));

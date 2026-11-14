@@ -430,7 +430,7 @@ pub(crate) fn parse_manifest_text(text: &str) -> Result<Vec<Value>> {
 pub fn preview_manifest(path: &Path) -> Result<String> {
     let (path, mut documents) = manifest_documents(path)?;
     let mut out = format!(
-        "LOCAL MANIFEST | {}\nRedacted preview. `a` reviews a server-side apply (--write --allow-apply).\n",
+        "LOCAL MANIFEST | {}\nRedacted preview. `a` reviews a server-side apply.\n",
         path.display()
     );
     for document in &mut documents {

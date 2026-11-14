@@ -238,12 +238,15 @@ pub(super) fn table_hints(app: &App) -> Vec<(String, &'static str)> {
 }
 /// Key hints as keycaps: the key on a raised `cap` surface in the key color,
 /// then its label. `colors` is [key, label, background, cap].
+/// With `app`, each hint is a clickable button and `danger` colors the ones
+/// that destroy something.
 pub(super) fn key_hints(
     out: &mut impl Write,
     y: u16,
     width: u16,
     hints: &[(impl AsRef<str>, impl AsRef<str>)],
     colors: [Color; 4],
+    app: Option<(&App, Color)>,
 ) -> io::Result<()> {
     let [key, text, bg, cap] = colors;
     row(out, y, width, "", text, bg)?;
@@ -255,6 +258,22 @@ pub(super) fn key_hints(
         if x + shortcut.len() as u16 + label.len() as u16 > width {
             break;
         }
+        let (key, text) = match app {
+            Some((app, danger)) => {
+                app.add_key_click(
+                    x,
+                    y,
+                    (shortcut.len() + label.trim_end().len()) as u16,
+                    shortcut.trim(),
+                );
+                if header_block::risky(label.trim()) {
+                    (danger, danger)
+                } else {
+                    (key, text)
+                }
+            }
+            None => (key, text),
+        };
         cell(out, x, y, shortcut.len() as u16, &shortcut, key, cap)?;
         x += shortcut.len() as u16;
         cell(out, x, y, label.len() as u16, &label, text, bg)?;
@@ -494,28 +513,29 @@ pub(super) fn draw(app: &mut App) -> Result<()> {
         .and_then(|_| out.flush())
         .map_err(|_| "draw failed")?;
     if w >= 28 && h >= 10 {
+        // Content lines of a full-height view in the frame just drawn.
+        let view_rows =
+            usize::from(h.saturating_sub(app.view_top(w, h) + header_block::VIEW_FRAME_ROWS));
         let advice_colors = [
             ui_color(app, "accent"),
             ui_color(app, "warning"),
             ui_color(app, "background"),
         ];
         if let Modal::WriteReview(review) = &mut app.modal {
-            review
-                .view
-                .mark_drawn(usize::from(w - 2), usize::from(h - 8));
+            review.view.mark_drawn(usize::from(w - 2), view_rows);
             render_write_footer(&mut out, &review.view, w, h, advice_colors)
                 .and_then(|_| out.flush())
                 .map_err(|_| "draw failed")?;
         }
         if let Modal::AdviceReview(review) = &mut app.modal {
-            review.mark_drawn(usize::from(w - 2), usize::from(h - 8));
+            review.mark_drawn(usize::from(w - 2), view_rows);
             render_advice_footer(&mut out, review, w, h, advice_colors)
                 .and_then(|_| out.flush())
                 .map_err(|_| "draw failed")?;
         }
         let changed = if let Modal::HelmReview(review) = &mut app.modal {
             let before = review.remaining(usize::from(w - 2));
-            review.mark_drawn(usize::from(w - 2), usize::from(h - 8));
+            review.mark_drawn(usize::from(w - 2), view_rows);
             before != review.remaining(usize::from(w - 2))
         } else {
             false
@@ -561,8 +581,10 @@ fn widen_age(cols: &mut [(Column, usize)]) {
         *width -= 2;
     }
 }
-pub(super) fn modal_rect(modal: &Modal, width: u16, height: u16) -> Rect {
-    let available = height.saturating_sub(6);
+/// Where a view's panel goes. `top` is the first row below the header
+/// (`App::view_top`); the status, hint and approval rows stay below it.
+pub(super) fn modal_rect(modal: &Modal, width: u16, height: u16, top: u16) -> Rect {
+    let available = height.saturating_sub(top + 3);
     let compact = matches!(
         modal,
         Modal::Input(..)
@@ -601,7 +623,7 @@ pub(super) fn modal_rect(modal: &Modal, width: u16, height: u16) -> Rect {
     let modal_height = desired.min(available).max(2).min(available);
     Rect {
         x: width.saturating_sub(modal_width) / 2,
-        y: 3 + available.saturating_sub(modal_height) / 2,
+        y: top + available.saturating_sub(modal_height) / 2,
         width: modal_width,
         height: modal_height,
     }
@@ -647,7 +669,11 @@ pub(super) fn render_log_modal(
         }
     };
     let bg = color("background");
-    let y = if view.fullscreen { 2 } else { 3 };
+    let y = if view.fullscreen {
+        2
+    } else {
+        app.view_top(w, h)
+    };
     let rect = Rect {
         x: 0,
         y,
@@ -752,7 +778,46 @@ pub(super) fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<
     .and_then(|_| out.flush())
     .map_err(|_| "draw failed".into())
 }
+/// The columns of the resource table in a panel with `column_width` cells
+/// for them: the active view's, or the built-in ones the width allows.
+pub(super) fn table_columns(app: &App, column_width: usize) -> Vec<(Column, usize)> {
+    let namespaced = app
+        .kinds
+        .get(app.kind_index)
+        .is_some_and(|kind| kind.namespaced);
+    let view = app.current_view();
+    let style = &app.ui.table;
+    let mut cols = if let Some(view) = view {
+        view_columns(view, column_width, app.wide)
+    } else {
+        let measured = matches!(app.kind().as_str(), "pods" | "nodes") && column_width >= 70;
+        let node_columns =
+            app.kind() == "pods" && (column_width >= 130 || (app.wide && column_width >= 90));
+        let ip_column = node_columns && (column_width >= 155 || (app.wide && column_width >= 110));
+        let reserved = if measured { 20 } else { 0 }
+            + if node_columns { 23 } else { 0 }
+            + if ip_column { 17 } else { 0 };
+        let mut cols = columns(column_width.saturating_sub(reserved), namespaced);
+        if measured {
+            cols.push((Column::Cpu, 9));
+            cols.push((Column::Memory, 9));
+        }
+        if node_columns {
+            cols.push((Column::Node, 22));
+        }
+        if ip_column {
+            cols.push((Column::Ip, 16));
+        }
+        cols
+    };
+    if style.long_age() {
+        widen_age(&mut cols);
+    }
+    cols
+}
+
 fn render_frame(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
+    app.clicks.borrow_mut().clear();
     let t = &app.theme;
     let color = |role: &str| {
         if app.options.color && !t.terminal {
@@ -801,7 +866,10 @@ fn render_frame(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
         out.flush().map_err(|_| "draw failed")?;
         return Ok(());
     }
-    let mode = if app.options.connection.demo {
+    let mode = if app.copy_mode {
+        // The mouse belongs to the terminal until copy mode ends.
+        "COPY MODE"
+    } else if app.options.connection.demo {
         "DEMO SAMPLE DATA"
     } else if app.options.connection.writable {
         // Like k9s, a writable session is the normal case and needs no badge.
@@ -817,6 +885,12 @@ fn render_frame(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
     // The dashboard keeps its own fixed layout; the k9s-style block and the
     // ui.yaml chrome rows apply to the resource table view.
     let chrome = app.chrome(w, h);
+    // Views open below the header block, or below the bar's three rows.
+    let view_top = if chrome.block.is_some() {
+        chrome.top
+    } else {
+        header_block::BAR_ROWS
+    };
     let mode_color = if app.options.connection.writable && !app.options.connection.demo {
         color("warning")
     } else {
@@ -1207,47 +1281,21 @@ fn render_frame(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
         let column_width = usize::from(rect.width - 5);
         let view = app.current_view();
         let custom: &[crate::views::ColumnSpec] = view.map_or(&[], |view| view.columns.as_slice());
-        let mut cols = if let Some(view) = view {
-            view_columns(view, column_width, app.wide)
-        } else {
-            let measured = matches!(app.kind().as_str(), "pods" | "nodes") && column_width >= 70;
-            let node_columns =
-                app.kind() == "pods" && (column_width >= 130 || (app.wide && column_width >= 90));
-            let ip_column =
-                node_columns && (column_width >= 155 || (app.wide && column_width >= 110));
-            let reserved = if measured { 20 } else { 0 }
-                + if node_columns { 23 } else { 0 }
-                + if ip_column { 17 } else { 0 };
-            let mut cols = columns(column_width.saturating_sub(reserved), namespaced);
-            if measured {
-                cols.push((Column::Cpu, 9));
-                cols.push((Column::Memory, 9));
-            }
-            if node_columns {
-                cols.push((Column::Node, 22));
-            }
-            if ip_column {
-                cols.push((Column::Ip, 16));
-            }
-            cols
-        };
-        if style.long_age() {
-            widen_age(&mut cols);
-        }
+        let cols = table_columns(app, column_width);
         let now = k8s_openapi::jiff::Timestamp::now().as_second();
-        let sort_title = app.sort_column.clone().unwrap_or_else(|| {
-            match app.sort {
-                Sort::Name => "NAME",
-                Sort::Namespace => "NAMESPACE",
-                Sort::Status => "STATUS",
-                Sort::Restarts => "RSTS",
-                Sort::Age => "AGE",
-                Sort::Ready => "READY",
-                Sort::Cpu => "CPU",
-                Sort::Memory => "MEM",
-            }
-            .into()
-        });
+        let sort_title = app.sort_title();
+        // A click on a column title sorts by it; a second click reverses.
+        let mut title_x = rect.x + 4;
+        for (column, width) in &cols {
+            let width = *width as u16;
+            app.add_click(
+                title_x,
+                rect.y + 1,
+                width.min((rect.x + rect.width).saturating_sub(title_x + 1)),
+                ClickAction::Sort(column_title(*column, custom).to_owned()),
+            );
+            title_x = title_x.saturating_add(width + text_cells(&style.column_separator));
+        }
         cell(
             out,
             rect.x + 1,
@@ -1432,6 +1480,7 @@ fn render_frame(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
                     bg,
                     raised,
                 ],
+                Some((app, color("danger"))),
             )
             .map_err(|_| "draw failed")?;
         }
@@ -1560,7 +1609,7 @@ fn render_frame(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
                 Modal::EditContainers(..) => "EDIT WORKLOAD / choose ordinary container",
                 Modal::Editor(..) => "EDIT CONTAINER / server dry-run and review required",
                 Modal::Export(_) => "EXPORT / review local file",
-                Modal::YamlEditor(_) => "YAML EDITOR / spec fields",
+                Modal::YamlEditor(_) => "YAML EDITOR",
                 Modal::WriteReview(review) if matches!(review.plan, WritePlan::Batch(_)) => {
                     "REVIEW BATCH / every marked object / approval required"
                 }
@@ -1580,7 +1629,7 @@ fn render_frame(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
                 Modal::None => "",
                 Modal::Filter(..) => "",
             };
-            let rect = modal_rect(modal, w, h);
+            let rect = modal_rect(modal, w, h, view_top);
             let modal_bg = if matches!(modal, Modal::HelmForm(..)) {
                 surface
             } else {
@@ -1765,7 +1814,7 @@ fn render_frame(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
                 }
                 Modal::Resources(_,_,name,_,text) => wrap_text(&format!("Deployment {name}\n\ncontainer CPU_REQUEST MEMORY_REQUEST CPU_LIMIT MEMORY_LIMIT\n\n> {text}_\n\nExample: app 100m 128Mi 500m 512Mi\nEnter server dry-run / full review; Esc cancel"), usize::from(rect.width.saturating_sub(2))).lines().map(str::to_owned).collect(),
                 Modal::Scale(_, _, name, _, text) => vec![
-                    format!(" SCALE {name} | enter replicas 0..20: {text}_"),
+                    format!(" SCALE {name} | enter replicas 0..10000: {text}_"),
                     " Enter server dry-run/review | Esc cancel".into(),
                 ],
                 Modal::SessionConfirm(prepared, text) => {
@@ -1877,7 +1926,7 @@ fn render_frame(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
             let hints = if let Some(generated) = generated.as_deref() {
                 generated
             } else if let Modal::Confirm(prepared, text) = modal {
-                if confirmation_fits(&prepared.summary, text, w, h) {
+                if confirmation_fits(&prepared.summary, text, w, h, view_top) {
                     if review_ui::strict() {
                         "Type namespace/name | Enter execute | Esc cancel"
                     } else {
@@ -1887,7 +1936,7 @@ fn render_frame(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
                     "Esc cancel | Enlarge terminal to review complete mutation."
                 }
             } else if let Modal::SessionConfirm(prepared, text) = modal {
-                if confirmation_fits(prepared.summary(), text, w, h) {
+                if confirmation_fits(prepared.summary(), text, w, h, view_top) {
                     session_hint = if review_ui::strict() {
                         format!(
                             "Type target | Enter start session | Esc cancel | {} ends session",
@@ -1965,10 +2014,12 @@ fn render_frame(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
                     w,
                     &hints,
                     [color("accent"), color("muted"), bg, raised],
+                    Some((app, color("danger"))),
                 )
                 .map_err(|_| "draw failed")?;
             } else {
                 row(out, h - 2, w, hints, color("muted"), bg).map_err(|_| "draw failed")?;
+                app.add_hint_clicks(h - 2, hints);
             }
             // Connection, mode and freshness already remain visible above the
             // modal. Reserve the last line for in-flight state and approvals.
@@ -2047,19 +2098,28 @@ pub(super) fn confirmation_lines(summary: &str, text: &str, width: u16) -> Vec<S
         })
         .collect()
 }
-pub(super) fn confirmation_fits(summary: &str, text: &str, width: u16, height: u16) -> bool {
+/// `top` is the view's first row (`App::view_top`).
+pub(super) fn confirmation_fits(
+    summary: &str,
+    text: &str,
+    width: u16,
+    height: u16,
+    top: u16,
+) -> bool {
     confirmation_display(summary, text).is_ok()
         && width >= 28
         && height >= 10
         && confirmation_lines(summary, text, width.saturating_sub(1)).len()
-            <= usize::from(height.saturating_sub(8))
+            <= usize::from(height.saturating_sub(top + header_block::VIEW_FRAME_ROWS))
 }
-pub(super) fn scroll_offset(text: &str, offset: usize, code: KeyCode) -> usize {
+/// `top` is the view's first row (`App::view_top_now`): a page is the
+/// content the view shows below it.
+pub(super) fn scroll_offset(text: &str, offset: usize, code: KeyCode, top: u16) -> usize {
     let (width, height) = terminal::size().unwrap_or((80, 24));
     let count = wrap_text(text, usize::from(width.saturating_sub(2)))
         .lines()
         .count();
-    let page = usize::from(height.saturating_sub(8)).max(1);
+    let page = usize::from(height.saturating_sub(top + header_block::VIEW_FRAME_ROWS)).max(1);
     match code {
         KeyCode::Down | KeyCode::Char('j') => offset.saturating_add(1),
         KeyCode::Up | KeyCode::Char('k') => offset.saturating_sub(1),

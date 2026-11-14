@@ -80,6 +80,10 @@ pub struct Connection {
     /// Opt-in: reviewed server-side apply of local manifest files.
     pub allow_apply: bool,
     pub allow_force_kill: bool,
+    /// Changes in kube-system, kube-public and kube-node-lease.
+    pub allow_system_namespaces: bool,
+    /// Changes to cluster-scoped objects (Nodes, Namespaces, ClusterRoles...).
+    pub allow_cluster_scoped: bool,
     pub allow_secret_reveal: bool,
     pub allow_auth_helper: bool,
     /// Operator policy denial, independent of the optional reviewed helper mode.
@@ -129,6 +133,14 @@ pub struct Prepared {
 }
 
 impl Gateway {
+    /// Whether a change may target this scope: `""` is cluster-scoped.
+    pub(crate) fn change_scope(&self, namespace: &str) -> Result<()> {
+        self.policy.scope(namespace)
+    }
+    /// Whether changes reach kube-system, kube-public and kube-node-lease.
+    pub(crate) fn system_namespaces(&self) -> bool {
+        self.policy.system_namespaces
+    }
     pub async fn connect(options: Connection) -> Result<Self> {
         if options.demo {
             let namespace = if options.namespace.is_empty() {
@@ -149,6 +161,8 @@ impl Gateway {
                 session: "demo".into(),
                 policy: Policy {
                     writable: options.writable,
+                    system_namespaces: options.allow_system_namespaces,
+                    cluster_scoped: options.allow_cluster_scoped,
                 },
                 logs: true,
                 allow_helm: true,
@@ -337,6 +351,8 @@ impl Gateway {
             namespace,
             policy: Policy {
                 writable: options.writable,
+                system_namespaces: options.allow_system_namespaces,
+                cluster_scoped: options.allow_cluster_scoped,
             },
             logs: options.logs,
             allow_helm: options.allow_helm,
@@ -378,7 +394,10 @@ impl Gateway {
     }
     pub(crate) fn helm_reader(&self, namespace: &str) -> Result<crate::helm::Reader> {
         if !self.allow_helm {
-            return Err("Helm release storage access requires --allow-helm. Next: restart with --allow-helm".into());
+            return Err(
+                "Helm is off in this session. Next: set allow_helm: true in the operator config"
+                    .into(),
+            );
         }
         crate::helm::Reader::new(
             self.client
@@ -403,17 +422,17 @@ impl Gateway {
     }
     pub(crate) fn helm_lifecycle_session(&self) -> Result<&str> {
         if !self.policy.writable || !self.allow_helm_write || !self.allow_helm {
-            return Err("Helm lifecycle requires --write --allow-helm --allow-helm-write. Next: restart with those flags".into());
+            return Err("Helm changes are off in this session. Next: start without --read-only, or set allow_helm_write: true in the operator config".into());
         }
         Ok(&self.session)
     }
     pub(crate) fn helm_extension_access(&self, hooks: bool, crds: bool) -> Result<()> {
         self.helm_lifecycle_session()?;
         if hooks && !self.allow_helm_hooks {
-            return Err("Helm hooks require explicit --allow-helm-hooks. Next: restart with --allow-helm-hooks".into());
+            return Err("Helm hooks are off in this session. Next: set allow_helm_hooks: true in the operator config".into());
         }
         if crds && !self.allow_helm_crds {
-            return Err("Helm CRD actions require explicit --allow-helm-crds. Next: restart with --allow-helm-crds".into());
+            return Err("Helm CRD actions are off in this session. Next: set allow_helm_crds: true in the operator config".into());
         }
         Ok(())
     }
@@ -427,7 +446,7 @@ impl Gateway {
             user: "test".into(),
             namespace: namespace.into(),
             session: "test".into(),
-            policy: Policy { writable: false },
+            policy: Policy::strict(false),
             logs: false,
             allow_helm: false,
             allow_helm_write: false,

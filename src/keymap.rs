@@ -138,7 +138,7 @@ impl Scope {
         Self::ALL.into_iter().find(|scope| scope.name() == name)
     }
     /// The action name prefix inside keymap.yaml `scopes:` sections.
-    fn prefix(self) -> &'static str {
+    pub fn prefix(self) -> &'static str {
         match self {
             Scope::Global | Scope::Table => "",
             Scope::Log => "log.",
@@ -327,6 +327,12 @@ pub const ACTIONS: &[Action] = &[
         &["Ctrl-G"],
         "Ask Copilot about this screen (:ask); the transfer is reviewed first",
     ),
+    act(
+        "copy.mode",
+        Global,
+        &["Ctrl-Y"],
+        "Copy mode: release the mouse to select text (:mouse)",
+    ),
     // Unbound by default: documented keymaps already use the spare Ctrl keys.
     act(
         "explain",
@@ -349,7 +355,12 @@ pub const ACTIONS: &[Action] = &[
     ),
     act("yaml", Table, &["y", "v"], "View redacted YAML"),
     act("json", Table, &["J"], "View redacted JSON"),
-    act("edit", Table, &["e"], "YAML spec editor"),
+    act(
+        "edit",
+        Table,
+        &["e"],
+        "YAML editor: fields, labels, annotations",
+    ),
     act(
         "resources",
         Table,
@@ -448,6 +459,34 @@ pub const ACTIONS: &[Action] = &[
     act("sort.age", Table, &["A"], "Sort by age"),
     act("sort.status", Table, &["S"], "Sort by status"),
     act("sort.ready", Table, &["R"], "Sort by readiness"),
+    act("sort.restarts", Table, &["T"], "Sort by restarts"),
+    act("sort.namespace", Table, &["P"], "Sort by namespace"),
+    act("sort.node", Table, &["O"], "Sort Pods by node"),
+    act("sort.ip", Table, &["I"], "Sort Pods by IP"),
+    act(
+        "sort.column.next",
+        Table,
+        &["Shift-Right"],
+        "Sort by the next column to the right",
+    ),
+    act(
+        "sort.column.previous",
+        Table,
+        &["Shift-Left"],
+        "Sort by the next column to the left",
+    ),
+    act(
+        "sort.ascending",
+        Table,
+        &["Shift-Up"],
+        "Sort the current column ascending",
+    ),
+    act(
+        "sort.descending",
+        Table,
+        &["Shift-Down"],
+        "Sort the current column descending",
+    ),
     act(
         "sort.cpu",
         Table,
@@ -896,12 +935,7 @@ pub const ACTIONS: &[Action] = &[
         &["y"],
         "Safe revision metadata as YAML",
     ),
-    act(
-        "helm.install",
-        Helm,
-        &["i"],
-        "Install a chart (reviewed; --allow-helm-write)",
-    ),
+    act("helm.install", Helm, &["i"], "Install a chart (reviewed)"),
     act("helm.crds", Helm, &["c"], "Install chart CRDs separately"),
     act(
         "helm.upgrade",
@@ -1013,7 +1047,7 @@ pub const ACTIONS: &[Action] = &[
         "helm.history.install",
         HelmHistory,
         &["i"],
-        "Install a chart (reviewed; --allow-helm-write)",
+        "Install a chart (reviewed)",
     ),
     act(
         "helm.history.crds",
@@ -1144,7 +1178,7 @@ pub const ACTIONS: &[Action] = &[
         &["Esc"],
         "Restore the previous theme",
     ),
-    // :secrets list, key list and masked YAML (--allow-secret-reveal).
+    // :secrets list, key list and masked YAML.
     act(
         "secrets.yaml",
         Secrets,
@@ -1237,6 +1271,11 @@ pub enum Key {
     PageDown,
     Home,
     End,
+    /// Shift with an arrow key: the sort column and its direction.
+    ShiftLeft,
+    ShiftRight,
+    ShiftUp,
+    ShiftDown,
 }
 
 impl Key {
@@ -1256,6 +1295,10 @@ impl Key {
             KeyCode::BackTab => Key::BackTab,
             KeyCode::Backspace => Key::Backspace,
             KeyCode::Delete => Key::Delete,
+            KeyCode::Up if modifiers.contains(KeyModifiers::SHIFT) => Key::ShiftUp,
+            KeyCode::Down if modifiers.contains(KeyModifiers::SHIFT) => Key::ShiftDown,
+            KeyCode::Left if modifiers.contains(KeyModifiers::SHIFT) => Key::ShiftLeft,
+            KeyCode::Right if modifiers.contains(KeyModifiers::SHIFT) => Key::ShiftRight,
             KeyCode::Up => Key::Up,
             KeyCode::Down => Key::Down,
             KeyCode::Left => Key::Left,
@@ -1288,6 +1331,10 @@ impl Key {
             Key::PageDown => (KeyCode::PageDown, none),
             Key::Home => (KeyCode::Home, none),
             Key::End => (KeyCode::End, none),
+            Key::ShiftLeft => (KeyCode::Left, KeyModifiers::SHIFT),
+            Key::ShiftRight => (KeyCode::Right, KeyModifiers::SHIFT),
+            Key::ShiftUp => (KeyCode::Up, KeyModifiers::SHIFT),
+            Key::ShiftDown => (KeyCode::Down, KeyModifiers::SHIFT),
         }
     }
     /// Parses `L`, `Shift-N`, `Ctrl-D`, `Alt-x`, `F5`, `Space`, `Delete`,
@@ -1314,6 +1361,10 @@ impl Key {
             "pgdown" | "pagedown" | "pgdn" => Some(Key::PageDown),
             "home" => Some(Key::Home),
             "end" => Some(Key::End),
+            "shift-left" => Some(Key::ShiftLeft),
+            "shift-right" => Some(Key::ShiftRight),
+            "shift-up" => Some(Key::ShiftUp),
+            "shift-down" => Some(Key::ShiftDown),
             _ => None,
         };
         if named.is_some() {
@@ -1376,6 +1427,10 @@ impl std::fmt::Display for Key {
             Key::PageDown => write!(f, "PgDown"),
             Key::Home => write!(f, "Home"),
             Key::End => write!(f, "End"),
+            Key::ShiftLeft => write!(f, "Shift-Left"),
+            Key::ShiftRight => write!(f, "Shift-Right"),
+            Key::ShiftUp => write!(f, "Shift-Up"),
+            Key::ShiftDown => write!(f, "Shift-Down"),
         }
     }
 }

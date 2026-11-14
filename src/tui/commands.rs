@@ -49,13 +49,14 @@ impl App {
             ("a" | "alias" | "aliases", []) => self.aliases(),
             ("actions", []) => self.modal = Modal::Picker("Actions", self.action_menu(), 0),
             ("export", []) => self.request_export(),
+            ("mouse" | "copy", []) => self.toggle_copy_mode(),
             ("save", []) => self.save_resource_selection()?,
             ("selections", []) => self.open_saved_selections()?,
             ("edit"|"yaml-edit",[])=>self.yaml_editor(),
             ("edit-container",[])=>self.editor(),
             ("cordon",[])=>self.node_maintenance(crate::node_maintenance::Request::Cordon),
             ("uncordon",[])=>self.node_maintenance(crate::node_maintenance::Request::Uncordon),
-            ("drain",[])=>self.node_maintenance(crate::node_maintenance::Request::Drain{seconds:120}),
+            ("drain",[])=>self.node_maintenance(crate::node_maintenance::Request::Drain{seconds:600}),
             ("ctx" | "context" | "contexts", []) => {
                 let list=self.recent.order_contexts(contexts(&self.options.connection)?);
                 let index=list.iter().position(|name|name==&self.context).unwrap_or(0);
@@ -501,6 +502,8 @@ impl App {
         connection.allow_node_maintenance = false;
         connection.allow_yaml_edit = false;
         connection.allow_force_kill = false;
+        connection.allow_system_namespaces = false;
+        connection.allow_cluster_scoped = false;
         connection.allow_secret_reveal = false;
         connection.allow_helm_write = false;
         connection.allow_helm_hooks = false;

@@ -72,7 +72,7 @@ fn workload_logs_reject_partial_foreign_namespace_selector_escapes_and_stale_wor
         assert!(gateway.capture_log_membership("default",crate::logs::PodLogSelection::Workload{resource:"deployments.apps".into(),name:"web".into(),uid:"captured".into()}).await.is_err());
         assert_eq!(requests.lock().map_err(|_|"requests")?.len(),1);
         let (mut gateway,requests)=log_capture_gateway(Vec::new());gateway.logs=false;
-        assert!(gateway.capture_log_membership("default",crate::logs::PodLogSelection::Selector("app=web".into())).await.is_err_and(|error|error.contains("--allow-logs")));
+        assert!(gateway.capture_log_membership("default",crate::logs::PodLogSelection::Selector("app=web".into())).await.is_err_and(|error|error.contains("allow_logs")));
         gateway.logs=true;
         assert!(gateway.capture_log_membership("*",crate::logs::PodLogSelection::Selector("app=web".into())).await.is_err());
         assert!(gateway.capture_log_membership("default",crate::logs::PodLogSelection::Selector(String::new())).await.is_err());
@@ -116,7 +116,7 @@ fn merged_logs_gate_before_pod_reads_and_reject_unbound_identity() -> Result<()>
             gateway
                 .merged_logs("default", "app", "uid", false, Default::default())
                 .await
-                .is_err_and(|error| error.contains("--allow-logs"))
+                .is_err_and(|error| error.contains("allow_logs"))
         );
         assert!(
             gateway
@@ -128,7 +128,7 @@ fn merged_logs_gate_before_pod_reads_and_reject_unbound_identity() -> Result<()>
                     Default::default()
                 )
                 .await
-                .is_err_and(|error| error.contains("--allow-logs"))
+                .is_err_and(|error| error.contains("allow_logs"))
         );
         gateway.logs = true;
         assert!(
@@ -564,6 +564,93 @@ fn force_kill_is_pod_only_opt_in_and_uses_zero_grace() {
             .unwrap_or_else(|e| panic!("{e}"));
         assert!(g.get("pods", "demo", &name).await.is_err());
     });
+}
+#[test]
+fn delete_and_edit_reach_any_kind_cluster_objects_and_system_namespaces() -> Result<()> {
+    runtime()?.block_on(async {
+        // The restrictive connection: only non-system namespaced objects.
+        let strict = Gateway::connect(Connection {
+            demo: true,
+            writable: true,
+            ..Default::default()
+        })
+        .await?;
+        let error = strict
+            .prepare("namespaces", "demo", "demo", Action::Delete)
+            .await
+            .err()
+            .unwrap_or_default();
+        assert!(error.contains("allow_cluster_scoped"), "{error}");
+        assert!(
+            strict
+                .yaml_draft("clusterroles", "*", "demo-reader")
+                .await
+                .is_err()
+        );
+
+        let mut g = Gateway::connect(Connection {
+            demo: true,
+            writable: true,
+            allow_yaml_edit: true,
+            allow_system_namespaces: true,
+            allow_cluster_scoped: true,
+            ..Default::default()
+        })
+        .await?;
+        // Any kind can be deleted, not only workloads.
+        let prepared = g
+            .prepare("configmaps", "demo", "api-config", Action::Delete)
+            .await?;
+        assert!(prepared.summary.contains("Type demo/api-config to execute"));
+        let approval =
+            Approval::confirm(prepared.target.clone(), Action::Delete, "demo/api-config")?;
+        g.execute(prepared, approval).await?;
+        assert!(g.get("configmaps", "demo", "api-config").await.is_err());
+        // Workload actions stay with workloads.
+        assert!(
+            g.prepare("clusterroles", "*", "demo-reader", Action::Restart)
+                .await
+                .is_err()
+        );
+        // A cluster-scoped object: whatever namespace the view passed, the
+        // target has none, the review warns, and the name alone confirms.
+        let prepared = g
+            .prepare("namespaces", "default", "demo", Action::Delete)
+            .await?;
+        assert_eq!(prepared.target.namespace, "");
+        assert!(prepared.summary.contains("Type demo to execute"));
+        assert!(prepared.summary.contains("EVERY object inside it"));
+        assert!(
+            Approval::confirm(prepared.target.clone(), Action::Delete, "default/demo").is_err()
+        );
+        let approval = Approval::confirm(prepared.target.clone(), Action::Delete, "demo")?;
+        g.execute(prepared, approval).await?;
+        assert!(g.get("namespaces", "*", "demo").await.is_err());
+        // The YAML editor covers cluster-scoped objects and their labels.
+        let draft = g
+            .yaml_draft("clusterroles", "default", "demo-reader")
+            .await?;
+        let mut edited: Value = serde_saphyr::from_str(draft.text()).map_err(|_| "fixture YAML")?;
+        edited["metadata"]["labels"] = json!({"team":"platform"});
+        let text = serde_json::to_string(&edited).map_err(|_| "fixture JSON")?;
+        let prepared = g.prepare_yaml(&draft, &text).await?;
+        assert!(prepared.summary().contains("Type demo-reader to apply"));
+        assert!(g.execute_yaml(prepared, "demo-reader").await.is_ok());
+        assert_eq!(
+            g.get("clusterroles", "*", "demo-reader").await?["metadata"]["labels"]["team"],
+            "platform"
+        );
+        // System namespaces: open here, refused by the restrictive connection.
+        for capability in 0..3 {
+            g.operation_capabilities[capability] = true;
+            let error = g.operation_api("kube-system", capability).err();
+            assert!(
+                error.is_some_and(|error| error.contains("demo mode")),
+                "kube-system is in scope; only the missing cluster refuses"
+            );
+        }
+        Ok(())
+    })
 }
 #[test]
 fn prepared_review_cannot_be_changed_after_dry_run() {

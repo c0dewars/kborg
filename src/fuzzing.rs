@@ -232,7 +232,12 @@ pub fn manifest(data: &[u8]) {
                 continue;
             }
         };
-        let (namespace, name, body) = match manifest_apply::body(document, kind, "fuzz") {
+        let (namespace, name, body) = match manifest_apply::body(
+            document,
+            kind,
+            "fuzz",
+            &crate::policy::Policy::strict(true),
+        ) {
             Ok(planned) => planned,
             Err(error) => {
                 check_error(&error);

@@ -99,9 +99,13 @@ fn label(byte: u8) -> String {
     }
 }
 
+/// Longest interactive session: twelve hours.
+pub const MAX_LIFETIME: u16 = 43_200;
 pub fn validate_lifetime(seconds: u16) -> Result<()> {
-    if !(1..=3600).contains(&seconds) {
-        return Err("interactive session lifetime must be 1..3600 seconds".into());
+    if !(1..=MAX_LIFETIME).contains(&seconds) {
+        return Err(format!(
+            "interactive session lifetime must be 1..{MAX_LIFETIME} seconds"
+        ));
     }
     Ok(())
 }
@@ -881,8 +885,8 @@ mod tests {
     }
     #[test]
     fn lifetime_and_keyboard_controls_are_explicit() {
-        assert!(validate_lifetime(0).is_err() && validate_lifetime(3601).is_err());
-        assert!(validate_lifetime(1).is_ok() && validate_lifetime(3600).is_ok());
+        assert!(validate_lifetime(0).is_err() && validate_lifetime(MAX_LIFETIME + 1).is_err());
+        assert!(validate_lifetime(1).is_ok() && validate_lifetime(MAX_LIFETIME).is_ok());
         assert!(matches!(
             key_input(
                 KeyEvent::new(KeyCode::Char(']'), KeyModifiers::CONTROL),
