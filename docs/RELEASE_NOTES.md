@@ -1,4 +1,4 @@
-# KBorg 0.5.1 — unreleased
+# KBorg 0.5.1 — 2026-11-14
 
 - **One header on every view.** The k9s-style header now stays when you open describe, YAML, logs, a review, Secrets, Helm or help, instead of collapsing to the three-row bar. Its key hints are those of the view in front (search and close on a YAML view, filters and time ranges on logs), and its middle column names the view and, for logs and object overviews, what it shows. The namespace number keys are listed only on the table, where they work. The dashboard keeps its own layout, and full-screen logs (`f`) take the header's rows for log lines. Views have six fewer content rows than in 0.5.0; terminals under 100x24 and `header.style: bar` are unchanged.
 

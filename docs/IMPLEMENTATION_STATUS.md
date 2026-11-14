@@ -1,6 +1,6 @@
 # KBorg current implementation status
 
-Updated 2026-11-13 for the 0.5.0 release. This file and [REMAINING_WORK.md](REMAINING_WORK.md) supersede older progress notes. Historical acceptance reports keep their original scope and evidence.
+Updated 2026-11-14 for the 0.5.1 release. This file and [REMAINING_WORK.md](REMAINING_WORK.md) supersede older progress notes. Historical acceptance reports keep their original scope and evidence.
 
 ## Implemented
 
@@ -20,10 +20,11 @@ Updated 2026-11-13 for the 0.5.0 release. This file and [REMAINING_WORK.md](REMA
 - Pod/Node metrics with exact quantities, request/limit comparisons and bounded history.
 
 **Operate** (available capabilities are on by default; company configuration can deny them. Review before execution, server dry-run where supported, local audit record. Quick confirmation is `y`/Enter; `strict_confirmations` restores typed confirmation.)
-- Scale, restart, rollback, delete, force kill; CronJob trigger and suspend/resume; image/resource forms; YAML spec editing in-app or in `$EDITOR`.
-- Server-side apply of local manifests (`--allow-apply`), never forcing field ownership.
-- Cordon/uncordon/drain (`--allow-node-maintenance`); node shell through a reviewed, self-expiring privileged Pod (`--allow-node-shell`); ephemeral debug containers (`--allow-debug`).
-- Exec/attach with optional TTY, eight loopback port forwards with a bounded benchmark, file and directory copy (`--allow-file-copy`).
+- Scale (0 to 10,000), restart, rollback, force kill; delete for any kind except Secrets; CronJob trigger and suspend/resume; image/resource forms; YAML editing of every top-level field except identity and status, plus labels and annotations, in-app or in `$EDITOR`.
+- Changes reach system namespaces and cluster-scoped objects; `allow_system_namespaces: false` and `allow_cluster_scoped: false` in the operator configuration take that away.
+- Server-side apply of local manifests, up to 64 objects, never forcing field ownership.
+- Cordon/uncordon/drain (the review warns for each Pod that loses data or is not recreated); node shell through a reviewed, self-expiring privileged Pod; ephemeral debug containers.
+- Exec/attach with optional TTY, eight loopback port forwards with a bounded benchmark, file and directory copy.
 - Helm browsing and a reviewed lifecycle subset with OCI, OpenPGP and Sigstore verification.
 - Secret key listing and masked YAML; revealing one value requires a separate action and expires.
 
