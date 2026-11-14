@@ -84,6 +84,10 @@ impl DocSearch {
     pub(super) fn clear(&mut self) {
         *self = Self::default();
     }
+    /// True while the search text is being typed.
+    pub(super) fn typing(&self) -> bool {
+        self.draft.is_some()
+    }
     /// The hint row while a search is typed or applied. `lines` are the
     /// wrapped document lines and `offset` the top line shown.
     pub(super) fn hint(&self, lines: &[&str], offset: usize) -> Option<String> {

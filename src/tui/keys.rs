@@ -29,9 +29,7 @@ impl App {
             Modal::HelmReview(review) => review.accept(),
             Modal::AdviceReview(review) => review.accept(),
             Modal::SessionConfirm(prepared, text) => *text = prepared.confirmation(),
-            Modal::Confirm(prepared, text) => {
-                *text = format!("{}/{}", prepared.target.namespace, prepared.target.name)
-            }
+            Modal::Confirm(prepared, text) => *text = prepared.target.confirmation(),
             Modal::ScanConfirm(_, typed) => typed.clear(),
             _ => {}
         }
@@ -188,7 +186,9 @@ impl App {
                     review.view.key(
                         code,
                         usize::from(width.saturating_sub(2)),
-                        usize::from(height.saturating_sub(8)),
+                        usize::from(height.saturating_sub(
+                            self.view_top(width, height) + header_block::VIEW_FRAME_ROWS,
+                        )),
                     );
                     self.modal = Modal::WriteReview(review);
                 }
@@ -210,7 +210,9 @@ impl App {
                         )
                         .lines()
                         .count()
-                            > usize::from(height.saturating_sub(8))
+                            > usize::from(height.saturating_sub(
+                                self.view_top(width, height) + header_block::VIEW_FRAME_ROWS,
+                            ))
                     {
                         self.status="Enlarge the terminal to review the full export destination before saving.".into();
                         self.modal = Modal::Export(draft);
@@ -264,7 +266,9 @@ impl App {
                     review.key(
                         code,
                         usize::from(width.saturating_sub(2)),
-                        usize::from(height.saturating_sub(8)),
+                        usize::from(height.saturating_sub(
+                            self.view_top(width, height) + header_block::VIEW_FRAME_ROWS,
+                        )),
                     );
                     self.modal = Modal::AdviceReview(review);
                 }
@@ -296,7 +300,7 @@ impl App {
                     }
                     self.close_subview();
                 } else {
-                    let offset = scroll_offset(&text, offset, code);
+                    let offset = scroll_offset(&text, offset, code, self.view_top_now());
                     self.modal = Modal::AdviceDocument(title, text, offset);
                 }
             }
@@ -380,7 +384,9 @@ impl App {
                     review.key(
                         code,
                         usize::from(width.saturating_sub(2)),
-                        usize::from(height.saturating_sub(8)),
+                        usize::from(height.saturating_sub(
+                            self.view_top(width, height) + header_block::VIEW_FRAME_ROWS,
+                        )),
                     );
                     self.modal = Modal::HelmReview(review);
                 }
@@ -396,7 +402,7 @@ impl App {
                         self.close_subview();
                     }
                 } else {
-                    let offset = scroll_offset(&text, offset, code);
+                    let offset = scroll_offset(&text, offset, code, self.view_top_now());
                     self.modal = Modal::HelmOutcome(title, text, offset);
                 }
             }
@@ -440,7 +446,7 @@ impl App {
                 if matches!(code, KeyCode::Esc | KeyCode::Char('q')) {
                     self.close_subview();
                 } else {
-                    let offset = scroll_offset(&text, offset, code);
+                    let offset = scroll_offset(&text, offset, code, self.view_top_now());
                     self.modal = Modal::HelmDocument(title, text, offset);
                 }
             }
@@ -504,7 +510,7 @@ impl App {
                     } else if let Ok(ports) = parsed
                         && ports[0] >= 1024
                         && ports[1] > 0
-                        && (1..=300).contains(&ports[2])
+                        && (1..=crate::ops::MAX_FORWARD_SECONDS).contains(&ports[2])
                         && uid.is_some()
                     {
                         self.send(Task::PrepareSession(
@@ -518,7 +524,10 @@ impl App {
                             },
                         ));
                     } else {
-                        self.status="Use local port 1024..65535, remote port 1..65535 and duration 1..300s; Pod UID required.".into();
+                        self.status = format!(
+                            "Use local port 1024..65535, remote port 1..65535 and duration 1..{}s; Pod UID required.",
+                            crate::ops::MAX_FORWARD_SECONDS
+                        );
                         self.modal = Modal::ForwardForm(namespace, pod, uid, fields, index);
                     }
                 }
@@ -653,7 +662,7 @@ impl App {
                                 [
                                     self.worker.forward.suggested_port().to_string(),
                                     "80".into(),
-                                    "300".into(),
+                                    "3600".into(),
                                 ],
                                 0,
                             );
@@ -1172,7 +1181,7 @@ impl App {
             Modal::Detail(text, mut offset) => match code {
                 KeyCode::Esc | KeyCode::Char('q') => self.close_subview(),
                 _ => {
-                    offset = scroll_offset(&text, offset, code);
+                    offset = scroll_offset(&text, offset, code, self.view_top_now());
                     self.modal = Modal::Detail(text, offset);
                 }
             },
@@ -1187,7 +1196,12 @@ impl App {
                 }
                 KeyCode::Char('y') => self.modal = Modal::Detail(crate::inspect::yaml(&object)?, 0),
                 _ => {
-                    offset = scroll_offset(&overview_text(&object, &self.context), offset, code);
+                    offset = scroll_offset(
+                        &overview_text(&object, &self.context),
+                        offset,
+                        code,
+                        self.view_top_now(),
+                    );
                     self.modal = Modal::Overview(object, offset);
                 }
             },
@@ -1316,7 +1330,13 @@ impl App {
                 KeyCode::Esc => self.status = "Session review canceled.".into(),
                 KeyCode::Enter => {
                     let (width, height) = terminal::size().map_err(|_| "terminal size failed")?;
-                    if !confirmation_fits(prepared.summary(), &text, width, height) {
+                    if !confirmation_fits(
+                        prepared.summary(),
+                        &text,
+                        width,
+                        height,
+                        self.view_top(width, height),
+                    ) {
                         self.status = "Enlarge terminal to inspect the complete session review before approving.".into();
                         self.modal = Modal::SessionConfirm(prepared, text);
                     } else if text != prepared.confirmation() {
@@ -1359,7 +1379,7 @@ impl App {
                     self.modal = Modal::Metrics(text, offset);
                 }
                 _ => {
-                    offset = scroll_offset(&text, offset, code);
+                    offset = scroll_offset(&text, offset, code, self.view_top_now());
                     self.modal = Modal::Metrics(text, offset);
                 }
             },
@@ -1536,7 +1556,13 @@ impl App {
                 KeyCode::Esc => self.status = "Operation canceled.".into(),
                 KeyCode::Enter => {
                     let (width, height) = terminal::size().map_err(|_| "terminal size failed")?;
-                    if !confirmation_fits(&p.summary, &text, width, height) {
+                    if !confirmation_fits(
+                        &p.summary,
+                        &text,
+                        width,
+                        height,
+                        self.view_top(width, height),
+                    ) {
                         self.status="Enlarge terminal to inspect the complete confirmation before approving.".into();
                         self.modal = Modal::Confirm(p, text);
                         return Ok(false);
@@ -1567,7 +1593,7 @@ impl App {
                     if let Ok(replicas) = text.parse() {
                         self.send(Task::Prepare(k, n, name, uid, Action::Scale(replicas)));
                     } else {
-                        self.status = "Enter replicas 0..20".into();
+                        self.status = "Enter replicas 0..10000".into();
                     }
                 }
                 KeyCode::Char(c) if c.is_ascii_digit() && text.len() < 2 => {
@@ -1663,6 +1689,13 @@ impl App {
         }
         if self.write_inflight {
             return self.key(code);
+        }
+        // Copy mode toggles from every view: its key is never typed text.
+        if crate::keymap::Key::from_event(code, modifiers)
+            .is_some_and(|key| self.keymap.matches("copy.mode", key))
+        {
+            self.toggle_copy_mode();
+            return Ok(false);
         }
         if self.palette.is_some() {
             return self.palette_key(code, modifiers);
@@ -1842,6 +1875,20 @@ impl App {
                 return self.table_key(key);
             }
             return Ok(false);
+        }
+        // Shift with an arrow is its own key on the table (the sort column);
+        // every other view reads it as the plain arrow.
+        if modifiers.contains(KeyModifiers::SHIFT)
+            && matches!(self.modal, Modal::None)
+            && matches!(
+                code,
+                KeyCode::Left | KeyCode::Right | KeyCode::Up | KeyCode::Down
+            )
+            && self.palette.is_none()
+            && !self.write_inflight
+            && let Some(key) = crate::keymap::Key::from_event(code, modifiers)
+        {
+            return self.table_key(key);
         }
         self.key(code)
     }

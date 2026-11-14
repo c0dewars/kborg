@@ -13,15 +13,15 @@ Capabilities default off. An enabled capability does not bypass the review or Ku
 
 ## YAML editing
 
-Select an existing namespaced resource and press `e` or type `:edit`. Move with arrows/Home/End; Tab inserts spaces; bracketed paste supports multiline ASCII YAML. Ctrl-S prepares the server dry-run and readable diff. PgUp/PgDown reads the entire review; all wrapped lines must have actually been painted before typed target confirmation can execute. Esc returns to the draft; validation errors retain edits. Reviews expire after 60 seconds. `:edit-container` opens the original focused form.
+Select an existing resource and press `e` or type `:edit`. Move with arrows/Home/End; Tab inserts spaces; bracketed paste supports multiline ASCII YAML. Ctrl-S prepares the server dry-run and readable diff. PgUp/PgDown reads the entire review; all wrapped lines must have actually been painted before typed target confirmation can execute. Esc returns to the draft; validation errors retain edits. Reviews expire after 60 seconds. `:edit-container` opens the original focused form.
 
-Only spec paths change. The private raw baseline preserves omitted/redacted content; identity, status and metadata cannot be edited. No Secret editing, resource creation, ConfigMap data/RBAC editing, arbitrary cluster-scoped apply, or external editor. Unicode values use YAML escapes. See [YAML editing](YAML_EDITING.md).
+Every top-level field except identity and status can change, plus labels and annotations; cluster-scoped objects and RBAC rules included. The private raw baseline preserves omitted/redacted content, so hidden values (ConfigMap data, existing annotations, env values) stay read-only. No Secret editing or resource creation. Unicode values use YAML escapes. See [YAML editing](YAML_EDITING.md).
 
 CLI: `yaml-template RESOURCE NAME` emits the editable projection; `yaml-edit RESOURCE NAME FILE` loads it and requests terminal confirmation. Templates contain UID/version; stale templates are rejected.
 
 ## Nodes
 
-In `:nodes`, `c` cordons, `u` uncordons, and `r` prepares a 120-second drain. Equivalent commands are `:cordon`, `:uncordon`, `:drain`. CLI supports `cordon NODE`, `uncordon NODE`, `drain NODE [SECONDS]`; drain budget 1..300 seconds.
+In `:nodes`, `c` cordons, `u` uncordons, and `r` prepares a 600-second drain. Equivalent commands are `:cordon`, `:uncordon`, `:drain`. CLI supports `cordon NODE`, `uncordon NODE`, `drain NODE [SECONDS]`; drain budget 1..300 seconds.
 
 Node identity and non-status content are bound to the review. Status-only heartbeat/version updates may be refreshed; the resulting write uses guarded current identity/version tests. Drain reviews a complete bounded node Pod inventory and uses native policy/v1 eviction, with Pod UID/version preconditions and no forced deletion. Disruption budgets can refuse the operation.
 
@@ -31,7 +31,7 @@ Partial failures leave the node cordoned. Read the outcome, reconcile pending au
 
 ## Multiple port forwards
 
-Select a live Pod and press `F`. Review loopback address, Pod identity, remote port and duration before confirmation. Local ports 1024..65535, remote ports 1..65535, duration 1..300 seconds.
+Select a live Pod and press `F`. Review loopback address, Pod identity, remote port and duration before confirmation. Local ports 1024..65535, remote ports 1..65535, duration 1..43200 seconds (the form suggests 3600).
 
 `:pf` opens up to 8 concurrent sessions, each with up to 4 clients. `j/k` selects a session, `s` stops that session and `F` prepares another. A port remains reserved while its previous session is stopping. Context/resource-scope changes and exit stop every listener and client. The CLI `forward` command continues to run one reviewed session per invocation.
 

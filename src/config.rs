@@ -62,6 +62,12 @@ pub struct Config {
     pub allow_secret_reveal: bool,
     #[serde(default = "yes")]
     pub allow_force_kill: bool,
+    /// Changes in kube-system, kube-public and kube-node-lease.
+    #[serde(default = "yes")]
+    pub allow_system_namespaces: bool,
+    /// Changes to cluster-scoped objects such as Nodes and Namespaces.
+    #[serde(default = "yes")]
+    pub allow_cluster_scoped: bool,
     #[serde(default = "yes")]
     pub allow_yaml_edit: bool,
     #[serde(default = "yes")]
@@ -116,6 +122,8 @@ impl Default for Config {
             allow_auth_helper: true,
             allow_secret_reveal: true,
             allow_force_kill: true,
+            allow_system_namespaces: true,
+            allow_cluster_scoped: true,
             allow_yaml_edit: true,
             allow_node_maintenance: true,
             allow_external_editor: true,
@@ -195,6 +203,8 @@ pub fn apply(config: Config, options: &mut Options) -> Result<()> {
     c.deny_auth_helpers |= !config.allow_auth_helper;
     c.allow_secret_reveal &= config.allow_secret_reveal;
     c.allow_force_kill &= config.allow_force_kill;
+    c.allow_system_namespaces &= config.allow_system_namespaces;
+    c.allow_cluster_scoped &= config.allow_cluster_scoped;
     c.allow_yaml_edit &= config.allow_yaml_edit;
     c.allow_node_maintenance &= config.allow_node_maintenance;
     c.allow_apply &= config.allow_apply;
@@ -312,6 +322,8 @@ mod tests {
             && c.allow_yaml_edit
             && c.allow_apply
             && c.allow_force_kill
+            && c.allow_system_namespaces
+            && c.allow_cluster_scoped
             && c.allow_secret_reveal
             && o.allow_tools
             && o.allow_extensions
@@ -338,7 +350,7 @@ mod tests {
     #[test]
     fn each_false_field_turns_its_capability_off() -> Result<()> {
         type Check = (&'static str, fn(&Options) -> bool);
-        let off: [Check; 22] = [
+        let off: [Check; 24] = [
             ("allow_logs", |o| o.connection.logs),
             ("allow_helm", |o| o.connection.allow_helm),
             ("allow_helm_write", |o| o.connection.allow_helm_write),
@@ -352,6 +364,12 @@ mod tests {
             ("allow_extensions", |o| o.allow_extensions),
             ("allow_secret_reveal", |o| o.connection.allow_secret_reveal),
             ("allow_force_kill", |o| o.connection.allow_force_kill),
+            ("allow_system_namespaces", |o| {
+                o.connection.allow_system_namespaces
+            }),
+            ("allow_cluster_scoped", |o| {
+                o.connection.allow_cluster_scoped
+            }),
             ("allow_yaml_edit", |o| o.connection.allow_yaml_edit),
             ("allow_node_maintenance", |o| {
                 o.connection.allow_node_maintenance

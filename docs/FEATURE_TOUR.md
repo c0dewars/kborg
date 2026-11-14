@@ -2,7 +2,7 @@
 
 The README animation is recorded from the real KBorg binary in an isolated pseudo-terminal, using `--demo --theme catppuccin-mocha`. Cluster data is synthetic. The recording does not contact Kubernetes, run shell/scan/Helm mutations, reveal a Secret, or send a Copilot request. Operation screens show reviews or available actions, not proof of real-cluster execution.
 
-The current main tour is 54 seconds (96 captured frames, 2.51 MiB), recorded on 2026-11-13 from the 0.5.0 macOS ARM64 release build; `tour.json` pins the binary's SHA-256. It has two parts: a feature walk on the small demo data set, then the same binary started with `KBORG_DEMO_SCALE=20000`, which adds 20,000 synthetic Pods. The startup tour (`connect.gif`) is 12 seconds and was recorded earlier from the [release/next review](RELEASE_NEXT_REVIEW.md) build.
+The current main tour is 54 seconds (96 captured frames, 2.51 MiB), recorded on 2026-11-13 from a macOS ARM64 release build of the source after 0.5.0, where the header stays on every view; `tour.json` pins the binary's SHA-256. It has two parts: a feature walk on the small demo data set, then the same binary started with `KBORG_DEMO_SCALE=20000`, which adds 20,000 synthetic Pods. The startup tour (`connect.gif`) is 12 seconds and was recorded earlier from the [release/next review](RELEASE_NEXT_REVIEW.md) build.
 
 ## Coverage
 

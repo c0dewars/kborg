@@ -52,7 +52,9 @@ impl App {
             match reply {
                 Reply::YamlDraft(draft) => {
                     self.modal = Modal::YamlEditor(Box::new(crate::ui_yaml::Editor::new(*draft)));
-                    self.status = "Edit spec fields. Ctrl-S prepares a diff; Esc cancels.".into();
+                    self.status =
+                        "Edit fields, labels or annotations. Ctrl-S prepares a diff; Esc cancels."
+                            .into();
                 }
                 Reply::YamlPrepared(editor, result) => match result {
                     Ok(prepared) => {
@@ -1425,13 +1427,8 @@ impl App {
                 Some("Deployments, StatefulSets and DaemonSets only")
             } else if (index == 8 || index == 14) && !crate::edit::supports_resource(&kind) {
                 Some("Supported workloads only")
-            } else if index == 10
-                && !matches!(
-                    kind.as_str(),
-                    "pods" | "deployments.apps" | "services" | "jobs.batch"
-                )
-            {
-                Some("unsupported resource")
+            } else if index == 10 && !super::keyhelp::deletable(&kind) {
+                Some("Secrets are not opened here")
             } else if index == 12 && !self.options.connection.allow_exec {
                 Some("off (read-only or operator config)")
             } else if index == 12 && (kind != "pods" || self.options.connection.demo) {
@@ -1456,16 +1453,7 @@ impl App {
             Action::SetContainer { .. } | Action::SetImage { .. } | Action::SetResources { .. } => {
                 crate::edit::supports_resource(&self.kind())
             }
-            Action::Delete => matches!(
-                self.kind().as_str(),
-                "pods"
-                    | "deployments.apps"
-                    | "statefulsets.apps"
-                    | "daemonsets.apps"
-                    | "services"
-                    | "jobs.batch"
-                    | "cronjobs.batch"
-            ),
+            Action::Delete => super::keyhelp::deletable(&self.kind()),
             Action::Kill => self.kind() == "pods",
             Action::Trigger | Action::Suspend(_) => self.kind() == "cronjobs.batch",
             Action::Rollback(_) => ["deployments.apps", "statefulsets.apps", "daemonsets.apps"]
@@ -1523,7 +1511,11 @@ impl App {
                 self.marks
                     .contains(uid)
                     .then(|| crate::gateway::BatchTarget {
-                        namespace: namespace(object).to_owned(),
+                        // Empty for a cluster-scoped object.
+                        namespace: object["metadata"]["namespace"]
+                            .as_str()
+                            .unwrap_or("")
+                            .to_owned(),
                         name: name(object).to_owned(),
                         uid: uid.to_owned(),
                     })

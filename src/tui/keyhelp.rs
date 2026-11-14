@@ -153,7 +153,10 @@ pub(super) fn help_key(app: &App, view: &mut HelpView, code: KeyCode) -> bool {
             view.offset = 0;
         }
         KeyCode::Char('/') => view.typing = true,
-        _ => view.offset = scroll_offset(&help_body(app, view), view.offset, code),
+        _ => {
+            view.offset =
+                scroll_offset(&help_body(app, view), view.offset, code, app.view_top_now())
+        }
     }
     false
 }
@@ -230,8 +233,16 @@ pub(super) const TABLE_GROUPS: &[(&str, &[&str])] = &[
             "sort.age",
             "sort.status",
             "sort.ready",
+            "sort.restarts",
+            "sort.namespace",
+            "sort.node",
+            "sort.ip",
             "sort.cpu",
             "sort.memory",
+            "sort.column.previous",
+            "sort.column.next",
+            "sort.ascending",
+            "sort.descending",
             "toggle.wide",
         ],
     ),
@@ -276,16 +287,8 @@ pub(super) const TABLE_GROUPS: &[(&str, &[&str])] = &[
 
 /// Kinds a reviewed deletion exists for.
 pub(super) fn deletable(kind: &str) -> bool {
-    matches!(
-        kind,
-        "pods"
-            | "deployments.apps"
-            | "statefulsets.apps"
-            | "daemonsets.apps"
-            | "services"
-            | "jobs.batch"
-            | "cronjobs.batch"
-    )
+    // Every kind can be deleted after review; Secrets are never opened here.
+    kind != "secrets"
 }
 
 /// What Enter opens for a kind, or `None` when it opens nothing.
@@ -319,9 +322,11 @@ fn applies(app: &App, action: &Action) -> bool {
         "scan" => logs,
         "scale" => matches!(kind, "deployments.apps" | "statefulsets.apps"),
         "resources" => crate::edit::supports_resource(kind),
-        "edit" => namespaced && kind != "secrets",
+        "edit" => kind != "secrets",
         "delete" => deletable(kind),
         "metrics" | "sort.cpu" | "sort.memory" => matches!(kind, "pods" | "nodes"),
+        "sort.node" | "sort.ip" => kind == "pods",
+        "sort.namespace" => namespaced,
         "copy.namespace" | "warp" => namespaced,
         "toggle.wide" => kind == "pods" || app.current_view().is_some(),
         _ => true,

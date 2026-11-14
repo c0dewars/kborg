@@ -15,6 +15,8 @@ use tokio::io::{AsyncRead, AsyncReadExt};
 
 pub const NODE_SHELL_CAPABILITY: usize = 4;
 pub const DEBUG_CAPABILITY: usize = 5;
+/// Longest reviewed port-forward: twelve hours.
+pub const MAX_FORWARD_SECONDS: u16 = 43_200;
 pub enum Request {
     Exec {
         container: String,
@@ -115,8 +117,13 @@ impl Request {
                 remote_port,
                 seconds,
             } => {
-                if *local_port < 1024 || *remote_port == 0 || !(1..=300).contains(seconds) {
-                    return Err("forwarding requires local port 1024..65535, remote port 1..65535 and duration 1..300 seconds".into());
+                if *local_port < 1024
+                    || *remote_port == 0
+                    || !(1..=MAX_FORWARD_SECONDS).contains(seconds)
+                {
+                    return Err(format!(
+                        "forwarding requires local port 1024..65535, remote port 1..65535 and duration 1..{MAX_FORWARD_SECONDS} seconds"
+                    ));
                 }
             }
             Self::NodeShell { node, .. } => {
@@ -1062,7 +1069,11 @@ mod tests {
             .validate()
             .is_ok()
         );
-        for (local_port, remote_port, seconds) in [(80, 80, 1), (8080, 0, 1), (8080, 80, 301)] {
+        for (local_port, remote_port, seconds) in [
+            (80, 80, 1),
+            (8080, 0, 1),
+            (8080, 80, MAX_FORWARD_SECONDS + 1),
+        ] {
             assert!(
                 Request::PortForward {
                     local_port,

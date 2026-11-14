@@ -102,6 +102,8 @@ impl Gateway {
         Ok(first)
     }
     pub(super) fn api(&self, k: &Kind, ns: &str) -> Result<Api<DynamicObject>> {
+        // A cluster-scoped kind has no namespace, whatever the view passed.
+        let ns = if k.namespaced { ns } else { "*" };
         if ns != "*" && !safety::valid_id(ns) {
             return Err("invalid namespace".into());
         }
@@ -120,7 +122,7 @@ impl Gateway {
         ns: &str,
     ) -> Result<Option<Api<k8s_openapi::api::core::v1::Secret>>> {
         if !self.allow_secret_reveal {
-            return Err("Secret inspection requires --allow-secret-reveal".into());
+            return Err("Secret inspection is off in this session (operator config allow_secret_reveal: false)".into());
         }
         if ns == "*" || !safety::valid_id(ns) {
             return Err("Secret inspection requires one explicit namespace".into());

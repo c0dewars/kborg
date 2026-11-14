@@ -575,7 +575,7 @@ def main():
             keys(b"d", 1)
             capture("object-overview", ["OBJECT OVERVIEW", "app", "Running"])
             keys(b"J")
-            capture("json", ["apiVersion", "containers"])
+            capture("json", ["apiVersion", "metadata"])
             keys(b"\x1b")
             keys(b"\r", 1)
             capture("containers", ["CONTAINERS", "app", "running"])
@@ -608,6 +608,9 @@ def main():
             capture("metrics", ["METRICS", "CPU", "MEM", "SESSION HISTORY"])
             keys(b"M", 1)
             capture("allocations", ["requests", "Resource comparisons"])
+            # The comparison rows follow the session history; page down to them.
+            keys(b"\x1b[6~")
+            drain(.3)
             percentages = [float(value) for value in re.findall(r"(\d+\.\d{2})%", screen.text())]
             assert percentages and all(0 < value <= 200 for value in percentages), f"expected positive bounded demo resource percentages: {screen.text()}"
             keys(b"\x1b")

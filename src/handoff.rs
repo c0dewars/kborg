@@ -301,7 +301,10 @@ fn run_bounded(
     limit: usize,
 ) -> Result<Outcome> {
     if !allowed {
-        return Err("external tool views require explicit --allow-tools".into());
+        return Err(
+            "external tool views are off in this session (operator config allow_tools: false)"
+                .into(),
+        );
     }
     if confirmation != prepared.confirmation {
         return Err(format!(

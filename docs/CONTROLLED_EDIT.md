@@ -10,7 +10,7 @@ The strategic merge patch contains UID/resourceVersion, the selected container n
 
 Dry-run metadata protection compares labels, annotations, ownerReferences, finalizers, name, namespace and UID. Technical resourceVersion/managedFields differences are permitted. Kubernetes apps/v1 DaemonSets also increment `deprecated.daemonset.template.generation` when their Pod template changes: only the exact canonical positive-counter increment is permitted, with every other annotation unchanged. This exception was confirmed on Docker Desktop Kubernetes 1.36.1 and does not relax full-spec comparison.
 
-Scale supports Deployments and StatefulSets, with 0..20 replicas. Restart supports Deployments, StatefulSets and DaemonSets. OnDelete strategies explicitly require Pod replacement before new templates take effect; CronJob edits affect future Jobs. These workflow differences appear in review.
+Scale supports Deployments and StatefulSets, with 0..10000 replicas. Restart supports Deployments, StatefulSets and DaemonSets. OnDelete strategies explicitly require Pod replacement before new templates take effect; CronJob edits affect future Jobs. These workflow differences appear in review.
 
 Audit records retain operation name, target identity and outcome without image, container, resource values, patch or workload content. Action debug formatting also omits values. Durable intent/outcome storage and unknown-outcome handling apply; local filesystem/ACL and protected external audit gates remain.
 

@@ -17,7 +17,9 @@ use std::{
 };
 
 const MAX_PODS: usize = 1000;
-const MAX_EVICTIONS: usize = 64;
+const MAX_EVICTIONS: usize = 256;
+/// Longest drain deadline: one hour.
+pub const MAX_DRAIN_SECONDS: u16 = 3600;
 const MAX_INVENTORY_BYTES: usize = 8 * 1024 * 1024;
 const API_BUDGET: Duration = Duration::from_secs(15);
 const REVIEW_BUDGET: Duration = Duration::from_secs(60);
@@ -93,6 +95,9 @@ struct PodTarget {
     identity: Identity,
     retained: Option<&'static str>,
     controller: Option<(String, String, String, String)>,
+    /// What the review flags on an evicted Pod: lost local data, no
+    /// controller to recreate it, critical priority.
+    warnings: Vec<&'static str>,
 }
 #[derive(Clone)]
 struct Inventory {
@@ -217,7 +222,9 @@ async fn bounded<T>(
         .map_err(|_| "Kubernetes request timed out; write outcome may be unknown".to_string())?
         .map_err(api_failure)
 }
-fn classify(value: &Value, node: &str) -> Result<PodTarget> {
+/// `system` evicts Pods in system namespaces too, as `kubectl drain` does;
+/// off (operator config `allow_system_namespaces: false`) they stay.
+fn classify(value: &Value, node: &str, system: bool) -> Result<PodTarget> {
     let identity = Identity::from_object(value, true)?;
     if value["spec"]["nodeName"].as_str() != Some(node) {
         return Err("Pod inventory returned another node; review blocked".into());
@@ -237,16 +244,15 @@ fn classify(value: &Value, node: &str) -> Result<PodTarget> {
         .any(|owner| owner["kind"] == "DaemonSet" && owner["apiVersion"] == "apps/v1")
     {
         Some("DaemonSet Pod")
-    } else if matches!(
-        identity.namespace.as_str(),
-        "kube-system" | "kube-public" | "kube-node-lease"
-    ) {
+    } else if !system && crate::policy::system_namespace(&identity.namespace) {
         Some("protected system Pod")
     } else if matches!(
         value["status"]["phase"].as_str(),
         Some("Succeeded" | "Failed")
     ) {
         Some("completed Pod")
+    } else if value["metadata"]["deletionTimestamp"].is_string() {
+        Some("already terminating")
     } else {
         None
     };
@@ -255,42 +261,35 @@ fn classify(value: &Value, node: &str) -> Result<PodTarget> {
             identity,
             retained,
             controller: None,
+            warnings: Vec::new(),
         });
     }
-    if value["metadata"]["deletionTimestamp"].is_string() {
-        return Err(format!(
-            "{} is already terminating; wait and review again",
-            identity.label()
-        ));
-    }
+    // Like `kubectl drain --delete-emptydir-data --force`: these Pods are
+    // evicted too, and the review flags each one instead of refusing the node.
+    let mut warnings = Vec::new();
     if value["spec"]["priority"].as_i64().unwrap_or(0) >= 2_000_000_000
         || matches!(
             value["spec"]["priorityClassName"].as_str(),
             Some("system-node-critical" | "system-cluster-critical")
         )
     {
-        return Err(format!(
-            "{} has protected critical priority; drain blocked",
-            identity.label()
-        ));
+        warnings.push("critical priority");
     }
     if value["spec"]["volumes"].as_array().is_some_and(|volumes| {
-        volumes.iter().any(|volume| {
-            volume.get("emptyDir").is_some()
-                || volume.get("hostPath").is_some()
-                || volume.get("ephemeral").is_some()
-        })
+        volumes
+            .iter()
+            .any(|volume| volume.get("emptyDir").is_some() || volume.get("ephemeral").is_some())
     }) {
-        return Err(format!(
-            "{} uses emptyDir, hostPath or ephemeral storage; drain blocked to avoid local data loss",
-            identity.label()
-        ));
+        warnings.push("emptyDir/ephemeral data is LOST");
     }
     if controllers.len() != 1 {
-        return Err(format!(
-            "{} has no single supported controller; unmanaged Pods are never force-deleted",
-            identity.label()
-        ));
+        warnings.push("no controller: it is NOT recreated");
+        return Ok(PodTarget {
+            identity,
+            retained: None,
+            controller: None,
+            warnings,
+        });
     }
     let owner = controllers[0];
     let api = owner["apiVersion"].as_str().unwrap_or("");
@@ -301,10 +300,15 @@ fn classify(value: &Value, node: &str) -> Result<PodTarget> {
             | ("batch/v1", "Job")
             | ("v1", "ReplicationController")
     ) {
-        return Err(format!(
-            "{} has an unsupported controller; drain blocked",
-            identity.label()
-        ));
+        // An operator or another custom controller owns it; KBorg cannot
+        // check that owner, so the review says so.
+        warnings.push("custom controller: check it recreates the Pod");
+        return Ok(PodTarget {
+            identity,
+            retained: None,
+            controller: None,
+            warnings,
+        });
     }
     let name = owner["name"].as_str().unwrap_or("");
     let uid = owner["uid"].as_str().unwrap_or("");
@@ -315,9 +319,10 @@ fn classify(value: &Value, node: &str) -> Result<PodTarget> {
         identity,
         retained: None,
         controller: Some((api.into(), kind.into(), name.into(), uid.into())),
+        warnings,
     })
 }
-async fn inventory(client: &Client, node: &str) -> Result<Inventory> {
+async fn inventory(client: &Client, node: &str, system: bool) -> Result<Inventory> {
     let api = pods(client);
     let mut params = ListParams::default()
         .fields(&format!("spec.nodeName={node}"))
@@ -355,7 +360,7 @@ async fn inventory(client: &Client, node: &str) -> Result<Inventory> {
                     "complete node inventory exceeds 1000 Pods or 8 MiB; drain blocked".into(),
                 );
             }
-            let target = classify(&object, node)?;
+            let target = classify(&object, node, system)?;
             if !ids.insert((
                 target.identity.namespace.clone(),
                 target.identity.name.clone(),
@@ -375,7 +380,7 @@ async fn inventory(client: &Client, node: &str) -> Result<Inventory> {
                 });
                 let inventory = Inventory { pods: result };
                 if inventory.evictable().count() > MAX_EVICTIONS {
-                    return Err("drain exceeds 64 reviewed evictions; split maintenance into smaller workloads".into());
+                    return Err("drain exceeds 256 reviewed evictions; split maintenance into smaller workloads".into());
                 }
                 return Ok(inventory);
             }
@@ -471,24 +476,26 @@ pub async fn prepare(gateway: &Gateway, node: &str, request: Request) -> Result<
         return Err("invalid node name".into());
     }
     if let Request::Drain { seconds } = request
-        && !(1..=300).contains(&seconds)
+        && !(1..=MAX_DRAIN_SECONDS).contains(&seconds)
     {
-        return Err("drain deadline must be 1..300 seconds".into());
+        return Err(format!(
+            "drain deadline must be 1..{MAX_DRAIN_SECONDS} seconds"
+        ));
     }
     let client = gateway.node_maintenance_access()?;
     tokio::time::timeout(Duration::from_secs(45), async {
         let current = value(bounded(nodes(&client).get(node)).await?)?;
         let identity = Identity::from_object(&current,false)?;
         if current["metadata"]["deletionTimestamp"].is_string() { return Err("node is terminating".into()); }
-        let inventory = if matches!(request,Request::Drain { .. }) { inventory(&client,node).await? } else { Inventory { pods: vec![] } };
+        let inventory = if matches!(request,Request::Drain { .. }) { inventory(&client,node,gateway.system_namespaces()).await? } else { Inventory { pods: vec![] } };
         for pod in inventory.evictable() { check_owner(&client,pod).await?; }
         let dry = patch_scheduling(&client,&identity,request.desired(),true).await?;
         check_scheduling_response(&current,&dry,request.desired())?;
         let mut summary = format!("{}\nserver: {}\ncontext: {}\ntarget: nodes/{node}\nUID: {}\nresourceVersion: {}\nScheduling: {} -> {}\n",request.name(),gateway.server,gateway.context,identity.uid,identity.version,if current["spec"]["unschedulable"] == true { "cordoned" } else { "schedulable" }, if request.desired() { "cordoned" } else { "schedulable" });
         if let Request::Drain { seconds } = request {
-            summary.push_str(&format!("\nCordon, then policy/v1 eviction of {} reviewed Pods; deadline {seconds}s.\nEvery eviction checks its reviewed UID/resourceVersion and respects PodDisruptionBudgets and the Pod's termination grace period. No forced deletion, retry or automatic uncordon.\nAll namespaces inventoried. Mirror, DaemonSet, completed and protected system Pods remain. This is workload evacuation; retained Pods prevent a blanket safe-to-power-off guarantee.\nSingle-node clusters may lose workload availability. PVC relocation/capacity and external workload effects are not proven.\nConcurrent direct bindings or unschedulable-tolerating Pods can arrive; final inventory detects them but cannot prevent later arrivals.\n",inventory.evictable().count()));
+            summary.push_str(&format!("\nCordon, then policy/v1 eviction of {} reviewed Pods; deadline {seconds}s.\nEvery eviction checks its reviewed UID/resourceVersion and respects PodDisruptionBudgets and the Pod's termination grace period. No forced deletion, retry or automatic uncordon. Lines marked ! lose local data or are not recreated.\nAll namespaces inventoried. Mirror, DaemonSet and completed Pods remain{}. This is workload evacuation; retained Pods prevent a blanket safe-to-power-off guarantee.\nSingle-node clusters may lose workload availability. PVC relocation/capacity and external workload effects are not proven.\nConcurrent direct bindings or unschedulable-tolerating Pods can arrive; final inventory detects them but cannot prevent later arrivals.\n",inventory.evictable().count(),if gateway.system_namespaces() { "" } else { ", and so do system-namespace Pods (operator config)" }));
             for pod in &inventory.pods {
-                summary.push_str(&format!("{} {} UID {} RV {}{}\n",if pod.retained.is_some() { "RETAIN" } else { "EVICT" },pod.identity.label(),pod.identity.uid,pod.identity.version,pod.retained.map(|why|format!(" ({why})")).unwrap_or_default()));
+                summary.push_str(&format!("{} {} UID {} RV {}{}\n",if pod.retained.is_some() { "RETAIN" } else { "EVICT" },pod.identity.label(),pod.identity.uid,pod.identity.version,pod.retained.map(|why|format!(" ({why})")).unwrap_or_else(|| if pod.warnings.is_empty() { String::new() } else { format!("  ! {}", pod.warnings.join("; ")) })));
             }
             summary.push_str(&format!("Inventory SHA-256: {}\n",inventory.fingerprint()));
         } else if request == Request::Cordon { summary.push_str("Existing Pods keep running. New ordinary scheduling stops; direct bindings and tolerating Pods can still arrive.\n"); }
@@ -661,7 +668,7 @@ async fn execute_at(
         }
         report.node_cordoned = Some(current["spec"]["unschedulable"] == true);
         if matches!(review.request,Request::Drain { .. }) {
-            let fresh = inventory(&client,&review.node.name).await?;
+            let fresh = inventory(&client,&review.node.name,gateway.system_namespaces()).await?;
             recheck_inventory(&review.inventory,&fresh)?;
             for pod in fresh.evictable() { check_owner(&client,pod).await?; }
         }
@@ -681,7 +688,7 @@ async fn execute_at(
             }
             let api: Api<DynamicObject> = Api::namespaced_with(client.clone(),&pod.identity.namespace,&resource("pods","Pod",""));
             let current = value(bounded(api.get(&pod.identity.name)).await?)?;
-            if classify(&current,&review.node.name)? != *pod { return Err(format!("{} changed before eviction; node remains cordoned",pod.identity.label())); }
+            if classify(&current,&review.node.name,gateway.system_namespaces())? != *pod { return Err(format!("{} changed before eviction; node remains cordoned",pod.identity.label())); }
             check_owner(&client,pod).await?;
             let mut child = Audit::start(audit_dir,&gateway.context,&pod.identity,"node-drain-evict",None)?;
             match evict(&client,&pod.identity).await {
@@ -708,7 +715,7 @@ async fn execute_at(
         }
         let final_node = value(bounded(nodes(&client).get(&review.node.name)).await?)?;
         if final_node["metadata"]["uid"].as_str() != Some(&review.node.uid) || final_node["spec"]["unschedulable"] != true { report.node_cordoned = None; return Err("node identity or scheduling changed during drain; inspect current state".into()); }
-        let fresh = inventory(&client,&review.node.name).await?;
+        let fresh = inventory(&client,&review.node.name,gateway.system_namespaces()).await?;
         if fresh.evictable().next().is_some() { report.pending = fresh.evictable().map(|p|p.identity.label()).collect(); return Err("new or remaining eligible Pods were found after eviction; node remains cordoned; review again".into()); }
         report.retained = fresh.pods.iter().filter_map(|p|p.retained.map(|why|format!("{} ({why})",p.identity.label()))).collect();
         Ok(())
@@ -839,23 +846,58 @@ mod tests {
 
     #[test]
     fn inventory_dispositions_protect_data_and_unmanaged_workloads() -> Result<()> {
-        assert!(classify(&pod(), "worker.test")?.retained.is_none());
-        for (pointer, replacement) in [
-            ("/metadata/ownerReferences", json!([])),
-            ("/spec/priorityClassName", json!("system-node-critical")),
-            ("/spec/volumes", json!([{"name":"local","emptyDir":{}}])),
+        assert!(classify(&pod(), "worker.test", false)?.retained.is_none());
+        // Like kubectl drain with --delete-emptydir-data and --force: these
+        // Pods are evicted, each with its warning in the review.
+        for (pointer, replacement, warning) in [
+            ("/metadata/ownerReferences", json!([]), "NOT recreated"),
+            (
+                "/spec/priorityClassName",
+                json!("system-node-critical"),
+                "critical priority",
+            ),
             (
                 "/spec/volumes",
-                json!([{"name":"local","hostPath":{"path":"/data"}}]),
+                json!([{"name":"local","emptyDir":{}}]),
+                "LOST",
             ),
-            ("/spec/volumes", json!([{"name":"local","ephemeral":{}}])),
-            ("/metadata/deletionTimestamp", json!("2026-01-01T00:00:00Z")),
+            (
+                "/spec/volumes",
+                json!([{"name":"local","ephemeral":{}}]),
+                "LOST",
+            ),
+            (
+                "/metadata/ownerReferences/0/kind",
+                json!("Rollout"),
+                "custom controller",
+            ),
         ] {
             let mut value = pod();
             let (parent, key) = pointer.rsplit_once('/').ok_or("pointer")?;
             value.pointer_mut(parent).ok_or("parent")?[key] = replacement;
-            assert!(classify(&value, "worker.test").is_err(), "{pointer}");
+            let target = classify(&value, "worker.test", false)?;
+            assert!(target.retained.is_none(), "{pointer}");
+            assert!(
+                target.warnings.iter().any(|shown| shown.contains(warning)),
+                "{pointer}: {:?}",
+                target.warnings
+            );
         }
+        // hostPath data stays on the node: no warning.
+        let mut value = pod();
+        value["spec"]["volumes"] = json!([{"name":"local","hostPath":{"path":"/data"}}]);
+        assert!(classify(&value, "worker.test", false)?.warnings.is_empty());
+        // A Pod already going away is left to finish.
+        let mut value = pod();
+        value["metadata"]["deletionTimestamp"] = json!("2026-01-01T00:00:00Z");
+        assert_eq!(
+            classify(&value, "worker.test", false)?.retained,
+            Some("already terminating")
+        );
+        // System-namespace Pods are evicted unless the operator config says no.
+        let mut value = pod();
+        value["metadata"]["namespace"] = json!("kube-system");
+        assert!(classify(&value, "worker.test", true)?.retained.is_none());
         for mode in 0..4 {
             let mut value = pod();
             match mode {
@@ -866,9 +908,9 @@ mod tests {
                 2 => value["metadata"]["ownerReferences"][0]["kind"] = json!("DaemonSet"),
                 _ => value["status"]["phase"] = json!("Succeeded"),
             };
-            assert!(classify(&value, "worker.test")?.retained.is_some());
+            assert!(classify(&value, "worker.test", false)?.retained.is_some());
         }
-        assert!(classify(&pod(), "other").is_err());
+        assert!(classify(&pod(), "other", false).is_err());
         Ok(())
     }
     #[test]
@@ -895,7 +937,7 @@ mod tests {
     }
     #[test]
     fn refreshed_inventory_binds_all_members_and_evictable_versions() -> Result<()> {
-        let target = classify(&pod(), "worker.test")?;
+        let target = classify(&pod(), "worker.test", false)?;
         let before = Inventory {
             pods: vec![target.clone()],
         };
@@ -1078,7 +1120,7 @@ mod tests {
                 &gateway,
                 review(
                     Request::Drain { seconds: 10 },
-                    vec![classify(&pod(), "worker.test")?],
+                    vec![classify(&pod(), "worker.test", false)?],
                 )?,
                 "nodes/worker.test",
                 &dir,
@@ -1118,7 +1160,7 @@ mod tests {
                 &gateway,
                 review(
                     Request::Drain { seconds: 10 },
-                    vec![classify(&pod(), "worker.test")?],
+                    vec![classify(&pod(), "worker.test", false)?],
                 )?,
                 "nodes/worker.test",
                 &dir,
@@ -1197,7 +1239,7 @@ mod tests {
                 &gateway,
                 review(
                     Request::Drain { seconds: 1 },
-                    vec![classify(&pod(), "worker.test")?],
+                    vec![classify(&pod(), "worker.test", false)?],
                 )?,
                 "nodes/worker.test",
                 &dir,
@@ -1246,7 +1288,7 @@ mod tests {
                 &gateway,
                 review(
                     Request::Drain { seconds: 10 },
-                    vec![classify(&pod(), "worker.test")?],
+                    vec![classify(&pod(), "worker.test", false)?],
                 )?,
                 "nodes/worker.test",
                 &dir,

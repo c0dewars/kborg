@@ -24,16 +24,19 @@ The [Kubernetes Eviction API](https://kubernetes.io/docs/concepts/scheduling-evi
 
 The review lists every Pod as either `EVICT` or `RETAIN`:
 
-- Mirror Pods, DaemonSet Pods, completed Pods and Pods in `kube-system`, `kube-public` or `kube-node-lease` are retained explicitly.
-- Unmanaged Pods, unsupported or missing controllers, terminating eligible Pods and critical-priority application Pods block the review.
-- Eligible Pods using `emptyDir`, `hostPath` or generic ephemeral volumes block the review. There is no data-loss override.
-- Supported application controllers are ReplicaSets, StatefulSets, Jobs and ReplicationControllers, with matching current controller UIDs.
+- Mirror Pods, DaemonSet Pods, completed Pods and Pods already terminating are retained explicitly. Pods in `kube-system`, `kube-public` and `kube-node-lease` are evicted like any other, as `kubectl drain` does, unless the operator config sets `allow_system_namespaces: false`; then they are retained.
+- Every other Pod is evicted. The review marks with `!` the ones that deserve a second look, the same cases `kubectl drain` asks a flag for:
+  - `emptyDir/ephemeral data is LOST` — the Pod uses an `emptyDir` or generic ephemeral volume (`--delete-emptydir-data`).
+  - `no controller: it is NOT recreated` — a bare Pod (`--force`).
+  - `custom controller: check it recreates the Pod` — owned by something other than a ReplicaSet, StatefulSet, Job or ReplicationController (an operator, Argo Rollouts); KBorg cannot check that owner.
+  - `critical priority` — `system-node-critical`, `system-cluster-critical` or a priority of 2,000,000,000 or more.
+- For ReplicaSets, StatefulSets, Jobs and ReplicationControllers the current controller UID is checked before eviction.
 
-A successful result means the reviewed eligible workloads were evacuated. Retained system or DaemonSet Pods still need separate maintenance planning. KBorg does not prove replacement capacity, PVC relocation, workload availability or that a node can safely be powered off. A single-node cluster can lose application availability. Consult the [Kubernetes node drain guidance](https://kubernetes.io/docs/tasks/administer-cluster/safely-drain-node/) when planning maintenance.
+A successful result means the reviewed eligible workloads were evacuated. Retained DaemonSet and mirror Pods still need separate maintenance planning. KBorg does not prove replacement capacity, PVC relocation, workload availability or that a node can safely be powered off. A single-node cluster can lose application availability. Consult the [Kubernetes node drain guidance](https://kubernetes.io/docs/tasks/administer-cluster/safely-drain-node/) when planning maintenance.
 
 ## Bounds and recovery
 
-The complete Pod inventory is limited to 1,000 Pods, 10 pages and 8 MiB. Each operation supports at most 64 eligible evictions. The drain deadline is 1–300 seconds, defaulting to 120 seconds in the CLI/TUI. Individual API requests are also bounded.
+The complete Pod inventory is limited to 1,000 Pods, 10 pages and 8 MiB. Each operation supports at most 256 eligible evictions. The drain deadline is 1–3600 seconds, defaulting to 600 seconds in the CLI and the TUI. Individual API requests are also bounded.
 
 Drain **never automatically uncordons the node**, including after a PDB refusal, timeout or partial failure. The result reports the scheduling state, confirmed evacuations, retained Pods and pending targets. A scheduling state of `unknown` requires inspection. Accepted evictions can continue after the client exits.
 

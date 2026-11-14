@@ -6,7 +6,7 @@ use operations::{finish_audit, start_operation_audit};
 impl Gateway {
     fn apply_access(&self) -> Result<()> {
         if !self.policy.writable || !self.allow_apply {
-            return Err("Apply requires --write --allow-apply".into());
+            return Err("Apply is off in this session (--read-only or operator config)".into());
         }
         if self.is_demo() {
             return Err("Apply needs a live cluster; demo mode has no API server".into());
@@ -66,11 +66,11 @@ impl Gateway {
         let mut unchanged = true;
         for document in &documents {
             let kind = apply::kind_for(&self.kinds, document)?.clone();
-            let (ns, name, mut body) = apply::body(document, &kind, namespace)?;
+            let (ns, name, mut body) = apply::body(document, &kind, namespace, &self.policy)?;
             if objects.iter().any(|other: &Planned| {
                 other.kind.key() == kind.key() && other.namespace == ns && other.name == name
             }) {
-                return Err(format!("{} {ns}/{name} appears twice", kind.kind));
+                return Err(format!("{} {name} appears twice", kind.kind));
             }
             let live = self.live_object(&kind, &ns, &name).await?;
             if let Some(live) = &live {

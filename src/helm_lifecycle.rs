@@ -889,7 +889,7 @@ fn parse_resources_with(
                 "every resource needs an explicit valid metadata.name; generateName is unsupported",
             )?
             .to_owned();
-        let resource_api = resource_api(&api, &kind).or_else(|_| bindings.iter().find_map(|binding| binding.definition.resource_api(&api, &kind)).ok_or_else(|| "custom resource requires --allow-helm-crds, an Established sealed Namespaced CRD, and a fresh review".to_owned()))?;
+        let resource_api = resource_api(&api, &kind).or_else(|_| bindings.iter().find_map(|binding| binding.definition.resource_api(&api, &kind)).ok_or_else(|| "custom resource requires Helm CRD actions (operator config allow_helm_crds), an Established sealed Namespaced CRD, and a fresh review".to_owned()))?;
         let ns = object["metadata"]["namespace"]
             .as_str()
             .filter(|ns| !ns.is_empty())
@@ -1564,7 +1564,7 @@ async fn parse_resolved(
             continue;
         }
         if !options.allow_crds {
-            return Err("custom resources require --allow-helm-crds and an already Established reviewed Namespaced CRD; run separate CRD bootstrap first".into());
+            return Err("custom resources require Helm CRD actions (operator config allow_helm_crds) and an already Established reviewed Namespaced CRD; run separate CRD bootstrap first".into());
         }
         if bindings.len() >= crate::helm_extensions::MAX_CRDS {
             return Err("chart exceeds16 custom-resource API bindings".into());
@@ -1883,7 +1883,11 @@ pub async fn prepare(gateway: &Gateway, options: Options, request: Request) -> R
     .map_err(|_| "Helm preparation exceeded 120 seconds; no lifecycle action sent".to_owned())?
 }
 async fn prepare_inner(gateway: &Gateway, options: Options, request: Request) -> Result<Prepared> {
-    namespace_allowed(&options.namespace)?;
+    // Releases in system namespaces follow the gateway policy (operator config).
+    if !safety::valid_id(&options.namespace) || options.namespace == "*" {
+        return Err("Helm lifecycle requires one namespace".into());
+    }
+    gateway.change_scope(&options.namespace)?;
     if !helm::valid_release_name(&options.release) || !(1..=900).contains(&options.seconds) {
         return Err("Helm needs a valid release name and timeout 1..900 seconds".into());
     }
@@ -1892,10 +1896,15 @@ async fn prepare_inner(gateway: &Gateway, options: Options, request: Request) ->
     }
     gateway.helm_extension_access(options.allow_hooks, options.allow_crds)?;
     if schema_request(&request) && !options.allow_crds {
-        return Err("CRD bootstrap requires --allow-helm-crds".into());
+        return Err(
+            "Helm CRD actions are off in this session (operator config allow_helm_crds: false)"
+                .into(),
+        );
     }
     if matches!(request, Request::Test) && !options.allow_hooks {
-        return Err("Helm tests require --allow-helm-hooks".into());
+        return Err(
+            "Helm hooks are off in this session (operator config allow_helm_hooks: false)".into(),
+        );
     }
     let session = gateway.helm_lifecycle_session()?.to_owned();
     if gateway.is_demo() {

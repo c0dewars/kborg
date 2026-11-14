@@ -124,6 +124,21 @@ impl App {
             "sort.name" => self.set_sort(Sort::Name),
             "sort.age" => self.set_sort(Sort::Age),
             "sort.ready" => self.set_sort(Sort::Ready),
+            "sort.restarts" => self.set_sort(Sort::Restarts),
+            "sort.namespace" => self.set_sort(Sort::Namespace),
+            "sort.node" | "sort.ip" => {
+                if self.kind() == "pods" {
+                    self.sort_by_title(if action == "sort.node" { "NODE" } else { "IP" }, None);
+                } else {
+                    self.status = "Node and IP sorting applies to the Pod table.".into();
+                }
+            }
+            "sort.column.next" | "sort.column.previous" => {
+                let (width, height) = terminal::size().unwrap_or((120, 40));
+                self.sort_step(action == "sort.column.next", width, height);
+            }
+            "sort.ascending" => self.sort_direction(false),
+            "sort.descending" => self.sort_direction(true),
             "sort.cpu" | "sort.memory" => {
                 if matches!(self.kind().as_str(), "pods" | "nodes") {
                     self.set_sort(if action == "sort.cpu" {
@@ -204,7 +219,7 @@ impl App {
             "dashboard" => self.open_dashboard(vec![self.context.clone()])?,
             "drain" => {
                 if self.kind() == "nodes" {
-                    self.node_maintenance(crate::node_maintenance::Request::Drain { seconds: 120 });
+                    self.node_maintenance(crate::node_maintenance::Request::Drain { seconds: 600 });
                 }
             }
             "restart" if crate::edit::supports_resource(&self.kind()) => {

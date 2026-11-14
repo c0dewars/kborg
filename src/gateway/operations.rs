@@ -1,10 +1,31 @@
 //! Reviewed writes: preparation, dry run, execution, YAML edits and local audit records.
 use super::*;
 
+/// What else goes with the object, for the kinds where a delete reaches
+/// far beyond the one row.
+fn delete_warning(kind: &Kind) -> &'static str {
+    match (kind.plural.as_str(), kind.group.as_str()) {
+        ("namespaces", "") => "\n! Deleting a Namespace deletes EVERY object inside it.",
+        ("nodes", "") => {
+            "\n! Deleting a Node removes it from the cluster and its Pods are deleted. Drain it first."
+        }
+        ("customresourcedefinitions", "apiextensions.k8s.io") => {
+            "\n! Deleting a CRD deletes EVERY custom resource of that kind in the cluster."
+        }
+        ("persistentvolumeclaims" | "persistentvolumes", "") => {
+            "\n! Stored data may be deleted for good, depending on the reclaim policy."
+        }
+        _ => "",
+    }
+}
+
 impl Gateway {
     pub(crate) fn operation_api(&self, namespace: &str, capability: usize) -> Result<Api<Pod>> {
         if !self.policy.writable {
-            return Err("READ ONLY: operations require --write".into());
+            return Err(
+                "READ ONLY: changes are off in this session (--read-only or operator config)"
+                    .into(),
+            );
         }
         if !self
             .operation_capabilities
@@ -14,11 +35,10 @@ impl Gateway {
         {
             return Err("operation requires its explicit capability flag".into());
         }
-        if !safety::valid_id(namespace)
-            || ["kube-system", "kube-public", "kube-node-lease"].contains(&namespace)
-        {
-            return Err("operation namespace is prohibited".into());
+        if !safety::valid_id(namespace) {
+            return Err("operation namespace is invalid".into());
         }
+        self.policy.scope(namespace)?;
         let client = self
             .client
             .clone()
@@ -27,7 +47,9 @@ impl Gateway {
     }
     pub(crate) fn node_maintenance_access(&self) -> Result<Client> {
         if !self.policy.writable || !self.allow_node_maintenance {
-            return Err("node maintenance requires --write --allow-node-maintenance".into());
+            return Err(
+                "node maintenance is off in this session (--read-only or operator config)".into(),
+            );
         }
         self.client
             .clone()
@@ -51,15 +73,18 @@ impl Gateway {
         name: &str,
     ) -> Result<crate::manifest_edit::Draft> {
         let kind = self.find(key)?.clone();
-        if !kind.namespaced || kind.kind.eq_ignore_ascii_case("Secret") {
-            return Err("YAML editing supports namespaced non-Secret spec resources".into());
+        if kind.kind.eq_ignore_ascii_case("Secret") {
+            return Err("Secrets are not edited here; their values are never shown".into());
         }
+        self.policy.scope(if kind.namespaced { ns } else { "" })?;
         let original = self.raw_get(key, ns, name).await?;
         crate::manifest_edit::Draft::new(original, kind, self.session.clone())
     }
     pub(super) fn yaml_edit_access(&self) -> Result<()> {
         if !self.policy.writable || !self.allow_yaml_edit {
-            return Err("YAML edits require --write --allow-yaml-edit".into());
+            return Err(
+                "YAML editing is off in this session (--read-only or operator config)".into(),
+            );
         }
         Ok(())
     }
@@ -72,43 +97,48 @@ impl Gateway {
         if draft.session != self.session {
             return Err("session changed; reopen the YAML editor".into());
         }
+        self.policy.scope(draft.namespace())?;
         let current = self
             .raw_get(&draft.resource(), draft.namespace(), draft.name())
             .await?;
         draft.unchanged(&current)?;
-        let (patch, expected_spec, diff) = draft.changes(edited)?;
+        let (patch, expected, diff) = draft.changes(edited)?;
+        let label = if draft.namespace().is_empty() {
+            draft.name().to_owned()
+        } else {
+            format!("{}/{}", draft.namespace(), draft.name())
+        };
         let summary = format!(
-            "REVIEW YAML SPEC EDIT\nContext: {}\nServer: {}\nResource: {} {}/{}\nUID: {}\nResourceVersion: {}\n\n{}\n\nOnly the listed spec paths change. Hidden values, metadata and status are preserved.\nSpec edits may start workloads or change networking; server RBAC and admission still apply.\n{}\nType {}/{} to apply. Review expires after 60 seconds.",
+            "REVIEW YAML EDIT\nContext: {}\nServer: {}\nResource: {} {}\nUID: {}\nResourceVersion: {}\n\n{}{}\n\nOnly the listed paths change. Hidden values, identity and status are preserved.\nEdits may start workloads, change networking or change access; server RBAC and admission still apply.\n{}\nType {} to apply. Review expires after 60 seconds.",
             self.context,
             self.server,
             draft.resource(),
-            draft.namespace(),
-            draft.name(),
+            label,
             draft.original["metadata"]["uid"].as_str().unwrap_or(""),
             draft.original["metadata"]["resourceVersion"]
                 .as_str()
                 .unwrap_or(""),
             diff,
+            // Roles, bindings and ServiceAccounts decide who may do what.
+            match crate::manifest_apply::privilege_note(&draft.kind) {
+                Some(note) => format!("\n{note}"),
+                None => String::new(),
+            },
             if self.is_demo() {
                 "Demo validation only; no cluster contacted."
             } else {
                 "Server dry-run passed. Admission may behave differently on the real write."
             },
-            draft.namespace(),
-            draft.name()
+            label
         );
         let prepared =
-            crate::manifest_edit::PreparedYaml::new(draft.clone(), patch, expected_spec, summary)?;
+            crate::manifest_edit::PreparedYaml::new(draft.clone(), patch, expected, summary)?;
         if !self.is_demo() {
             let response =
                 tokio::time::timeout(OPERATION_BUDGET, self.perform_yaml(&prepared, true))
                     .await
                     .map_err(|_| "YAML dry-run timed out")??;
-            crate::manifest_edit::check_admission(
-                &response,
-                &prepared.expected_spec,
-                &draft.original,
-            )?;
+            crate::manifest_edit::check_admission(&response, &prepared.expected, &draft.original)?;
         }
         Ok(prepared)
     }
@@ -175,6 +205,7 @@ impl Gateway {
         {
             return Err("YAML review expired or session changed; prepare and review again".into());
         }
+        self.policy.scope(prepared.draft.namespace())?;
         if typed != prepared.confirmation() {
             return Err("confirmation must exactly match namespace/name".into());
         }
@@ -186,7 +217,7 @@ impl Gateway {
         if self.is_demo() {
             for object in &mut self.demo {
                 if object["metadata"]["uid"] == draft.original["metadata"]["uid"] {
-                    object["spec"] = prepared.expected_spec.clone();
+                    crate::manifest_edit::apply_expected(object, &prepared.expected);
                     object["metadata"]["resourceVersion"] = json!(format!(
                         "{}y",
                         draft.original["metadata"]["resourceVersion"]
@@ -200,7 +231,7 @@ impl Gateway {
         let response = tokio::time::timeout(OPERATION_BUDGET, self.perform_yaml(&prepared, true))
             .await
             .map_err(|_| "YAML revalidation timed out; no write sent")??;
-        crate::manifest_edit::check_admission(&response, &prepared.expected_spec, &draft.original)?;
+        crate::manifest_edit::check_admission(&response, &prepared.expected, &draft.original)?;
         if prepared.created.elapsed() > Duration::from_secs(60) {
             return Err("YAML review expired during revalidation; review again".into());
         }
@@ -229,7 +260,7 @@ impl Gateway {
                 ),
             };
         let result = result.and_then(|response| {
-            crate::manifest_edit::check_applied(&response, &prepared.expected_spec, &draft.original)
+            crate::manifest_edit::check_applied(&response, &prepared.expected, &draft.original)
         });
         finish_audit(
             &audit,
@@ -250,26 +281,43 @@ impl Gateway {
         action: Action,
     ) -> Result<Prepared> {
         if !self.policy.writable {
-            return Err("READ ONLY: mutations are disabled; opt in with --write".into());
+            return Err(
+                "READ ONLY: changes are off in this session (--read-only or operator config)"
+                    .into(),
+            );
         }
         if action == Action::Kill && !self.allow_force_kill {
-            return Err("Force kill requires --write --allow-force-kill".into());
+            return Err(
+                "Force kill is off in this session (--read-only or operator config)".into(),
+            );
         }
         let object = self.raw_get(key, ns, name).await?;
         let kind = self.find(key)?;
-        if !matches!(
+        // Scale, restart, image and the other workload actions keep to the
+        // built-in workload kinds; delete works for every kind.
+        let workload = matches!(
             (kind.plural.as_str(), kind.group.as_str()),
             ("pods", "")
                 | ("deployments" | "statefulsets" | "daemonsets", "apps")
                 | ("services", "")
                 | ("jobs" | "cronjobs", "batch")
-        ) {
-            return Err("mutations on this API group/resource are disabled".into());
+        );
+        if !workload && action != Action::Delete {
+            return Err(format!(
+                "{} is not available for {}",
+                action.operation_name(),
+                kind.plural
+            ));
         }
         let target = Target {
             session: self.session.clone(),
             resource: kind.plural.clone(),
-            namespace: ns.into(),
+            // A cluster-scoped object has no namespace, whatever view it came from.
+            namespace: if kind.namespaced {
+                ns.into()
+            } else {
+                String::new()
+            },
             name: name.into(),
             uid: object["metadata"]["uid"].as_str().unwrap_or("").into(),
             version: object["metadata"]["resourceVersion"]
@@ -344,9 +392,10 @@ impl Gateway {
             Action::SetContainer { container, edit } => {
                 crate::edit::expected_container(&object, container, edit)?.1
             }
-            Action::Delete => {
-                "delete object; background cascading; server default grace period; no force".into()
-            }
+            Action::Delete => format!(
+                "delete object; background cascading; server default grace period; no force{}",
+                delete_warning(kind)
+            ),
             Action::Kill => "FORCE KILL Pod: gracePeriodSeconds=0; the API object is removed at once without waiting for container shutdown; the kubelet may still be stopping processes and a controller may create a replacement".into(),
             Action::Suspend(true) => "SUSPEND CronJob: no new Jobs are scheduled; Jobs already running continue".into(),
             Action::Suspend(false) => "RESUME CronJob: scheduling restarts; missed runs within startingDeadlineSeconds may start at once".into(),
@@ -368,7 +417,7 @@ impl Gateway {
             }
         };
         let summary = format!(
-            "{}\nserver: {}\ncontext: {}\ntarget: {}/{} ({})\nUID: {}\nresourceVersion: {}\n{}\nType {}/{} to execute. Approval expires after 60 seconds.",
+            "{}\nserver: {}\ncontext: {}\ntarget: {} ({})\nUID: {}\nresourceVersion: {}\n{}\nType {} to execute. Approval expires after 60 seconds.",
             if self.is_demo() {
                 "DEMO"
             } else {
@@ -376,14 +425,12 @@ impl Gateway {
             },
             self.server,
             self.context,
-            ns,
-            name,
+            target.confirmation(),
             key,
             target.uid,
             target.version,
             effect,
-            ns,
-            name
+            target.confirmation()
         );
         let summary = safety::review_text(&summary, 16_384)?;
         let prepared = Prepared {

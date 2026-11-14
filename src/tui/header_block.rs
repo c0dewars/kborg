@@ -18,6 +18,11 @@ const LOGO_WIDTH: u16 = 25;
 /// Cells between the block's columns.
 const GAP: u16 = 3;
 const LABEL_WIDTH: u16 = 11;
+/// Rows above a view's panel when the three-row bar is shown.
+pub(super) const BAR_ROWS: u16 = 3;
+/// Rows a view keeps around its content: panel borders, the status line, the
+/// hint row and the approval row.
+pub(super) const VIEW_FRAME_ROWS: u16 = 5;
 /// Widest recent-namespace name shown before it is cut with `~`.
 const NAMESPACE_WIDTH: usize = 18;
 
@@ -57,19 +62,31 @@ impl State {
 }
 
 impl App {
-    /// The chrome rows of the frame drawn now. The block shows with the
-    /// resource table and its command or filter prompt; every other view
-    /// keeps the bar, and the dashboard its own fixed layout.
+    /// The chrome rows of the frame drawn now. The block stays on every
+    /// view, so the app keeps one header; only the dashboard (its own fixed
+    /// layout) and full-screen logs give its rows to their content.
     pub(super) fn chrome(&self, width: u16, height: u16) -> Chrome {
-        let prompt = match &self.modal {
-            Modal::None => Some(false),
-            Modal::Input("Command", _) | Modal::Filter(..) => Some(true),
+        let open = match &self.modal {
+            Modal::None => false,
             Modal::LiveOverview(..) => return UiConfig::default().chrome(),
-            _ => None,
+            Modal::Follow(view) if view.fullscreen => return self.ui.chrome(),
+            _ => true,
         };
-        prompt
-            .and_then(|prompt| self.ui.block_chrome(width, height, prompt))
+        self.ui
+            .block_chrome(width, height, open)
             .unwrap_or_else(|| self.ui.chrome())
+    }
+    /// The first row of a view's panel: below the header block when the
+    /// terminal has room for it, else below the three-row bar.
+    pub(super) fn view_top(&self, width: u16, height: u16) -> u16 {
+        self.ui
+            .block_chrome(width, height, true)
+            .map_or(BAR_ROWS, |chrome| chrome.top)
+    }
+    /// `view_top` for the terminal as it is now (key handlers).
+    pub(super) fn view_top_now(&self) -> u16 {
+        let (width, height) = terminal::size().unwrap_or((80, 24));
+        self.view_top(width, height)
     }
     pub(super) fn layout(&self, width: u16, height: u16) -> Layout {
         Layout::for_chrome(width, height, &self.chrome(width, height), &self.ui)
@@ -167,6 +184,120 @@ fn namespace_entries(app: &App) -> Vec<(String, String, bool)> {
     entries
 }
 
+/// True while the resource table is in front (alone or under its prompt).
+fn on_table(app: &App) -> bool {
+    matches!(
+        app.modal,
+        Modal::None | Modal::Input("Command", _) | Modal::Filter(..)
+    )
+}
+
+/// What a view other than the table says about itself in the block's middle
+/// column: its name, and for logs and object overviews what it shows.
+fn view_lines(app: &App) -> Vec<(&'static str, String)> {
+    let mut lines = vec![("View", screen_title(app, &app.modal))];
+    match &app.modal {
+        Modal::Follow(_) => {
+            if let Some(target) = &app.log_target {
+                lines.push(("Pod", format!("{}/{}", target.namespace, target.pod)));
+                lines.push((
+                    "Container",
+                    if target.all {
+                        "all".into()
+                    } else {
+                        target.container.clone().unwrap_or_else(|| "default".into())
+                    },
+                ));
+                lines.push((
+                    "Logs",
+                    if target.previous {
+                        "previous container"
+                    } else if target.follow {
+                        "following"
+                    } else {
+                        "snapshot"
+                    }
+                    .into(),
+                ));
+            }
+        }
+        Modal::Overview(object, _) => {
+            for (label, value) in [
+                ("Kind", &object["kind"]),
+                ("Name", &object["metadata"]["name"]),
+                ("Namespace", &object["metadata"]["namespace"]),
+            ] {
+                if let Some(value) = value.as_str() {
+                    lines.push((label, value.to_owned()));
+                }
+            }
+        }
+        _ => {}
+    }
+    lines
+}
+
+/// The key hints of the view in front: the table's actions, or the keys of
+/// the open view from the keymap, so the header always lists what works here.
+fn view_hints(app: &App) -> Vec<(String, String)> {
+    if on_table(app) {
+        return table_hints(app)
+            .into_iter()
+            .map(|(key, label)| (key, label.to_owned()))
+            .collect();
+    }
+    let mut hints = Vec::new();
+    let mut push = |key: Option<String>, label: &str| {
+        if let Some(key) = key {
+            hints.push((key, label.to_owned()));
+        }
+    };
+    if doc_search::document_text(app, &app.modal).is_some() {
+        push(Some("/".into()), "search");
+    }
+    if let Some(scope) = keyhelp::translated_scope(&app.modal) {
+        // Moving around needs no hint; everything else the view can do does.
+        const MOVES: [&str; 8] = [
+            "down",
+            "up",
+            "page-down",
+            "page-up",
+            "top",
+            "bottom",
+            "left",
+            "right",
+        ];
+        for (action, keys, _) in app.keymap.entries(scope) {
+            let name = action
+                .name
+                .strip_prefix(scope.prefix())
+                .unwrap_or(action.name);
+            if MOVES.contains(&name) || keys.is_empty() {
+                continue;
+            }
+            push(
+                app.keymap.primary(action.name),
+                &name.replace(['.', '-'], " "),
+            );
+        }
+        if keyhelp::help_scope(&app.modal).is_some() {
+            push(app.keymap.primary("help"), "all keys");
+        }
+    }
+    if palette::command_prompt_allowed(&app.modal) {
+        push(app.keymap.primary("command"), "command");
+    }
+    push(Some("Esc".into()), "back");
+    hints
+}
+
+/// Hints whose action removes or evicts something: drawn in the danger color.
+pub(super) fn risky(label: &str) -> bool {
+    ["delete", "kill", "drain", "uninstall"]
+        .iter()
+        .any(|word| label.starts_with(word))
+}
+
 /// Draws the block's five rows from `y`. `color` maps a theme role.
 pub(super) fn render(
     app: &App,
@@ -194,8 +325,45 @@ pub(super) fn render(
     let key = color(&app.ui.hints.key_role);
     let label = color(&app.ui.hints.text_role);
     let mut x = 1 + info_width + GAP;
-    // Recent namespaces with the keys that switch to them.
-    if app.ui.header.namespaces {
+    // Other views name themselves and what they show.
+    if !on_table(app) {
+        let lines = view_lines(app);
+        let label_width = lines
+            .iter()
+            .map(|(label, _)| text_cells(label))
+            .max()
+            .unwrap_or(0)
+            + 2;
+        let value_width = lines
+            .iter()
+            .map(|(_, value)| text_cells(value))
+            .max()
+            .unwrap_or(0)
+            .min(34);
+        if x + label_width + value_width < width {
+            for (line, (name, value)) in lines.iter().enumerate() {
+                let y = y + line as u16;
+                cell(out, x, y, label_width, name, color("muted"), bg)?;
+                cell(
+                    out,
+                    x + label_width,
+                    y,
+                    value_width,
+                    value,
+                    if line == 0 {
+                        color("accent")
+                    } else {
+                        color("text")
+                    },
+                    bg,
+                )?;
+            }
+            x += label_width + value_width + GAP;
+        }
+    }
+    // Recent namespaces with the keys that switch to them (table only: the
+    // number keys mean something else in other views).
+    if app.ui.header.namespaces && on_table(app) {
         let entries = namespace_entries(app);
         let key_width = entries
             .iter()
@@ -210,6 +378,7 @@ pub(super) fn render(
         if !entries.is_empty() && x + key_width + 1 + name_width < width {
             for (line, (shortcut, name, current)) in entries.iter().enumerate() {
                 let y = y + line as u16;
+                app.add_key_click(x, y, key_width + 1 + text_cells(name), shortcut);
                 cell(out, x, y, key_width, &format!("<{shortcut}>"), key, bg)?;
                 cell(
                     out,
@@ -226,7 +395,7 @@ pub(super) fn render(
     }
     // Key hints, five to a column, as many columns as fit. `?` lists the rest.
     let hints = if app.ui.hints.show {
-        table_hints(app)
+        view_hints(app)
     } else {
         Vec::new()
     };
@@ -247,6 +416,13 @@ pub(super) fn render(
         }
         for (line, (shortcut, text)) in column.iter().enumerate() {
             let y = y + line as u16;
+            // Every hint is a button; the ones that destroy something are red.
+            app.add_key_click(x, y, key_width + 1 + text_cells(text), shortcut);
+            let (key, label) = if risky(text) {
+                (color("danger"), color("danger"))
+            } else {
+                (key, label)
+            };
             cell(out, x, y, key_width, &format!("<{shortcut}>"), key, bg)?;
             cell(out, x + key_width + 1, y, label_width, text, label, bg)?;
         }

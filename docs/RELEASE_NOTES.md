@@ -1,3 +1,25 @@
+# KBorg 0.5.1 — unreleased
+
+- **One header on every view.** The k9s-style header now stays when you open describe, YAML, logs, a review, Secrets, Helm or help, instead of collapsing to the three-row bar. Its key hints are those of the view in front (search and close on a YAML view, filters and time ranges on logs), and its middle column names the view and, for logs and object overviews, what it shows. The namespace number keys are listed only on the table, where they work. The dashboard keeps its own layout, and full-screen logs (`f`) take the header's rows for log lines. Views have six fewer content rows than in 0.5.0; terminals under 100x24 and `header.style: bar` are unchanged.
+
+- **Operate the whole cluster, not only application namespaces.** Changes now reach `kube-system`, `kube-public` and `kube-node-lease` (delete, edit, apply, shell, port-forward, Helm) and cluster-scoped objects (Nodes, Namespaces, ClusterRoles, CRDs, PersistentVolumes). Every change still goes through its review; a cluster-scoped object is confirmed by its name. The operator config can switch either off: `allow_system_namespaces: false`, `allow_cluster_scoped: false`.
+- **Delete any kind.** `Ctrl-D` (and marked-row batches) works on every resource, not only the seven workload kinds: ConfigMaps, Ingresses, PVCs, ServiceAccounts, Roles, custom resources. The review warns when a delete reaches further than the row: a Namespace (everything in it), a Node, a CRD (every custom resource of that kind), a volume.
+- **The YAML editor edits more than `spec`.** Every top-level field except identity and status (RBAC `rules` and `subjects`, StorageClass `parameters`, ...), plus labels and annotations, on namespaced and cluster-scoped objects. Values KBorg hides (ConfigMap `data`, existing annotations, `env` values) stay read-only and are preserved.
+- **Apply handles real manifests.** Up to 64 objects per file (was 16), including cluster-scoped ones such as Namespaces, ClusterRoles and CRDs.
+- **Drain works on real nodes.** It used to refuse a node when any Pod had an `emptyDir` volume, a critical priority, no controller or a custom controller, and it left `kube-system` Pods in place. It now evicts them as `kubectl drain --delete-emptydir-data --force` does and marks each such Pod with `!` in the review (data lost, not recreated, custom controller, critical priority). Up to 256 evictions (was 64) and a deadline of up to one hour (was 5 minutes; default now 10 minutes).
+- **Longer sessions.** A port-forward can run for up to 12 hours (was 5 minutes; the form suggests one hour) and an interactive shell for up to 12 hours (was one hour). Scale accepts 0 to 10,000 replicas (was 20).
+
+- **Pick the sort column from the keyboard or with a click.** `Shift-Right` and `Shift-Left` move the sort to the next column, `Shift-Down` and `Shift-Up` set descending and ascending, and a click on a column title sorts by it (again reverses). The k9s letters are complete: `T` restarts, `P` namespace, `O` node and `I` IP join `N`, `A`, `S`, `R`, `C` and `M`.
+- **The mouse works everywhere, not only on table rows.** Every key hint in the header is a button, so are the `key action` items in a view's footer (close, search, confirm, cancel), a double click opens a row, and the wheel scrolls describe, YAML, logs and reviews. Where you are typing, a click never types a letter.
+- **Copy mode.** `Ctrl-Y` (or `:mouse`) hands the mouse back to the terminal so you can select and copy text; the title bar shows `COPY MODE` until you press it again.
+- **Destructive actions stand out.** Delete, kill and drain are drawn in the theme's danger color in the header and the key bar.
+
+- **Filtering a large table is twice as fast.** With 20,000 Pods, typing a filter takes 0.19 s instead of 0.40 s, and sorting and clearing the filter are faster too: the sorted order and the text a filter matches are kept between keystrokes instead of being rebuilt for each one.
+- **Messages no longer point at flags that are gone.** Everything is on by default, so a refusal now says what switched the feature off (`--read-only` or the operator config) instead of asking for `--write` or an `--allow-*` flag.
+- **Editing a Role, binding or ServiceAccount warns about access.** The YAML edit review now carries the same "changes who may act" line as apply.
+
+- **A smaller binary.** 13 MB instead of 18 MB on macOS, with the same speed: the release is now built with whole-program optimization.
+
 # KBorg 0.5.0 — 2026-11-13
 
 The first stable release since 0.4.0. It collects everything from the five release candidates below.
