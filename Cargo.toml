@@ -44,7 +44,11 @@ rustix = { version = "1", default-features = false, features = ["std", "event"] 
 tokio = { version = "1", features = ["test-util"] }
 
 [profile.release]
-lto = "thin"
+# Whole-program optimization in one unit: the binary is about a quarter
+# smaller than with thin LTO and no slower (measured with the bench gate).
+# The price is a longer release link.
+lto = "fat"
+codegen-units = 1
 strip = true
 
 # Self-spawn supervision fixtures must fit the same 128 MiB executable limit
