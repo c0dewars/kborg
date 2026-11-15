@@ -1087,13 +1087,19 @@ fn a_new_secret_is_refused_when_the_name_is_taken_and_never_written_in_demo() ->
             review.contains("REVIEW NEW SECRET")
                 && review.contains("CREATE the Secret demo/new-creds with key token: 13 bytes")
                 && !review.contains("canary"),
-            "{review}"
+            "review text did not match"
         );
         let outcome = g.execute_secret(prepared, "demo/new-creds").await?;
-        assert!(outcome.contains("no cluster contacted"), "{outcome}");
+        assert!(
+            outcome.contains("no cluster contacted"),
+            "unexpected Secret outcome"
+        );
         // Used-by reads the Pods of the namespace and returns names only.
         let (rows, total, truncated) = g.secret_users("demo", "api-credentials").await?;
-        assert!(total > 0 && !truncated && rows.len() <= total, "{rows:?}");
+        assert!(
+            total > 0 && !truncated && rows.len() <= total,
+            "unexpected used-by rows"
+        );
         assert!(g.secret_users("*", "api-credentials").await.is_err());
         Ok(())
     })
@@ -1168,21 +1174,24 @@ fn secret_changes_need_write_access_their_own_switch_and_a_review() -> Result<()
         assert!(
             review.contains("REVIEW SECRET CHANGE")
                 && review.contains("Secret: demo/api-credentials"),
-            "{review}"
+            "review text did not match"
         );
         assert!(
             review.contains("SET key password:") && review.contains("-> 13 bytes"),
-            "{review}"
+            "review text did not match"
         );
         assert!(
             review.contains("Demo validation only") && !review.contains("canary"),
-            "{review}"
+            "review text did not match"
         );
         // The confirmation is checked, and the demo Secret is never written.
         let wrong = g.prepare_secret("demo", name, uid, set()).await?;
         assert!(g.execute_secret(wrong, "demo/other").await.is_err());
         let outcome = g.execute_secret(prepared, "demo/api-credentials").await?;
-        assert!(outcome.contains("no cluster contacted"), "{outcome}");
+        assert!(
+            outcome.contains("no cluster contacted"),
+            "unexpected Secret outcome"
+        );
         let removed = g
             .prepare_secret(
                 "demo",

@@ -705,7 +705,7 @@ mod tests {
             typed.secret_type = secret_type.into();
             assert!(
                 text(&typed, &Change::Delete).contains(note),
-                "{secret_type}"
+                "type-specific warning missing"
             );
         }
         let mut owned = plain.clone();
