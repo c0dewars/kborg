@@ -1,6 +1,6 @@
 # KBorg current implementation status
 
-Updated 2026-11-15 for the 0.6.0 release. This file and [REMAINING_WORK.md](REMAINING_WORK.md) supersede older progress notes. Historical acceptance reports keep their original scope and evidence.
+Updated 2026-11-15 for the 0.7.0 release. This file and [REMAINING_WORK.md](REMAINING_WORK.md) supersede older progress notes. Historical acceptance reports keep their original scope and evidence.
 
 ## Implemented
 
@@ -34,6 +34,7 @@ Updated 2026-11-15 for the 0.6.0 release. This file and [REMAINING_WORK.md](REMA
 - Discoverable `:ask`/Copilot setup and status. Contained inference is macOS ARM64 only; real GitHub.com evidence exists. GHE.com/GHES compatibility is implemented but live enterprise acceptance remains open. Every transfer is reviewed; platform availability and account entitlement are prerequisites.
 - 20 themes plus custom palettes with WCAG AA contrast checks, animated startup, truecolor/256/16/monochrome output, contextual key hints, shell completions.
 - Homebrew formula, release archives with checksums, CycloneDX SBOM.
+- A skill for AI assistants (Agent Skills format: `kborg skill install`, a Claude Code plugin marketplace, `gh skill install`, and `kborg skill print` for chat apps). It covers read-only cluster investigation and help with every user setting. Supporting commands: `kborg describe`, `kborg keymap`, `kborg config check`, and `KBORG_READ_ONLY=1` to force read-only. Privacy and write-guard audits are in AI_ASSISTANTS_SECURITY.md.
 
 ## Evidence
 

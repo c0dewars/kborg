@@ -20,7 +20,7 @@ DEBIAN_FRONTEND=noninteractive apt-get install -y -qq procps python3 >/build/apt
 mkdir -p /build/work /build/cargo
 if [ -d /cache/registry ]; then cp -R /cache/registry /build/cargo/; fi
 export CARGO_HOME=/build/cargo
-cp -R /source/src /source/tests /source/docs /source/assets /build/work/
+cp -R /source/src /source/tests /source/docs /source/assets /source/skills /build/work/
 cp /source/Cargo.toml /source/Cargo.lock /source/rust-toolchain.toml /build/work/
 mkdir -p /build/work/scripts /build/work/fuzz
 cp /source/scripts/test-terminal.py /build/work/scripts/

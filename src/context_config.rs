@@ -291,6 +291,19 @@ pub fn load_in(directory: &Path, context: &str) -> Result<Option<ContextConfig>>
     parse(std::str::from_utf8(&bytes).map_err(|_| "context settings must be UTF-8")?).map(Some)
 }
 
+/// One context settings file checked as `load_in` checks it (trust, size,
+/// schema), for `kborg config check`, which has file names, not contexts.
+pub fn check_file(path: &Path) -> Result<ContextConfig> {
+    safety::checked_path(path)?;
+    let meta = std::fs::symlink_metadata(path).map_err(|_| "cannot inspect the file")?;
+    if !meta.is_file() {
+        return Err("context settings must be a regular file".into());
+    }
+    check_private(&meta, "the context settings file")?;
+    let bytes = safety::read_small(path, MAX_BYTES as u64)?;
+    parse(std::str::from_utf8(&bytes).map_err(|_| "context settings must be UTF-8")?)
+}
+
 /// The installed settings for `context` (see `load_in`).
 pub fn load(context: &str) -> Result<Option<ContextConfig>> {
     load_in(&directory()?, context)

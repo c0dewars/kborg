@@ -88,12 +88,20 @@ fn template(spec: &Value, object: &str, serving: bool, out: &mut Vec<Finding>) {
             );
         }
         let resources = &container["resources"];
-        if resources["requests"]["cpu"].is_null() || resources["requests"]["memory"].is_null() {
+        let missing: Vec<&str> = [("cpu", "CPU"), ("memory", "memory")]
+            .into_iter()
+            .filter(|(field, _)| resources["requests"][field].is_null())
+            .map(|(_, name)| name)
+            .collect();
+        if !missing.is_empty() {
             push(
                 out,
                 Severity::Warning,
                 &label,
-                "no CPU or memory request; scheduling and eviction are unpredictable",
+                format!(
+                    "no {} request; scheduling and eviction are unpredictable",
+                    missing.join(" or ")
+                ),
             );
         }
         if resources["limits"]["memory"].is_null() {
@@ -363,9 +371,43 @@ mod tests {
         assert!(has(Severity::Warning, "service shop/ghost", "no endpoints"));
         assert!(!has(Severity::Warning, "service shop/api", "no endpoints"));
         assert!(!has(Severity::Warning, "pod shop/debug [x]", "request"));
+        assert!(has(
+            Severity::Warning,
+            "deployment shop/api [app]",
+            "no CPU or memory request"
+        ));
         assert_eq!(found[0].severity, Severity::Error);
         let text = report("ctx", "shop", &found, &[]);
         assert!(has(Severity::Error, "deployment shop/api", "not available"));
         assert!(text.contains("3 errors"), "{text}");
+    }
+    #[test]
+    fn a_missing_request_is_named_exactly() {
+        let mut reads = BTreeMap::new();
+        let deployment = |name: &str, requests: Value| json!({"metadata":{"namespace":"shop","name":name},"spec":{"replicas":2,"template":{"spec":{"containers":[{"name":"app","image":"nginx:1.27","readinessProbe":{},"resources":{"requests":requests,"limits":{"memory":"1Gi"}}}]}}},"status":{"availableReplicas":2}});
+        reads.insert(
+            "deployments".to_owned(),
+            vec![
+                deployment("cpu-only", json!({"cpu":"100m"})),
+                deployment("memory-only", json!({"memory":"64Mi"})),
+                deployment("both", json!({"cpu":"100m","memory":"64Mi"})),
+            ],
+        );
+        let found = findings(&reads);
+        let message = |name: &str| {
+            found
+                .iter()
+                .find(|f| f.object.contains(name) && f.message.contains("request"))
+                .map(|f| f.message.clone())
+        };
+        assert_eq!(
+            message("cpu-only").as_deref(),
+            Some("no memory request; scheduling and eviction are unpredictable")
+        );
+        assert_eq!(
+            message("memory-only").as_deref(),
+            Some("no CPU request; scheduling and eviction are unpredictable")
+        );
+        assert_eq!(message("/both"), None);
     }
 }

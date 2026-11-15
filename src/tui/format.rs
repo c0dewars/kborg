@@ -446,6 +446,28 @@ pub(super) fn overview_text(object: &Value, context: &str) -> String {
             "NETWORK".into(),
             format!("Type      {}", clean_value(&object["spec"]["type"])),
             format!("ClusterIP {}", clean_value(&object["spec"]["clusterIP"])),
+            format!(
+                "Selector  {}",
+                object["spec"]["selector"]
+                    .as_object()
+                    .filter(|selector| !selector.is_empty())
+                    .map_or_else(
+                        || "(none: endpoints are managed by hand)".to_owned(),
+                        |selector| {
+                            selector
+                                .iter()
+                                .map(|(key, value)| {
+                                    format!(
+                                        "{}={}",
+                                        safety::safe_text(key, 253),
+                                        clean_value(value)
+                                    )
+                                })
+                                .collect::<Vec<_>>()
+                                .join(",")
+                        }
+                    )
+            ),
         ]);
         if let Some(ports) = object["spec"]["ports"].as_array() {
             lines.extend(ports.iter().take(32).map(|port| {
