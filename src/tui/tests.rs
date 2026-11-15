@@ -1994,8 +1994,7 @@ fn double_click_opens_a_row_and_copy_mode_releases_the_mouse() -> Result<()> {
     app.key_event(KeyCode::Char('y'), KeyModifiers::CONTROL)?;
     assert!(
         !app.copy_mode && app.status.contains("not captured"),
-        "{}",
-        app.status
+        "unexpected status line"
     );
     app.command("mouse")?;
     assert!(!app.copy_mode);
@@ -3730,8 +3729,7 @@ fn ui_reload_command_is_recognised() {
     assert!(app.command("ui reload").is_ok());
     assert!(
         app.status == "ui.yaml reloaded." || matches!(app.modal, Modal::Detail(..)),
-        "{}",
-        app.status
+        "unexpected status line"
     );
 }
 #[test]
@@ -3905,8 +3903,7 @@ fn marks_turn_delete_into_one_batch_prepare_of_every_marked_object() -> Result<(
     assert!(
         app.status
             .starts_with("2 marked: Ctrl-D deletes all, r restarts all"),
-        "{}",
-        app.status
+        "unexpected status line"
     );
     assert!(table_hints(&app).contains(&("Ctrl-D".to_owned(), "delete all marked")));
     app.key_event(KeyCode::Char('d'), KeyModifiers::CONTROL)?;
@@ -3972,7 +3969,10 @@ fn batch_marks_refuse_unlisted_objects_and_mixed_cronjob_states() -> Result<()> 
     app.marks.insert("uid-api".into());
     app.marks.insert("uid-gone".into());
     app.key_event(KeyCode::Char('d'), KeyModifiers::CONTROL)?;
-    assert!(app.status.contains("no longer listed"), "{}", app.status);
+    assert!(
+        app.status.contains("no longer listed"),
+        "unexpected status line"
+    );
     assert!(commands.try_recv().is_err());
     app.marks.clear();
     app.desired_resource = Some("cronjobs.batch".into());
@@ -3984,8 +3984,7 @@ fn batch_marks_refuse_unlisted_objects_and_mixed_cronjob_states() -> Result<()> 
     app.key_event(KeyCode::Char('s'), KeyModifiers::NONE)?;
     assert!(
         app.status.contains("mix suspended and active"),
-        "{}",
-        app.status
+        "unexpected status line"
     );
     assert!(commands.try_recv().is_err());
     app.marks.remove("uid-b");
@@ -4120,7 +4119,10 @@ fn remapped_helm_release_and_history_keys_move_and_help_follows() -> Result<()> 
     app.key_event(KeyCode::Char('i'), KeyModifiers::NONE)?;
     assert!(matches!(app.modal, Modal::Helm(..)), "i no longer installs");
     app.key_event(KeyCode::Char('I'), KeyModifiers::NONE)?;
-    assert!(matches!(app.modal, Modal::HelmForm(..)), "{}", app.status);
+    assert!(
+        matches!(app.modal, Modal::HelmForm(..)),
+        "unexpected status line"
+    );
     app.subviews.clear();
     app.modal = helm_table(None);
     assert_context_help(
@@ -4151,8 +4153,7 @@ fn remapped_helm_release_and_history_keys_move_and_help_follows() -> Result<()> 
     app.key_event(KeyCode::Char('r'), KeyModifiers::ALT)?;
     assert!(
         matches!(&app.modal, Modal::HelmForm(form) if matches!(form.intent, helm_ui::Intent::Rollback { .. })),
-        "{}",
-        app.status
+        "unexpected status line"
     );
     app.subviews.clear();
     app.modal = helm_table(Some(helm_release("web", 2)));
@@ -4837,7 +4838,10 @@ fn k9s_plugin_shortcut_help_menu_and_review_show_the_exact_expanded_argv() -> Re
     app.options.allow_extensions = true;
     app.options.allow_tools = true;
     app.key_event(KeyCode::Char('l'), KeyModifiers::CONTROL)?;
-    assert!(matches!(app.modal, Modal::WriteReview(_)), "{}", app.status);
+    assert!(
+        matches!(app.modal, Modal::WriteReview(_)),
+        "unexpected status line"
+    );
     assert!(app.status.contains("type RUN TOOL"));
     let review = screen(&app, 140, 70).join("\n");
     for line in [
@@ -4859,8 +4863,7 @@ fn k9s_plugin_shortcut_help_menu_and_review_show_the_exact_expanded_argv() -> Re
     assert!(matches!(app.modal, Modal::None));
     assert!(
         app.status.contains("refused") && app.status.contains("$NAME"),
-        "{}",
-        app.status
+        "unexpected status line"
     );
     Ok(())
 }
@@ -4906,7 +4909,10 @@ fn k9s_plugin_in_containers_binds_free_keys_and_respects_the_keymap() -> Result<
     app.key(KeyCode::Esc)?;
     assert!(matches!(app.modal, Modal::PodContainers(..)));
     app.key_event(KeyCode::Char('d'), KeyModifiers::NONE)?;
-    assert!(matches!(app.modal, Modal::WriteReview(_)), "{}", app.status);
+    assert!(
+        matches!(app.modal, Modal::WriteReview(_)),
+        "unexpected status line"
+    );
     assert!(app.status.contains("RUN DANGEROUS dive"));
     let review = screen(&app, 140, 70).join("\n");
     assert!(review.contains("[1] \"nginx:1.27\""), "{review}");
@@ -5014,8 +5020,7 @@ fn palette_refuses_disabled_actions_with_their_reason() -> Result<()> {
     assert!(matches!(app.modal, Modal::None));
     assert!(
         app.status.contains("[OFF]") && app.status.contains("read-only mode"),
-        "{}",
-        app.status
+        "unexpected status line"
     );
     // Kind-specific actions for other kinds are listed as OFF too.
     app.key_event(KeyCode::Esc, KeyModifiers::NONE)?;
@@ -5214,7 +5219,7 @@ fn palette_remembers_opened_objects_and_jumps_back_to_them() -> Result<()> {
     app.remember_visit("describe");
     assert_eq!(app.visited.len(), palette::MAX_VISITED);
     ctrl(&mut app, 'p')?;
-    assert!(app.palette.is_some(), "{}", app.status);
+    assert!(app.palette.is_some(), "unexpected status line");
     type_text(&mut app, "deployments/web")?;
     let first = app.palette.as_ref().and_then(|palette| {
         palette
@@ -5322,7 +5327,7 @@ fn one_key_approval_runs_reviews_with_the_exact_confirmation_and_n_cancels() -> 
         _ => return Err("missing Helm review".into()),
     };
     app.key_with_approval_size(KeyCode::Char('y'), || Ok((80, 24)))?;
-    assert!(app.write_inflight, "{}", app.status);
+    assert!(app.write_inflight, "unexpected status line");
     let mut sent = None;
     while let Ok((_, task)) = commands.try_recv() {
         if let Task::HelmExecute(_, typed, ..) = task {
@@ -5545,8 +5550,7 @@ fn live_keymap_changes_wait_until_a_typed_approval_closes() -> Result<()> {
     assert!(
         app.status
             .contains("keymap.yaml changed; applies when this dialog closes"),
-        "{}",
-        app.status
+        "unexpected status line"
     );
     assert_eq!(app.keymap.keys("logs"), [crate::keymap::Key::Char('l')]);
     for ch in " 1 object".chars() {
@@ -6605,8 +6609,7 @@ fn owner_jump_service_forward_replicaset_scale_and_used_by_start_from_the_table(
     app.key(KeyCode::Char('U'))?;
     assert!(
         app.kind() == "pods" && app.status.contains("web has no owner"),
-        "{}",
-        app.status
+        "unexpected status line"
     );
     app.selected = 0;
     app.key(KeyCode::Char('U'))?;
@@ -6617,8 +6620,7 @@ fn owner_jump_service_forward_replicaset_scale_and_used_by_start_from_the_table(
     );
     assert!(
         app.status.contains("Owner of api: ReplicaSet api-7d4f9"),
-        "{}",
-        app.status
+        "unexpected status line"
     );
     sent(&mut commands);
 
@@ -6667,7 +6669,10 @@ fn owner_jump_service_forward_replicaset_scale_and_used_by_start_from_the_table(
         Modal::ForwardForm(ns, pod, Some(uid), fields, 0)
             if (ns.as_str(), pod.as_str(), uid.as_str()) == ("test", "api-b", "uid-api-b") && fields[1] == "8080" && fields[2] == "3600"
     ));
-    assert!(app.status.contains("Pod api-b port 8080"), "{}", app.status);
+    assert!(
+        app.status.contains("Pod api-b port 8080"),
+        "unexpected status line"
+    );
     app.key(KeyCode::Esc)?;
 
     // u on a ConfigMap asks which Pods use it; on a Node it is still uncordon's key.
@@ -6685,8 +6690,7 @@ fn owner_jump_service_forward_replicaset_scale_and_used_by_start_from_the_table(
     app.key(KeyCode::Char('u'))?;
     assert!(
         sent(&mut commands).is_none() && app.status.contains("Used-by works on"),
-        "{}",
-        app.status
+        "unexpected status line"
     );
     Ok(())
 }
