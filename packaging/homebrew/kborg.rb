@@ -1,8 +1,8 @@
 class Kborg < Formula
   desc "Fast Kubernetes terminal UI with multi-cluster dashboard and reviewed changes"
   homepage "https://github.com/c0dewars/kborg"
-  url "https://github.com/c0dewars/kborg/archive/refs/tags/v0.5.1.tar.gz"
-  sha256 "fe1aaf76f977c1499fb4f95545945dc53c6b7b391acca7e8ddb056561cbc6481"
+  url "https://github.com/c0dewars/kborg/archive/refs/tags/v0.6.0.tar.gz"
+  sha256 "5f6a689fa48585f6b0226271285757c163606787d393bae1731ce8d63382ee27"
   license "Apache-2.0"
   head "https://github.com/c0dewars/kborg.git", branch: "main"
 
