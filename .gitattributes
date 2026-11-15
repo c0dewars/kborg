@@ -2,3 +2,7 @@
 # Preserve bytes across Windows checkout instead of converting LF to CRLF.
 assets/dependency-licenses/** -text
 assets/upstream/** -text
+# The skill is embedded in the binary and read by AI assistants: keep LF
+# everywhere so every platform ships the same bytes.
+skills/** text eol=lf
+.claude-plugin/** text eol=lf

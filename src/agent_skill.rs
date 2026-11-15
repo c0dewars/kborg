@@ -109,6 +109,7 @@ pub fn install_everywhere() -> Result<Vec<(&'static str, Result<PathBuf>)>> {
 /// installer such as `gh skill install` rewrote: its frontmatter names it.
 fn is_ours(skill: &Path) -> bool {
     std::fs::read_to_string(skill).is_ok_and(|text| {
+        let text = text.replace("\r\n", "\n");
         text.strip_prefix("---\n")
             .and_then(|rest| rest.split_once("\n---"))
             .is_some_and(|(front, _)| front.lines().any(|line| line.trim() == "name: kborg"))
@@ -317,6 +318,11 @@ mod tests {
     #[test]
     fn the_skill_has_agent_skills_frontmatter_and_ships_every_reference_it_links() {
         let (_, skill) = FILES[0];
+        // .gitattributes keeps the skill LF on every checkout, so every
+        // platform's binary embeds the same bytes.
+        for (relative, content) in FILES {
+            assert!(!content.contains('\r'), "{relative} has CR line endings");
+        }
         assert!(skill.starts_with("---\nname: kborg\ndescription: "));
         let head = skill[4..]
             .find("\n---\n")
@@ -392,6 +398,17 @@ mod tests {
         std::fs::write(
             &skill,
             "---\ndescription: old\nmetadata:\n    github-repo: c0dewars/kborg\n    github-ref: v0.7.0\n    github-sha: abc\n    local-path: /x\nname: kborg\n---\nold\n",
+        )
+        .map_err(|_| "fixture")?;
+        install(&dir)?;
+        assert_eq!(
+            std::fs::read_to_string(&skill).ok().as_deref(),
+            Some(FILES[0].1)
+        );
+        // A Windows copy with CRLF line endings is ours too.
+        std::fs::write(
+            &skill,
+            "---\r\nname: kborg\r\ndescription: old\r\n---\r\nold\r\n",
         )
         .map_err(|_| "fixture")?;
         install(&dir)?;
