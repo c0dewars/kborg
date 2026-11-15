@@ -16,6 +16,11 @@ on:
         description: Release tag (must equal the ref you dispatch from and v<Cargo.toml version>)
         required: true
         type: string
+      run_tests:
+        description: Run the native tests even when a passed CI run covers this exact source tree
+        required: false
+        type: boolean
+        default: false
 permissions: {}
 concurrency:
   group: release-${{ inputs.tag }}
@@ -26,8 +31,10 @@ jobs:
     timeout-minutes: 5
     permissions:
       contents: read
+      actions: read
     outputs:
       version: ${{ steps.check.outputs.version }}
+      tested: ${{ steps.tested.outputs.tested }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -50,6 +57,40 @@ jobs:
             echo "::error::tag $RELEASE_TAG does not match Cargo.toml version $version"; exit 1
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
+      # The repository merges by rebase, so CI's commit IDs differ from the
+      # tag's, but an unchanged source tree keeps its tree hash. A passed CI run
+      # whose commit has exactly this tree has already run the same native tests
+      # on all six platforms. The tree includes .github/workflows/ci.yml, so the
+      # run used this tag's CI workflow, not a weaker one from a branch. The
+      # release still builds, smoke-tests, signs and attests from the tag.
+      - name: Find a passed CI run for this exact source tree
+        id: tested
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_TESTS: ${{ inputs.run_tests }}
+        run: |
+          set -euo pipefail
+          tree=$(git rev-parse 'HEAD^{tree}')
+          if [ "$RUN_TESTS" = "true" ]; then
+            echo "::notice::run_tests requested; native tests run in this workflow"
+            echo "tested=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          found=""
+          for sha in $(gh run list --workflow ci.yml --status success --limit 50 --json headSha --jq '.[].headSha' | sort -u); do
+            other=$(gh api "repos/$GH_REPO/git/commits/$sha" --jq .tree.sha 2>/dev/null || true)
+            if [ "$other" = "$tree" ]; then
+              found=$(gh run list --workflow ci.yml --status success --commit "$sha" --limit 1 --json url --jq '.[0].url')
+              break
+            fi
+          done
+          if [ -n "$found" ]; then
+            echo "::notice::CI passed on this exact source tree ($tree): $found. Native tests are not repeated."
+            echo "tested=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::No passed CI run for source tree $tree; native tests run in this workflow."
+            echo "tested=false" >> "$GITHUB_OUTPUT"
+          fi
 
   build:
     needs: prepare
@@ -89,6 +130,7 @@ jobs:
           rustup target add '${{ matrix.target }}'
           if ($LASTEXITCODE -ne 0) { throw 'target installation failed' }
       - name: Test natively
+        if: needs.prepare.outputs.tested != 'true'
         run: |
           cargo test --locked --target '${{ matrix.target }}'
           if ($LASTEXITCODE -ne 0) { throw 'native tests failed' }
