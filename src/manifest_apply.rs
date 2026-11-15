@@ -245,8 +245,33 @@ fn hidden(path: &str) -> bool {
     })
 }
 
-fn shown(path: &str, value: &Value) -> String {
-    if hidden(path) {
+/// What the review may print for each leaf: the screen's projection
+/// (`safety::redact_shown`), so ConfigMap data, annotations and plain env
+/// values read as they do in describe and YAML. Secrets, and objects that do
+/// not say their kind, keep the stricter path rule.
+fn readable_leaves(object: &Value) -> Option<Map<String, Value>> {
+    match object.get("kind").and_then(Value::as_str) {
+        None | Some("Secret") => None,
+        Some(_) => {
+            let mut masked = object.clone();
+            safety::redact_shown(&mut masked);
+            let mut leaves = Map::new();
+            flatten_paths(&masked, String::new(), &mut leaves);
+            Some(leaves)
+        }
+    }
+}
+
+/// Changes are found on the raw values; only what is printed is masked, so a
+/// hidden value that changed still shows up as a changed line.
+fn shown(path: &str, value: &Value, readable: Option<&Map<String, Value>>) -> String {
+    let visible = match readable {
+        Some(leaves) => leaves
+            .get(path)
+            .is_some_and(|masked| masked == value && masked.as_str() != Some("[REDACTED]")),
+        None => !hidden(path),
+    };
+    if !visible {
         return "(value hidden)".into();
     }
     let text = match value {
@@ -265,6 +290,9 @@ pub fn diff(live: Option<&Value>, result: &Value) -> Vec<String> {
         flatten_paths(live, String::new(), &mut before);
     }
     flatten_paths(result, String::new(), &mut after);
+    let readable_before = live.and_then(readable_leaves);
+    let readable_after = readable_leaves(result);
+    let (old_view, new_view) = (readable_before.as_ref(), readable_after.as_ref());
     let ignored = |path: &str| {
         IGNORED
             .iter()
@@ -276,18 +304,18 @@ pub fn diff(live: Option<&Value>, result: &Value) -> Vec<String> {
             continue;
         }
         match before.get(path) {
-            None => lines.push(format!("  + {path}: {}", shown(path, value))),
+            None => lines.push(format!("  + {path}: {}", shown(path, value, new_view))),
             Some(old) if old != value => lines.push(format!(
                 "  ~ {path}: {} -> {}",
-                shown(path, old),
-                shown(path, value)
+                shown(path, old, old_view),
+                shown(path, value, new_view)
             )),
             _ => {}
         }
     }
     for (path, value) in &before {
         if !ignored(path) && !after.contains_key(path) {
-            lines.push(format!("  - {path}: {}", shown(path, value)));
+            lines.push(format!("  - {path}: {}", shown(path, value, old_view)));
         }
     }
     if lines.len() > MAX_DIFF_LINES {
@@ -453,5 +481,40 @@ mod tests {
         );
         assert!(diff(None, &json!({"spec":{"a":"\u{1b}[2J"}}))[0].starts_with("  + /spec/a:"));
         assert!(!diff(None, &json!({"spec":{"a":"\u{1b}[2J"}}))[0].contains('\u{1b}'));
+    }
+    #[test]
+    fn diff_shows_configmap_values_as_the_screen_does_but_never_secret_ones() {
+        let config = |level: &str| {
+            json!({"kind":"ConfigMap","metadata":{"name":"c","annotations":{"note":level}},
+                "data":{"level":level,"password":level}})
+        };
+        assert_eq!(
+            diff(Some(&config("info")), &config("debug")),
+            vec![
+                "  ~ /data/level: \"info\" -> \"debug\"",
+                "  ~ /data/password: (value hidden) -> (value hidden)",
+                "  ~ /metadata/annotations/note: \"info\" -> \"debug\"",
+            ]
+        );
+        let env = |value: &str| {
+            json!({"kind":"Deployment","spec":{"env":[{"name":"MODE","value":value},
+                {"name":"DB_PASSWORD","value":value}]}})
+        };
+        assert_eq!(
+            diff(Some(&env("a")), &env("b")),
+            vec![
+                "  ~ /spec/env/0/value: \"a\" -> \"b\"",
+                "  ~ /spec/env/1/value: (value hidden) -> (value hidden)",
+            ]
+        );
+        let secret = json!({"kind":"Secret","data":{"level":"ZGVidWc="},"stringData":{"k":"v"}});
+        assert_eq!(
+            diff(None, &secret),
+            vec![
+                "  + /data/level: (value hidden)",
+                "  + /kind: \"Secret\"",
+                "  + /stringData/k: (value hidden)",
+            ]
+        );
     }
 }

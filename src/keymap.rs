@@ -347,19 +347,14 @@ pub const ACTIONS: &[Action] = &[
         &["/"],
         "Filter rows: regex, !inverse, -f fuzzy, -l selector",
     ),
-    act(
-        "describe",
-        Table,
-        &["d"],
-        "Describe the selected object (redacted)",
-    ),
-    act("yaml", Table, &["y", "v"], "View redacted YAML"),
-    act("json", Table, &["J"], "View redacted JSON"),
+    act("describe", Table, &["d"], "Describe the selected object"),
+    act("yaml", Table, &["y", "v"], "View YAML"),
+    act("json", Table, &["J"], "View JSON"),
     act(
         "edit",
         Table,
         &["e"],
-        "YAML editor: fields, labels, annotations",
+        "YAML editor: fields, labels, annotations, ConfigMap data",
     ),
     act(
         "resources",
@@ -390,6 +385,18 @@ pub const ACTIONS: &[Action] = &[
     ),
     act("forward", Table, &["F"], "New loopback port-forward"),
     kind("node.show", POD, &["o"], "Jump to the selected Pod's Node"),
+    act(
+        "owner",
+        Table,
+        &["U"],
+        "Jump to the owner (a Pod's ReplicaSet, its Deployment, a Job's CronJob)",
+    ),
+    kind(
+        "used.by",
+        OTHER,
+        &["u"],
+        "Pods that use the selected ConfigMap, PVC or ServiceAccount",
+    ),
     kind("node.shell", NODE, &["s"], "Reviewed node shell Pod"),
     kind("cordon", NODE, &["c"], "Review cordon"),
     kind("uncordon", NODE, &["u"], "Review uncordon"),
@@ -398,7 +405,7 @@ pub const ACTIONS: &[Action] = &[
         "scale",
         WORKLOAD | OTHER,
         &["s"],
-        "Scale a Deployment/StatefulSet (reviewed)",
+        "Scale a Deployment, StatefulSet or ReplicaSet (reviewed)",
     ),
     kind(
         "restart",
@@ -1191,6 +1198,36 @@ pub const ACTIONS: &[Action] = &[
         &["x"],
         "List keys; reveal or hide the selected key for 30s",
     ),
+    act(
+        "secrets.edit",
+        Secrets,
+        &["e"],
+        "Set a new value for the selected key (reviewed)",
+    ),
+    act(
+        "secrets.add",
+        Secrets,
+        &["a"],
+        "Add a key to the Secret (reviewed)",
+    ),
+    act(
+        "secrets.used-by",
+        Secrets,
+        &["u"],
+        "Pods that mount or read the Secret",
+    ),
+    act(
+        "secrets.create",
+        Secrets,
+        &["n"],
+        "Create a new Secret with one key (reviewed)",
+    ),
+    act(
+        "secrets.delete",
+        Secrets,
+        &["Ctrl-D"],
+        "Delete the selected Secret, or remove the selected key (reviewed)",
+    ),
     act("secrets.down", Secrets, &["j", "Down"], "Move down"),
     act("secrets.up", Secrets, &["k", "Up"], "Move up"),
     act(
@@ -1451,6 +1488,8 @@ pub enum Translation {
 pub struct Keymap {
     keys: Vec<Vec<Key>>,
     custom: Vec<bool>,
+    /// Built-in keys that gave way to a key the user bound in keymap.yaml.
+    notes: Vec<String>,
 }
 
 impl Default for Keymap {
@@ -1467,6 +1506,7 @@ impl Default for Keymap {
                 })
                 .collect(),
             custom: vec![false; ACTIONS.len()],
+            notes: Vec::new(),
         }
     }
 }
@@ -1554,7 +1594,67 @@ impl Keymap {
             .filter(move |(_, action)| action.scope == scope)
             .map(|(index, action)| (action, self.keys[index].as_slice(), self.custom[index]))
     }
-    fn validate(&self) -> Result<()> {
+    /// What keymap.yaml changed beyond its own lines: each built-in key
+    /// that gave way to one of the user's.
+    pub fn notes(&self) -> &[String] {
+        &self.notes
+    }
+    /// A key the user bound stays theirs. A built-in action that has the same
+    /// key in the same view gives it up, so a new default key in a later
+    /// release can never break an existing keymap.yaml.
+    fn yield_to_user(&mut self) {
+        for scope in Scope::ALL {
+            let members: Vec<usize> = (0..ACTIONS.len())
+                .filter(|index| scope.layers().contains(&ACTIONS[*index].scope))
+                .collect();
+            for (offset, first) in members.iter().enumerate() {
+                for second in &members[offset + 1..] {
+                    if ACTIONS[*first].kinds & ACTIONS[*second].kinds == 0
+                        || self.custom[*first] == self.custom[*second]
+                    {
+                        continue;
+                    }
+                    let (user, builtin) = if self.custom[*first] {
+                        (*first, *second)
+                    } else {
+                        (*second, *first)
+                    };
+                    // A key that works in every view (help, the command
+                    // prompt, the palette) is not taken away everywhere by a
+                    // binding in one view: that stays an error to fix.
+                    if ACTIONS[builtin].scope == Scope::Global
+                        && ACTIONS[user].scope != Scope::Global
+                    {
+                        continue;
+                    }
+                    let taken: Vec<Key> = self.keys[builtin]
+                        .iter()
+                        .copied()
+                        .filter(|key| self.keys[user].contains(key))
+                        .collect();
+                    if taken.is_empty() {
+                        continue;
+                    }
+                    self.keys[builtin].retain(|key| !taken.contains(key));
+                    let left = if self.keys[builtin].is_empty() {
+                        "it has no key now: bind it in keymap.yaml to use it".to_owned()
+                    } else {
+                        format!("it keeps {}", label(&self.keys[builtin]))
+                    };
+                    self.notes.push(format!(
+                        "{} is yours for {}; the built-in {} gave it up ({left})",
+                        label(&taken),
+                        ACTIONS[user].name,
+                        ACTIONS[builtin].name
+                    ));
+                }
+            }
+        }
+        self.notes.sort();
+        self.notes.dedup();
+    }
+    fn validate(&mut self) -> Result<()> {
+        self.yield_to_user();
         for (index, keys) in self.keys.iter().enumerate() {
             let action = &ACTIONS[index];
             for (position, key) in keys.iter().enumerate() {
@@ -1878,18 +1978,65 @@ mod tests {
     }
 
     #[test]
+    fn a_user_key_wins_over_a_built_in_key_of_the_same_view() -> Result<()> {
+        // A release adds a default key the user already uses: nothing breaks.
+        let keymap = parse("keys:\n  logs: U\n  delete: [Ctrl-X, u]\n")?;
+        assert_eq!(keymap.table_action(Key::Char('U'), POD), Some(("logs", 0)));
+        assert_eq!(
+            keymap.table_action(Key::Char('u'), OTHER),
+            Some(("delete", 1))
+        );
+        // delete applies to every kind, so it wins on Nodes too.
+        assert_eq!(
+            keymap.table_action(Key::Char('u'), NODE),
+            Some(("delete", 1))
+        );
+        assert_eq!(keymap.primary("uncordon"), None);
+        assert_eq!(keymap.primary("owner"), None);
+        assert_eq!(keymap.primary("used.by"), None);
+        let notes = keymap.notes().join("\n");
+        assert!(notes.contains("U is yours for logs; the built-in owner gave it up (it has no key now: bind it in keymap.yaml to use it)"), "{notes}");
+        assert!(
+            notes.contains("u is yours for delete; the built-in used.by gave it up"),
+            "{notes}"
+        );
+        // A built-in action with a second key keeps that one.
+        let keymap = parse("keys:\n  logs: d\n  help: j\n")?;
+        assert_eq!(keymap.table_action(Key::Char('d'), POD), Some(("logs", 0)));
+        assert!(
+            keymap
+                .notes()
+                .iter()
+                .any(|note| note.contains("d is yours for logs; the built-in describe gave it up")),
+            "{:?}",
+            keymap.notes()
+        );
+        assert!(
+            keymap
+                .notes()
+                .iter()
+                .any(|note| note.contains("j is yours for help") && note.contains("it keeps Down")),
+            "{:?}",
+            keymap.notes()
+        );
+        // The defaults themselves and a plain remap leave no note.
+        assert!(Keymap::default().notes().is_empty());
+        assert!(parse("keys:\n  logs: Alt-l\n")?.notes().is_empty());
+        Ok(())
+    }
+
+    #[test]
     fn invalid_or_unsafe_keymaps_are_rejected() {
         for yaml in [
             // Unknown action, scope and field.
             "keys:\n  launch-missiles: x\n",
             "scopes:\n  nowhere:\n    x: y\n",
             "keys:\n  logs: L\nextra: true\n",
-            // Duplicates within a view, including against kept defaults.
-            "keys:\n  logs: d\n",
+            // The same key for two of the user's own bindings in a view.
             "keys:\n  logs: x\n  yaml: x\n",
-            "keys:\n  log.wrap: e\n",
-            "keys:\n  help: j\n",
             "keys:\n  logs: [x, x]\n",
+            // A key of one view cannot take a key that works everywhere.
+            "keys:\n  logs: \"?\"\n",
             // Same action twice through keys and scopes, or a YAML duplicate key.
             "keys:\n  log.wrap: Alt-w\nscopes:\n  log:\n    wrap: Alt-q\n",
             "keys:\n  logs: x\n  logs: z\n",
@@ -1984,9 +2131,7 @@ mod tests {
             "scopes:\n  picker:\n    choose: o\n",
             "scopes:\n  helm:\n    open: o\n",
             "scopes:\n  subjects:\n    open: o\n",
-            // Duplicates inside a view, including inherited picker keys.
-            "scopes:\n  helm:\n    install: u\n",
-            "scopes:\n  selections:\n    delete: j\n",
+            // A key that works everywhere is not taken by one view.
             "scopes:\n  tail:\n    select: \"?\"\n",
             "scopes:\n  helm.history:\n    rollback: Esc\n",
         ] {
@@ -2038,6 +2183,11 @@ mod tests {
         for name in [
             "secrets.yaml",
             "secrets.reveal",
+            "secrets.edit",
+            "secrets.add",
+            "secrets.create",
+            "secrets.used-by",
+            "secrets.delete",
             "secrets.down",
             "secrets.up",
             "secrets.page-down",
@@ -2068,7 +2218,19 @@ mod tests {
             keymap.translate(Scope::Secrets, Key::F(4)),
             Translation::To(Key::Char('y'))
         );
-        assert!(parse("scopes:\n  secrets:\n    reveal: j\n").is_err());
+        // A key the user takes from a built-in action of the same view is theirs.
+        let taken = parse("scopes:\n  secrets:\n    reveal: j\n")?;
+        assert_eq!(
+            taken.translate(Scope::Secrets, Key::Char('j')),
+            Translation::To(Key::Char('x'))
+        );
+        assert_eq!(taken.notes().len(), 1, "{:?}", taken.notes());
+        assert!(
+            taken.notes()[0].contains("j is yours for secrets.reveal")
+                && taken.notes()[0].contains("secrets.down gave it up (it keeps Down)"),
+            "{:?}",
+            taken.notes()
+        );
         Ok(())
     }
 

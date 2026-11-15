@@ -198,6 +198,8 @@ pub(super) const TABLE_GROUPS: &[(&str, &[&str])] = &[
             "attach",
             "forward",
             "node.show",
+            "owner",
+            "used.by",
             "node.shell",
             "cordon",
             "uncordon",
@@ -318,9 +320,11 @@ fn applies(app: &App, action: &Action) -> bool {
     match action.name {
         "drilldown" => drilldown_label(kind).is_some(),
         "logs" | "logs.previous" => logs,
-        "exec" | "attach" | "forward" | "kill" => kind == "pods",
+        "exec" | "attach" | "kill" => kind == "pods",
+        "forward" => kind == "pods" || super::replies::forwards_via_pod(kind),
         "scan" => logs,
-        "scale" => matches!(kind, "deployments.apps" | "statefulsets.apps"),
+        "scale" => super::replies::scalable(kind),
+        "used.by" => crate::navigation_views::used_by_kind(kind).is_some(),
         "resources" => crate::edit::supports_resource(kind),
         "edit" => kind != "secrets",
         "delete" => deletable(kind),
@@ -482,6 +486,12 @@ fn help_lines(app: &App, view: &HelpView) -> Vec<String> {
         }
         Mode::Keymap => {
             out.push("KEYMAP / every action, its keys and view; / filters".into());
+            // Built-in keys that gave way to the user's own bindings.
+            if !app.keymap.notes().is_empty() {
+                out.push("YOUR keymap.yaml TOOK THESE KEYS".into());
+                out.extend(app.keymap.notes().iter().map(|note| format!("  {note}")));
+                out.push(String::new());
+            }
             out.push(format!(
                 "{:<22} {:<18} {:<10} DESCRIPTION",
                 "ACTION", "KEYS", "VIEW"
@@ -620,10 +630,7 @@ pub(super) fn modal_hint(app: &App, modal: &Modal) -> Option<String> {
             let mut parts = vec!["Esc close".to_owned()];
             parts.extend(pairs(
                 app,
-                &[
-                    ("overview.json", "redacted JSON"),
-                    ("overview.yaml", "YAML"),
-                ],
+                &[("overview.json", "JSON"), ("overview.yaml", "YAML")],
             ));
             parts.push(scroll);
             parts.extend(pairs(app, &[("help", "keys")]));
@@ -793,13 +800,41 @@ pub(super) fn modal_hint(app: &App, modal: &Modal) -> Option<String> {
             };
             parts.extend(pairs(app, &[("secrets.reveal", reveal)]));
             if mode != SecretsMode::Yaml {
-                parts.extend(pairs(app, &[("secrets.yaml", "masked YAML")]));
+                parts.extend(pairs(
+                    app,
+                    &[
+                        ("secrets.yaml", "masked YAML"),
+                        ("secrets.used-by", "used by"),
+                    ],
+                ));
             }
             parts.push(format!(
                 "{} {} move",
                 key_of(app, "secrets.down"),
                 key_of(app, "secrets.up")
             ));
+            let connection = &app.options.connection;
+            if connection.writable && connection.allow_secret_edit {
+                if mode == SecretsMode::List {
+                    parts.extend(pairs(
+                        app,
+                        &[
+                            ("secrets.add", "add key"),
+                            ("secrets.create", "new Secret"),
+                            ("secrets.delete", "delete"),
+                        ],
+                    ));
+                } else {
+                    parts.extend(pairs(
+                        app,
+                        &[
+                            ("secrets.edit", "set value"),
+                            ("secrets.add", "add key"),
+                            ("secrets.delete", "remove key"),
+                        ],
+                    ));
+                }
+            }
             if mode == SecretsMode::Yaml {
                 parts.push(format!(
                     "{} {} scroll",

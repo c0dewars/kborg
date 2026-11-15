@@ -129,6 +129,25 @@ impl App {
                     }));
                     self.status = "Read every change, then type the confirmation to apply.".into();
                 }
+                Reply::SecretPrepared(prepared) => {
+                    let view = review_ui::Review::new(
+                        prepared.summary().into(),
+                        prepared.confirmation(),
+                        self.epoch,
+                    );
+                    let previous = std::mem::replace(
+                        &mut self.modal,
+                        Modal::WriteReview(Box::new(WriteReview {
+                            plan: WritePlan::Secret(prepared),
+                            view,
+                        })),
+                    );
+                    // Esc on the review returns to the Secrets view.
+                    if !matches!(previous, Modal::None) {
+                        self.push_subview(previous);
+                    }
+                    self.status = "Read the change, then confirm. The value is never shown.".into();
+                }
                 Reply::BatchPrepared(batch) => {
                     let view = review_ui::Review::new(
                         batch.summary().into(),
@@ -427,7 +446,19 @@ impl App {
                     };
                 }
                 Reply::Detail(text) => {
+                    // From :secrets (used by): Esc goes back to the Secrets view,
+                    // with any revealed value dropped first.
+                    if let Modal::Secrets(view) = &mut self.modal {
+                        view.hide();
+                        let previous = std::mem::replace(&mut self.modal, Modal::None);
+                        self.push_subview(previous);
+                    }
                     self.modal = Modal::Detail(text.replace('\t', " | "), 0);
+                }
+                Reply::Shown(text, masked) => self.modal = self.shown_document(text, masked),
+                Reply::ForwardVia(via) => {
+                    self.forward_form(via.namespace, via.pod, Some(via.uid), via.remote_port);
+                    self.status = via.note;
                 }
                 Reply::Object(object) => self.modal = Modal::Overview(object, 0),
                 Reply::Drill(object) => self.modal = Modal::PodContainers(object, 0),
@@ -1015,23 +1046,42 @@ impl App {
                     .into();
             return;
         }
-        if self.options.connection.demo || self.kind() != "pods" {
-            self.status = "Port-forward requires a selected live Pod.".into();
+        let kind = self.kind();
+        if self.options.connection.demo || !(kind == "pods" || forwards_via_pod(&kind)) {
+            self.status =
+                "Port-forward needs a live Pod, Service, Deployment, StatefulSet, DaemonSet or ReplicaSet."
+                    .into();
             return;
         }
-        if let Some((_, namespace, pod)) = self.selected_target() {
-            self.modal = Modal::ForwardForm(
-                namespace,
-                pod,
-                self.selected_uid(),
-                [
-                    self.worker.forward.suggested_port().to_string(),
-                    "80".into(),
-                    "300".into(),
-                ],
-                0,
-            );
+        let Some((resource, namespace, name)) = self.selected_target() else {
+            return;
+        };
+        if kind == "pods" {
+            self.forward_form(namespace, name, self.selected_uid(), 80);
+        } else {
+            // A forward ends at one Pod: find the ready Pod behind the row.
+            self.status = format!("Finding a ready Pod behind {name}...");
+            self.send(Task::ForwardVia(resource, namespace, name));
         }
+    }
+    pub(super) fn forward_form(
+        &mut self,
+        namespace: String,
+        pod: String,
+        uid: Option<String>,
+        remote_port: u16,
+    ) {
+        self.modal = Modal::ForwardForm(
+            namespace,
+            pod,
+            uid,
+            [
+                self.worker.forward.suggested_port().to_string(),
+                remote_port.to_string(),
+                "3600".into(),
+            ],
+            0,
+        );
     }
     pub(super) fn request_log_group(
         &mut self,
@@ -1416,10 +1466,8 @@ impl App {
                 && !self.options.connection.writable
             {
                 Some("read-only mode")
-            } else if index == 7
-                && !["deployments.apps", "statefulsets.apps"].contains(&kind.as_str())
-            {
-                Some("Deployments and StatefulSets only")
+            } else if index == 7 && !scalable(&kind) {
+                Some("Deployments, StatefulSets and ReplicaSets only")
             } else if index == 9
                 && !["deployments.apps", "statefulsets.apps", "daemonsets.apps"]
                     .contains(&kind.as_str())
@@ -1445,9 +1493,7 @@ impl App {
     }
     fn action_allowed(&self, action: &Action) -> bool {
         match action {
-            Action::Scale(_) => {
-                ["deployments.apps", "statefulsets.apps"].contains(&self.kind().as_str())
-            }
+            Action::Scale(_) => scalable(&self.kind()),
             Action::Restart => ["deployments.apps", "statefulsets.apps", "daemonsets.apps"]
                 .contains(&self.kind().as_str()),
             Action::SetContainer { .. } | Action::SetImage { .. } | Action::SetResources { .. } => {
@@ -1591,4 +1637,25 @@ impl App {
             )
         }
     }
+}
+
+/// Kinds with a replica count KBorg scales.
+pub(super) fn scalable(kind: &str) -> bool {
+    matches!(
+        kind,
+        "deployments.apps" | "statefulsets.apps" | "replicasets.apps"
+    )
+}
+
+/// Kinds a port-forward can start from besides a Pod: the forward goes to
+/// one ready Pod their selector matches.
+pub(super) fn forwards_via_pod(kind: &str) -> bool {
+    matches!(
+        kind,
+        "services"
+            | "deployments.apps"
+            | "statefulsets.apps"
+            | "daemonsets.apps"
+            | "replicasets.apps"
+    )
 }

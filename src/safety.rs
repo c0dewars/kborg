@@ -252,9 +252,80 @@ pub fn write_new(path: &Path, bytes: &[u8]) -> Result<()> {
         .map_err(|_| "cannot write file".into())
 }
 
-/// Conservative display/export projection; Secrets are rejected by the gateway itself.
-/// This is not a universal sensitive-business-data detector.
+/// Conservative export projection; Secrets are rejected by the gateway itself.
+/// This is not a universal sensitive-business-data detector. It is what leaves
+/// the screen: exports, snapshots, tool input, CLI output and Copilot.
 pub fn redact(value: &mut Value) {
+    redact_with(value, false);
+}
+
+/// The projection for the screen and the YAML editor. Unlike [`redact`] it
+/// keeps what an operator has to read and change: ConfigMap `data` and
+/// `binaryData`, annotations and literal `value`s (container environment,
+/// tolerations). Fields named like a credential stay hidden, and so does the
+/// `value` of an entry whose `name` is one (`DB_PASSWORD`, `API_TOKEN`).
+/// Clean text is kept byte for byte so the editor can tell an edit from a
+/// display change.
+pub fn redact_shown(value: &mut Value) {
+    redact_with(value, true);
+}
+
+/// Text the screen may hold as it is: no terminal, bidi or invisible
+/// characters except line breaks and tabs, which every renderer escapes or
+/// lays out itself.
+pub fn shown_text(text: &str) -> bool {
+    text.len() <= SHOWN_TEXT
+        && !text
+            .chars()
+            .any(|c| hidden(c) && !matches!(c, '\n' | '\r' | '\t'))
+}
+const SHOWN_TEXT: usize = 1024 * 1024;
+
+/// A variable or parameter name that says its value is a credential.
+fn credential_name(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    [
+        "password",
+        "passwd",
+        "secret",
+        "token",
+        "credential",
+        "api_key",
+        "apikey",
+        "private_key",
+        "access_key",
+    ]
+    .iter()
+    .any(|word| lower.contains(word))
+}
+
+/// An annotation can hold a whole manifest as JSON text: kubectl keeps the
+/// last applied one in `kubectl.kubernetes.io/last-applied-configuration`.
+/// What is hidden in the object is hidden in that copy too. A copy that
+/// changes becomes read-only in the editor, which keeps the original.
+fn embedded_manifests(annotations: &mut Value) {
+    let Some(map) = annotations.as_object_mut() else {
+        return;
+    };
+    for text in map.values_mut() {
+        let Some(json) = text
+            .as_str()
+            .filter(|text| text.trim_start().starts_with(['{', '[']))
+        else {
+            continue;
+        };
+        let Ok(parsed) = serde_json::from_str::<Value>(json) else {
+            continue;
+        };
+        let mut masked = parsed.clone();
+        redact_with(&mut masked, true);
+        if masked != parsed {
+            *text = Value::String(masked.to_string());
+        }
+    }
+}
+
+fn redact_with(value: &mut Value, shown: bool) {
     match value {
         Value::Object(map) => {
             // Keys reach terminals and JSON output too (CRDs choose them).
@@ -264,9 +335,18 @@ pub fn redact(value: &mut Value) {
                     .map(|(key, v)| (safe_text(&key, 253), v))
                     .collect();
             }
+            let credential = map
+                .get("name")
+                .and_then(Value::as_str)
+                .is_some_and(credential_name);
             for (key, v) in map {
                 let lower = key.to_ascii_lowercase();
-                if [
+                let readable: &[&str] = if credential {
+                    &["data", "binarydata", "annotations"]
+                } else {
+                    &["data", "binarydata", "annotations", "value"]
+                };
+                let hidden = [
                     "data",
                     "stringdata",
                     "binarydata",
@@ -276,18 +356,23 @@ pub fn redact(value: &mut Value) {
                     "token",
                     "password",
                     "client-key-data",
-                ]
-                .contains(&lower.as_str())
+                ];
+                if (hidden.contains(&lower.as_str())
+                    && !(shown && readable.contains(&lower.as_str())))
                     || lower.contains("secret")
                     || lower.contains("credential")
                 {
                     *v = Value::String("[REDACTED]".into());
                 } else {
-                    redact(v);
+                    if shown && lower == "annotations" {
+                        embedded_manifests(v);
+                    }
+                    redact_with(v, shown);
                 }
             }
         }
-        Value::Array(items) => items.iter_mut().for_each(redact),
+        Value::Array(items) => items.iter_mut().for_each(|item| redact_with(item, shown)),
+        Value::String(s) if shown && shown_text(s) => {}
         Value::String(s) => *s = safe_lines(s, 16384),
         _ => {}
     }
@@ -371,6 +456,57 @@ pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_screen_projection_shows_data_annotations_and_values_but_not_credentials() {
+        let object = serde_json::json!({
+            "kind":"ConfigMap",
+            "metadata":{"annotations":{"note":"n"},"managedFields":[{"manager":"m"}]},
+            "data":{"app.conf":"a\tb\r\nc\n","db-secret":"s","password":"p"},
+            "binaryData":{"blob":"AAEC"},
+            "spec":{"env":[{"name":"LOG_LEVEL","value":"info"},{"name":"DB_PASSWORD","value":"p"},{"name":"API_TOKEN","value":"t"}],
+                    "tolerations":[{"key":"k","value":"v"}],"token":"t","stringData":{"a":"b"},"clientSecret":"c",
+                    "hostile":"x\u{1b}[2Jy\u{202e}z"}
+        });
+        let mut shown = object.clone();
+        super::redact_shown(&mut shown);
+        assert_eq!(
+            shown,
+            serde_json::json!({
+                "kind":"ConfigMap",
+                "metadata":{"annotations":{"note":"n"},"managedFields":"[REDACTED]"},
+                "data":{"app.conf":"a\tb\r\nc\n","db-secret":"[REDACTED]","password":"[REDACTED]"},
+                "binaryData":{"blob":"AAEC"},
+                "spec":{"env":[{"name":"LOG_LEVEL","value":"info"},{"name":"DB_PASSWORD","value":"[REDACTED]"},{"name":"API_TOKEN","value":"[REDACTED]"}],
+                        "tolerations":[{"key":"k","value":"v"}],"token":"[REDACTED]","stringData":"[REDACTED]","clientSecret":"[REDACTED]",
+                        "hostile":"x[2Jyz"}
+            })
+        );
+        // A manifest kept inside an annotation is masked like the object itself;
+        // one with nothing to hide stays byte for byte.
+        let plain = r#"{"spec":{"env":[{"name":"LOG_LEVEL","value":"info"}]}}"#;
+        let mut embedded = serde_json::json!({"metadata":{"annotations":{
+            "kubectl.kubernetes.io/last-applied-configuration": "{\"spec\":{\"env\":[{\"name\":\"DB_PASSWORD\",\"value\":\"embedded-canary\"},{\"name\":\"LOG_LEVEL\",\"value\":\"info\"}],\"token\":\"embedded-canary\"}}\n",
+            "plain": plain,
+            "not-json": "{oops"}}});
+        super::redact_shown(&mut embedded);
+        let text = embedded.to_string();
+        assert!(
+            !text.contains("embedded-canary")
+                && text.contains("LOG_LEVEL")
+                && text.contains("info"),
+            "{text}"
+        );
+        assert_eq!(embedded["metadata"]["annotations"]["plain"], plain);
+        assert_eq!(embedded["metadata"]["annotations"]["not-json"], "{oops");
+        // Whatever the screen projection kept, the export projection hides.
+        let mut exported = object.clone();
+        super::redact(&mut exported);
+        super::redact(&mut shown);
+        assert_eq!(shown, exported);
+        for hidden in ["info", "app.conf", "AAEC", "note"] {
+            assert!(!exported.to_string().contains(hidden), "{hidden}");
+        }
+    }
     #[test]
     fn invisible_characters_and_hostile_keys_are_removed() {
         assert_eq!(

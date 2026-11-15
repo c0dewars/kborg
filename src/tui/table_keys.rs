@@ -97,6 +97,8 @@ impl App {
             }
             "up" => self.selected = self.selected.saturating_sub(1),
             "drilldown" => self.drilldown(),
+            "owner" => self.owner(),
+            "used.by" => self.used_by(),
             "filter" => {
                 self.modal = Modal::Filter(
                     self.filter.clone(),
@@ -294,7 +296,10 @@ impl App {
                     .and_then(|object| object["spec"]["nodeName"].as_str())
                     .map(str::to_owned);
                 if let Some(node) = node {
-                    return self.command(&format!("v1/nodes /^{node}$"));
+                    return self.command(&format!(
+                        "v1/nodes {}",
+                        super::commands::exact_name_filter(&node)
+                    ));
                 }
                 self.status =
                     "Show Node requires a scheduled Pod. :overview opens multiple contexts.".into();

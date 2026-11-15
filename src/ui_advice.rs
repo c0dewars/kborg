@@ -15,7 +15,12 @@ pub struct Review {
 }
 impl Review {
     pub fn new(prepared: Option<PreparedAdvice>, text: String, epoch: u64) -> Self {
-        let display = crate::safety::review_display(&text);
+        let phrase = prepared
+            .as_ref()
+            .map(PreparedAdvice::confirmation)
+            .unwrap_or_default();
+        let display =
+            crate::safety::review_display(&super::review_ui::instruction_for_mode(text, &phrase));
         Self {
             prepared,
             display_valid: display.is_ok(),

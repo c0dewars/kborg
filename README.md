@@ -14,7 +14,7 @@
     <a href="#documentation">Docs</a>
   </p>
   <p>
-    <img alt="Release 0.5.1" src="https://img.shields.io/badge/release-0.5.1-FF7A1A">
+    <img alt="Release 0.6.0" src="https://img.shields.io/badge/release-0.6.0-FF7A1A">
     <img alt="Rust" src="https://img.shields.io/badge/built%20with-Rust-0FA968">
     <img alt="Windows, macOS and Linux" src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-0B1220">
     <img alt="Apache 2.0" src="https://img.shields.io/badge/license-Apache%202.0-3BE08A">
@@ -45,8 +45,8 @@ brew install c0dewars/tap/kborg
 **Debian, Ubuntu, Fedora, RHEL** — download the package for your CPU from the [latest release](https://github.com/c0dewars/kborg/releases/latest):
 
 ```sh
-sudo apt install ./kborg_0.5.1_amd64.deb      # Debian / Ubuntu
-sudo dnf install ./kborg-0.5.1-1.x86_64.rpm   # Fedora / RHEL
+sudo apt install ./kborg_0.6.0_amd64.deb      # Debian / Ubuntu
+sudo dnf install ./kborg-0.6.0-1.x86_64.rpm   # Fedora / RHEL
 ```
 
 **Windows** — download the ZIP for your CPU from the [latest release](https://github.com/c0dewars/kborg/releases/latest), extract it and run `kborg.exe` from Windows Terminal or PowerShell.
@@ -54,7 +54,7 @@ sudo dnf install ./kborg-0.5.1-1.x86_64.rpm   # Fedora / RHEL
 **Any platform, from source** (needs Rust):
 
 ```sh
-cargo install --locked --git https://github.com/c0dewars/kborg --tag v0.5.1
+cargo install --locked --git https://github.com/c0dewars/kborg --tag v0.6.0
 ```
 
 Release archives exist for macOS, Linux and Windows on x86_64 and ARM64. Every file is signed; see [verify a download](#verify-a-download). Shell completions: `kborg completions zsh|bash|fish|powershell`.
@@ -93,7 +93,7 @@ KBorg shows the context, cluster and namespace and asks before it connects. From
 | **Dashboard** | One to nine clusters with health, restarts, OOM evidence, Node usage, degraded workloads, warnings and trend charts. |
 | **Check** | `:lint` for misconfigurations, `:scan` for image vulnerabilities through your Trivy or Grype, an errors-only view, `:pulses` and `:xray`. |
 | **Helm** | Browse releases and history; reviewed install, upgrade, rollback, uninstall and tests, with optional signature verification. |
-| **Secrets** | Key names and masked YAML; reveal one value for 30 seconds. Values are never exported or copied. |
+| **Secrets** | Key names and masked YAML; reveal one value for 30 seconds. Create a Secret, set, add or remove one key, or delete a Secret, each through a review that never shows a value; `u` lists the Pods that use it. Values are never exported or copied. |
 | **Metrics** | CPU and memory per Pod and Node, usage against requests and limits, live charts. Needs [metrics-server](https://github.com/kubernetes-sigs/metrics-server#installation); without it KBorg shows `-`, never zero. |
 | **Errors** | Messages that say what failed, why and what to do next, down to the exact `kubectl auth can-i` check for a permission problem. |
 
@@ -110,9 +110,10 @@ KBorg shows the context, cluster and namespace and asks before it connects. From
 | `/` | Filter rows (`/!` inverse, `/-f` fuzzy, `/-l` label selector) |
 | `Enter`, `d`, `y` | Drill down, describe, YAML; `/` then `n` / `N` searches inside |
 | `l`, `p` | Logs, previous logs |
-| `s`, `a`, `F` | Shell, attach, port-forward |
+| `s`, `a`, `F` | Shell, attach, port-forward (`F` also works on a Service or a workload: it picks a ready Pod) |
 | `s`, `r` on workloads | Scale, restart |
-| `e` | Edit the YAML spec |
+| `U`, `u` | Jump to the owner (Pod → ReplicaSet → Deployment); Pods that use a ConfigMap, Secret, PVC or ServiceAccount |
+| `e` | Edit the YAML: spec, labels, annotations, ConfigMap data |
 | Ctrl-D, Ctrl-K | Delete, force kill |
 | `Space` | Mark rows for one batch delete, restart or suspend |
 | `c`, `u`, `r` on Nodes | Cordon, uncordon, drain |
@@ -139,7 +140,7 @@ Speed is a design goal, and the numbers below are measured, not estimated.
 | CPU, 5,000 objects with churn | **2.8 %** | 6.8 % |
 | Binary size | **13 MB** | 140 MB |
 
-In KBorg's own scale test, a key press redraws in about 8 ms with 5,000 or with 20,000 Pods in the table, and filtering 20,000 Pods takes 0.4 s. These come from one Apple M2 Pro against local clusters; expect different absolute numbers on yours. [Method and full results](docs/PERFORMANCE_COMPARISON.md) · [the regression gate in CI](docs/PERFORMANCE.md).
+In KBorg's own scale test, a key press redraws in about 8 ms with 5,000 or with 20,000 Pods in the table, and filtering 20,000 Pods takes 0.2 s. These come from one Apple M2 Pro against local clusters; expect different absolute numbers on yours. [Method and full results](docs/PERFORMANCE_COMPARISON.md) · [the regression gate in CI](docs/PERFORMANCE.md).
 
 ## Make it yours
 
@@ -180,7 +181,7 @@ Before anything is sent you see the exact text and approve it. Answers are advic
 ### Verify a download
 
 ```sh
-gh attestation verify kborg-0.5.1-aarch64-apple-darwin.tar.gz --repo c0dewars/kborg
+gh attestation verify kborg-0.6.0-aarch64-apple-darwin.tar.gz --repo c0dewars/kborg
 ```
 
 `cosign verify-blob` and the checksum file work too; see [Release process](docs/RELEASE_PROCESS.md#verify-a-release-asset).

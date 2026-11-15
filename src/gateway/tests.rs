@@ -992,3 +992,214 @@ fn operator_auth_helper_denial_prevents_native_and_reviewed_execution() -> Resul
     std::fs::remove_dir_all(root).map_err(|_| "cleanup fixture")?;
     Ok(())
 }
+
+#[test]
+fn a_replicaset_scales_with_a_warning_about_its_deployment_and_nothing_else() -> Result<()> {
+    runtime()?.block_on(async {
+        let mut g = Gateway::connect(Connection {
+            demo: true,
+            writable: true,
+            ..Default::default()
+        })
+        .await?;
+        let prepared = g
+            .prepare("replicasets", "demo", "api-7d4f9", Action::Scale(3))
+            .await?;
+        assert!(prepared.summary.contains("-> 3"), "{}", prepared.summary);
+        assert!(
+            prepared
+                .summary
+                .contains("! owned by Deployment api: it sets the replica count back"),
+            "{}",
+            prepared.summary
+        );
+        let approval = Approval::confirm(
+            prepared.target.clone(),
+            prepared.action.clone(),
+            "demo/api-7d4f9",
+        )?;
+        g.execute(prepared, approval).await?;
+        assert_eq!(
+            g.get("replicasets", "demo", "api-7d4f9").await?["spec"]["replicas"],
+            3
+        );
+        // A Deployment's own review carries no such line.
+        let deployment = g
+            .prepare("deployments", "demo", "api", Action::Scale(2))
+            .await?;
+        assert!(
+            !deployment.summary.contains("owned by"),
+            "{}",
+            deployment.summary
+        );
+        // Restart and image changes stay with the owner.
+        for action in [
+            Action::Restart,
+            Action::SetImage {
+                container: "api".into(),
+                image: "example/api:v2".into(),
+            },
+        ] {
+            assert!(
+                g.prepare("replicasets", "demo", "api-7d4f9", action)
+                    .await
+                    .is_err()
+            );
+        }
+        Ok(())
+    })
+}
+
+#[test]
+fn a_new_secret_is_refused_when_the_name_is_taken_and_never_written_in_demo() -> Result<()> {
+    use crate::secret_edit::{Change, SecretBytes, Source};
+    let create = || Change::Create {
+        key: "token".into(),
+        value: SecretBytes::new(b"create-canary".to_vec()),
+        source: Source::Typed,
+    };
+    runtime()?.block_on(async {
+        let g = Gateway::connect(Connection {
+            demo: true,
+            writable: true,
+            allow_secret_reveal: true,
+            allow_secret_edit: true,
+            ..Default::default()
+        })
+        .await?;
+        let taken = g
+            .prepare_secret("demo", "api-credentials", "", create())
+            .await
+            .err()
+            .unwrap_or_default();
+        assert!(
+            taken.contains("already exists") && taken.contains("Next:"),
+            "{taken}"
+        );
+        assert!(
+            g.prepare_secret("demo", "new-creds", "some-uid", create())
+                .await
+                .is_err()
+        );
+        let prepared = g.prepare_secret("demo", "new-creds", "", create()).await?;
+        let review = prepared.summary().to_owned();
+        assert!(
+            review.contains("REVIEW NEW SECRET")
+                && review.contains("CREATE the Secret demo/new-creds with key token: 13 bytes")
+                && !review.contains("canary"),
+            "{review}"
+        );
+        let outcome = g.execute_secret(prepared, "demo/new-creds").await?;
+        assert!(outcome.contains("no cluster contacted"), "{outcome}");
+        // Used-by reads the Pods of the namespace and returns names only.
+        let (rows, total, truncated) = g.secret_users("demo", "api-credentials").await?;
+        assert!(total > 0 && !truncated && rows.len() <= total, "{rows:?}");
+        assert!(g.secret_users("*", "api-credentials").await.is_err());
+        Ok(())
+    })
+}
+
+#[test]
+fn secret_changes_need_write_access_their_own_switch_and_a_review() -> Result<()> {
+    use crate::secret_edit::{Change, SecretBytes, Source};
+    let set = || Change::Set {
+        key: "password".into(),
+        value: SecretBytes::new(b"review-canary".to_vec()),
+        source: Source::Typed,
+    };
+    runtime()?.block_on(async {
+        let connect = |writable, edit, system| {
+            Gateway::connect(Connection {
+                demo: true,
+                writable,
+                allow_secret_reveal: true,
+                allow_secret_edit: edit,
+                allow_system_namespaces: system,
+                ..Default::default()
+            })
+        };
+        let (name, uid) = ("api-credentials", "demo-secret-uid");
+        let read_only = connect(false, true, false).await?;
+        let error = read_only
+            .prepare_secret("demo", name, uid, set())
+            .await
+            .err()
+            .unwrap_or_default();
+        assert!(error.contains("READ ONLY"), "{error}");
+        let switched_off = connect(true, false, false).await?;
+        let error = switched_off
+            .prepare_secret("demo", name, uid, Change::Delete)
+            .await
+            .err()
+            .unwrap_or_default();
+        assert!(error.contains("allow_secret_edit"), "{error}");
+        let g = connect(true, true, false).await?;
+        let error = g
+            .prepare_secret("kube-system", name, uid, Change::Delete)
+            .await
+            .err()
+            .unwrap_or_default();
+        assert!(error.contains("allow_system_namespaces"), "{error}");
+        assert!(
+            g.prepare_secret("demo", "other", uid, Change::Delete)
+                .await
+                .is_err()
+        );
+        assert!(
+            g.prepare_secret("demo", name, "other-uid", Change::Delete)
+                .await
+                .is_err()
+        );
+        assert!(
+            g.prepare_secret(
+                "demo",
+                name,
+                uid,
+                Change::Remove {
+                    key: "absent".into()
+                }
+            )
+            .await
+            .is_err()
+        );
+
+        let prepared = g.prepare_secret("demo", name, uid, set()).await?;
+        let review = prepared.summary().to_owned();
+        assert!(
+            review.contains("REVIEW SECRET CHANGE")
+                && review.contains("Secret: demo/api-credentials"),
+            "{review}"
+        );
+        assert!(
+            review.contains("SET key password:") && review.contains("-> 13 bytes"),
+            "{review}"
+        );
+        assert!(
+            review.contains("Demo validation only") && !review.contains("canary"),
+            "{review}"
+        );
+        // The confirmation is checked, and the demo Secret is never written.
+        let wrong = g.prepare_secret("demo", name, uid, set()).await?;
+        assert!(g.execute_secret(wrong, "demo/other").await.is_err());
+        let outcome = g.execute_secret(prepared, "demo/api-credentials").await?;
+        assert!(outcome.contains("no cluster contacted"), "{outcome}");
+        let removed = g
+            .prepare_secret(
+                "demo",
+                name,
+                uid,
+                Change::Remove {
+                    key: "password".into(),
+                },
+            )
+            .await?;
+        assert!(removed.summary().contains("REMOVE key password"));
+        let deleted = g.prepare_secret("demo", name, uid, Change::Delete).await?;
+        assert!(
+            deleted
+                .summary()
+                .contains("DELETE the Secret demo/api-credentials")
+        );
+        Ok(())
+    })
+}

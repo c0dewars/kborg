@@ -74,6 +74,11 @@ use worker::*;
 const OVERVIEW_CONTEXTS_LABEL: &str = "Overview contexts (comma separated, max 9)";
 const ASK_LABEL: &str = "Ask Copilot about this screen";
 const FOLLOW_UP_LABEL: &str = "Follow-up question (same screen)";
+const SECRET_NAME_LABEL: &str = "New Secret name";
+const SECRET_KEY_LABEL: &str = "New Secret key";
+const SECRET_VALUE_LABEL: &str = "New Secret value";
+/// A typed Secret value; a longer one comes from a file (`@PATH`).
+const SECRET_VALUE_BYTES: usize = 4096;
 /// Title of a Copilot answer document; `f` there asks a follow-up.
 const ADVICE_TITLE: &str = "COPILOT ADVICE / review independently";
 const OVERVIEW_INPUT_BYTES: usize = crate::overview::MAX_LIVE_CONTEXTS * 254 - 1;
@@ -84,6 +89,10 @@ fn input_limit(label: &str) -> usize {
         nav::COMMAND_BYTES
     } else if label == ASK_LABEL || label == FOLLOW_UP_LABEL {
         crate::advice::MAX_QUESTION
+    } else if label == SECRET_VALUE_LABEL {
+        SECRET_VALUE_BYTES
+    } else if label == SECRET_KEY_LABEL || label == SECRET_NAME_LABEL {
+        253
     } else {
         100
     }
@@ -180,6 +189,20 @@ enum WritePlan {
     Debug(Box<crate::debug_container::Prepared>),
     /// One reviewed action on every marked object of the current kind.
     Batch(Box<crate::gateway::PreparedBatch>),
+    /// Set or remove one key of a Secret, or delete it.
+    Secret(Box<crate::secret_edit::Prepared>),
+}
+/// The Secret a value or key prompt is for.
+struct SecretDraft {
+    namespace: String,
+    name: String,
+    uid: String,
+    /// `None` while the key of a new entry is being typed.
+    key: Option<String>,
+    /// Tab shows the typed value; it is hidden otherwise.
+    visible: bool,
+    /// The Secret does not exist yet: the value creates it.
+    create: bool,
 }
 struct WriteReview {
     plan: WritePlan,
@@ -316,6 +339,11 @@ struct App {
     /// Cluster, user, version and usage shown by the k9s-style header block.
     header: header_block::State,
     ask_screen: Option<String>,
+    /// The Secret and key a value prompt in front belongs to.
+    secret_draft: Option<SecretDraft>,
+    /// Masked text of the documents that show values, by the hash of the
+    /// shown text: what a Copilot screen capture takes instead.
+    masked_documents: Vec<(u64, String)>,
     /// The status line when the screen was captured, for `:explain`.
     ask_status: Option<String>,
     /// The answered `:ask` conversation a follow-up continues.
@@ -1297,6 +1325,8 @@ pub fn run(mut options: Options) -> Result<()> {
         doc_search: doc_search::DocSearch::default(),
         header: header_block::State::default(),
         ask_screen: None,
+        secret_draft: None,
+        masked_documents: Vec::new(),
         ask_status: None,
         ask_thread: None,
         ask_inflight: None,
@@ -1390,6 +1420,17 @@ pub fn run(mut options: Options) -> Result<()> {
             ),
             0,
         );
+    }
+    if let Some(note) = app.keymap.notes().first() {
+        // Not an error: the user's keys are in force. Say once what moved.
+        app.status = format!(
+            "keymap.yaml: {note}{}. :keymap lists your keys.",
+            match app.keymap.notes().len() {
+                1 => String::new(),
+                more => format!(" (and {} more)", more - 1),
+            }
+        );
+        app.sticky_status = true;
     }
     if let Some(error) = keymap_error {
         app.modal = Modal::Detail(

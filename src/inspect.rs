@@ -6,12 +6,58 @@ const MAX_DEPTH: usize = 64;
 
 pub fn yaml(value: &Value) -> Result<String> {
     // Work only with redacted data, even when called independently of Gateway::get.
+    document(value, safety::redact, Blocks::None)
+}
+
+/// YAML for the screen: [`safety::redact_shown`], with multi-line text (a
+/// ConfigMap file) as a literal block instead of one escaped line.
+pub fn yaml_shown(value: &Value) -> Result<String> {
+    document(value, safety::redact_shown, Blocks::Text)
+}
+
+/// YAML for the editor. Its text is escaped to ASCII afterwards, and an
+/// escape means nothing inside a literal block, so only ASCII text gets one.
+pub fn yaml_editable(value: &Value) -> Result<String> {
+    document(value, safety::redact_shown, Blocks::Ascii)
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum Blocks {
+    None,
+    Text,
+    Ascii,
+}
+
+fn document(value: &Value, redact: fn(&mut Value), blocks: Blocks) -> Result<String> {
     preflight(value, 0, &mut 0, &mut 0)?;
     let mut value = value.clone();
-    safety::redact(&mut value);
+    redact(&mut value);
     let mut out = String::new();
-    render(&value, 0, &mut out)?;
+    render(&value, 0, blocks, &mut out)?;
     Ok(out)
+}
+
+/// The lines of a literal block and whether the text ends with a line break,
+/// or `None` when only a quoted scalar reproduces the text exactly.
+fn block(text: &str, blocks: Blocks) -> Option<(Vec<&str>, bool)> {
+    if blocks == Blocks::None || !text.contains('\n') || text.ends_with("\n\n") {
+        return None;
+    }
+    let (body, newline) = match text.strip_suffix('\n') {
+        Some(body) => (body, true),
+        None => (text, false),
+    };
+    let lines: Vec<&str> = body.split('\n').collect();
+    // The first line sets the block's indentation, so it cannot be blank or
+    // start with a space.
+    let first = lines.first()?;
+    if first.is_empty() || first.starts_with(' ') {
+        return None;
+    }
+    let plain = |line: &&str| {
+        safety::safe_text(line, usize::MAX) == **line && (blocks == Blocks::Text || line.is_ascii())
+    };
+    lines.iter().all(plain).then_some((lines, newline))
 }
 fn preflight(value: &Value, depth: usize, bytes: &mut usize, nodes: &mut usize) -> Result<()> {
     if depth > MAX_DEPTH {
@@ -60,7 +106,7 @@ fn scalar(value: &Value) -> Result<String> {
         } else { text.push(c); } text
     }))
 }
-fn render(value: &Value, depth: usize, out: &mut String) -> Result<()> {
+fn render(value: &Value, depth: usize, blocks: Blocks, out: &mut String) -> Result<()> {
     if depth > MAX_DEPTH {
         return Err("YAML inspection nesting exceeds 64 levels".into());
     }
@@ -71,14 +117,14 @@ fn render(value: &Value, depth: usize, out: &mut String) -> Result<()> {
                 write(out, &pad)?;
                 write(out, &scalar(&Value::String(key.clone()))?)?;
                 write(out, ":")?;
-                entry(value, depth, out)?;
+                entry(value, depth, blocks, out)?;
             }
         }
         Value::Array(items) if !items.is_empty() => {
             for value in items {
                 write(out, &pad)?;
                 write(out, "-")?;
-                entry(value, depth, out)?;
+                entry(value, depth, blocks, out)?;
             }
         }
         _ => {
@@ -89,17 +135,30 @@ fn render(value: &Value, depth: usize, out: &mut String) -> Result<()> {
     }
     Ok(())
 }
-fn entry(value: &Value, depth: usize, out: &mut String) -> Result<()> {
+fn entry(value: &Value, depth: usize, blocks: Blocks, out: &mut String) -> Result<()> {
     if matches!(value, Value::Object(m) if !m.is_empty())
         || matches!(value, Value::Array(a) if !a.is_empty())
     {
         write(out, "\n")?;
-        render(value, depth + 1, out)
-    } else {
-        write(out, " ")?;
-        write(out, &scalar(value)?)?;
-        write(out, "\n")
+        return render(value, depth + 1, blocks, out);
     }
+    if let Value::String(text) = value
+        && let Some((lines, newline)) = block(text, blocks)
+    {
+        write(out, if newline { " |\n" } else { " |-\n" })?;
+        let pad = "  ".repeat(depth + 1);
+        for line in lines {
+            if !line.is_empty() {
+                write(out, &pad)?;
+                write(out, line)?;
+            }
+            write(out, "\n")?;
+        }
+        return Ok(());
+    }
+    write(out, " ")?;
+    write(out, &scalar(value)?)?;
+    write(out, "\n")
 }
 #[cfg(test)]
 mod tests {

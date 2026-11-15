@@ -275,8 +275,8 @@ impl App {
     pub(super) fn scale(&mut self) -> Result<bool> {
         if !self.options.connection.writable {
             self.status = "scale requires write permission (off in --read-only mode).".into();
-        } else if !["deployments.apps", "statefulsets.apps"].contains(&self.kind().as_str()) {
-            self.status = "Scale supports Deployments and StatefulSets; other scale workflows are unavailable.".into();
+        } else if !super::replies::scalable(&self.kind()) {
+            self.status = "Scale works on Deployments, StatefulSets and ReplicaSets.".into();
         } else if let Some((k, n, name)) = self.selected_target() {
             self.modal = Modal::Scale(k, n, name, self.selected_uid(), String::new());
         }
@@ -400,6 +400,78 @@ impl App {
             }
         }
     }
+    /// Jump to the controller that owns the selected object: a Pod's
+    /// ReplicaSet, a ReplicaSet's Deployment, a Job's CronJob.
+    pub(super) fn owner(&mut self) {
+        let Some(object) = self
+            .visible()
+            .get(self.selected)
+            .map(|object| (*object).clone())
+        else {
+            return;
+        };
+        let child = name(&object).to_owned();
+        let owners = object["metadata"]["ownerReferences"].as_array();
+        let Some(owner) = owners.and_then(|all| {
+            all.iter()
+                .find(|owner| owner["controller"] == true)
+                .or_else(|| all.first())
+        }) else {
+            self.status = format!("{child} has no owner: nothing created or manages it.");
+            return;
+        };
+        let (api, kind, owner_name) = (
+            owner["apiVersion"].as_str().unwrap_or(""),
+            owner["kind"].as_str().unwrap_or(""),
+            owner["name"].as_str().unwrap_or(""),
+        );
+        let found = self.kinds.iter().find(|candidate| {
+            let api_version = if candidate.group.is_empty() {
+                candidate.version.clone()
+            } else {
+                format!("{}/{}", candidate.group, candidate.version)
+            };
+            candidate.kind == kind && api_version == api
+        });
+        let plain = !owner_name.is_empty()
+            && owner_name.len() <= 253
+            && owner_name
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'.');
+        let (Some(target), true) = (found, plain) else {
+            self.status = format!(
+                "The owner is {} {}, a kind this cluster connection does not list.",
+                safety::safe_text(kind, 63),
+                safety::safe_text(owner_name, 253)
+            );
+            return;
+        };
+        // An owner lives in the same namespace, or is cluster-scoped.
+        let (key, namespaced) = (target.key(), target.namespaced);
+        let filter = exact_name_filter(owner_name);
+        let command = if namespaced {
+            format!("{key} {} {filter}", namespace(&object))
+        } else {
+            format!("{key} {filter}")
+        };
+        match self.command(&command) {
+            Ok(_) if self.kind() == key => {
+                self.status = format!("Owner of {child}: {kind} {owner_name} | Esc back");
+            }
+            Ok(_) => {}
+            Err(error) => self.status = error,
+        }
+    }
+    /// The Pods that mount or read the selected ConfigMap, claim or account.
+    pub(super) fn used_by(&mut self) {
+        if crate::navigation_views::used_by_kind(&self.kind()).is_none() {
+            self.status = format!("{}.", crate::navigation_views::USED_BY_KINDS);
+            return;
+        }
+        if let Some((kind, namespace, name)) = self.selected_target() {
+            self.send(Task::UsedBy(kind, namespace, name));
+        }
+    }
     pub(super) fn drilldown(&mut self) {
         let Some(object) = self
             .visible()
@@ -505,6 +577,7 @@ impl App {
         connection.allow_system_namespaces = false;
         connection.allow_cluster_scoped = false;
         connection.allow_secret_reveal = false;
+        connection.allow_secret_edit = false;
         connection.allow_helm_write = false;
         connection.allow_helm_hooks = false;
         connection.allow_helm_crds = false;
@@ -675,6 +748,162 @@ impl App {
         }
         self.send(Task::Secrets(self.namespace.clone()));
     }
+    /// What a key in the `:secrets` view asked for. The view is in front.
+    pub(super) fn secret_outcome(&mut self, outcome: crate::ui_secrets::Outcome) {
+        use crate::secret_edit::Change;
+        use crate::ui_secrets::Outcome;
+        let change = !matches!(
+            outcome,
+            Outcome::Stay
+                | Outcome::Close
+                | Outcome::Reveal(..)
+                | Outcome::Yaml(..)
+                | Outcome::UsedBy(..)
+        );
+        if change {
+            let connection = &self.options.connection;
+            if !connection.writable || !connection.allow_secret_edit {
+                self.status = "Secret changes are off in this session (--read-only or operator config allow_secret_edit: false).".into();
+                return;
+            }
+            if self.busy {
+                self.status = "Wait for the current request before changing a Secret.".into();
+                return;
+            }
+        }
+        match outcome {
+            Outcome::Stay => {}
+            Outcome::Close => self.close_subview(),
+            Outcome::Reveal(namespace, name, uid, key) => {
+                self.send(Task::SecretValue(namespace, name, uid, key))
+            }
+            Outcome::Yaml(namespace, name, uid) => {
+                self.send(Task::SecretYaml(namespace, name, uid))
+            }
+            Outcome::UsedBy(namespace, name) => {
+                self.status = format!("Reading the Pods that use Secret {name}...");
+                self.send(Task::UsedBy("secrets".into(), namespace, name));
+            }
+            Outcome::Delete(namespace, name, uid) => {
+                self.status = format!("Preparing the review to delete Secret {name}...");
+                self.send(Task::SecretPrepare(namespace, name, uid, Change::Delete));
+            }
+            Outcome::Remove(namespace, name, uid, key) => {
+                self.status = format!("Preparing the review to remove key {key}...");
+                self.send(Task::SecretPrepare(
+                    namespace,
+                    name,
+                    uid,
+                    Change::Remove { key },
+                ));
+            }
+            Outcome::Edit(namespace, name, uid, key) => {
+                self.status = format!(
+                    "New value for {key} of {name}: type it (hidden; Tab shows it) or @/path/to/file. Enter reviews, Esc cancels."
+                );
+                self.secret_prompt(namespace, name, uid, Some(key));
+            }
+            Outcome::Add(namespace, name, uid) => {
+                self.status =
+                    format!("Name of the new key in {name}. Enter continues, Esc cancels.");
+                self.secret_prompt(namespace, name, uid, None);
+            }
+            Outcome::Create(namespace) => {
+                self.status = format!(
+                    "Name of the new Secret in {namespace}. Enter continues to its first key, Esc cancels."
+                );
+                self.secret_prompt(namespace, String::new(), String::new(), None);
+                if let Some(draft) = &mut self.secret_draft {
+                    draft.create = true;
+                }
+                self.modal = Modal::Input(SECRET_NAME_LABEL, String::new());
+            }
+        }
+    }
+    fn secret_prompt(&mut self, namespace: String, name: String, uid: String, key: Option<String>) {
+        let label = if key.is_some() {
+            SECRET_VALUE_LABEL
+        } else {
+            SECRET_KEY_LABEL
+        };
+        self.secret_draft = Some(SecretDraft {
+            namespace,
+            name,
+            uid,
+            key,
+            visible: false,
+            create: false,
+        });
+        let view = std::mem::replace(&mut self.modal, Modal::Input(label, String::new()));
+        self.push_subview(view);
+    }
+    /// Enter in a Secret prompt: the key leads to the value, the value to the review.
+    pub(super) fn secret_input(&mut self, label: &'static str, mut text: String) {
+        let Some(mut draft) = self.secret_draft.take() else {
+            crate::secrets::wipe(&mut text);
+            self.close_subview();
+            return;
+        };
+        if label == SECRET_NAME_LABEL {
+            if !crate::secret_edit::valid_name(&text) {
+                self.status = "A Secret name is 1 to 253 characters: lowercase letters, digits, '-' and '.', starting and ending with a letter or digit.".into();
+                self.secret_draft = Some(draft);
+                self.modal = Modal::Input(label, text);
+                return;
+            }
+            self.status =
+                format!("First key of {text}. Enter continues to its value, Esc cancels.");
+            draft.name = text;
+            self.secret_draft = Some(draft);
+            self.modal = Modal::Input(SECRET_KEY_LABEL, String::new());
+            return;
+        }
+        if label == SECRET_KEY_LABEL {
+            if !crate::secret_edit::valid_key(&text) {
+                self.status =
+                    "A key is 1 to 253 characters: letters, digits, '-', '_' and '.'.".into();
+                self.secret_draft = Some(draft);
+                self.modal = Modal::Input(label, text);
+                return;
+            }
+            self.status = format!(
+                "Value for {text}: type it (hidden; Tab shows it) or @/path/to/file. Enter reviews, Esc cancels."
+            );
+            draft.key = Some(text);
+            self.secret_draft = Some(draft);
+            self.modal = Modal::Input(SECRET_VALUE_LABEL, String::new());
+            return;
+        }
+        let value = crate::secret_edit::value_from_input(&text);
+        match (value, draft.key.clone()) {
+            (Ok((value, source)), Some(key)) => {
+                crate::secrets::wipe(&mut text);
+                // Back to the Secrets view while the review is prepared.
+                self.close_subview();
+                self.status = format!("Preparing the review for key {key}...");
+                let change = if draft.create {
+                    crate::secret_edit::Change::Create { key, value, source }
+                } else {
+                    crate::secret_edit::Change::Set { key, value, source }
+                };
+                self.send(Task::SecretPrepare(
+                    draft.namespace,
+                    draft.name,
+                    draft.uid,
+                    change,
+                ));
+            }
+            (Err(error), _) => {
+                self.status = error;
+                self.secret_draft = Some(draft);
+                self.modal = Modal::Input(label, text);
+            }
+            (Ok(_), None) => {
+                crate::secrets::wipe(&mut text);
+                self.close_subview();
+            }
+        }
+    }
     /// k9s Ctrl-K: a reviewed, approved Pod delete with gracePeriodSeconds=0.
     pub(super) fn kill(&mut self) {
         if !self.options.connection.writable || !self.options.connection.allow_force_kill {
@@ -800,6 +1029,40 @@ impl App {
             self.options.session_seconds,
         ));
     }
+    /// Open a document that shows values. `masked` is the same document as
+    /// an export sees it; a Copilot screen capture uses it instead.
+    pub(super) fn shown_document(&mut self, text: String, masked: String) -> Modal {
+        let text = text.replace('\t', " | ");
+        if self.masked_documents.len() >= 16 {
+            self.masked_documents.remove(0);
+        }
+        self.masked_documents.push((text_hash(&text), masked));
+        Modal::Detail(text, 0)
+    }
+    /// Put the masked view in front and return the shown one, when the view
+    /// in front shows values.
+    fn mask_shown_values(&mut self) -> Option<Modal> {
+        let masked = match &self.modal {
+            Modal::Detail(text, offset) => {
+                let hash = text_hash(text);
+                let masked = &self
+                    .masked_documents
+                    .iter()
+                    .rev()
+                    .find(|(h, _)| *h == hash)?
+                    .1;
+                let last = masked.lines().count().saturating_sub(1);
+                Modal::Detail(masked.clone(), (*offset).min(last))
+            }
+            Modal::Overview(object, offset) => {
+                let mut masked = (**object).clone();
+                safety::redact(&mut masked);
+                Modal::Overview(Box::new(masked), *offset)
+            }
+            _ => return None,
+        };
+        Some(std::mem::replace(&mut self.modal, masked))
+    }
     /// Capture what the user is looking at before the command prompt covers it.
     pub(super) fn capture_ask_screen(&mut self) {
         // Opening the prompt hides a revealed Secret value anyway; hide it
@@ -808,7 +1071,13 @@ impl App {
             view.hide();
         }
         let (width, height) = terminal::size().unwrap_or((120, 40));
+        // Values the screen shows (ConfigMap data, annotations, literal
+        // values) never reach Copilot: capture the masked view instead.
+        let shown = self.mask_shown_values();
         self.ask_screen = snapshot::screen_text(self, width, height).ok();
+        if let Some(shown) = shown {
+            self.modal = shown;
+        }
         // In the logs view the filtered lines go along, not only those that fit.
         if let (Some(screen), Modal::Follow(view)) = (&mut self.ask_screen, &self.modal)
             && let Some(lines) = view.ask_lines(LOG_LINES_SENT)
@@ -1282,6 +1551,7 @@ impl App {
                 | Task::BatchExecute(..)
                 | Task::YamlExecute(..)
                 | Task::ApplyExecute(..)
+                | Task::SecretExecute(..)
                 | Task::NodeShellStart(..)
                 | Task::DebugStart(..)
                 | Task::NodeExecute(..)
@@ -1353,4 +1623,18 @@ impl App {
         }
         true
     }
+}
+
+fn text_hash(text: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    text.hash(&mut hasher);
+    hasher.finish()
+}
+
+/// A table filter (`/PATTERN` command word) that keeps only the row with this
+/// exact name. The filter text of a row is `namespace name status`, so the
+/// name is matched as a whole word between spaces.
+pub(super) fn exact_name_filter(name: &str) -> String {
+    format!("/(^|\\s){}(\\s|$)", regex::escape(name))
 }

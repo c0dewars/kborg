@@ -166,6 +166,9 @@ impl App {
                                 Task::DebugStart(prepared, review.view.typed)
                             }
                             WritePlan::Batch(batch) => Task::BatchExecute(batch, review.view.typed),
+                            WritePlan::Secret(prepared) => {
+                                Task::SecretExecute(prepared, review.view.typed)
+                            }
                         };
                         self.send(task);
                         if !self.write_inflight {
@@ -542,18 +545,11 @@ impl App {
                     self.send(Task::Can(namespace, subject));
                 }
             },
-            Modal::Secrets(mut view) => match view.key(code) {
-                crate::ui_secrets::Outcome::Close => self.close_subview(),
-                crate::ui_secrets::Outcome::Stay => self.modal = Modal::Secrets(view),
-                crate::ui_secrets::Outcome::Reveal(namespace, name, uid, key) => {
-                    self.modal = Modal::Secrets(view);
-                    self.send(Task::SecretValue(namespace, name, uid, key));
-                }
-                crate::ui_secrets::Outcome::Yaml(namespace, name, uid) => {
-                    self.modal = Modal::Secrets(view);
-                    self.send(Task::SecretYaml(namespace, name, uid));
-                }
-            },
+            Modal::Secrets(mut view) => {
+                let outcome = view.key(code);
+                self.modal = Modal::Secrets(view);
+                self.secret_outcome(outcome);
+            }
             Modal::Directory(directory, mut index) => match code {
                 KeyCode::Esc | KeyCode::Char('q') => self.close_subview(),
                 KeyCode::Down | KeyCode::Char('j') => {
@@ -1116,6 +1112,15 @@ impl App {
                 KeyCode::Esc => {
                     if matches!(
                         label,
+                        SECRET_NAME_LABEL | SECRET_KEY_LABEL | SECRET_VALUE_LABEL
+                    ) {
+                        // Back to the Secrets view; the typed text is overwritten.
+                        crate::secrets::wipe(&mut text);
+                        self.secret_draft = None;
+                        self.status = "Canceled; the Secret was not changed.".into();
+                        self.close_subview();
+                    } else if matches!(
+                        label,
                         selections_ui::SAVE_LABEL | selections_ui::DELETE_LABEL
                     ) {
                         self.selection_ui.draft = None;
@@ -1126,8 +1131,19 @@ impl App {
                         self.close_subview();
                     }
                 }
+                KeyCode::Tab if label == SECRET_VALUE_LABEL => {
+                    if let Some(draft) = &mut self.secret_draft {
+                        draft.visible = !draft.visible;
+                    }
+                    self.modal = Modal::Input(label, text);
+                }
                 KeyCode::Enter => {
-                    if label == selections_ui::SAVE_LABEL {
+                    if matches!(
+                        label,
+                        SECRET_NAME_LABEL | SECRET_KEY_LABEL | SECRET_VALUE_LABEL
+                    ) {
+                        self.secret_input(label, text);
+                    } else if label == selections_ui::SAVE_LABEL {
                         self.commit_selection_name(&text);
                     } else if label == selections_ui::DELETE_LABEL {
                         self.delete_selection_name(&text);
@@ -1188,13 +1204,14 @@ impl App {
             Modal::Overview(object, mut offset) => match code {
                 KeyCode::Esc | KeyCode::Char('q') => {}
                 KeyCode::Char('J') => {
-                    self.modal = Modal::Detail(
-                        serde_json::to_string_pretty(&object)
-                            .map_err(|_| "serialization failed")?,
-                        0,
-                    )
+                    self.modal = self.shown_document(shown_json(&object)?, masked_json(&object)?);
                 }
-                KeyCode::Char('y') => self.modal = Modal::Detail(crate::inspect::yaml(&object)?, 0),
+                KeyCode::Char('y') => {
+                    self.modal = self.shown_document(
+                        crate::inspect::yaml_shown(&object)?,
+                        crate::inspect::yaml(&object)?,
+                    );
+                }
                 _ => {
                     offset = scroll_offset(
                         &overview_text(&object, &self.context),
@@ -1797,6 +1814,13 @@ impl App {
             if let Modal::HelmReview(review) = &mut self.modal {
                 if matches!(code, KeyCode::Char('u' | 'w')) {
                     review.typed.clear();
+                }
+                return Ok(false);
+            }
+            if let Modal::Secrets(view) = &mut self.modal {
+                if code == KeyCode::Char('d') {
+                    let outcome = view.delete();
+                    self.secret_outcome(outcome);
                 }
                 return Ok(false);
             }

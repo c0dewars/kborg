@@ -22,6 +22,21 @@ pub fn strict() -> bool {
 pub fn set_thread_strict(strict: Option<bool>) {
     OVERRIDE.with(|cell| cell.set(strict));
 }
+/// Review texts end with "Type PHRASE to ...", which is what strict mode asks
+/// for. Outside strict mode y/Enter approves, so say that instead. Only the
+/// displayed text changes; the confirmation phrase stays bound to the review.
+pub fn instruction_for_mode(text: String, phrase: &str) -> String {
+    if strict() || phrase.is_empty() {
+        return text;
+    }
+    let exact = format!("Type exactly: {phrase}");
+    let typed = format!("Type {phrase}");
+    if !text.contains(&typed) && !text.contains(&exact) {
+        return text;
+    }
+    text.replace(&exact, "Press y or Enter to approve.")
+        .replace(&typed, "Press y or Enter")
+}
 pub struct Review {
     pub typed: String,
     pub epoch: u64,
@@ -34,7 +49,7 @@ pub struct Review {
 }
 impl Review {
     pub fn new(text: String, confirmation: String, epoch: u64) -> Self {
-        let display = crate::safety::review_display(&text);
+        let display = crate::safety::review_display(&instruction_for_mode(text, &confirmation));
         Self {
             typed: String::new(),
             epoch,
@@ -161,6 +176,22 @@ mod tests {
         assert!(!excessive.ready(202, 208, 3));
     }
 
+    #[test]
+    fn instruction_names_the_keys_that_approve_in_the_current_mode() {
+        let text = "Diff\nType apply 2 to apply. Review expires after 60 seconds.".to_owned();
+        set_thread_strict(Some(false));
+        let quick = instruction_for_mode(text.clone(), "apply 2");
+        assert!(quick.ends_with("Press y or Enter to apply. Review expires after 60 seconds."));
+        assert_eq!(
+            instruction_for_mode("Sent.\nType exactly: SEND x".into(), "SEND x"),
+            "Sent.\nPress y or Enter to approve."
+        );
+        let review = Review::new(text.clone(), "apply 2".into(), 1);
+        assert!(review.lines(200, 10).concat().contains("Press y or Enter"));
+        set_thread_strict(Some(true));
+        assert_eq!(instruction_for_mode(text.clone(), "apply 2"), text);
+        set_thread_strict(None);
+    }
     #[test]
     fn wrapping_preserves_every_review_character_and_prefers_word_boundaries() {
         let text = "Node identity and scheduling stay bound. VeryLongUnbrokenIdentityValue";

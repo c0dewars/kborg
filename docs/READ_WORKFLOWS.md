@@ -27,7 +27,7 @@ Live Kubernetes acceptance and TUI command integration belong to the release gat
 
 ## TUI integration and acceptance (2026-10-10)
 
-- `y`: bounded redacted YAML inspection; `a`: discoverable action menu.
+- `y`: bounded YAML inspection (credential-named fields masked); `a`: discoverable action menu.
 - `l` / `L` / `f`: choose a normal/init/ephemeral container, then snapshot,
   previous snapshot, or bounded follow. `--allow-logs` is required before the chooser.
 - The live log modal has one shared bounded mailbox, never an unbounded per-line queue.

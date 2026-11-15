@@ -231,7 +231,7 @@ impl Gateway {
     }
     /// Reads one Secret by name, refusing a replacement with another UID; the
     /// payload is wiped if the UID does not match.
-    async fn fetch_secret(
+    pub(super) async fn fetch_secret(
         &self,
         api: &Api<k8s_openapi::api::core::v1::Secret>,
         name: &str,
@@ -406,9 +406,19 @@ impl Gateway {
         value["apiVersion"] = json!(kind.ar().api_version);
         Ok(value)
     }
+    /// One object for everything that leaves the screen (exports, CLI
+    /// output, tools, Copilot): [`safety::redact`].
     pub async fn get(&self, key: &str, ns: &str, name: &str) -> Result<Value> {
         let mut value = self.raw_get(key, ns, name).await?;
         safety::redact(&mut value);
+        Ok(value)
+    }
+    /// One object for the screen: ConfigMap data, annotations and literal
+    /// values are readable ([`safety::redact_shown`]). Never hand the result
+    /// to an export, a tool or Copilot; use [`Gateway::get`] there.
+    pub async fn get_shown(&self, key: &str, ns: &str, name: &str) -> Result<Value> {
+        let mut value = self.raw_get(key, ns, name).await?;
+        safety::redact_shown(&mut value);
         Ok(value)
     }
 }

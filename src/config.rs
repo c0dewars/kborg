@@ -60,6 +60,9 @@ pub struct Config {
     pub allow_auth_helper: bool,
     #[serde(default = "yes")]
     pub allow_secret_reveal: bool,
+    /// Reviewed changes to Secrets: set or remove one key, delete a Secret.
+    #[serde(default = "yes")]
+    pub allow_secret_edit: bool,
     #[serde(default = "yes")]
     pub allow_force_kill: bool,
     /// Changes in kube-system, kube-public and kube-node-lease.
@@ -121,6 +124,7 @@ impl Default for Config {
             allow_extensions: true,
             allow_auth_helper: true,
             allow_secret_reveal: true,
+            allow_secret_edit: true,
             allow_force_kill: true,
             allow_system_namespaces: true,
             allow_cluster_scoped: true,
@@ -202,6 +206,7 @@ pub fn apply(config: Config, options: &mut Options) -> Result<()> {
     // A deny must not turn off reviewed mode and fall back to native execution.
     c.deny_auth_helpers |= !config.allow_auth_helper;
     c.allow_secret_reveal &= config.allow_secret_reveal;
+    c.allow_secret_edit &= config.allow_secret_edit;
     c.allow_force_kill &= config.allow_force_kill;
     c.allow_system_namespaces &= config.allow_system_namespaces;
     c.allow_cluster_scoped &= config.allow_cluster_scoped;
@@ -325,6 +330,7 @@ mod tests {
             && c.allow_system_namespaces
             && c.allow_cluster_scoped
             && c.allow_secret_reveal
+            && c.allow_secret_edit
             && o.allow_tools
             && o.allow_extensions
             && o.allow_scan
@@ -350,7 +356,7 @@ mod tests {
     #[test]
     fn each_false_field_turns_its_capability_off() -> Result<()> {
         type Check = (&'static str, fn(&Options) -> bool);
-        let off: [Check; 24] = [
+        let off: [Check; 25] = [
             ("allow_logs", |o| o.connection.logs),
             ("allow_helm", |o| o.connection.allow_helm),
             ("allow_helm_write", |o| o.connection.allow_helm_write),
@@ -363,6 +369,7 @@ mod tests {
             ("allow_tools", |o| o.allow_tools),
             ("allow_extensions", |o| o.allow_extensions),
             ("allow_secret_reveal", |o| o.connection.allow_secret_reveal),
+            ("allow_secret_edit", |o| o.connection.allow_secret_edit),
             ("allow_force_kill", |o| o.connection.allow_force_kill),
             ("allow_system_namespaces", |o| {
                 o.connection.allow_system_namespaces

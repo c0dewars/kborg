@@ -1,6 +1,6 @@
 # KBorg current implementation status
 
-Updated 2026-11-14 for the 0.5.1 release. This file and [REMAINING_WORK.md](REMAINING_WORK.md) supersede older progress notes. Historical acceptance reports keep their original scope and evidence.
+Updated 2026-11-15 for the 0.6.0 release. This file and [REMAINING_WORK.md](REMAINING_WORK.md) supersede older progress notes. Historical acceptance reports keep their original scope and evidence.
 
 ## Implemented
 
@@ -26,7 +26,7 @@ Updated 2026-11-14 for the 0.5.1 release. This file and [REMAINING_WORK.md](REMA
 - Cordon/uncordon/drain (the review warns for each Pod that loses data or is not recreated); node shell through a reviewed, self-expiring privileged Pod; ephemeral debug containers.
 - Exec/attach with optional TTY, eight loopback port forwards with a bounded benchmark, file and directory copy.
 - Helm browsing and a reviewed lifecycle subset with OCI, OpenPGP and Sigstore verification.
-- Secret key listing and masked YAML; revealing one value requires a separate action and expires.
+- Secret key listing and masked YAML; revealing one value requires a separate action and expires. A Secret can be created with one key, one key set, added or removed, and a Secret deleted, each through a review that never shows a value (`allow_secret_edit`); `u` lists the Pods that use it.
 
 **Workspace and integrations**
 - k9s-format aliases and `hotkeys.yaml`; registered read-only extensions runnable from the CLI and the TUI (`:ext`), with a k9s `plugins.yaml` importer.

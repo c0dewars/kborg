@@ -165,6 +165,127 @@ pub struct ForwardTarget {
     pub remote_port: u16,
     pub seconds: u16,
 }
+/// The Pod and port a port-forward to a Service or a workload goes to.
+/// A forward always ends at one Pod, as with `kubectl port-forward svc/NAME`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ForwardVia {
+    pub namespace: String,
+    pub pod: String,
+    pub uid: String,
+    pub remote_port: u16,
+    /// One line for the status bar: what was chosen and why.
+    pub note: String,
+}
+
+/// Choose the Pod behind a Service or workload: the first ready, running Pod
+/// its selector matches, by name. For a Service the first port's targetPort
+/// is resolved on that Pod; for a workload the first container port.
+pub fn forward_via(
+    object: &serde_json::Value,
+    pods: &[serde_json::Value],
+    namespace: &str,
+) -> Result<ForwardVia> {
+    let kind = object["kind"].as_str().unwrap_or("object");
+    let name = safety::safe_text(object["metadata"]["name"].as_str().unwrap_or(""), 253);
+    let ready = |pod: &&serde_json::Value| {
+        pod["metadata"]["deletionTimestamp"].is_null()
+            && pod["status"]["phase"] == "Running"
+            && pod["status"]["conditions"].as_array().is_some_and(|all| {
+                all.iter()
+                    .any(|c| c["type"] == "Ready" && c["status"] == "True")
+            })
+    };
+    let pod = pods
+        .iter()
+        .filter(ready)
+        .min_by_key(|pod| pod["metadata"]["name"].as_str().unwrap_or("").to_owned())
+        .ok_or_else(|| {
+            format!(
+                "{kind} {name} has no ready Pod to forward to ({} selected). Next: press Enter on it to see its Pods.",
+                pods.len()
+            )
+        })?;
+    let pod_name = pod["metadata"]["name"].as_str().ok_or("Pod has no name")?;
+    let uid = pod["metadata"]["uid"].as_str().ok_or("Pod has no UID")?;
+    let container_ports = || {
+        pod["spec"]["containers"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .flat_map(|c| c["ports"].as_array().into_iter().flatten())
+    };
+    let port_number = |value: &serde_json::Value| {
+        value
+            .as_u64()
+            .and_then(|port| u16::try_from(port).ok())
+            .filter(|port| *port > 0)
+    };
+    let (remote_port, route) = if kind == "Service" {
+        let ports = object["spec"]["ports"]
+            .as_array()
+            .filter(|p| !p.is_empty())
+            .ok_or_else(|| {
+                format!("Service {name} has no ports. Next: forward to one of its Pods instead.")
+            })?;
+        let first = &ports[0];
+        let service_port = port_number(&first["port"]).ok_or("Service port is invalid")?;
+        // targetPort is a number, a named container port, or absent (= port).
+        let target = match &first["targetPort"] {
+            serde_json::Value::String(named) => container_ports()
+                .find(|port| port["name"] == *named)
+                .and_then(|port| port_number(&port["containerPort"]))
+                .ok_or_else(|| {
+                    format!(
+                        "Pod {pod_name} has no container port named {}. Next: forward to the Pod and type the port.",
+                        safety::safe_text(named, 63)
+                    )
+                })?,
+            serde_json::Value::Null => service_port,
+            number => port_number(number).ok_or("Service targetPort is invalid")?,
+        };
+        let more = if ports.len() > 1 {
+            format!(
+                " ({} more ports: change the remote port for another)",
+                ports.len() - 1
+            )
+        } else {
+            String::new()
+        };
+        (target, format!("Service {name} port {service_port}{more}"))
+    } else {
+        let port = container_ports()
+            .find_map(|port| port_number(&port["containerPort"]))
+            .unwrap_or(80);
+        (port, format!("{kind} {name}"))
+    };
+    Ok(ForwardVia {
+        namespace: namespace.to_owned(),
+        pod: pod_name.to_owned(),
+        uid: uid.to_owned(),
+        remote_port,
+        note: format!(
+            "{route} -> Pod {pod_name} port {remote_port}. The forward ends if that Pod goes away."
+        ),
+    })
+}
+
+/// Read the Service or workload and the Pods it selects, then [`forward_via`].
+pub async fn resolve_forward(
+    gateway: &Gateway,
+    resource: &str,
+    namespace: &str,
+    name: &str,
+) -> Result<ForwardVia> {
+    let object = gateway.get(resource, namespace, name).await?;
+    let selector = crate::insights::pod_selector(&object)?;
+    let pods = gateway.list_selector("pods", namespace, &selector).await?;
+    forward_via(
+        &object,
+        pods["items"].as_array().map_or(&[][..], Vec::as_slice),
+        namespace,
+    )
+}
+
 pub struct ReviewedOperation {
     request: Request,
     namespace: String,
@@ -971,6 +1092,66 @@ fn finish_audit(path: &std::path::Path, status: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn a_service_or_workload_forward_goes_to_a_ready_pod_and_its_target_port() -> Result<()> {
+        let pod = |name: &str, ready: &str, phase: &str| {
+            json!({"metadata":{"name":name,"uid":format!("uid-{name}")},
+                "spec":{"containers":[{"name":"app","ports":[{"name":"http","containerPort":8080},{"name":"metrics","containerPort":9090}]}]},
+                "status":{"phase":phase,"conditions":[{"type":"Ready","status":ready}]}})
+        };
+        let mut terminating = pod("api-a", "True", "Running");
+        terminating["metadata"]["deletionTimestamp"] = json!("2026-11-14T00:00:00Z");
+        let pods = [
+            pod("api-c", "True", "Running"),
+            terminating,
+            pod("api-b", "True", "Running"),
+            pod("api-0", "False", "Running"),
+            pod("api-1", "True", "Pending"),
+        ];
+        // A named targetPort is resolved on the chosen Pod; the first ready Pod by name wins.
+        let service = json!({"kind":"Service","metadata":{"name":"api"},"spec":{"ports":[{"port":80,"targetPort":"http"},{"port":9090,"targetPort":9090}]}});
+        let via = forward_via(&service, &pods, "demo")?;
+        assert_eq!(
+            (
+                via.namespace.as_str(),
+                via.pod.as_str(),
+                via.uid.as_str(),
+                via.remote_port
+            ),
+            ("demo", "api-b", "uid-api-b", 8080)
+        );
+        assert!(
+            via.note.contains("Service api port 80 (1 more ports")
+                && via.note.contains("Pod api-b port 8080"),
+            "{}",
+            via.note
+        );
+        // A numeric targetPort is used as it is; without one the port itself.
+        let numeric = json!({"kind":"Service","metadata":{"name":"api"},"spec":{"ports":[{"port":80,"targetPort":3000}]}});
+        assert_eq!(forward_via(&numeric, &pods, "demo")?.remote_port, 3000);
+        let plain =
+            json!({"kind":"Service","metadata":{"name":"api"},"spec":{"ports":[{"port":5432}]}});
+        assert_eq!(forward_via(&plain, &pods, "demo")?.remote_port, 5432);
+        // A workload uses the first container port.
+        let deployment = json!({"kind":"Deployment","metadata":{"name":"api"}});
+        let via = forward_via(&deployment, &pods, "demo")?;
+        assert_eq!((via.pod.as_str(), via.remote_port), ("api-b", 8080));
+        // Nothing ready, an unknown port name and a Service without ports say what to do.
+        let error = forward_via(&service, &pods[3..], "demo")
+            .err()
+            .unwrap_or_default();
+        assert!(
+            error.contains("no ready Pod")
+                && error.contains("2 selected")
+                && error.contains("Next:"),
+            "{error}"
+        );
+        let unknown = json!({"kind":"Service","metadata":{"name":"api"},"spec":{"ports":[{"port":80,"targetPort":"grpc"}]}});
+        assert!(forward_via(&unknown, &pods, "demo").is_err_and(|e| e.contains("named grpc")));
+        let headless = json!({"kind":"Service","metadata":{"name":"api"},"spec":{}});
+        assert!(forward_via(&headless, &pods, "demo").is_err_and(|e| e.contains("no ports")));
+        Ok(())
+    }
     #[test]
     fn forwarding_can_cancel_after_bind_and_releases_listener() -> Result<()> {
         crate::cli::runtime()?.block_on(async {

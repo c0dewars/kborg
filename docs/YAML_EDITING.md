@@ -33,10 +33,17 @@ cluster-scoped: every top-level field except `apiVersion`, `kind` and `status`
 `metadata.labels` and `metadata.annotations`. Kubernetes immutability and
 admission rules still apply. A cluster-scoped object is confirmed by its name
 alone. It does not create resources, and it does not edit Secrets, terminating
-objects or resources with recognized Argo CD / Flux ownership markers. Fields
-KBorg hides stay read-only: ConfigMap `data`, existing annotations and
-container `env` values appear as `[REDACTED]` and are preserved untouched (new
-annotations can be added where an object has none). The operator config can
+objects or resources with recognized Argo CD / Flux ownership markers.
+ConfigMap `data`, annotations and literal container `env` values are shown and
+editable; a multi-line value is a YAML literal block (`key: |`), and the review
+lists the lines of it that change. Fields KBorg still hides stay read-only:
+anything named like a credential (`password`, `token`, a name containing
+`secret` or `credential`) and the value of an `env` entry whose name is one
+(`DB_PASSWORD`, `API_TOKEN`) appear as `[REDACTED]` and are preserved
+untouched; such an entry cannot be added here either. An annotation that holds
+a manifest as JSON (kubectl's `last-applied-configuration`) is masked the same
+way inside and is then read-only. Text with characters
+outside ASCII stays a quoted one-line string with `\u` escapes. The operator config can
 switch off changes in system namespaces (`allow_system_namespaces: false`) and
 to cluster-scoped objects (`allow_cluster_scoped: false`). Use
 `:edit-container` for the smaller existing image/resource-budget editor.

@@ -178,7 +178,8 @@ pub(super) fn demo_objects() -> Vec<Value> {
             object["provisioner"] = json!("demo.local/storage");
         }
         if object["kind"] == "ConfigMap" {
-            object["data"] = json!({"endpoint":"synthetic-example"});
+            object["data"] = json!({"endpoint":"synthetic-example","app.properties":"log.level=info\ncache.size=256\nfeature.checkout=on\n"});
+            object["metadata"]["annotations"] = json!({"demo.local/owner":"platform-team"});
         }
         if object["kind"] == "Node" {
             object["metadata"]["labels"] = json!({"node-role.kubernetes.io/control-plane":""});

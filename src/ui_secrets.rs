@@ -46,6 +46,18 @@ pub enum Outcome {
     Reveal(String, String, String, String),
     /// namespace, name, uid: fetch the masked YAML
     Yaml(String, String, String),
+    /// namespace, name, uid: review the deletion of the Secret
+    Delete(String, String, String),
+    /// namespace, name, uid, key: review the removal of one key
+    Remove(String, String, String, String),
+    /// namespace, name, uid, key: ask for a new value of one key
+    Edit(String, String, String, String),
+    /// namespace, name, uid: ask for a new key and its value
+    Add(String, String, String),
+    /// namespace: ask for the name, first key and value of a new Secret
+    Create(String),
+    /// namespace, name: list the Pods that use the Secret
+    UsedBy(String, String),
 }
 
 impl View {
@@ -123,6 +135,68 @@ impl View {
         self.notice = "Reading one key...".into();
         Outcome::Reveal(self.index.namespace.clone(), name, uid, key)
     }
+    /// namespace, name and uid of the Secret in front: the one whose keys or
+    /// YAML are open, else the selected row.
+    fn current_secret(&self) -> Option<(String, String, String)> {
+        let namespace = self.index.namespace.clone();
+        if let Some(yaml) = &self.yaml {
+            return Some((namespace, yaml.doc.name.clone(), yaml.doc.uid.clone()));
+        }
+        let entry = self
+            .index
+            .items
+            .get(self.open.map_or(self.selected, |(secret, _)| secret))?;
+        Some((namespace, entry.name.clone(), entry.uid.clone()))
+    }
+    /// Ctrl-D: delete the selected Secret from the list, or remove the
+    /// selected key when a Secret's keys or YAML are open. Both are reviewed.
+    pub fn delete(&mut self) -> Outcome {
+        self.hide();
+        let Some((namespace, name, uid)) = self.current_secret() else {
+            return Outcome::Stay;
+        };
+        if self.mode() == Mode::List {
+            return Outcome::Delete(namespace, name, uid);
+        }
+        match self.current_key().map(|(_, _, key)| key.to_owned()) {
+            Some(key) => Outcome::Remove(namespace, name, uid, key),
+            None => {
+                self.notice =
+                    "This Secret has no keys to remove; Esc, then Ctrl-D deletes the Secret."
+                        .into();
+                Outcome::Stay
+            }
+        }
+    }
+    /// `e`: a new value for the selected key.
+    fn edit(&mut self) -> Outcome {
+        self.hide();
+        if self.mode() == Mode::List {
+            if self.index.items.get(self.selected).is_some() {
+                self.open = Some((self.selected, 0));
+                self.notice = "Select a key, then e sets its value.".into();
+            }
+            return Outcome::Stay;
+        }
+        let Some((namespace, name, uid)) = self.current_secret() else {
+            return Outcome::Stay;
+        };
+        match self.current_key().map(|(_, _, key)| key.to_owned()) {
+            Some(key) => Outcome::Edit(namespace, name, uid, key),
+            None => {
+                self.notice = "This Secret has no keys; a adds one.".into();
+                Outcome::Stay
+            }
+        }
+    }
+    /// `a`: a new key for the Secret in front.
+    fn add(&mut self) -> Outcome {
+        self.hide();
+        match self.current_secret() {
+            Some((namespace, name, uid)) => Outcome::Add(namespace, name, uid),
+            None => Outcome::Stay,
+        }
+    }
     fn request_yaml(&mut self, secret: usize) -> Outcome {
         let Some(entry) = self.index.items.get(secret) else {
             return Outcome::Stay;
@@ -171,9 +245,27 @@ impl View {
                     }
                 }
                 KeyCode::Enter | KeyCode::Char('x') => return self.toggle_reveal(),
+                KeyCode::Char('e') => return self.edit(),
+                KeyCode::Char('a') => return self.add(),
                 _ => {}
             }
             return Outcome::Stay;
+        }
+        match code {
+            KeyCode::Char('e') => return self.edit(),
+            KeyCode::Char('a') => return self.add(),
+            KeyCode::Char('n') => {
+                self.hide();
+                return Outcome::Create(self.index.namespace.clone());
+            }
+            KeyCode::Char('u') => {
+                self.hide();
+                return match self.current_secret() {
+                    Some((namespace, name, _)) => Outcome::UsedBy(namespace, name),
+                    None => Outcome::Stay,
+                };
+            }
+            _ => {}
         }
         match (self.open, code) {
             (None, KeyCode::Esc | KeyCode::Char('q')) => return Outcome::Close,
@@ -343,7 +435,9 @@ impl View {
                             ""
                         }
                     )));
-                    lines.push(clip("Enter keys / y masked YAML / Esc close"));
+                    lines.push(clip(
+                        "Enter keys / y masked YAML / u used by / n new Secret / Esc close",
+                    ));
                     lines.push(clip(
                         "   NAME                               TYPE                         KEYS",
                     ));
@@ -363,7 +457,7 @@ impl View {
                         )));
                     }
                     if self.index.items.is_empty() {
-                        lines.push(clip("  No Secrets in this namespace."));
+                        lines.push(clip("  No Secrets in this namespace; n creates one."));
                     }
                 }
                 Some((entry, selected)) => {
@@ -417,6 +511,75 @@ mod tests {
             items: vec![crate::secrets::entry("api", "u1", None, Some(&data))],
             truncated: false,
         })
+    }
+    #[test]
+    fn edit_add_and_delete_name_the_secret_or_key_in_front_and_hide_any_value() {
+        let secret = || ("demo".to_owned(), "api".to_owned(), "u1".to_owned());
+        let (ns, name, uid) = secret();
+        let mut view = view();
+        // n creates a new Secret in the namespace; u lists the Pods using one.
+        assert_eq!(view.key(KeyCode::Char('n')), Outcome::Create(ns.clone()));
+        assert_eq!(
+            view.key(KeyCode::Char('u')),
+            Outcome::UsedBy(ns.clone(), name.clone())
+        );
+        // From the list: Ctrl-D is the whole Secret, a adds a key, e opens the keys.
+        assert_eq!(
+            view.delete(),
+            Outcome::Delete(ns.clone(), name.clone(), uid.clone())
+        );
+        assert_eq!(
+            view.key(KeyCode::Char('a')),
+            Outcome::Add(ns.clone(), name.clone(), uid.clone())
+        );
+        assert_eq!(view.key(KeyCode::Char('e')), Outcome::Stay);
+        assert_eq!(view.mode(), Mode::Keys);
+        assert!(view.notice.contains("Select a key"));
+        // With keys open (blob.bin, ca.crt, password, username): the selected key.
+        view.key(KeyCode::Down);
+        view.key(KeyCode::Down);
+        view.key(KeyCode::Char('x'));
+        view.reveal("u1", "password", Ok(Revealed::Text("shown-canary".into())));
+        assert!(view.lines(100, 30).join("\n").contains("shown-canary"));
+        assert_eq!(
+            view.key(KeyCode::Char('e')),
+            Outcome::Edit(ns.clone(), name.clone(), uid.clone(), "password".into())
+        );
+        // Starting a change drops a revealed value.
+        assert!(!view.lines(100, 30).join("\n").contains("shown-canary"));
+        assert_eq!(
+            view.delete(),
+            Outcome::Remove(ns.clone(), name.clone(), uid.clone(), "password".into())
+        );
+        assert_eq!(
+            view.key(KeyCode::Char('a')),
+            Outcome::Add(ns.clone(), name.clone(), uid.clone())
+        );
+        // The masked YAML view works on its selected key too.
+        assert!(matches!(view.key(KeyCode::Char('y')), Outcome::Yaml(..)));
+        let mut secret = crate::secrets::demo_secret("demo");
+        secret.metadata.uid = Some("u1".into());
+        secret.metadata.name = Some("api".into());
+        view.yaml("u1", Ok(crate::secrets::masked(&secret)));
+        assert_eq!(view.mode(), Mode::Yaml);
+        view.key(KeyCode::Down);
+        assert_eq!(
+            view.key(KeyCode::Char('e')),
+            Outcome::Edit(ns.clone(), name.clone(), uid.clone(), "ca.crt".into())
+        );
+        assert_eq!(
+            view.delete(),
+            Outcome::Remove(ns, name, uid, "ca.crt".into())
+        );
+        // An empty list has nothing to change.
+        let mut empty = View::new(SecretIndex {
+            namespace: "demo".into(),
+            items: Vec::new(),
+            truncated: false,
+        });
+        assert_eq!(empty.delete(), Outcome::Stay);
+        assert_eq!(empty.key(KeyCode::Char('a')), Outcome::Stay);
+        assert_eq!(empty.key(KeyCode::Char('e')), Outcome::Stay);
     }
     #[test]
     fn values_stay_hidden_until_one_key_is_revealed_and_toggle_off() {
