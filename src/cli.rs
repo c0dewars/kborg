@@ -143,6 +143,8 @@ fn doctor(opts: &Options) -> Result<()> {
         "mode: {}{}",
         if opts.connection.writable {
             "read and write"
+        } else if read_only_value(std::env::var("KBORG_READ_ONLY").ok().as_deref()) {
+            "read only (KBORG_READ_ONLY)"
         } else {
             "read only"
         },
@@ -674,6 +676,9 @@ fn parse(args: Vec<String>) -> Result<Options> {
             !matches!(
                 command.as_str(),
                 "audit"
+                    | "config"
+                    | "keymap"
+                    | "describe"
                     | "extensions"
                     | "contexts"
                     | "overview"
@@ -692,10 +697,24 @@ fn parse(args: Vec<String>) -> Result<Options> {
     {
         return Err("--json requires a supported read command; see docs/CLI_OUTPUT.md".into());
     }
+    if read_only_value(std::env::var("KBORG_READ_ONLY").ok().as_deref()) {
+        // Set in the shell an AI assistant drives: no flag can turn changes back on.
+        opts.connection.writable = false;
+    }
     if let Some(path) = config_path {
         crate::config::apply(crate::config::load(&path)?, &mut opts)?;
     }
     Ok(opts)
+}
+
+/// `KBORG_READ_ONLY=1` (or `true`, `yes`, `on`) forces read-only.
+fn read_only_value(value: Option<&str>) -> bool {
+    value.is_some_and(|value| {
+        matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        )
+    })
 }
 pub fn runtime() -> Result<tokio::runtime::Runtime> {
     tokio::runtime::Builder::new_current_thread()
@@ -743,20 +762,114 @@ pub fn run_args(args: Vec<String>) -> Result<()> {
             print_json(&serde_json::to_value(records).map_err(|_| "audit encoding failed")?)?;
             return Ok(());
         }
+        "config" if opts.command.get(1).map(String::as_str) == Some("check") => {
+            if opts.command.len() != 2 {
+                return Err("usage: config check [--json]".into());
+            }
+            let (dir, findings) = crate::config_check::check()?;
+            let invalid = findings
+                .iter()
+                .any(|finding| finding.status == crate::config_check::Status::Invalid);
+            if opts.json {
+                print_json(&serde_json::json!({
+                    "config_dir": dir.display().to_string(),
+                    "valid": !invalid,
+                    "files": findings,
+                }))?;
+            } else {
+                outputln!("{}", crate::config_check::text(&dir, &findings));
+            }
+            if invalid {
+                return Err("config check found invalid files; see above".into());
+            }
+            return Ok(());
+        }
         "config" => {
             let args = &opts.command[1..];
+            if opts.json {
+                return Err("--json works with config check only".into());
+            }
             if args.len() != 2 {
-                return Err("usage: config init|validate FILE".into());
+                return Err("usage: config init|validate FILE | config check".into());
             }
             match args[0].as_str() {
                 "init" => crate::config::init(std::path::Path::new(&args[1]))?,
                 "validate" => {
                     crate::config::load(std::path::Path::new(&args[1]))?;
                 }
-                _ => return Err("usage: config init|validate FILE".into()),
+                _ => return Err("usage: config init|validate FILE | config check".into()),
             }
             outputln!("Configuration OK (schema 1).");
             return Ok(());
+        }
+        "keymap" | "keys" => {
+            if opts.command.len() != 1 {
+                return Err("usage: keymap [--json]".into());
+            }
+            let keymap = crate::keymap::load().map_err(|error| {
+                format!("{error}. Next: fix keymap.yaml (kborg config check shows every file)")
+            })?;
+            if opts.json {
+                print_json(&serde_json::json!({
+                    "version": env!("CARGO_PKG_VERSION"),
+                    "actions": keymap.report(),
+                    "notes": keymap.notes(),
+                }))?;
+            } else {
+                outputln!("{}", keymap.report_text());
+            }
+            return Ok(());
+        }
+        "skill" => {
+            let args: Vec<&str> = opts.command[1..].iter().map(String::as_str).collect();
+            let version = env!("CARGO_PKG_VERSION");
+            let shown =
+                |path: &std::path::Path| safety::safe_text(&path.display().to_string(), 512);
+            match args.as_slice() {
+                ["print"] => {
+                    output!("{}", crate::agent_skill::bundle());
+                    return Ok(());
+                }
+                ["install"] => {
+                    let results = crate::agent_skill::install_everywhere()?;
+                    let mut written = 0;
+                    for (label, result) in &results {
+                        match result {
+                            Ok(skill) => {
+                                written += 1;
+                                outputln!("{label}: {}", shown(skill));
+                            }
+                            Err(error) => outputln!("{label}: not written: {error}"),
+                        }
+                    }
+                    if written == 0 {
+                        return Err("the skill was not written anywhere; see above".into());
+                    }
+                    outputln!(
+                        "Wrote the KBorg {version} skill. Assistants that read Agent Skills pick it up in their next session; for chat apps use kborg skill print. Rerun after upgrading KBorg."
+                    );
+                    return Ok(());
+                }
+                ["install", target] => {
+                    let dir = if std::path::Path::new(target).is_absolute() {
+                        PathBuf::from(target)
+                    } else {
+                        crate::agent_skill::target_dir(target)?
+                    };
+                    let skill = crate::agent_skill::install(&dir)?;
+                    outputln!(
+                        "Wrote the KBorg {version} skill to {}. Rerun after upgrading KBorg.",
+                        shown(&skill)
+                    );
+                    return Ok(());
+                }
+                _ => {
+                    return Err(
+                        "usage: skill install [claude|copilot|codex|gemini|agents|DIR] | skill print"
+                            .into(),
+                    );
+                }
+            }
         }
         "completions" => {
             if opts.command.len() != 2 {
@@ -900,12 +1013,12 @@ pub fn run_args(args: Vec<String>) -> Result<()> {
             opts.dashboard_last = true;
             return tui::run(opts);
         }
-        "helm" | "history" | "list" | "watch" | "metrics" | "get" | "view" | "logs"
-        | "resources" | "doctor" | "scale" | "restart" | "delete" | "kill" | "set-image"
-        | "trigger" | "suspend" | "resume" | "rollback" | "set-resources" | "exec" | "attach"
-        | "forward" | "cp-from" | "cp-to" | "apply" | "node-shell" | "debug" | "lint" | "scan"
-        | "pulses" | "xray" | "workloads" | "can" | "yaml-template" | "yaml-edit" | "cordon"
-        | "uncordon" | "drain" => {}
+        "helm" | "history" | "list" | "watch" | "metrics" | "get" | "describe" | "view"
+        | "logs" | "resources" | "doctor" | "scale" | "restart" | "delete" | "kill"
+        | "set-image" | "trigger" | "suspend" | "resume" | "rollback" | "set-resources"
+        | "exec" | "attach" | "forward" | "cp-from" | "cp-to" | "apply" | "node-shell"
+        | "debug" | "lint" | "scan" | "pulses" | "xray" | "workloads" | "can" | "yaml-template"
+        | "yaml-edit" | "cordon" | "uncordon" | "drain" => {}
         _ => return Err("unknown command; see --help".into()),
     }
     // contexts/NAME.yaml read_only / strict_confirmations restrict this run.
@@ -1085,6 +1198,26 @@ pub fn run_args(args: Vec<String>) -> Result<()> {
             "list"=>{if args.len()!=1{return Err("usage: list <resource>".into());}let value=tokio::time::timeout(Duration::from_secs(15),gateway.list_selector(&args[0],&ns,&opts.selector)).await.map_err(|_|"API timed out")??;
                 if opts.json {print_json(&value)?;} else {outputln!("NAMESPACE\tNAME\tSTATUS");if let Some(items)=value["items"].as_array(){for v in items{outputln!("{}\t{}\t{}",safety::safe_text(v["metadata"]["namespace"].as_str().unwrap_or("-"),63),safety::safe_text(v["metadata"]["name"].as_str().unwrap_or("-"),253),safety::safe_text(&summary(v),100));}}
 if value["truncated"]==true {eprintln!("TRUNCATED: limit reached; narrow namespace scope");}}},
+            "describe"=>{
+                if args.len()!=2{return Err("usage: describe <resource> <name>".into());}
+                let object=tokio::time::timeout(Duration::from_secs(15),gateway.get(&args[0],&ns,&args[1])).await.map_err(|_|"API timed out")??;
+                // Cluster-scoped objects (Nodes, PVs) report their events in default.
+                let events_ns=object["metadata"]["namespace"].as_str().unwrap_or("default").to_owned();
+                let events=match tokio::time::timeout(Duration::from_secs(15),gateway.list("events",&events_ns)).await{
+                    Ok(Ok(list))=>Ok(crate::describe::events_for(&object,list["items"].as_array().map_or(&[][..],Vec::as_slice))),
+                    Ok(Err(error))=>Err(error),
+                    Err(_)=>Err("the event list timed out".to_owned()),
+                };
+                if opts.json{
+                    print_json(&match &events{
+                        Ok(events)=>serde_json::json!({"object":object,"events":events}),
+                        Err(error)=>serde_json::json!({"object":object,"events":null,"events_error":error}),
+                    })?;
+                }else{
+                    let overview=crate::tui::describe_overview(&object,&gateway.context);
+                    outputln!("{}",crate::describe::render(&overview,&object,events.as_deref().map_err(String::as_str)));
+                }
+            },
             "get"=>{if args.len()!=2{return Err("usage: get <resource> <name>".into());}let value=tokio::time::timeout(Duration::from_secs(15),gateway.get(&args[0],&ns,&args[1])).await.map_err(|_|"API timed out")??; if opts.yaml {output!("{}",crate::inspect::yaml(&value)?);}else{print_json(&value)?;}},
             "view" => {
                 if opts.interactive {
@@ -1122,6 +1255,9 @@ if value["truncated"]==true {eprintln!("TRUNCATED: limit reached; narrow namespa
                 let needed = if cmd == "yaml-template" { 2 } else { 3 };
                 if args.len() != needed { return Err("usage: yaml-template RESOURCE NAME | yaml-edit RESOURCE NAME FILE".into()); }
                 if cmd == "yaml-edit" && (!io::stdin().is_terminal() || !io::stdout().is_terminal()) { return Err("YAML writes require interactive terminal confirmation".into()); }
+                // A template is the first step of an edit; read-only sessions (and AI
+                // assistants, which always pass --read-only) read with get/describe.
+                if cmd == "yaml-template" && !opts.connection.writable { return Err("yaml-template prepares an edit, which --read-only turns off. Next: read the object with kborg describe or kborg get".into()); }
                 let draft = tokio::time::timeout(Duration::from_secs(15), gateway.yaml_draft(&args[0], &ns, &args[1])).await.map_err(|_| "YAML read timed out")??;
                 if cmd == "yaml-template" { output!("{}", draft.text()); }
                 else {
@@ -2418,6 +2554,19 @@ mod tests {
             .is_err()
         );
         assert!(parse(vec!["--json".into(), "doctor".into()]).is_err());
+        for on in ["1", "true", " YES ", "on"] {
+            assert!(read_only_value(Some(on)), "{on}");
+        }
+        for off in [
+            None,
+            Some(""),
+            Some("0"),
+            Some("false"),
+            Some("no"),
+            Some("off"),
+        ] {
+            assert!(!read_only_value(off), "{off:?}");
+        }
         assert!(parse(vec!["--json".into()]).is_err());
     }
 

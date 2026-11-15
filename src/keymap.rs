@@ -1849,6 +1849,77 @@ pub fn load() -> Result<Keymap> {
     load_from(&safety::config_dir()?.join("keymap.yaml"))
 }
 
+/// One action as `kborg keymap` reports it.
+#[derive(Debug, serde::Serialize)]
+pub struct ActionReport {
+    pub action: &'static str,
+    /// The view it works in, as named in keymap.yaml `scopes:`.
+    pub view: &'static str,
+    /// The keys it has now, with keymap.yaml applied; empty when unbound.
+    pub keys: Vec<String>,
+    pub default_keys: Vec<&'static str>,
+    /// Set by keymap.yaml.
+    pub custom: bool,
+    /// Review, approval and other keys keymap.yaml cannot move.
+    pub fixed: bool,
+    pub description: &'static str,
+}
+
+impl Keymap {
+    /// Every registered action with its effective and default keys.
+    pub fn report(&self) -> Vec<ActionReport> {
+        ACTIONS
+            .iter()
+            .enumerate()
+            .map(|(index, action)| ActionReport {
+                action: action.name,
+                view: action.scope.name(),
+                keys: self.keys[index].iter().map(Key::to_string).collect(),
+                default_keys: action.keys.to_vec(),
+                custom: self.custom[index],
+                fixed: action.fixed,
+                description: action.description,
+            })
+            .collect()
+    }
+    /// The report as text, one section per view in registry order.
+    pub fn report_text(&self) -> String {
+        let report = self.report();
+        let mut out = String::from(
+            "KBorg keys (keymap.yaml applied). * = set in keymap.yaml, (fixed) = cannot be remapped.\n",
+        );
+        for scope in Scope::ALL {
+            let rows: Vec<&ActionReport> = report
+                .iter()
+                .filter(|row| row.view == scope.name())
+                .collect();
+            if rows.is_empty() {
+                continue;
+            }
+            out.push_str(&format!("\n{} [{}]\n", scope.title(), scope.name()));
+            for row in rows {
+                let keys = if row.keys.is_empty() {
+                    "(unbound)".to_owned()
+                } else {
+                    row.keys.join(" / ")
+                };
+                out.push_str(&format!(
+                    "  {:<22} {:<30} {}{}{}\n",
+                    keys,
+                    row.action,
+                    row.description,
+                    if row.fixed { " (fixed)" } else { "" },
+                    if row.custom { " *" } else { "" }
+                ));
+            }
+        }
+        for note in self.notes() {
+            out.push_str(&format!("\nNote: {note}"));
+        }
+        out
+    }
+}
+
 /// Load from an explicit path (live reload watches the config folder).
 pub fn load_from(path: &std::path::Path) -> Result<Keymap> {
     safety::checked_path(path)?;

@@ -1236,6 +1236,16 @@ fn ui_theme(ui: &crate::ui_config::UiConfig, cli: Option<&str>) -> Result<(Theme
     Ok((theme, error))
 }
 
+/// The describe view's text for one object, for `kborg describe`.
+pub fn describe_overview(object: &Value, context: &str) -> String {
+    // The view's own key hints mean nothing outside the TUI.
+    format::overview_text(object, context)
+        .lines()
+        .filter(|line| !line.starts_with("J JSON"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 pub fn run(mut options: Options) -> Result<()> {
     let (ui, mut ui_error) = match crate::ui_config::load() {
         Ok(ui) => (ui, None),

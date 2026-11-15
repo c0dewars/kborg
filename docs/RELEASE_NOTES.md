@@ -1,3 +1,35 @@
+# KBorg 0.7.0 — 2026-11-15
+
+KBorg now works with AI assistants. A built-in skill teaches GitHub Copilot, Claude, Codex, Gemini and other assistants to inspect and debug clusters with KBorg's read-only commands, to ask before any change, and to help with keys, themes and config. This release also closes the privacy gaps an audit of that path found.
+
+- **A skill for AI assistants.** KBorg ships an Agent Skills folder (`SKILL.md` and eight references). With it Claude Code, GitHub Copilot, OpenAI Codex, Gemini CLI and other assistants can help with all of KBorg:
+  - finding and remapping keys, hotkeys and aliases
+  - creating and changing themes, `ui.yaml` and table columns
+  - per-cluster settings such as PROD badges and read-only clusters, and team restrictions
+  - dashboards and saved selections, moving over from k9s, plugins, editors, scanners and Copilot setup
+  - explaining screens and reviews, installing, and troubleshooting
+
+  The skill tells the assistant to take facts from the installed KBorg, running the commands itself or, in a chat, asking you to run them. It must check every file it writes, leave approvals to you, and never ask for a credential or a Secret value. `kborg skill install` writes it into every assistant found on the machine and into `~/.agents/skills`; `kborg skill install NAME|DIR` targets one. `kborg skill print` prints it as one Markdown file for ChatGPT, Gemini and other chat apps. It is built into the binary, so it matches your version; rerun the install after upgrading. Install updates an earlier KBorg skill, removes references it no longer ships, and never writes into a folder that holds anything else. Every example in it is parsed by KBorg's tests.
+- **Assistants can debug clusters with KBorg.** The skill's investigation guide tells an assistant how to inspect a cluster for you:
+  - **How it runs commands:** always with `--read-only` and an explicit `--context`, never the TUI and never an endless stream.
+  - **What to look at:** playbooks for crash loops, OOM kills, Pending Pods, image pulls, stuck rollouts, Services without endpoints, Node pressure, PVCs, Jobs and Helm releases.
+  - **How it reports:** the cause with its evidence, and the fix as a command you run yourself. Cluster text is treated as data, not instructions.
+
+  Without a terminal KBorg refuses every change, so an assistant's commands cannot write.
+- **Assistants ask before any change, and KBorg enforces it.**
+  - **In the skill:** before any change to a live cluster, an assistant must say what it changes and where, the risk and how to undo it. It then asks for a yes for that one change, and gives you the command to run yourself; KBorg's review is the second confirmation.
+  - **In KBorg:** a write started without a terminal is refused, and so is one with `--read-only`, which the skill puts on every command.
+  - **`KBORG_READ_ONLY=1`:** new. In the environment, it forces read-only for every command and the TUI, and no flag turns changes back on. Start your assistant with it (`KBORG_READ_ONLY=1 code .`, `KBORG_READ_ONLY=1 claude`); `kborg doctor` shows it.
+
+  See [AI assistants: security and privacy](AI_ASSISTANTS_SECURITY.md).
+- **Fixed: credentials in container arguments were shown.** `--password=VALUE`, `--token VALUE` and `NAME_PASSWORD=VALUE` in a container's `command` or `args` are now `[REDACTED]` on screen and in `kborg get`, `list --json`, `describe`, `watch`, exports and Copilot. In the YAML editor such an argument is read-only and preserved.
+- **Fixed: more credential-named values are hidden on screen.** Describe, YAML, the YAML editor and `kborg yaml-template` now hide any text value whose name looks like a credential (`db_password`, `api-token`, `owner-token`, `aws_access_key`), as these notes already promised for 0.6.0. ConfigMap data with other names stays visible on screen.
+- **`kborg yaml-template` is refused under `--read-only`.** It is the first step of an edit and prints ConfigMap data; use `kborg describe` or `kborg get` to read.
+- **`kborg lint` names the missing request** (`no CPU request`, `no memory request`) instead of always saying "no CPU or memory request". **`describe` shows a Service's selector.**
+- **`kborg describe RESOURCE NAME`** prints the describe view of one object for scripts and assistants: overview, containers, conditions, each container's last termination (reason and exit code, such as `OOMKilled`) and the object's recent events, newest first. `--json` returns the object and its events. It uses the same masking as `kborg get`.
+- **`kborg keymap`** lists every action with its view, its keys now (your `keymap.yaml` applied), its default keys and what it does; `--json` for tools. `kborg keys` is the same.
+- **`kborg config check`** validates every file in the config folder with the loaders KBorg itself uses: `ui.yaml`, `aliases.yaml`, `views.yaml`, `hotkeys.yaml`, `keymap.yaml` (including a hotkey that takes an action's key), custom themes, `contexts/*.yaml` (including the trust checks) and the extension registry. Each invalid file is named with its error and line, and the exit code is non-zero; `--json` for tools.
+
 # KBorg 0.6.0 — 2026-11-15
 
 - **ConfigMaps can be read and edited.** Describe (`d`), YAML (`y`) and JSON (`J`) now show ConfigMap `data` and `binaryData`, annotations and literal container `env` values, which used to appear as `[REDACTED]`. Describe lists each key with its value, or the first lines of a file. In the YAML view a multi-line value (an `nginx.conf`, an `application.properties`) is a readable block instead of one escaped line. The YAML editor (`e`) accepts changes to all of these, and its review lists the changed lines of a file, not the whole file.

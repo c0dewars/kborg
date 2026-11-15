@@ -1,0 +1,20 @@
+{
+  "name": "kborg",
+  "owner": {
+    "name": "c0dewars",
+    "url": "https://github.com/c0dewars"
+  },
+  "description": "KBorg for Claude Code: the KBorg skill teaches Claude to inspect and debug Kubernetes clusters with KBorg's read-only commands and to help with keys, themes and config.",
+  "plugins": [
+    {
+      "name": "kborg",
+      "source": "./",
+      "description": "Use KBorg, the k9s-style Kubernetes TUI and CLI, to inspect and debug clusters with read-only commands (asking before any change), and to customize its keys, themes, views and per-cluster settings.",
+      "homepage": "https://github.com/c0dewars/kborg",
+      "repository": "https://github.com/c0dewars/kborg",
+      "license": "Apache-2.0",
+      "keywords": ["kubernetes", "k9s", "kubectl", "debugging", "tui"],
+      "skills": ["./skills/kborg"]
+    }
+  ]
+}

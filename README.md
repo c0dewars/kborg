@@ -14,7 +14,7 @@
     <a href="#documentation">Docs</a>
   </p>
   <p>
-    <img alt="Release 0.6.0" src="https://img.shields.io/badge/release-0.6.0-FF7A1A">
+    <img alt="Release 0.7.0" src="https://img.shields.io/badge/release-0.7.0-FF7A1A">
     <img alt="Rust" src="https://img.shields.io/badge/built%20with-Rust-0FA968">
     <img alt="Windows, macOS and Linux" src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-0B1220">
     <img alt="Apache 2.0" src="https://img.shields.io/badge/license-Apache%202.0-3BE08A">
@@ -45,8 +45,8 @@ brew install c0dewars/tap/kborg
 **Debian, Ubuntu, Fedora, RHEL** — download the package for your CPU from the [latest release](https://github.com/c0dewars/kborg/releases/latest):
 
 ```sh
-sudo apt install ./kborg_0.6.0_amd64.deb      # Debian / Ubuntu
-sudo dnf install ./kborg-0.6.0-1.x86_64.rpm   # Fedora / RHEL
+sudo apt install ./kborg_0.7.0_amd64.deb      # Debian / Ubuntu
+sudo dnf install ./kborg-0.7.0-1.x86_64.rpm   # Fedora / RHEL
 ```
 
 **Windows** — download the ZIP for your CPU from the [latest release](https://github.com/c0dewars/kborg/releases/latest), extract it and run `kborg.exe` from Windows Terminal or PowerShell.
@@ -54,7 +54,7 @@ sudo dnf install ./kborg-0.6.0-1.x86_64.rpm   # Fedora / RHEL
 **Any platform, from source** (needs Rust):
 
 ```sh
-cargo install --locked --git https://github.com/c0dewars/kborg --tag v0.6.0
+cargo install --locked --git https://github.com/c0dewars/kborg --tag v0.7.0
 ```
 
 Release archives exist for macOS, Linux and Windows on x86_64 and ARM64. Every file is signed; see [verify a download](#verify-a-download). Shell completions: `kborg completions zsh|bash|fish|powershell`.
@@ -171,6 +171,43 @@ Before anything is sent you see the exact text and approve it. Answers are advic
 
 **Answers inside KBorg currently work on Apple Silicon Macs only.** On other platforms setup completes the GitHub sign-in and says so. [Setup, enterprise hosts and limits](docs/COPILOT_INTEGRATION.md).
 
+## AI assistants
+
+KBorg ships a skill that teaches an AI assistant to work with KBorg on your behalf. Ask Copilot, Claude, Codex or Gemini "why is my Pod crashing in staging?" and it inspects the cluster with KBorg's read-only commands (`describe`, `logs --previous`, events, metrics, `lint`, `pulses`). It always passes `--read-only` and names the context, and it reports the cause with the evidence. The fix comes back as a command for you to run and approve in KBorg's review.
+
+Before any change it must ask you, and it hands you the command to run and approve yourself. Its own commands cannot write: KBorg refuses changes without a terminal or with `--read-only`. Start the assistant with `KBORG_READ_ONLY=1` (`KBORG_READ_ONLY=1 code .`, `KBORG_READ_ONLY=1 claude`) and no KBorg command it runs can change anything. What reaches the AI is masked: no Secrets, credentials, ConfigMap data or env values. Logs are the exception, because they are shown as written. See [AI assistants: security and privacy](docs/AI_ASSISTANTS_SECURITY.md).
+
+It also helps you use KBorg itself. That covers:
+- which key does what, and remapping keys
+- creating or changing a theme
+- `ui.yaml`, `views.yaml`, `hotkeys.yaml` and aliases
+- per-cluster badges and read-only clusters, dashboards, and moving over from k9s
+- plugins and Copilot setup
+- explaining any screen or review, and troubleshooting
+
+The skill tells the assistant to ask your installed KBorg for facts instead of guessing, to check every file it writes, never to ask for a Secret or a credential, and to leave every approval to you.
+
+It is in the open Agent Skills format (a folder with a `SKILL.md`), so it works with Claude Code, GitHub Copilot, OpenAI Codex, Gemini CLI and other tools that read such folders. Install it in whichever way suits your assistant:
+
+| Assistant | Install |
+|---|---|
+| Any, from KBorg itself (matches your installed version) | `kborg skill install` (every assistant found, plus `~/.agents/skills`), or `kborg skill install claude` (or `copilot`, `codex`, `gemini`, `agents`, or a folder) |
+| Claude Code | `/plugin install kborg --marketplace c0dewars/kborg`, or `claude plugin marketplace add c0dewars/kborg` then `claude plugin install kborg@kborg` |
+| GitHub Copilot, Claude Code, Codex, Cursor, Gemini CLI and about 50 more, with the GitHub CLI 2.90+ | `gh skill install c0dewars/kborg kborg --agent github-copilot --scope user` (or `--agent claude-code`, `codex`, `cursor`, `gemini-cli`, ...) |
+| Gemini CLI | `gemini skills install https://github.com/c0dewars/kborg --path skills/kborg` |
+| ChatGPT, Gemini, Claude or Copilot in a browser | `kborg skill print > kborg-skill.md`, then add the file to a project, custom GPT, Gem or Claude project |
+
+> **If you are an AI assistant asked to install the KBorg skill:** run `kborg skill install` if `kborg` is installed (check with `kborg --version`). Otherwise use the row above that matches you, and tell the person to restart or reload you so the skill loads. The skill is in [skills/kborg](skills/kborg/SKILL.md).
+
+Two commands the skill relies on are useful on their own:
+
+```sh
+kborg keymap                   # every action, its view and its keys (--json for tools)
+kborg config check             # validates every file in the config folder, with line numbers
+```
+
+`kborg skill install` writes the copy built into your KBorg, so it always matches your version; rerun it after upgrading. The GitHub-based installers take the skill from the latest release. Every example in it is parsed by KBorg's test suite.
+
 ## For teams
 
 - **Policy in one file.** An operator `--config` can switch off any capability (`"allow_node_shell": false`), force read-only or require typed confirmations. It can only take capabilities away. [Operations](docs/OPERATIONS.md)
@@ -181,7 +218,7 @@ Before anything is sent you see the exact text and approve it. Answers are advic
 ### Verify a download
 
 ```sh
-gh attestation verify kborg-0.6.0-aarch64-apple-darwin.tar.gz --repo c0dewars/kborg
+gh attestation verify kborg-0.7.0-aarch64-apple-darwin.tar.gz --repo c0dewars/kborg
 ```
 
 `cosign verify-blob` and the checksum file work too; see [Release process](docs/RELEASE_PROCESS.md#verify-a-release-asset).

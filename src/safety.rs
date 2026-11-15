@@ -325,6 +325,60 @@ fn embedded_manifests(annotations: &mut Value) {
     }
 }
 
+const MASK: &str = "[REDACTED]";
+
+/// Masks credential values written into a container's `command` or `args`:
+/// `--password=VALUE`, `PGPASSWORD=VALUE` and `--token VALUE` (the next word,
+/// in the same string or the next item). Other text is kept as it is.
+fn mask_arguments(items: &mut [Value]) {
+    let mut mask_next = false;
+    for item in items {
+        let Value::String(text) = item else {
+            mask_next = false;
+            continue;
+        };
+        let (masked, dangling) = mask_words(text, mask_next);
+        *text = masked;
+        mask_next = dangling;
+    }
+}
+
+/// One argument string; `mask_first` masks its first word. Returns the masked
+/// text and whether a credential flag at its end still needs its value.
+fn mask_words(text: &str, mut mask_first: bool) -> (String, bool) {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while !rest.is_empty() {
+        let space = rest.len() - rest.trim_start().len();
+        out.push_str(&rest[..space]);
+        rest = &rest[space..];
+        if rest.is_empty() {
+            break;
+        }
+        let end = rest.find(char::is_whitespace).unwrap_or(rest.len());
+        let word = &rest[..end];
+        rest = &rest[end..];
+        if mask_first {
+            out.push_str(MASK);
+            mask_first = false;
+            continue;
+        }
+        let name = word.trim_start_matches('-');
+        match name.split_once('=') {
+            Some((key, value)) if credential_name(key) && !value.is_empty() => {
+                out.push_str(&word[..word.len() - value.len()]);
+                out.push_str(MASK);
+            }
+            None if word.starts_with('-') && credential_name(name) => {
+                out.push_str(word);
+                mask_first = true;
+            }
+            _ => out.push_str(word),
+        }
+    }
+    (out, mask_first)
+}
+
 fn redact_with(value: &mut Value, shown: bool) {
     match value {
         Value::Object(map) => {
@@ -361,8 +415,16 @@ fn redact_with(value: &mut Value, shown: bool) {
                     && !(shown && readable.contains(&lower.as_str())))
                     || lower.contains("secret")
                     || lower.contains("credential")
+                    // A text value under a credential-like name: db_password,
+                    // api-token, owner-token, aws_access_key.
+                    || (v.is_string() && credential_name(&lower))
                 {
-                    *v = Value::String("[REDACTED]".into());
+                    *v = Value::String(MASK.into());
+                } else if matches!(lower.as_str(), "args" | "command")
+                    && let Value::Array(items) = v
+                {
+                    mask_arguments(items);
+                    redact_with(v, shown);
                 } else {
                     if shown && lower == "annotations" {
                         embedded_manifests(v);
@@ -456,6 +518,59 @@ pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn credential_arguments_and_credential_named_values_are_masked_in_both_projections() {
+        use serde_json::json;
+        let pod = json!({"kind":"Pod","spec":{"containers":[{"name":"app",
+            "command":["sh","-c","PGPASSWORD=s3cret-canary psql --host db; echo ok"],
+            "args":["--password=flag-canary","--token","next-canary","--level=debug","--api-key"],
+            "env":[{"name":"MODE","value":"fast"}]}],
+            "initContainers":[{"name":"init","args":["--secret-file","/etc/x","plain"]}]},
+            "metadata":{"annotations":{"team.example/owner-token":"annotation-canary","note":"kept"}}});
+        let config = json!({"kind":"ConfigMap","data":{"db_password":"cm-canary","level":"info"},
+            "spec":{"automountServiceAccountToken":true}});
+        for shown in [true, false] {
+            let mut masked = pod.clone();
+            super::redact_with(&mut masked, shown);
+            let text = masked.to_string();
+            for canary in [
+                "s3cret-canary",
+                "flag-canary",
+                "next-canary",
+                "annotation-canary",
+            ] {
+                assert!(
+                    !text.contains(canary),
+                    "a credential value survived masking"
+                );
+            }
+            let container = &masked["spec"]["containers"][0];
+            assert_eq!(
+                container["command"][2],
+                "PGPASSWORD=[REDACTED] psql --host db; echo ok"
+            );
+            assert_eq!(container["args"][0], "--password=[REDACTED]");
+            assert_eq!(container["args"][1], "--token");
+            assert_eq!(container["args"][2], "[REDACTED]");
+            assert_eq!(container["args"][3], "--level=debug");
+            assert_eq!(masked["spec"]["initContainers"][0]["args"][1], "[REDACTED]");
+            assert_eq!(masked["spec"]["initContainers"][0]["args"][2], "plain");
+            let mut cm = config.clone();
+            super::redact_with(&mut cm, shown);
+            assert!(
+                !cm.to_string().contains("cm-canary"),
+                "a credential-named ConfigMap value survived masking"
+            );
+            // Booleans and numbers under such names are settings, not credentials.
+            assert_eq!(cm["spec"]["automountServiceAccountToken"], true);
+        }
+        let mut shown = pod;
+        super::redact_shown(&mut shown);
+        assert_eq!(shown["metadata"]["annotations"]["note"], "kept");
+        let mut cm = config;
+        super::redact_shown(&mut cm);
+        assert_eq!(cm["data"]["level"], "info");
+    }
     #[test]
     fn the_screen_projection_shows_data_annotations_and_values_but_not_credentials() {
         let object = serde_json::json!({

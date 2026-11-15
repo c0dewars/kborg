@@ -18,6 +18,7 @@ KBorg — Kubernetes operations, under your control (kborg --version for the ver
   kborg metrics pods|nodes        CPU/memory/history; --metrics-resources comparisons
   kborg list RESOURCE             Bounded resource table; --json for pipelines
   kborg get RESOURCE NAME         Redacted JSON; --yaml for YAML inspection
+  kborg describe RESOURCE NAME    Overview, last container terminations and the object's recent events
   kborg yaml-template RESOURCE NAME   Safe editable spec template with UID/version
   kborg yaml-edit RESOURCE NAME FILE  Reviewed patch (fields, labels, annotations)
   kborg view RESOURCE NAME --interactive  Native searchable JSON/YAML pager
@@ -65,6 +66,11 @@ KBorg — Kubernetes operations, under your control (kborg --version for the ver
   kborg audit pending             Uncertain local outcomes; never auto-retries
   kborg audit verify FILE...      Check an audit_file hash chain (oldest rotated file first)
   kborg config init|validate FILE Strict schema-1 JSON configuration
+  kborg config check [--json]    Validate every file in the KBorg config folder, with line numbers
+  kborg keymap [--json]          Every action, its view, current and default keys (keymap.yaml applied)
+  kborg skill install [ASSISTANT|DIR]  Install the KBorg skill for AI assistants: every one found
+                                 (Claude Code, Copilot, Codex, Gemini CLI, ~/.agents), one by name, or DIR
+  kborg skill print              The skill as one Markdown file, for chat apps (ChatGPT, Gemini, ...)
   kborg completions bash|zsh|fish|powershell   Static completion script
   kborg auth-helper review --executable ABS [--env NAME=VALUE] --output POLICY
   kborg extensions list | register NAME --tool ABS | remove NAME
@@ -97,6 +103,8 @@ Options (put KBorg flags before exec's -- separator):
   --poll            --theme ID     --color=never    --json       --yaml
   --no-mouse        --follow          --previous     --no-splash      --demo       --help
   The old --write and --allow-* flags are still accepted; everything is already on.
+  KBORG_READ_ONLY=1 in the environment forces --read-only; no flag turns changes back on
+  (set it in the shell an AI assistant drives).
 
 Everything is enabled by default, like k9s: browsing, logs, edits, apply, scale,
 restart, delete, exec/attach, port forwards, file copy, node shell, debug
