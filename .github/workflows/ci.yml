@@ -85,10 +85,9 @@ jobs:
         run: |
           cargo test --locked --target '${{ matrix.target }}'
           if ($LASTEXITCODE -ne 0) { throw 'native tests failed' }
-      - name: Build release
-        run: |
-          cargo build --release --locked --target '${{ matrix.target }}'
-          if ($LASTEXITCODE -ne 0) { throw 'release build failed' }
+      # Package-Release.ps1 builds the release binary itself, in a fresh target
+      # directory, so a separate `cargo build --release` here was a second,
+      # unused compile (4 to 11 minutes per platform).
       - name: Package and smoke-test
         run: ./scripts/Package-Release.ps1 -Target '${{ matrix.target }}' -SourceCommit '${{ github.sha }}'
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
