@@ -87,6 +87,8 @@ fn harness() -> Harness {
             doc_search: doc_search::DocSearch::default(),
             header: header_block::State::default(),
             ask_screen: None,
+            secret_draft: None,
+            masked_documents: Vec::new(),
             ask_status: None,
             ask_thread: None,
             ask_inflight: None,
@@ -5671,7 +5673,7 @@ fn metadata_rows_render_and_describe_fetches_the_full_object() {
         text.contains("LOADING") && text.contains("settings"),
         "{text}"
     );
-    assert!(text.contains("Data redacted"), "{text}");
+    assert!(!text.contains("REDACTED"), "{text}");
     assert!(app.key(KeyCode::Char('d')).is_ok());
     match commands.try_recv() {
         Ok((_, Task::Inspect(kind, ns, name))) => assert_eq!(
@@ -6019,7 +6021,7 @@ fn header_block_stays_on_every_view_and_yields_to_the_bar_when_small_or_configur
         "{}",
         frame[2]
     );
-    assert!(frame[9].contains("REDACTED INSPECTION"), "{}", frame[9]);
+    assert!(frame[9].contains("INSPECTION"), "{}", frame[9]);
     assert!(hint_shown(&frame, "/", "search") && hint_shown(&frame, "q", "close"));
     assert!(hint_shown(&frame, "Esc", "back") && !hint_shown(&frame, "0", "all"));
     assert!(
@@ -6035,7 +6037,7 @@ fn header_block_stays_on_every_view_and_yields_to_the_bar_when_small_or_configur
     assert!(!confirmation_fits(&review, "test/api", 160, 40, top));
     // A small terminal keeps the bar for views too.
     let frame = screen(&app, 80, 24);
-    assert!(frame[1].contains("CTX test") && frame[3].contains("REDACTED INSPECTION"));
+    assert!(frame[1].contains("CTX test") && frame[3].contains("INSPECTION"));
     assert_eq!(modal_rect(&app.modal, 80, 24, app.view_top(80, 24)).y, 3);
     // Logs name their Pod in the block; full-screen logs take its rows back.
     app.log_target = Some(LogTarget {
@@ -6490,5 +6492,492 @@ fn copilot_key_asks_about_the_view_in_front() -> Result<()> {
             .iter()
             .any(|(_, label)| *label == "ask Copilot")
     );
+    Ok(())
+}
+
+#[test]
+fn views_show_configmap_data_and_copilot_captures_get_the_masked_text() -> Result<()> {
+    let (mut app, replies, _commands) = harness();
+    let mut object = serde_json::json!({"apiVersion":"v1","kind":"ConfigMap","metadata":{"name":"settings","namespace":"demo","uid":"u9","resourceVersion":"3","annotations":{"team/owner":"shown-annotation"}},"data":{"mode":"shown-value","app.conf":"listen 80;\nshown-file-line;\n","db-secret":"never-shown"}});
+    crate::safety::redact_shown(&mut object);
+    // What the worker sends for `y`: the screen text and its masked twin.
+    let reply = Reply::Shown(
+        crate::inspect::yaml_shown(&object)?,
+        crate::inspect::yaml(&object)?,
+    );
+    assert!(replies.send((app.epoch, reply)).is_ok());
+    app.receive();
+    let yaml = screen(&app, 120, 40).join("\n");
+    for shown in [
+        "shown-value",
+        "shown-file-line;",
+        "shown-annotation",
+        "\"app.conf\": |",
+    ] {
+        assert!(yaml.contains(shown), "{shown}\n{yaml}");
+    }
+    assert!(!yaml.contains("never-shown"), "{yaml}");
+    app.capture_ask_screen();
+    let captured = app.ask_screen.clone().unwrap_or_default();
+    assert!(
+        captured.contains("settings") && captured.contains("REDACTED"),
+        "{captured}"
+    );
+    for hidden in [
+        "shown-value",
+        "shown-file-line",
+        "shown-annotation",
+        "never-shown",
+    ] {
+        assert!(!captured.contains(hidden), "{hidden}\n{captured}");
+    }
+    // The capture leaves the view as it was.
+    assert!(screen(&app, 120, 40).join("\n").contains("shown-value"));
+
+    // Describe lists the keys and values; its JSON and YAML keep the split.
+    assert!(
+        replies
+            .send((app.epoch, Reply::Object(Box::new(object))))
+            .is_ok()
+    );
+    app.receive();
+    let describe = screen(&app, 120, 44).join("\n");
+    for shown in [
+        "DATA (3 keys)",
+        "mode = shown-value",
+        "app.conf  (2 lines",
+        "  shown-file-line;",
+        "ANNOTATIONS",
+        "team/owner = shown-annotation",
+    ] {
+        assert!(describe.contains(shown), "{shown}\n{describe}");
+    }
+    assert!(!describe.contains("never-shown"), "{describe}");
+    app.capture_ask_screen();
+    let captured = app.ask_screen.clone().unwrap_or_default();
+    for hidden in [
+        "shown-value",
+        "shown-file-line",
+        "shown-annotation",
+        "never-shown",
+    ] {
+        assert!(!captured.contains(hidden), "{hidden}\n{captured}");
+    }
+    for key in ['J', 'y'] {
+        app.key(KeyCode::Char(key))?;
+        let text = screen(&app, 120, 44).join("\n");
+        assert!(
+            text.contains("shown-value") && !text.contains("never-shown"),
+            "{key}\n{text}"
+        );
+        app.capture_ask_screen();
+        let captured = app.ask_screen.clone().unwrap_or_default();
+        assert!(
+            !captured.contains("shown-value") && !captured.contains("shown-annotation"),
+            "{key}\n{captured}"
+        );
+        // Back to the overview for the next key.
+        let mut object = serde_json::json!({"apiVersion":"v1","kind":"ConfigMap","metadata":{"name":"settings","namespace":"demo","annotations":{"team/owner":"shown-annotation"}},"data":{"mode":"shown-value"}});
+        crate::safety::redact_shown(&mut object);
+        app.modal = Modal::Overview(Box::new(object), 0);
+    }
+    Ok(())
+}
+
+#[test]
+fn owner_jump_service_forward_replicaset_scale_and_used_by_start_from_the_table() -> Result<()> {
+    let (mut app, replies, mut commands) = harness();
+    let sent = |commands: &mut tokio::sync::mpsc::Receiver<(u64, Task)>| {
+        let mut last = None;
+        while let Ok((_, task)) = commands.try_recv() {
+            last = Some(task);
+        }
+        last
+    };
+    app.options.connection.writable = true;
+    app.options.connection.allow_port_forward = true;
+
+    // U on a Pod jumps to its ReplicaSet, filtered to that one object.
+    let mut pods = ui_pods();
+    pods[0]["metadata"]["ownerReferences"] = serde_json::json!([{"apiVersion":"apps/v1","kind":"ReplicaSet","name":"api-7d4f9","uid":"rs-1","controller":true}]);
+    app.items = shared(pods);
+    app.selected = 1;
+    app.key(KeyCode::Char('U'))?;
+    assert!(
+        app.kind() == "pods" && app.status.contains("web has no owner"),
+        "{}",
+        app.status
+    );
+    app.selected = 0;
+    app.key(KeyCode::Char('U'))?;
+    assert_eq!(app.kind(), "replicasets.apps");
+    assert_eq!(
+        (app.namespace.as_str(), app.filter.as_str()),
+        ("test", r"(^|\s)api\-7d4f9(\s|$)")
+    );
+    assert!(
+        app.status.contains("Owner of api: ReplicaSet api-7d4f9"),
+        "{}",
+        app.status
+    );
+    sent(&mut commands);
+
+    assert_eq!(app.visible().len(), 0);
+    app.replace_items(shared(vec![
+        serde_json::json!({"kind":"ReplicaSet","apiVersion":"apps/v1","metadata":{"name":"api-7d4f9","namespace":"test","uid":"rs-1"},"spec":{"replicas":2}}),
+        serde_json::json!({"kind":"ReplicaSet","apiVersion":"apps/v1","metadata":{"name":"api-7d4f9-old","namespace":"test","uid":"rs-2"},"spec":{"replicas":0}}),
+    ]));
+    // Only the owner's row is left, not a longer name that starts the same.
+    assert_eq!(app.visible().len(), 1);
+
+    // s on that ReplicaSet opens the scale prompt.
+    app.replace_items(shared(vec![
+        serde_json::json!({"kind":"ReplicaSet","apiVersion":"apps/v1","metadata":{"name":"api-7d4f9","namespace":"test","uid":"rs-1"},"spec":{"replicas":2}}),
+    ]));
+    app.selected = 0;
+    app.key(KeyCode::Char('s'))?;
+    assert!(
+        matches!(&app.modal, Modal::Scale(kind, _, name, ..) if kind == "replicasets.apps" && name == "api-7d4f9")
+    );
+    app.key(KeyCode::Esc)?;
+
+    // F on a Service asks for the Pod behind it, then opens the form on it.
+    app.filter.clear();
+    app.kind_index = app.resolve_resource("services")?;
+    app.replace_items(shared(vec![
+        serde_json::json!({"kind":"Service","apiVersion":"v1","metadata":{"name":"api","namespace":"test","uid":"svc-1"},"spec":{"ports":[{"port":80,"targetPort":8080}]}}),
+    ]));
+    app.selected = 0;
+    app.key(KeyCode::Char('F'))?;
+    assert!(matches!(
+        sent(&mut commands),
+        Some(Task::ForwardVia(kind, ns, name)) if (kind.as_str(), ns.as_str(), name.as_str()) == ("services", "test", "api")
+    ));
+    let via = crate::ops::ForwardVia {
+        namespace: "test".into(),
+        pod: "api-b".into(),
+        uid: "uid-api-b".into(),
+        remote_port: 8080,
+        note: "Service api port 80 -> Pod api-b port 8080.".into(),
+    };
+    assert!(replies.send((app.epoch, Reply::ForwardVia(via))).is_ok());
+    app.receive();
+    assert!(matches!(
+        &app.modal,
+        Modal::ForwardForm(ns, pod, Some(uid), fields, 0)
+            if (ns.as_str(), pod.as_str(), uid.as_str()) == ("test", "api-b", "uid-api-b") && fields[1] == "8080" && fields[2] == "3600"
+    ));
+    assert!(app.status.contains("Pod api-b port 8080"), "{}", app.status);
+    app.key(KeyCode::Esc)?;
+
+    // u on a ConfigMap asks which Pods use it; on a Node it is still uncordon's key.
+    app.kind_index = app.resolve_resource("configmaps")?;
+    app.replace_items(shared(vec![
+        serde_json::json!({"kind":"ConfigMap","apiVersion":"v1","metadata":{"name":"settings","namespace":"test","uid":"cm-1"}}),
+    ]));
+    app.selected = 0;
+    app.key(KeyCode::Char('u'))?;
+    assert!(matches!(
+        sent(&mut commands),
+        Some(Task::UsedBy(kind, ns, name)) if (kind.as_str(), ns.as_str(), name.as_str()) == ("configmaps", "test", "settings")
+    ));
+    app.kind_index = app.resolve_resource("services")?;
+    app.key(KeyCode::Char('u'))?;
+    assert!(
+        sent(&mut commands).is_none() && app.status.contains("Used-by works on"),
+        "{}",
+        app.status
+    );
+    Ok(())
+}
+
+#[test]
+fn n_in_secrets_asks_name_key_and_value_then_reviews_a_new_secret() -> Result<()> {
+    use crate::secret_edit::{Change, Source};
+    let (mut app, replies, mut commands) = harness();
+    app.namespace = "demo".into();
+    app.options.connection.allow_secret_reveal = true;
+    app.options.connection.writable = true;
+    app.options.connection.allow_secret_edit = true;
+    replies
+        .send((
+            app.epoch,
+            Reply::Secrets(crate::secrets::SecretIndex {
+                namespace: "demo".into(),
+                items: Vec::new(),
+                truncated: false,
+            }),
+        ))
+        .map_err(|_| "reply closed")?;
+    app.receive();
+    let shown = screen(&app, 140, 30).join("\n");
+    assert!(
+        shown.contains("n creates one") && shown.contains("new Secret"),
+        "{shown}"
+    );
+    app.key(KeyCode::Char('n'))?;
+    assert!(matches!(&app.modal, Modal::Input(label, _) if *label == SECRET_NAME_LABEL));
+    type_text(&mut app, "Bad_Name")?;
+    app.key(KeyCode::Enter)?;
+    assert!(
+        app.status.contains("lowercase")
+            && matches!(&app.modal, Modal::Input(label, _) if *label == SECRET_NAME_LABEL)
+    );
+    for _ in 0.."Bad_Name".len() {
+        app.key(KeyCode::Backspace)?;
+    }
+    type_text(&mut app, "db-creds")?;
+    app.key(KeyCode::Enter)?;
+    assert!(matches!(&app.modal, Modal::Input(label, _) if *label == SECRET_KEY_LABEL));
+    type_text(&mut app, "password")?;
+    app.key(KeyCode::Enter)?;
+    assert!(matches!(&app.modal, Modal::Input(label, _) if *label == SECRET_VALUE_LABEL));
+    type_text(&mut app, "create-canary")?;
+    assert!(!screen(&app, 140, 30).join("\n").contains("canary"));
+    app.key(KeyCode::Enter)?;
+    let mut last = None;
+    while let Ok((_, task)) = commands.try_recv() {
+        last = Some(task);
+    }
+    match last {
+        Some(Task::SecretPrepare(ns, name, uid, Change::Create { key, value, source })) => {
+            assert_eq!(
+                (ns.as_str(), name.as_str(), uid.as_str(), key.as_str()),
+                ("demo", "db-creds", "", "password")
+            );
+            assert_eq!((value.len(), source), (13, Source::Typed));
+        }
+        _ => return Err("no Secret create task".into()),
+    }
+    assert!(matches!(app.modal, Modal::Secrets(..)) && app.secret_draft.is_none());
+    // Esc on the name prompt cancels and returns to the Secrets view.
+    app.busy = false;
+    app.key(KeyCode::Char('n'))?;
+    app.key(KeyCode::Esc)?;
+    assert!(matches!(app.modal, Modal::Secrets(..)) && app.secret_draft.is_none());
+    Ok(())
+}
+
+#[test]
+fn u_in_secrets_lists_users_and_esc_returns_to_the_secrets_view() -> Result<()> {
+    let (mut app, replies, mut commands) = harness();
+    app.namespace = "demo".into();
+    app.options.connection.allow_secret_reveal = true;
+    let data = crate::secrets::demo_data();
+    replies
+        .send((
+            app.epoch,
+            Reply::Secrets(crate::secrets::SecretIndex {
+                namespace: "demo".into(),
+                items: vec![crate::secrets::entry("api", "u1", None, Some(&data))],
+                truncated: false,
+            }),
+        ))
+        .map_err(|_| "reply closed")?;
+    app.receive();
+    app.key(KeyCode::Char('u'))?;
+    let mut last = None;
+    while let Ok((_, task)) = commands.try_recv() {
+        last = Some(task);
+    }
+    assert!(matches!(
+        last,
+        Some(Task::UsedBy(kind, ns, name)) if (kind.as_str(), ns.as_str(), name.as_str()) == ("secrets", "demo", "api")
+    ));
+    app.busy = false;
+    replies
+        .send((app.epoch, Reply::Detail("USED BY / Secret demo/api".into())))
+        .map_err(|_| "reply closed")?;
+    app.receive();
+    assert!(matches!(app.modal, Modal::Detail(..)));
+    app.key(KeyCode::Esc)?;
+    assert!(matches!(app.modal, Modal::Secrets(..)));
+    Ok(())
+}
+
+#[test]
+fn secret_keys_are_set_added_removed_and_secrets_deleted_through_a_review() -> Result<()> {
+    use crate::secret_edit::{Change, Source};
+    let (mut app, replies, mut commands) = harness();
+    review_ui::set_thread_strict(Some(false));
+    app.namespace = "demo".into();
+    app.options.connection.allow_secret_reveal = true;
+    let data = crate::secrets::demo_data();
+    let open = |app: &mut App| -> Result<()> {
+        replies
+            .send((
+                app.epoch,
+                Reply::Secrets(crate::secrets::SecretIndex {
+                    namespace: "demo".into(),
+                    items: vec![crate::secrets::entry("api", "u1", None, Some(&data))],
+                    truncated: false,
+                }),
+            ))
+            .map_err(|_| "reply closed")?;
+        app.receive();
+        Ok(())
+    };
+    let sent = |commands: &mut tokio::sync::mpsc::Receiver<(u64, Task)>| {
+        let mut last = None;
+        while let Ok((_, task)) = commands.try_recv() {
+            last = Some(task);
+        }
+        last
+    };
+    open(&mut app)?;
+
+    // A read-only session, or an operator who switched it off, changes nothing.
+    ctrl(&mut app, 'd')?;
+    assert!(app.status.contains("Secret changes are off") && sent(&mut commands).is_none());
+    app.options.connection.writable = true;
+    app.key(KeyCode::Char('a'))?;
+    assert!(app.status.contains("allow_secret_edit") && matches!(app.modal, Modal::Secrets(..)));
+    app.options.connection.allow_secret_edit = true;
+    let hints = screen(&app, 140, 30).join("\n");
+    assert!(
+        hints.contains("add key") && hints.contains("delete"),
+        "{hints}"
+    );
+
+    // Ctrl-D on the list reviews the deletion of the Secret.
+    ctrl(&mut app, 'd')?;
+    assert!(matches!(
+        sent(&mut commands),
+        Some(Task::SecretPrepare(ns, name, uid, Change::Delete)) if (ns.as_str(), name.as_str(), uid.as_str()) == ("demo", "api", "u1")
+    ));
+    app.busy = false;
+
+    // e on a key asks for the value: stars while typing, Tab shows it, a path stays readable.
+    app.key(KeyCode::Enter)?;
+    app.key(KeyCode::Down)?;
+    app.key(KeyCode::Down)?;
+    app.key(KeyCode::Char('e'))?;
+    assert!(matches!(&app.modal, Modal::Input(label, _) if *label == SECRET_VALUE_LABEL));
+    type_text(&mut app, "typed-canary")?;
+    let hidden = screen(&app, 140, 30).join("\n");
+    assert!(
+        hidden.contains("> ************_") && !hidden.contains("canary"),
+        "{hidden}"
+    );
+    app.key(KeyCode::Tab)?;
+    assert!(screen(&app, 140, 30).join("\n").contains("> typed-canary_"));
+    app.key(KeyCode::Tab)?;
+    assert!(!screen(&app, 140, 30).join("\n").contains("canary"));
+    app.key(KeyCode::Enter)?;
+    match sent(&mut commands) {
+        Some(Task::SecretPrepare(ns, name, uid, Change::Set { key, value, source })) => {
+            assert_eq!(
+                (ns.as_str(), name.as_str(), uid.as_str(), key.as_str()),
+                ("demo", "api", "u1", "password")
+            );
+            assert_eq!((value.len(), source), (12, Source::Typed));
+        }
+        _ => return Err("no Secret set task".into()),
+    }
+    assert!(matches!(app.modal, Modal::Secrets(..)) && app.secret_draft.is_none());
+    app.busy = false;
+
+    // The review comes back over the Secrets view; y sends it, Esc returns.
+    let shape = crate::secret_edit::Shape {
+        secret_type: "Opaque".into(),
+        keys: vec![("password".into(), 8)],
+        immutable: false,
+        version: "7".into(),
+        owner: None,
+    };
+    let prepared = |change: Change| {
+        crate::secret_edit::Prepared::new(
+            "demo",
+            "api",
+            "u1",
+            &shape,
+            change,
+            "session",
+            "REVIEW SECRET CHANGE\nSET key password: 8 bytes -> 12 bytes".into(),
+        )
+    };
+    let set = || Change::Set {
+        key: "password".into(),
+        value: crate::secret_edit::SecretBytes::new(b"typed-canary".to_vec()),
+        source: Source::Typed,
+    };
+    assert!(
+        replies
+            .send((app.epoch, Reply::SecretPrepared(Box::new(prepared(set())?))))
+            .is_ok()
+    );
+    app.receive();
+    let review = screen(&app, 140, 30).join("\n");
+    assert!(
+        review.contains("SET key password: 8 bytes -> 12 bytes") && !review.contains("canary"),
+        "{review}"
+    );
+    app.key(KeyCode::Esc)?;
+    assert!(matches!(app.modal, Modal::Secrets(..)));
+    assert!(
+        replies
+            .send((app.epoch, Reply::SecretPrepared(Box::new(prepared(set())?))))
+            .is_ok()
+    );
+    app.receive();
+    // The live loop marks a painted review as drawn; one key then approves it.
+    let Modal::WriteReview(review) = &mut app.modal else {
+        return Err("missing Secret review".into());
+    };
+    review.view.mark_drawn(138, 20);
+    app.key_with_approval_size(KeyCode::Char('y'), || Ok((140, 30)))?;
+    assert!(matches!(
+        sent(&mut commands),
+        Some(Task::SecretExecute(prepared, typed)) if typed == "demo/api" && prepared.confirmation() == "demo/api"
+    ));
+    assert!(
+        replies
+            .send((
+                app.epoch,
+                Reply::WriteOutcome(Ok("Secret demo/api: key password set (12 bytes).".into()))
+            ))
+            .is_ok()
+    );
+    app.receive();
+    assert!(
+        screen(&app, 140, 30)
+            .join("\n")
+            .contains("key password set (12 bytes)")
+    );
+    app.key(KeyCode::Esc)?;
+
+    // a asks for the key name first, refuses a bad one, then asks for the value; Esc cancels.
+    open(&mut app)?;
+    app.key(KeyCode::Char('a'))?;
+    assert!(matches!(&app.modal, Modal::Input(label, _) if *label == SECRET_KEY_LABEL));
+    type_text(&mut app, "bad key")?;
+    app.key(KeyCode::Enter)?;
+    assert!(
+        matches!(&app.modal, Modal::Input(label, _) if *label == SECRET_KEY_LABEL)
+            && app.status.contains("letters, digits")
+    );
+    for _ in 0..7 {
+        app.key(KeyCode::Backspace)?;
+    }
+    type_text(&mut app, "api-key")?;
+    app.key(KeyCode::Enter)?;
+    assert!(
+        matches!(&app.modal, Modal::Input(label, text) if *label == SECRET_VALUE_LABEL && text.is_empty())
+    );
+    type_text(&mut app, "@relative")?;
+    assert!(screen(&app, 140, 30).join("\n").contains("> @relative_"));
+    app.key(KeyCode::Enter)?;
+    assert!(app.status.contains("@/absolute/path") && sent(&mut commands).is_none());
+    app.key(KeyCode::Esc)?;
+    assert!(matches!(app.modal, Modal::Secrets(..)) && app.secret_draft.is_none());
+    assert!(app.status.contains("was not changed"));
+
+    // Ctrl-D with the keys open removes the selected key, not the Secret.
+    app.key(KeyCode::Enter)?;
+    ctrl(&mut app, 'd')?;
+    assert!(matches!(
+        sent(&mut commands),
+        Some(Task::SecretPrepare(_, _, _, Change::Remove { key })) if key == "blob.bin"
+    ));
     Ok(())
 }

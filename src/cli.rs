@@ -104,6 +104,7 @@ pub(crate) fn enable_everything(opts: &mut Options) {
     c.allow_system_namespaces = true;
     c.allow_cluster_scoped = true;
     c.allow_secret_reveal = true;
+    c.allow_secret_edit = true;
     opts.allow_tools = true;
     opts.allow_extensions = true;
     opts.allow_scan = true;

@@ -78,6 +78,201 @@ struct RbacRead {
     error: Option<String>,
 }
 
+pub const USED_BY_KINDS: &str =
+    "Used-by works on ConfigMaps, Secrets, PersistentVolumeClaims and ServiceAccounts";
+
+/// The kind whose users [`used_by`] lists, for a table resource key.
+pub fn used_by_kind(resource: &str) -> Option<&'static str> {
+    match resource {
+        "configmaps" => Some("ConfigMap"),
+        "persistentvolumeclaims" => Some("PersistentVolumeClaim"),
+        "serviceaccounts" => Some("ServiceAccount"),
+        "secrets" => Some("Secret"),
+        _ => None,
+    }
+}
+
+/// How one Pod uses the named ConfigMap, Secret, claim or account; empty if
+/// it does not. A Secret is matched on the raw Pod: the masked one hides
+/// every field named like `secret`, the references included.
+fn pod_uses(kind: &str, name: &str, pod: &Value) -> Vec<String> {
+    let spec = &pod["spec"];
+    let list = |value: &Value| value.as_array().cloned().unwrap_or_default();
+    let mut uses = Vec::new();
+    match kind {
+        "ServiceAccount" => {
+            if spec["serviceAccountName"].as_str().unwrap_or("default") == name {
+                uses.push("runs as it".into());
+            }
+        }
+        "PersistentVolumeClaim" => {
+            for volume in list(&spec["volumes"]) {
+                if volume["persistentVolumeClaim"]["claimName"] == name {
+                    uses.push(format!(
+                        "volume {}",
+                        safety::safe_text(volume["name"].as_str().unwrap_or("-"), 63)
+                    ));
+                }
+            }
+        }
+        _ => {
+            // ConfigMap and Secret: the same places, under different fields.
+            let secret = kind == "Secret";
+            let (source, by_name, env_from, key_ref) = if secret {
+                ("secret", "secretName", "secretRef", "secretKeyRef")
+            } else {
+                ("configMap", "name", "configMapRef", "configMapKeyRef")
+            };
+            for volume in list(&spec["volumes"]) {
+                let projected = list(&volume["projected"]["sources"])
+                    .iter()
+                    .any(|entry| entry[source]["name"] == name);
+                if volume[source][by_name] == name || projected {
+                    uses.push(format!(
+                        "volume {}",
+                        safety::safe_text(volume["name"].as_str().unwrap_or("-"), 63)
+                    ));
+                }
+            }
+            for field in ["initContainers", "containers", "ephemeralContainers"] {
+                for container in list(&spec[field]) {
+                    let all = list(&container["envFrom"])
+                        .iter()
+                        .any(|entry| entry[env_from]["name"] == name);
+                    let keys = list(&container["env"])
+                        .iter()
+                        .filter(|entry| entry["valueFrom"][key_ref]["name"] == name)
+                        .count();
+                    let container =
+                        safety::safe_text(container["name"].as_str().unwrap_or("-"), 63);
+                    if all {
+                        uses.push(format!("all keys as env in {container}"));
+                    }
+                    if keys > 0 {
+                        uses.push(format!("{keys} env from keys in {container}"));
+                    }
+                }
+            }
+            if secret
+                && list(&spec["imagePullSecrets"])
+                    .iter()
+                    .any(|pull| pull["name"] == name)
+            {
+                uses.push("image pull".into());
+            }
+        }
+    }
+    uses
+}
+
+/// One Pod that uses the object: its name, how, and its first owner.
+pub(crate) type UsedRow = (String, String, String);
+
+/// The used-by report for the Pods of one namespace.
+fn used_by_text(
+    kind: &str,
+    namespace: &str,
+    name: &str,
+    pods: &[Value],
+    truncated: bool,
+) -> String {
+    let rows = used_rows(kind, name, pods);
+    render_used_by(kind, namespace, name, &rows, pods.len(), truncated)
+}
+
+/// The Pods of `pods` that use the object. Only names and how they use it
+/// leave this function, never anything else of the Pod.
+pub(crate) fn used_rows(kind: &str, name: &str, pods: &[Value]) -> Vec<UsedRow> {
+    pods.iter()
+        .filter_map(|pod| {
+            let uses = pod_uses(kind, name, pod);
+            (!uses.is_empty()).then(|| {
+                let owner = pod["metadata"]["ownerReferences"]
+                    .as_array()
+                    .and_then(|all| all.first())
+                    .map(|owner| {
+                        format!(
+                            "{} {}",
+                            safety::safe_text(owner["kind"].as_str().unwrap_or("-"), 63),
+                            safety::safe_text(owner["name"].as_str().unwrap_or("-"), 253)
+                        )
+                    })
+                    .unwrap_or_else(|| "-".into());
+                (
+                    safety::safe_text(pod["metadata"]["name"].as_str().unwrap_or("-"), 253),
+                    uses.join("; "),
+                    owner,
+                )
+            })
+        })
+        .collect()
+}
+
+fn render_used_by(
+    kind: &str,
+    namespace: &str,
+    name: &str,
+    rows: &[UsedRow],
+    total: usize,
+    truncated: bool,
+) -> String {
+    let mut text = format!(
+        "USED BY / {kind} {namespace}/{name}\n{} of {total} Pods in the namespace use it.\n",
+        rows.len(),
+    );
+    if !rows.is_empty() {
+        let width = rows
+            .iter()
+            .map(|row| row.0.chars().count())
+            .max()
+            .unwrap_or(3)
+            .clamp(3, 48);
+        let how = rows
+            .iter()
+            .map(|row| row.1.chars().count())
+            .max()
+            .unwrap_or(3)
+            .clamp(3, 60);
+        text.push_str(&format!("\n{:<width$}  {:<how$}  OWNER\n", "POD", "HOW"));
+        for (pod, uses, owner) in rows {
+            text.push_str(&format!("{pod:<width$}  {uses:<how$}  {owner}\n"));
+        }
+    }
+    text.push_str("\nOnly running objects are checked: Pods that exist now. A CronJob or a scaled-to-zero workload that names it in its template is not listed.");
+    if truncated {
+        text.push_str("\nThe Pod list was cut at its limit, so this may be incomplete.");
+    }
+    text
+}
+
+/// Which Pods mount or read a ConfigMap, Secret, PersistentVolumeClaim or ServiceAccount.
+pub async fn used_by(
+    gateway: &Gateway,
+    resource: &str,
+    namespace: &str,
+    name: &str,
+) -> Result<String> {
+    let kind = used_by_kind(resource).ok_or(USED_BY_KINDS)?;
+    if !safety::valid_id(namespace) {
+        return Err("select a concrete namespace".into());
+    }
+    let name = safety::safe_text(name, 253);
+    if kind == "Secret" {
+        let (rows, total, truncated) = gateway.secret_users(namespace, &name).await?;
+        return Ok(render_used_by(
+            kind, namespace, &name, &rows, total, truncated,
+        ));
+    }
+    let pods = gateway.list("pods", namespace).await?;
+    Ok(used_by_text(
+        kind,
+        namespace,
+        &name,
+        pods["items"].as_array().map_or(&[][..], Vec::as_slice),
+        pods["truncated"] == true,
+    ))
+}
+
 /// Declared Role/ClusterRole binding evidence, rather than effective authorization.
 pub async fn can(gateway: &Gateway, namespace: &str, subject: &str) -> Result<String> {
     if namespace != "*" && !safety::valid_id(namespace) {
@@ -448,6 +643,95 @@ pub fn preview_manifest(path: &Path) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn used_by_finds_every_way_a_pod_uses_a_secret() {
+        let pods = [
+            serde_json::json!({"metadata":{"name":"web"},"spec":{
+                "volumes":[{"name":"tls","secret":{"secretName":"creds"}},
+                    {"name":"all","projected":{"sources":[{"secret":{"name":"creds"}}]}},
+                    {"name":"cm","configMap":{"name":"creds"}}],
+                "imagePullSecrets":[{"name":"creds"}],
+                "containers":[{"name":"app","envFrom":[{"secretRef":{"name":"creds"}}],
+                    "env":[{"name":"P","valueFrom":{"secretKeyRef":{"name":"creds","key":"p"}}}]}]}}),
+            serde_json::json!({"metadata":{"name":"cm-only"},"spec":{
+                "containers":[{"name":"app","envFrom":[{"configMapRef":{"name":"creds"}}]}]}}),
+        ];
+        let rows = used_rows("Secret", "creds", &pods);
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert_eq!(
+            rows[0].1,
+            "volume tls; volume all; all keys as env in app; 1 env from keys in app; image pull"
+        );
+        let text = render_used_by("Secret", "demo", "creds", &rows, 2, false);
+        assert!(
+            text.starts_with("USED BY / Secret demo/creds\n1 of 2 Pods"),
+            "{text}"
+        );
+        // A ConfigMap of the same name is not the Secret, and the other way round.
+        assert_eq!(used_rows("ConfigMap", "creds", &pods).len(), 2);
+    }
+    #[test]
+    fn used_by_lists_the_pods_that_mount_or_read_the_object() {
+        let pod = |name: &str, spec: serde_json::Value| serde_json::json!({"metadata":{"name":name,"ownerReferences":[{"kind":"ReplicaSet","name":format!("{name}-rs")}]},"spec":spec});
+        let pods = [
+            pod(
+                "mounts",
+                serde_json::json!({"volumes":[{"name":"config","configMap":{"name":"settings"}},{"name":"data","persistentVolumeClaim":{"claimName":"disk"}}],"containers":[{"name":"app"}]}),
+            ),
+            pod(
+                "projects",
+                serde_json::json!({"volumes":[{"name":"mixed","projected":{"sources":[{"configMap":{"name":"settings"}}]}}],"containers":[{"name":"app"}]}),
+            ),
+            pod(
+                "reads",
+                serde_json::json!({"serviceAccountName":"runner","containers":[{"name":"app","envFrom":[{"configMapRef":{"name":"settings"}}],"env":[{"name":"A","valueFrom":{"configMapKeyRef":{"name":"settings","key":"a"}}},{"name":"B","valueFrom":{"configMapKeyRef":{"name":"other","key":"b"}}}]}]}),
+            ),
+            pod(
+                "unrelated",
+                serde_json::json!({"volumes":[{"name":"config","configMap":{"name":"other"}}],"containers":[{"name":"app"}]}),
+            ),
+        ];
+        let text = used_by_text("ConfigMap", "demo", "settings", &pods, false);
+        assert!(
+            text.starts_with(
+                "USED BY / ConfigMap demo/settings\n3 of 4 Pods in the namespace use it."
+            ),
+            "{text}"
+        );
+        assert!(
+            text.contains("mounts    volume config") && text.contains("ReplicaSet mounts-rs"),
+            "{text}"
+        );
+        assert!(text.contains("projects  volume mixed"), "{text}");
+        assert!(
+            text.contains("all keys as env in app; 1 env from keys in app"),
+            "{text}"
+        );
+        assert!(
+            !text.contains("unrelated") && !text.contains("cut at its limit"),
+            "{text}"
+        );
+        let text = used_by_text("PersistentVolumeClaim", "demo", "disk", &pods, true);
+        assert!(
+            text.contains("1 of 4 Pods")
+                && text.contains("mounts  volume data")
+                && text.contains("cut at its limit"),
+            "{text}"
+        );
+        // A Pod without serviceAccountName runs as "default".
+        let text = used_by_text("ServiceAccount", "demo", "default", &pods, false);
+        assert!(
+            text.contains("3 of 4 Pods") && !text.contains("reads "),
+            "{text}"
+        );
+        assert!(
+            used_by_text("ServiceAccount", "demo", "runner", &pods, false)
+                .contains("reads  runs as it")
+        );
+        assert!(used_by_text("ConfigMap", "demo", "absent", &pods, false).contains("0 of 4 Pods"));
+        assert_eq!(used_by_kind("configmaps"), Some("ConfigMap"));
+        assert_eq!(used_by_kind("secrets"), Some("Secret"));
+    }
     use serde_json::json;
     use std::sync::atomic::{AtomicUsize, Ordering};
 

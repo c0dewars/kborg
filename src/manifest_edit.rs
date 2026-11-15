@@ -126,8 +126,11 @@ impl Draft {
                 projection[key.as_str()] = value;
             }
         }
-        safety::redact(&mut projection);
-        let text = escape_non_ascii(&crate::inspect::yaml(&projection)?, true);
+        // What the screen shows is what can be edited: ConfigMap data,
+        // annotations and literal values are in; credential-named fields
+        // stay placeholders and are preserved.
+        safety::redact_shown(&mut projection);
+        let text = escape_non_ascii(&crate::inspect::yaml_editable(&projection)?, true);
         if text.len() > MAX_DOCUMENT {
             return Err("editable YAML exceeds 64 KiB; use a narrower operation".into());
         }
@@ -406,11 +409,45 @@ fn display(value: &Value) -> Result<String> {
         &serde_json::to_string(value).map_err(|_| "cannot encode YAML change")?,
         false,
     );
-    safety::review_text(&encoded, 4096)
+    safety::review_text(&encoded, 16384)
+}
+/// A changed multi-line text (a ConfigMap file) as the lines that differ, so
+/// a one-line change in a long file is reviewed as one line. Everything that
+/// changes is listed; only the equal lines above and below are counted.
+fn text_change(shown_path: &str, before: &str, after: &str, diff: &mut Vec<String>) -> Result<()> {
+    let (old, new): (Vec<&str>, Vec<&str>) =
+        (before.split('\n').collect(), after.split('\n').collect());
+    let above = old.iter().zip(&new).take_while(|(a, b)| a == b).count();
+    let below = old[above..]
+        .iter()
+        .rev()
+        .zip(new[above..].iter().rev())
+        .take_while(|(a, b)| a == b)
+        .count();
+    diff.push(format!(
+        "~ {shown_path}: text of {} lines becomes {} lines; {above} equal above, {below} equal below",
+        old.len(),
+        new.len()
+    ));
+    for (sign, lines) in [('-', &old), ('+', &new)] {
+        for (index, line) in lines
+            .iter()
+            .enumerate()
+            .take(lines.len() - below)
+            .skip(above)
+        {
+            diff.push(format!(
+                "{sign} {:>5}: {}",
+                index + 1,
+                display(&Value::String((*line).into()))?
+            ));
+        }
+    }
+    Ok(())
 }
 fn unchanged_projection(raw: &Value) -> bool {
     let mut safe = raw.clone();
-    safety::redact(&mut safe);
+    safety::redact_shown(&mut safe);
     safe == *raw
 }
 fn sensitive_key(key: &str) -> bool {
@@ -439,11 +476,20 @@ fn record(
     }
     safety::review_text(path, 1024)?;
     let shown_path = display(&Value::String(path.into()))?;
-    if let Some(before) = before {
-        diff.push(format!("- {shown_path}: {}", display(before)?));
-    }
-    if let Some(after) = after {
-        diff.push(format!("+ {shown_path}: {}", display(after)?));
+    match (before, after) {
+        (Some(Value::String(old)), Some(Value::String(new)))
+            if old.contains('\n') || new.contains('\n') =>
+        {
+            text_change(&shown_path, old, new, diff)?;
+        }
+        _ => {
+            if let Some(before) = before {
+                diff.push(format!("- {shown_path}: {}", display(before)?));
+            }
+            if let Some(after) = after {
+                diff.push(format!("+ {shown_path}: {}", display(after)?));
+            }
+        }
     }
     let mut patch = json!({"op":op,"path":path});
     if let Some(after) = after {
@@ -778,43 +824,89 @@ mod tests {
         Ok(())
     }
     #[test]
-    fn hidden_data_and_annotations_stay_read_only_while_labels_change() -> Result<()> {
-        // ConfigMap data and existing annotations are shown as placeholders
-        // everywhere in KBorg; the editor preserves them and refuses to
-        // write through a placeholder.
-        let original = json!({"apiVersion":"v1","kind":"ConfigMap","metadata":{"name":"settings","namespace":"demo","uid":"u4","resourceVersion":"7","annotations":{"note":"private-note-canary"}},"data":{"mode":"private-data-canary"}});
+    fn configmap_data_annotations_and_env_values_are_shown_and_editable() -> Result<()> {
+        let file = "listen 80;\nserver_name old;\ngzip on;\n";
+        let original = json!({"apiVersion":"v1","kind":"ConfigMap","metadata":{"name":"settings","namespace":"demo","uid":"u4","resourceVersion":"7","annotations":{"note":"first"}},"data":{"mode":"blue","nginx.conf":file,"caf\u{e9}":"cr\u{e8}me\nbr\u{fb}l\u{e9}e\n"}});
         let draft = Draft::new(original.clone(), kind("ConfigMap")?, "session".into())?;
-        assert!(!draft.text().contains("canary"), "{}", draft.text());
-        let mut edited = draft.projection.clone();
-        edited["metadata"]["labels"] = json!({"tier":"backend"});
-        let (patch, expected, diff) = draft.changes(&encode(&edited)?)?;
+        // A file is a literal block; text the editor escapes stays quoted.
+        assert!(
+            draft.text().contains(
+                "\"nginx.conf\": |\n    listen 80;\n    server_name old;\n    gzip on;\n"
+            ),
+            "{}",
+            draft.text()
+        );
+        assert!(
+            draft.text().contains("\"note\": \"first\"") && !draft.text().contains("br\u{fb}l")
+        );
+        // Unchanged text parses back to the same values, blocks included.
+        assert_eq!(
+            draft.changes(draft.text()).err().as_deref(),
+            Some("YAML has no editable changes")
+        );
+        // One line of the file, one value and one annotation change.
+        let text = draft
+            .text()
+            .replace("server_name old;", "server_name new;")
+            .replace("\"mode\": \"blue\"", "\"mode\": \"green\"")
+            .replace("\"note\": \"first\"", "\"note\": \"second\"");
+        let (patch, expected, diff) = draft.changes(&text)?;
         assert_eq!(
             paths(&patch),
-            [("add".to_owned(), "/metadata/labels".to_owned())]
+            [
+                ("replace".to_owned(), "/data/mode".to_owned()),
+                ("replace".to_owned(), "/data/nginx.conf".to_owned()),
+                (
+                    "replace".to_owned(),
+                    "/metadata/annotations/note".to_owned()
+                ),
+            ]
         );
-        assert!(!patch.to_string().contains("canary") && !diff.contains("canary"));
-        assert_eq!(expected["data"], original["data"]);
         assert_eq!(
-            expected["metadata"]["annotations"],
-            original["metadata"]["annotations"]
+            expected["data"]["nginx.conf"],
+            json!("listen 80;\nserver_name new;\ngzip on;\n")
         );
+        assert_eq!(expected["data"]["caf\u{e9}"], original["data"]["caf\u{e9}"]);
+        // The review lists the changed line, not the whole file.
+        assert!(
+            diff.contains("text of 4 lines becomes 4 lines; 1 equal above, 2 equal below"),
+            "{diff}"
+        );
+        assert!(
+            diff.contains("-     2: \"server_name old;\"")
+                && diff.contains("+     2: \"server_name new;\""),
+            "{diff}"
+        );
+        assert!(!diff.contains("gzip"), "{diff}");
         let mut response = original.clone();
         apply_expected(&mut response, &expected);
         assert!(check_admission(&response, &expected, &original).is_ok());
-        for path in ["/data", "/metadata/annotations"] {
-            let mut edited = draft.projection.clone();
-            *edited.pointer_mut(path).ok_or("fixture")? = json!({"mode":"new"});
-            assert!(draft.changes(&encode(&edited)?).is_err(), "accepted {path}");
-            let mut edited = draft.projection.clone();
-            let (parent, key) = path.rsplit_once('/').ok_or("fixture")?;
-            let parent = if parent.is_empty() {
-                &mut edited
-            } else {
-                edited.pointer_mut(parent).ok_or("fixture")?
-            };
-            parent.as_object_mut().ok_or("fixture")?.remove(key);
-            assert!(draft.changes(&encode(&edited)?).is_err(), "removed {path}");
-        }
+
+        // A literal environment value is editable; a credential-named field is not.
+        let original = json!({"apiVersion":"apps/v1","kind":"Deployment","metadata":{"name":"api","namespace":"demo","uid":"u5","resourceVersion":"9"},"spec":{"template":{"spec":{"containers":[{"name":"api","image":"api:1","env":[{"name":"LOG_LEVEL","value":"info"}],"password":"private-canary"}]}}}});
+        let draft = Draft::new(original, kind("Deployment")?, "session".into())?;
+        assert!(draft.text().contains("\"value\": \"info\"") && !draft.text().contains("canary"));
+        let (patch, expected, _) = draft.changes(
+            &draft
+                .text()
+                .replace("\"value\": \"info\"", "\"value\": \"debug\""),
+        )?;
+        assert_eq!(
+            paths(&patch),
+            [(
+                "replace".to_owned(),
+                "/spec/template/spec/containers/0/env/0/value".to_owned()
+            )]
+        );
+        assert_eq!(
+            expected["spec"]["template"]["spec"]["containers"][0]["password"],
+            json!("private-canary")
+        );
+        assert!(
+            draft
+                .changes(&draft.text().replace("[REDACTED]", "guess"))
+                .is_err()
+        );
         Ok(())
     }
     #[test]

@@ -304,7 +304,7 @@ def tour(session):
     if s.copilot_account:
         ask_copilot(s)
     s.keys(b"y", 0.6)
-    s.soft_wait(r"REDACTED INSPECTION")
+    s.soft_wait(r"INSPECTION")
     s.keys(b"/", 0.3)
     s.caption = "/ searches inside YAML, JSON and describe"
     s.type("name", 90)

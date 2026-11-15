@@ -146,7 +146,8 @@ TUI navigation (k9s command grammar; full compatibility register in docs/K9S_COM
   j/k / arrows: rows   Enter: drill down   Esc: back   ?: help
   /REGEX: filter   /!REGEX: inverse   /-f TEXT: fuzzy   /-l LABELS: server selector
   Tab: command completion   Up/Down: command history   [ / ]: back/forward
-  d: describe   y: redacted YAML   l: logs   p: previous logs   Ctrl-R: refresh
+  d: describe   y: YAML   l: logs   p: previous logs   Ctrl-R: refresh
+  F: port-forward (Pod, Service, workload)   U: owner   u: used by
   Shift-N/A/S: sort name/age/status   C/M: CPU/memory sort on Pods and Nodes
   CPU/MEM refresh every 15s; - means unknown; ~ means UID absent, creation-time checked
   Table quantities are rounded to fit; d/m and CLI metrics retain exact measured values

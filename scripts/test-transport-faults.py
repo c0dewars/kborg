@@ -130,6 +130,11 @@ class Handler(BaseHTTPRequestHandler):
         watch = parse_qs(parsed.query).get("watch") == ["true"]
         kind = parsed.path.rsplit("/", 1)[-1]
         allowed = parsed.path in [f"/api/v1/namespaces/{NAMESPACE}/{k}" for k in ("pods", "events")]
+        # The health dashboard also reads these; the fixture denies them (403),
+        # which the client must take as "unknown", but they are not a surprise.
+        evidence = parsed.path in (
+            "/api/v1/nodes", "/api/v1/namespaces/default/events", "/apis/metrics.k8s.io/v1beta1/nodes",
+            f"/apis/apps/v1/namespaces/{NAMESPACE}/deployments", f"/apis/apps/v1/namespaces/{NAMESPACE}/statefulsets")
         with fixture.lock:
             mode = fixture.mode
             fixture.requests.append({"at": time.monotonic(), "kind": kind, "watch": watch})
@@ -137,7 +142,7 @@ class Handler(BaseHTTPRequestHandler):
                 fixture.pod_watches += int(watch)
                 fixture.pod_lists += int(not watch)
             watches, lists = fixture.pod_watches, fixture.pod_lists
-            if not allowed:
+            if not allowed and not evidence:
                 fixture.unexpected += 1
         if not allowed or self.headers.get("Authorization") != "Bearer " + TOKEN:
             self.reply(403, BODY_CANARY)
@@ -165,7 +170,8 @@ class Handler(BaseHTTPRequestHandler):
             elif mode == "cross_scope":
                 items = [pod(namespace="foreign-namespace")]
             elif mode == "flood":
-                items = [pod("fixture-" + str(i)) for i in range(1001)]
+                # One more than the watch cache accepts (MAX_OBJECTS in src/watch.rs).
+                items = [pod("fixture-" + str(i)) for i in range(10_001)]
         body = json.dumps({"apiVersion": "v1", "kind": "PodList" if kind == "pods" else "EventList",
                            "metadata": {"resourceVersion": str(lists + 1)}, "items": items})
         self.reply(200, body, slow=mode == "slow_body" and kind == "pods")

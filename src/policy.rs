@@ -140,7 +140,8 @@ impl Policy {
         }
         match action {
             Action::Scale(n)
-                if ["deployments", "statefulsets"].contains(&target.resource.as_str())
+                if ["deployments", "statefulsets", "replicasets"]
+                    .contains(&target.resource.as_str())
                     && (0..=MAX_REPLICAS).contains(n) =>
             {
                 Ok(())
@@ -218,8 +219,14 @@ mod tests {
     fn workload_operations_respect_family_write_and_namespace_boundaries() {
         let mut target = target();
         let mut policy = Policy::strict(true);
+        for resource in ["deployments", "replicasets", "statefulsets"] {
+            target.resource = resource.into();
+            assert!(policy.check(&target, &Action::Scale(0)).is_ok());
+        }
+        // A ReplicaSet scales, but restart and image changes belong to its owner.
+        target.resource = "replicasets".into();
+        assert!(policy.check(&target, &Action::Restart).is_err());
         target.resource = "statefulsets".into();
-        assert!(policy.check(&target, &Action::Scale(0)).is_ok());
         assert!(
             policy
                 .check(&target, &Action::Scale(MAX_REPLICAS + 1))

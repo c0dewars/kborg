@@ -82,6 +82,7 @@ fn read_only(options: &Connection, context: &str) -> Connection {
     connection.allow_system_namespaces = false;
     connection.allow_cluster_scoped = false;
     connection.allow_secret_reveal = false;
+    connection.allow_secret_edit = false;
     connection.allow_helm_write = false;
     connection.allow_helm_hooks = false;
     connection.allow_helm_crds = false;

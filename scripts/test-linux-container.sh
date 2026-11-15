@@ -22,8 +22,10 @@ if [ -d /cache/registry ]; then cp -R /cache/registry /build/cargo/; fi
 export CARGO_HOME=/build/cargo
 cp -R /source/src /source/tests /source/docs /source/assets /build/work/
 cp /source/Cargo.toml /source/Cargo.lock /source/rust-toolchain.toml /build/work/
-mkdir -p /build/work/scripts
+mkdir -p /build/work/scripts /build/work/fuzz
 cp /source/scripts/test-terminal.py /build/work/scripts/
+# The fuzz tests replay their seed corpus.
+cp -R /source/fuzz/seeds /build/work/fuzz/
 cd /build/work
 sha256sum /source/src/*.rs /source/tests/*.rs /source/Cargo.toml /source/Cargo.lock /source/rust-toolchain.toml /source/docs/CLI_HELP.txt /source/scripts/test-terminal.py /source/scripts/test-linux-container.sh > /build/source-hashes.txt
 rustc --version

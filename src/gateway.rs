@@ -9,6 +9,7 @@ mod kubeconfig;
 mod log_streams;
 mod operations;
 mod reads;
+mod secret_writes;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
@@ -85,6 +86,8 @@ pub struct Connection {
     /// Changes to cluster-scoped objects (Nodes, Namespaces, ClusterRoles...).
     pub allow_cluster_scoped: bool,
     pub allow_secret_reveal: bool,
+    /// Reviewed Secret changes: set or remove one key, delete a Secret.
+    pub allow_secret_edit: bool,
     pub allow_auth_helper: bool,
     /// Operator policy denial, independent of the optional reviewed helper mode.
     pub deny_auth_helpers: bool,
@@ -116,6 +119,7 @@ pub struct Gateway {
     allow_apply: bool,
     allow_force_kill: bool,
     allow_secret_reveal: bool,
+    allow_secret_edit: bool,
     demo: Vec<Value>,
     pub kinds: Vec<Kind>,
 }
@@ -175,6 +179,7 @@ impl Gateway {
                 allow_apply: options.allow_apply,
                 allow_force_kill: options.allow_force_kill,
                 allow_secret_reveal: options.allow_secret_reveal,
+                allow_secret_edit: options.allow_secret_edit,
                 operation_capabilities: [
                     options.allow_exec,
                     options.allow_attach,
@@ -365,6 +370,7 @@ impl Gateway {
             allow_apply: options.allow_apply,
             allow_force_kill: options.allow_force_kill,
             allow_secret_reveal: options.allow_secret_reveal,
+            allow_secret_edit: options.allow_secret_edit,
             operation_capabilities: [
                 options.allow_exec,
                 options.allow_attach,
@@ -459,6 +465,7 @@ impl Gateway {
             allow_apply: false,
             allow_force_kill: false,
             allow_secret_reveal: false,
+            allow_secret_edit: false,
             demo: Vec::new(),
             kinds: kinds(),
         }
@@ -643,7 +650,14 @@ pub fn summary(object: &Value) -> String {
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| "-".into()),
         "Event" => safety::safe_text(object["reason"].as_str().unwrap_or("Unknown"), 100),
-        "ConfigMap" => "Data redacted".into(),
+        // Lists carry metadata only; the count shows where the data is loaded.
+        "ConfigMap" => match (object["data"].as_object(), object["binaryData"].as_object()) {
+            (None, None) => "-".into(),
+            (data, binary) => format!(
+                "{} keys",
+                data.map_or(0, |m| m.len()) + binary.map_or(0, |m| m.len())
+            ),
+        },
         "StorageClass" => safety::safe_text(object["provisioner"].as_str().unwrap_or("-"), 100),
         _ => safety::safe_text(object["status"]["phase"].as_str().unwrap_or("-"), 100),
     }

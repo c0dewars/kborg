@@ -305,6 +305,8 @@ impl App {
                     | "attach"
                     | "forward"
                     | "node.show"
+                    | "owner"
+                    | "used.by"
                     | "node.shell"
                     | "cordon"
                     | "uncordon"

@@ -38,6 +38,13 @@ pub(super) enum Task {
     NodeExecute(Box<crate::node_maintenance::ReviewedNode>, String),
     Overview(Connection, Vec<String>),
     PrepareSession(String, String, Option<String>, crate::ops::Request),
+    /// Resolve the Pod behind a Service or workload for a port-forward.
+    ForwardVia(String, String, String),
+    /// Review one Secret change: namespace, name, uid and the change.
+    SecretPrepare(String, String, String, crate::secret_edit::Change),
+    SecretExecute(Box<crate::secret_edit::Prepared>, String),
+    /// The Pods that use a ConfigMap, PersistentVolumeClaim or ServiceAccount.
+    UsedBy(String, String, String),
     RunSession(Box<crate::ops::ReviewedOperation>, String),
     RunForward(Box<crate::ops::ReviewedOperation>, String, u64),
     CaptureLogs(LogTarget, crate::logs::PodLogSelection, u64),
@@ -124,6 +131,12 @@ pub(super) enum Reply {
     HeaderInfo(Option<HeaderInfo>),
     Items(Value),
     Detail(String),
+    /// The Pod behind a Service or workload, for the port-forward form.
+    ForwardVia(crate::ops::ForwardVia),
+    SecretPrepared(Box<crate::secret_edit::Prepared>),
+    /// A document that shows values (ConfigMap data, annotations, literal
+    /// values) and the masked text a Copilot screen capture uses instead.
+    Shown(String, String),
     ScanPrepared(Result<Box<crate::scan::Plan>>),
     ScanStarted,
     ScanOutcome(Result<crate::scan::Report>),
@@ -687,6 +700,15 @@ pub(super) fn worker() -> Worker {
                         },
                         None=>Reply::Failure("Not connected; nothing was added.".into()),
                     },
+                    Task::SecretPrepare(namespace,name,uid,change)=>match gateway.as_ref() {
+                        Some(g)=>match tokio::time::timeout(Duration::from_secs(40),g.prepare_secret(&namespace,&name,&uid,change)).await {
+                            Ok(Ok(prepared))=>Reply::SecretPrepared(Box::new(prepared)),
+                            Ok(Err(error))=>Reply::Failure(error),
+                            Err(_)=>Reply::Failure("Secret review timed out; nothing was written.".into()),
+                        },
+                        None=>Reply::Failure("Not connected.".into()),
+                    },
+                    Task::SecretExecute(prepared,typed)=>Reply::WriteOutcome(if let Some(g)=gateway.as_ref(){g.execute_secret(*prepared,&typed).await}else{Err("Not connected; the Secret was not changed.".into())}),
                     Task::ApplyExecute(prepared,typed)=>Reply::WriteOutcome(if let Some(g)=gateway.as_ref(){g.execute_apply(*prepared,&typed).await}else{Err("Not connected; nothing was applied.".into())}),
                     Task::BatchPrepare(request)=>match gateway.as_ref() {
                         Some(g)=>match tokio::time::timeout(Duration::from_secs(120),g.prepare_batch(*request)).await {
@@ -845,10 +867,17 @@ pub(super) fn worker() -> Worker {
                                     Task::Workloads(n)=>Reply::Detail(crate::insights::workloads(g,&n).await?),
                                     Task::Can(n,subject)=>Reply::Detail(crate::navigation_views::can(g,&n,&subject).await?),
                                     Task::Subjects(n,kind,title)=>Reply::Subjects(title,n.clone(),crate::navigation_views::subjects(g,&n,kind).await?),
-                                    Task::Get(k,n,name) => Reply::Detail(serde_json::to_string_pretty(&g.get(&k,&n,&name).await?).map_err(|_| "serialization failed")?),
-                                    Task::Inspect(k,n,name) => Reply::Object(Box::new(g.get(&k,&n,&name).await?)),
+                                    Task::Get(k,n,name) => {
+                                        // The screen shows values; a Copilot capture gets the masked text.
+                                        let object=g.get_shown(&k,&n,&name).await?;
+                                        Reply::Shown(super::format::shown_json(&object)?,super::format::masked_json(&object)?)
+                                    },
+                                    Task::Inspect(k,n,name) => Reply::Object(Box::new(g.get_shown(&k,&n,&name).await?)),
                                     Task::Drill(k,n,name)=>Reply::Drill(Box::new(g.get(&k,&n,&name).await?)),
-                                    Task::Yaml(k,n,name) => Reply::Detail(crate::inspect::yaml(&g.get(&k,&n,&name).await?)?),
+                                    Task::Yaml(k,n,name) => {
+                                        let object=g.get_shown(&k,&n,&name).await?;
+                                        Reply::Shown(crate::inspect::yaml_shown(&object)?,crate::inspect::yaml(&object)?)
+                                    },
                                     Task::ExportResource(k,n,name) => Reply::Export(crate::exports::resource(&g.get(&k,&n,&name).await?)?),
                                     Task::ExportHelm(release) => Reply::Export(crate::exports::helm(&crate::helm::detail(g,&release).await?)?),
                                     Task::YamlDraft(kind,ns,name,uid)=>{
@@ -861,6 +890,8 @@ pub(super) fn worker() -> Worker {
                                         if uid.as_deref().is_none_or(|uid|uid!=prepared.uid()) {return Err("Selected node was replaced; select it again.".into());}
                                         Reply::NodePrepared(Box::new(prepared))
                                     },
+                                    Task::UsedBy(k,n,name) => Reply::Detail(crate::navigation_views::used_by(g,&k,&n,&name).await?),
+                                    Task::ForwardVia(k,n,name) => Reply::ForwardVia(crate::ops::resolve_forward(g,&k,&n,&name).await?),
                                     Task::PrepareSession(n,name,uid,request) => {
                                         let prepared = crate::ops::prepare(g,&n,&name,request).await?;
                                         if uid.as_deref().is_none_or(|uid| uid != prepared.uid()) { return Err("Selected pod was replaced; select and review again.".into()); }
@@ -915,7 +946,7 @@ pub(super) fn worker() -> Worker {
                                         Reply::Prepared(Box::new(prepared))
                                     },
                                     Task::Execute(p,a) => Reply::Notice(g.execute(*p,a).await?),
-                                    Task::YamlPrepare(..) | Task::YamlExecute(..) | Task::ApplyPrepare(..) | Task::ApplyExecute(..) | Task::NodeShellPrepare(..) | Task::NodeShellStart(..) | Task::DebugPrepare(..) | Task::DebugStart(..) | Task::ScanPrepare(..) | Task::ScanRun(..) | Task::Bench(..) | Task::NodeExecute(..) | Task::DashboardLogs(..) | Task::DashboardWorkloads(..) | Task::DashboardTail(..) | Task::Overview(..) | Task::Connect(_) | Task::Watch(..) | Task::Metrics(..) | Task::HeaderInfo(..) | Task::RunSession(..) | Task::RunForward(..) | Task::Directory(_) | Task::Manifest(_) | Task::Helm(..) | Task::HelmPrepare(..) | Task::HelmExecute(..) | Task::AskPrepare(..) | Task::AdvicePrepare(..) | Task::AdviceExecute(..) | Task::BatchPrepare(..) | Task::BatchExecute(..) => return Err("invalid worker task".into()),
+                                    Task::YamlPrepare(..) | Task::YamlExecute(..) | Task::SecretPrepare(..) | Task::SecretExecute(..) | Task::ApplyPrepare(..) | Task::ApplyExecute(..) | Task::NodeShellPrepare(..) | Task::NodeShellStart(..) | Task::DebugPrepare(..) | Task::DebugStart(..) | Task::ScanPrepare(..) | Task::ScanRun(..) | Task::Bench(..) | Task::NodeExecute(..) | Task::DashboardLogs(..) | Task::DashboardWorkloads(..) | Task::DashboardTail(..) | Task::Overview(..) | Task::Connect(_) | Task::Watch(..) | Task::Metrics(..) | Task::HeaderInfo(..) | Task::RunSession(..) | Task::RunForward(..) | Task::Directory(_) | Task::Manifest(_) | Task::Helm(..) | Task::HelmPrepare(..) | Task::HelmExecute(..) | Task::AskPrepare(..) | Task::AdvicePrepare(..) | Task::AdviceExecute(..) | Task::BatchPrepare(..) | Task::BatchExecute(..) => return Err("invalid worker task".into()),
                                 })
                             };
                             match tokio::time::timeout(Duration::from_secs(25), future).await {

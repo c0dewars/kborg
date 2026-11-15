@@ -307,8 +307,14 @@ def main():
             sessions["tui"] = {"process": process, "fd": master, "slave": slave, "bytes": 0, "records": 0,
                                "counts": set(), "stale": 0, "original_mode": original_mode}
             deadline = time.monotonic() + 45
+            connected = False
             while not ("steady" in screen.text() and all(sessions[name]["last_count"] == 1 for name in ("resource", "dashboard"))):
                 require(time.monotonic() < deadline, "initial resource watches did not converge")
+                # The TUI names the context and waits for consent before it connects.
+                if not connected and "Connect to this kubeconfig context?" in screen.text():
+                    require(args.context in screen.text(), "connection prompt names another context")
+                    os.write(master, b"y")
+                    connected = True
                 drain(.2)
             deadline = time.monotonic() + 30
             next_dashboard_key = 0

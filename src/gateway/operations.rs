@@ -3,6 +3,21 @@ use super::*;
 
 /// What else goes with the object, for the kinds where a delete reaches
 /// far beyond the one row.
+/// A ReplicaSet owned by a Deployment is scaled back by that Deployment.
+fn scale_warning(object: &Value) -> String {
+    object["metadata"]["ownerReferences"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|owner| owner["kind"] == "Deployment" && owner["controller"] == true)
+        .map(|owner| {
+            format!(
+                "\n  ! owned by Deployment {}: it sets the replica count back; scale the Deployment to keep the change",
+                safety::safe_text(owner["name"].as_str().unwrap_or("-"), 253)
+            )
+        })
+        .unwrap_or_default()
+}
 fn delete_warning(kind: &Kind) -> &'static str {
     match (kind.plural.as_str(), kind.group.as_str()) {
         ("namespaces", "") => "\n! Deleting a Namespace deletes EVERY object inside it.",
@@ -302,7 +317,10 @@ impl Gateway {
                 | ("services", "")
                 | ("jobs" | "cronjobs", "batch")
         );
-        if !workload && action != Action::Delete {
+        // A ReplicaSet only scales; its template belongs to its Deployment.
+        let replica_set = matches!(action, Action::Scale(_))
+            && (kind.plural.as_str(), kind.group.as_str()) == ("replicasets", "apps");
+        if !workload && !replica_set && action != Action::Delete {
             return Err(format!(
                 "{} is not available for {}",
                 action.operation_name(),
@@ -380,7 +398,11 @@ impl Gateway {
             }
         };
         let effect = match &action {
-            Action::Scale(n) => format!("scale replicas {} -> {n}", object["spec"]["replicas"]),
+            Action::Scale(n) => format!(
+                "scale replicas {} -> {n}{}",
+                object["spec"]["replicas"],
+                scale_warning(&object)
+            ),
             Action::Restart => crate::edit::expected_restart(&object, &timestamp)?.1,
             Action::SetImage { container, image } => {
                 crate::edit::expected_spec(&object, container, image)?.1

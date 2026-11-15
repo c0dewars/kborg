@@ -73,6 +73,7 @@ pub mod pager;
 pub mod plugins;
 pub mod scan;
 pub mod screendump;
+pub mod secret_edit;
 pub mod secrets;
 pub mod selections;
 pub mod selectors;

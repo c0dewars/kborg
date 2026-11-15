@@ -185,8 +185,11 @@ pub(super) fn table_hints(app: &App) -> Vec<(String, &'static str)> {
             if logs {
                 push(&mut hints, "logs", "logs");
             }
-            if write && ["deployments.apps", "statefulsets.apps"].contains(&kind) {
+            if write && super::replies::scalable(kind) {
                 push(&mut hints, "scale", "scale");
+            }
+            if write && connection.allow_port_forward && kind == "services" {
+                push(&mut hints, "forward", "forward");
             }
             if write && crate::edit::supports_resource(kind) {
                 push(
@@ -199,6 +202,9 @@ pub(super) fn table_hints(app: &App) -> Vec<(String, &'static str)> {
                     },
                 );
             }
+        }
+        kind if crate::navigation_views::used_by_kind(kind).is_some() => {
+            push(&mut hints, "used.by", "used by");
         }
         _ => {}
     }
@@ -626,6 +632,22 @@ pub(super) fn modal_rect(modal: &Modal, width: u16, height: u16, top: u16) -> Re
         y: top + available.saturating_sub(modal_height) / 2,
         width: modal_width,
         height: modal_height,
+    }
+}
+/// What the prompt paints: a typed Secret value is stars until Tab shows it.
+/// A file path (`@PATH`) is not a secret and stays readable.
+pub(super) fn secret_input_text<'a>(
+    app: &App,
+    label: &str,
+    text: &'a str,
+) -> std::borrow::Cow<'a, str> {
+    let hidden = label == SECRET_VALUE_LABEL
+        && !text.starts_with('@')
+        && !app.secret_draft.as_ref().is_some_and(|draft| draft.visible);
+    if hidden {
+        "*".repeat(text.chars().count()).into()
+    } else {
+        text.into()
     }
 }
 pub(super) fn input_lines(label: &str, text: &str, width: usize, height: usize) -> Vec<String> {
@@ -1584,7 +1606,7 @@ fn render_frame(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
                 Modal::HelmDocument(title, ..) => title.as_str(),
                 Modal::Containers(..) => "CHOOSE CONTAINER",
                 Modal::Image(..) => "CHANGE DEPLOYMENT IMAGE",
-                Modal::Detail(..) => "REDACTED INSPECTION / Esc close",
+                Modal::Detail(..) => "INSPECTION / Esc close",
                 Modal::Overview(..) => "OBJECT OVERVIEW / J JSON / y YAML / Esc close",
                 Modal::LiveOverview(..) => "LIVE CONTEXT OVERVIEW / independent watches",
                 Modal::SessionContainers(..) => "POD SHELL / choose ordinary container",
@@ -1603,7 +1625,7 @@ fn render_frame(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
                 Modal::Themes(..) => "THEMES / Enter save / Esc restore",
                 Modal::NewTheme(..) => "CREATE CUSTOM THEME / from preview colors",
                 Modal::Confirm(..) => "REVIEW MUTATION / explicit confirmation required",
-                Modal::Scale(..) => "SCALE DEPLOYMENT",
+                Modal::Scale(..) => "SCALE",
                 Modal::Resources(..) => "RESOURCE BUDGET / reviewed deployment edit",
                 Modal::Help(..) => "HELP / KEYMAP",
                 Modal::EditContainers(..) => "EDIT WORKLOAD / choose ordinary container",
@@ -1670,7 +1692,7 @@ fn render_frame(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
                 Modal::Helm(table)=>table.lines(usize::from(rect.width.saturating_sub(2)),height),
                 Modal::HelmLoading(label)=>vec![(*label).into(),String::new(),"Esc cancels this view; late results cannot reopen it.".into()],
                 Modal::HelmDocument(_,text,offset)=>wrap_text(text,usize::from(rect.width.saturating_sub(2))).lines().skip(*offset).map(str::to_owned).collect(),
-                Modal::Input(label, text) => input_lines(label, text, usize::from(rect.width.saturating_sub(2)), height),
+                Modal::Input(label, text) => input_lines(label, &secret_input_text(app, label, text), usize::from(rect.width.saturating_sub(2)), height),
                 Modal::EditContainers(_,_,name,_,values,index)=>std::iter::once(format!("{name} | Enter choose / Esc cancel")).chain(values.iter().enumerate().skip(index.saturating_sub(height.saturating_sub(2))).map(|(i,value)|format!("{} {}  {}",if i==*index{">"}else{" "},value.name,value.image))).collect(),
                 Modal::Editor(draft)=>{
                     let mut lines=vec![format!("{} / {} / {}",draft.namespace,draft.name,draft.container),"Tab field | Ctrl-U clear | F2 resource budget | Enter review | Esc cancel".into(),String::new()];

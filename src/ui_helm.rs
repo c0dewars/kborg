@@ -635,7 +635,10 @@ pub struct Review {
 }
 impl Review {
     pub fn new(prepared: Box<crate::helm_lifecycle::Prepared>, epoch: u64) -> Self {
-        let display = safety::review_display(&Self::presentation(&prepared));
+        let display = safety::review_display(&super::review_ui::instruction_for_mode(
+            Self::presentation(&prepared),
+            &prepared.confirmation(),
+        ));
         Self {
             display_valid: display.is_ok(),
             text: display
@@ -1361,7 +1364,12 @@ mod tests {
         ] {
             assert!(all.contains(section));
         }
-        let backend = super::super::wrap_text(review.prepared.summary(), 116)
+        let summary = super::super::review_ui::instruction_for_mode(
+            review.prepared.summary().to_owned(),
+            &review.prepared.confirmation(),
+        );
+        assert!(!summary.contains(&format!("Type {}", review.prepared.confirmation())));
+        let backend = super::super::wrap_text(&summary, 116)
             .lines()
             .map(|line| format!("  {line}"))
             .collect::<Vec<_>>();
