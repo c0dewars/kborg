@@ -392,6 +392,32 @@ fn table_sections(app: &App, out: &mut Vec<String>) {
     }
 }
 
+/// The keys `?` would list for the view in front, with the operator's own
+/// bindings: sent with `:ask` so Copilot names keys that work in this view
+/// instead of guessing from k9s. Built from the key registry, never from
+/// cluster data; bounded by `advice::MAX_KEYS` at a line boundary.
+pub(super) fn ask_key_reference(app: &App) -> String {
+    // Keys that work everywhere first, so the bound never cuts them.
+    let mut out = Vec::new();
+    section(app, Scope::Global, &mut out);
+    match translated_scope(&app.modal) {
+        Some(scope) => section(app, scope, &mut out),
+        None if matches!(app.modal, Modal::None) => table_sections(app, &mut out),
+        // Prompts, reviews and forms keep their own fixed keys.
+        None => {}
+    }
+    let mut text = String::new();
+    for line in out {
+        if text.len() + line.len() + 1 > crate::advice::MAX_KEYS - 4 {
+            text.push_str("...\n");
+            break;
+        }
+        text.push_str(&line);
+        text.push('\n');
+    }
+    text.trim_end().to_owned()
+}
+
 fn hotkeys(app: &App, out: &mut Vec<String>) {
     if app.hotkeys.is_empty() {
         return;
