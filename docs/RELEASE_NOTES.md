@@ -1,4 +1,4 @@
-# KBorg — unreleased
+# KBorg 0.7.1 — 2026-11-16
 
 - **Copilot in KBorg knows your keys.** `:ask` (and Ctrl-G) sends the keys of the view you asked from with the question: what `?` shows there, with your own `keymap.yaml` bindings. Copilot is told to name only those keys and KBorg's `:` commands, to send you to `?` rather than guess, and to describe changes as yours to make in KBorg's review. Before, it only had general k9s knowledge and could name a key that does not exist or that you remapped. The keys come from KBorg itself, never from the cluster, and appear in the transfer review with the rest of the text.
 - **CI builds each release binary once** (the packaging step already builds fresh), about 37 runner-minutes less per run. **The release skips native tests a CI run already passed** on the exact same source tree, and still builds, signs and attests from the tag.
