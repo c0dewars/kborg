@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Record the README demo GIF from the real binary in demo mode (no cluster).
 
-Spawns KBorg in its own pseudo-terminal (120x32, truecolor), answers terminal
+Spawns KBorg in its own pseudo-terminal (112x26, truecolor), answers terminal
 queries like a real emulator, drives a fixed key script, renders the emulated
 screen to PNG after each step and assembles an animated GIF with Pillow.
 
@@ -35,9 +35,9 @@ REPO = SCRIPTS.parent
 _lifecycle = runpy.run_path(str(SCRIPTS / "test-live-lifecycle-ui.py"))
 Screen, _spawn = _lifecycle["Screen"], _lifecycle["_spawn"]
 
-WIDTH, HEIGHT = 120, 32
+WIDTH, HEIGHT = 112, 26
 ARGS = ["--demo", "--no-splash", "--theme", "catppuccin-mocha",
-        "--allow-logs", "--no-mouse", "--color=always"]
+        "--allow-logs", "--color=always"]
 
 # The emulator in test-terminal.py understands CSI [0-9;?]* <letter> only and
 # stalls on anything else, so OSC/DCS strings, charset selections and CSI
@@ -52,7 +52,7 @@ _INCOMPLETE = re.compile(rb"\x1b(?:\][^\x07]*|[P^_].*|\[[0-9;?<>= -/]*|[()])?$",
 
 class Session:
     def __init__(self, binary, frames_dir, extra_args=(), copilot_account=None, connection_tour=False,
-                 extra_env=None, prefix="frame"):
+                 extra_env=None, prefix="frame", mouse=False):
         self.frames_dir = frames_dir
         self.prefix = prefix
         self.copilot_account = copilot_account
@@ -71,13 +71,16 @@ class Session:
         env.update(extra_env or {})
         if connection_tour:
             config = home / "no-kubeconfig"
+            prod = "arn:aws:eks:eu-central-1:111111111111:cluster/company-prod"
+            dev = "arn:aws:eks:eu-central-1:222222222222:cluster/company-dev"
             config.write_text(json.dumps({
-                "apiVersion": "v1", "kind": "Config", "current-context": "company-prod",
-                "clusters": [{"name": "company", "cluster": {"server": "https://127.0.0.1:9"}}],
+                "apiVersion": "v1", "kind": "Config", "current-context": prod,
+                "clusters": [{"name": name, "cluster": {"server": "https://127.0.0.1:9"}}
+                             for name in (prod, dev)],
                 "users": [{"name": "demo-user", "user": {"token": "SYNTHETIC-NOT-A-CREDENTIAL"}}],
                 "contexts": [
-                    {"name": "company-prod", "context": {"cluster": "company", "user": "demo-user", "namespace": "payments"}},
-                    {"name": "company-dev", "context": {"cluster": "company", "user": "demo-user", "namespace": "development"}},
+                    {"name": name, "context": {"cluster": name, "user": "demo-user", "namespace": "payments"}}
+                    for name in (prod, dev)
                 ],
             }))
             config.chmod(0o600)
@@ -90,7 +93,10 @@ class Session:
         self.screen = Screen(WIDTH, HEIGHT)
         self.pending = b""
         self.started = time.monotonic()
-        self.proc = _spawn([str(binary)] + [arg for arg in ARGS if not (connection_tour and arg == "--demo")] + list(extra_args), env, self.slave)
+        arguments = [arg for arg in ARGS if not (connection_tour and arg == "--demo")]
+        if not mouse:
+            arguments.append("--no-mouse")
+        self.proc = _spawn([str(binary), *arguments, *extra_args], env, self.slave)
 
     # ------------------------------------------------------------ terminal
 
@@ -153,7 +159,7 @@ class Session:
             self.frames[-1] = (path, duration + duration_ms, text, caption)
             return
         path = self.frames_dir / f"{self.prefix}-{len(self.frames):03d}.png"
-        self.screen.png(path)
+        self.screen.png(path, margin_color=(30, 30, 46))
         self.frames.append((path, duration_ms, text, self.caption))
 
     def soft_wait(self, pattern, timeout=8):
@@ -182,19 +188,21 @@ class Session:
 
 def connection_tour(s):
     s.wait(r"Connect to Kubernetes", 15)
-    s.caption = "Use the kubeconfig already prepared by your company CLI"
-    s.frame(3000)
-    s.caption = "Context, cluster and namespace are named before connecting"
-    s.frame(2500)
+    s.soft_wait(r"Namespace: All namespaces")
+    s.soft_wait(r"Opens in: Nodes")
+    s.caption = "Start in Nodes with all namespaces"
+    s.frame(2800)
     s.keys(b"c", 0.3)
     s.wait(r"Choose an existing context", 8)
-    s.caption = "Press C to search contexts and move the highlighted row"
-    s.type("dev", 200)
+    s.caption = "Press c to search contexts by name, region, or account"
+    s.frame(1000)
+    s.type("dev", 180)
+    s.soft_wait(r">\s+company-dev")
     s.frame(2500)
     s.keys(b"\r", 0.3)
-    s.wait(r"Context: company-dev", 8)
-    s.caption = "Review the context and the starting view before connecting"
-    s.frame(3500)
+    s.soft_wait(r"Context: arn:aws:eks:[^\n]*company-dev")
+    s.caption = "Review the exact cluster identity before connecting"
+    s.frame(2800)
     # Do not connect, contact an API, or run a helper in a public recording.
     s.keys(b"\x1b", 0.3)
     s.proc.wait(timeout=5)
@@ -286,12 +294,15 @@ def tour(session):
     def command(text, marker=None, hold=2400, caption=None):
         if caption:
             s.caption = caption
-        s.type(text, 90)
+            s.type(text, 90)
+        else:
+            s.keys(text.encode(), 0.12)
         s.keys(b"\r", 0.4)
         if marker:
             s.soft_wait(marker)
         s.drain(0.6)
-        s.frame(hold)
+        if caption:
+            s.frame(hold)
 
     s.wait(r"api-7d4f9", 30)
     s.soft_wait(r"METRICS [0-9]+ measured", 15)
@@ -316,8 +327,22 @@ def tour(session):
     s.keys(b"k", 0.3)
     s.keys(b"l", 0.4)
     s.soft_wait(r"LOGS")
-    s.drain(1.2)
-    step("l follows logs: filters, time ranges, export", 2400)
+    line_text = "INFO KBorg demo started"
+    s.soft_wait(line_text)
+    for row, line in enumerate(s.screen.text().splitlines(), 1):
+        if line_text in line:
+            start = line.index(line_text) + 1
+            end = start + len(line_text) - 1
+            for button, column, suffix in [(0, start, "M"), (32, end, "M"), (0, end, "m")]:
+                s.keys(f"\x1b[<{button};{column};{row}{suffix}".encode(), 0.18)
+            break
+    s.soft_wait(r"Esc clear selection")
+    step("Drag to select a log line, then press c to copy", 2800)
+    s.keys(b"\x1b", 0.4)
+    s.keys(b"\x1b", 0.4)
+    s.keys(b":copilot setup\r", 0.5)
+    s.soft_wait(r"Connect GitHub Copilot")
+    step(":copilot setup uses a saved GitHub account or browser sign-in", 2800)
     s.keys(b"\x1b", 0.4)
     command(":nodes", r"ROLE", 2800, "Nodes with the k9s columns: role, version, CPU and memory use")
     command(":deploy", r"deployments", 1000, "Every change is reviewed before it runs")
@@ -348,7 +373,7 @@ def tour(session):
     s.type("shell", 90)
     step(s.caption, 2600)
     s.keys(b"\x1b", 0.4)
-    command(":themes", r"(?i)theme", 2400, "20 themes with live preview; every key and column is yours to change")
+    command(":themes", r"(?i)theme", 2400, "Preview themes live and customize keys and columns")
     s.keys(b"\x1b", 0.4)
     quit_session(s)
 
@@ -370,7 +395,7 @@ def scale_scene(session):
     s = session
     s.wait(r"scale-0000", 30)
     s.soft_wait(rf"{SCALE_PODS + 2} Pods")
-    s.caption = f"{SCALE_PODS:,} Pods: on screen in under half a second"
+    s.caption = f"Browse {SCALE_PODS:,} synthetic Pods"
     s.drain(0.6)
     s.frame(2600)
     s.caption = f"Paging through {SCALE_PODS:,} rows"
@@ -470,14 +495,21 @@ def main():
             policy = args.copilot_policy.resolve(strict=True)
             account = json.loads(policy.read_text())["gh_cli"]["account"]
             extra += ["--copilot-policy", str(policy), "--allow-copilot-screen"]
-        for old in frames_dir.glob("scale-*.png"):
-            old.unlink()
-        session = Session(binary, frames_dir, extra, account, args.connection_tour)
+        for prefix in ("connection", "scale"):
+            for old in frames_dir.glob(f"{prefix}-*.png"):
+                old.unlink()
+        session = Session(binary, frames_dir, extra, account, args.connection_tour, mouse=args.tour)
         try:
             (connection_tour if args.connection_tour else tour if args.tour else record)(session)
         finally:
             session.close()
         if args.tour:
+            startup = Session(binary, frames_dir, connection_tour=True, prefix="connection")
+            try:
+                connection_tour(startup)
+            finally:
+                startup.close()
+            session.frames[:0] = startup.frames
             # The tour ends on the same binary holding 20,000 synthetic Pods.
             scale = Session(binary, frames_dir, extra, extra_env={"KBORG_DEMO_SCALE": str(SCALE_PODS)},
                             prefix="scale")
@@ -494,7 +526,14 @@ def main():
         "frames": len(session.frames), "duration_seconds": total / 1000,
         "gif_bytes": size, "gif_sha256": hashlib.sha256(args.out.read_bytes()).hexdigest(),
         "captions": list(dict.fromkeys(frame[3] for frame in session.frames)),
-        "scope": "Synthetic feature tour, then the same binary with 20,000 synthetic Pods (KBORG_DEMO_SCALE). Operation previews are not live acceptance; no cluster, auth helper, scanner, shell or model request is used without --copilot-policy.",
+        "scope": (
+            "Synthetic startup review only. The recording exits before connecting."
+            if args.connection_tour else
+            "Synthetic startup review, demo workflows, and 20,000 synthetic Pods (KBORG_DEMO_SCALE). "
+            "No cluster, auth helper, scanner, shell or model request is used without --copilot-policy."
+            if args.tour else
+            "Short offline recording using the built-in demo data."
+        ),
     }
     args.out.with_suffix(".json").write_text(json.dumps(manifest, indent=2) + "\n")
     print(f"{args.out}: {len(session.frames)} frames, {total / 1000:.1f} s, {size / 2**20:.2f} MiB")

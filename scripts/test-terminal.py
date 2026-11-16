@@ -165,7 +165,7 @@ class Screen:
             return True
         return False
 
-    def png(self, path):
+    def png(self, path, margin_color=None):
         from PIL import Image, ImageDraw, ImageFont
         font_path = next((path for path in (
             "/System/Library/Fonts/Menlo.ttc",
@@ -176,7 +176,8 @@ class Screen:
         cell_width = int(font.getlength("M") + .5)
         cell_height = 24
         cells = self.visible_cells()
-        picture = Image.new("RGB", (self.width * cell_width + 32, self.height * cell_height + 32), cells[0][0][2])
+        background = cells[0][0][2] if margin_color is None else margin_color
+        picture = Image.new("RGB", (self.width * cell_width + 32, self.height * cell_height + 32), background)
         draw = ImageDraw.Draw(picture)
         for y, row in enumerate(cells):
             for x, (char, fg, bg) in enumerate(row):
