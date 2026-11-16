@@ -1075,6 +1075,7 @@ impl App {
         // values) never reach Copilot: capture the masked view instead.
         let shown = self.mask_shown_values();
         self.ask_screen = snapshot::screen_text(self, width, height).ok();
+        self.ask_keys = Some(keyhelp::ask_key_reference(self));
         if let Some(shown) = shown {
             self.modal = shown;
         }
@@ -1225,13 +1226,15 @@ impl App {
             self.copilot_notice("ASK COPILOT / screen needed", "No screen is captured yet. Esc returns; press : on the resource, logs or dashboard you want help with, then type ask QUESTION. Nothing was sent.");
             return;
         };
-        if let Err(error) = crate::advice::screen_bundle(&question, &screen, &[]) {
+        let keys = self.ask_keys.take().unwrap_or_default();
+        if let Err(error) = crate::advice::screen_bundle(&question, &screen, &keys, &[]) {
             self.copilot_notice("ASK COPILOT / invalid capture", &format!("{error}\n\nEsc returns. Capture the screen again with :ask QUESTION. Nothing was sent."));
             return;
         }
         self.pending_copilot_question = None;
         let thread = AskThread {
             screen,
+            keys,
             turns: Vec::new(),
             epoch: self.epoch,
         };
@@ -1244,6 +1247,7 @@ impl App {
         self.send(Task::AskPrepare(
             question,
             thread.screen,
+            thread.keys,
             thread.turns,
             self.options.copilot_policy.clone(),
         ));

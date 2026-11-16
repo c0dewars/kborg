@@ -87,6 +87,7 @@ fn harness() -> Harness {
             doc_search: doc_search::DocSearch::default(),
             header: header_block::State::default(),
             ask_screen: None,
+            ask_keys: None,
             secret_draft: None,
             masked_documents: Vec::new(),
             ask_status: None,
@@ -5761,6 +5762,7 @@ fn ask_follow_up_carries_the_screen_and_conversation_into_a_new_review() -> Resu
     let (mut app, replies, mut commands) = harness();
     let thread = AskThread {
         screen: "pod api Pending".into(),
+        keys: "  l                Follow logs".into(),
         turns: Vec::new(),
         epoch: app.epoch,
     };
@@ -5786,9 +5788,11 @@ fn ask_follow_up_carries_the_screen_and_conversation_into_a_new_review() -> Resu
     app.key(KeyCode::Enter)?;
     assert!(matches!(app.modal, Modal::AdviceLoading));
     match commands.try_recv() {
-        Ok((_, Task::AskPrepare(question, screen, history, _))) => {
+        Ok((_, Task::AskPrepare(question, screen, keys, history, _))) => {
             assert_eq!(question, "which node is closest?");
             assert_eq!(screen, "pod api Pending");
+            // A follow-up sends the same key reference as the first question.
+            assert_eq!(keys, "  l                Follow logs");
             assert_eq!(
                 history,
                 vec![(
@@ -5815,6 +5819,7 @@ fn ask_follow_up_after_a_context_switch_sends_nothing() -> Result<()> {
     let (mut app, _replies, mut commands) = harness();
     app.ask_thread = Some(AskThread {
         screen: "pod api Pending".into(),
+        keys: String::new(),
         turns: vec![("why?".into(), "because".into())],
         epoch: app.epoch,
     });
@@ -5845,7 +5850,7 @@ fn explain_sends_the_status_line_error_with_the_screen() -> Result<()> {
         // With a saved Copilot setup the transfer is prepared at once; without
         // one the question waits for setup. Either way the error leads.
         let screen = match commands.try_recv() {
-            Ok((_, Task::AskPrepare(question, screen, history, _))) => {
+            Ok((_, Task::AskPrepare(question, screen, _keys, history, _))) => {
                 assert!(question.starts_with("Explain the status line") && history.is_empty());
                 screen
             }
@@ -5877,6 +5882,42 @@ fn explain_sends_the_status_line_error_with_the_screen() -> Result<()> {
         matches!(&app.modal, Modal::AdviceDocument(title, ..) if title == "EXPLAIN / no error")
     );
     assert!(app.ask_screen.is_none(), "nothing kept after a refusal");
+    Ok(())
+}
+
+#[test]
+fn ask_sends_the_keys_of_the_view_in_front_with_the_operators_own_bindings() -> Result<()> {
+    let (mut app, _replies, _commands) = harness();
+    app.keymap = crate::keymap::parse("keys:\n  logs: L\n")?;
+    // The resource table: the actions that apply to the kind in front.
+    app.capture_ask_screen();
+    let keys = app.ask_keys.clone().unwrap_or_default();
+    assert!(
+        keys.starts_with(crate::keymap::Scope::Global.title()),
+        "keys that work everywhere come first, so the bound never cuts them"
+    );
+    assert!(keys.contains("Follow logs *"), "remapped key is marked");
+    assert!(
+        keys.lines()
+            .any(|line| line.trim_start().starts_with("L ") && line.contains("Follow logs"))
+    );
+    assert!(
+        !keys
+            .lines()
+            .any(|line| line.trim_start().starts_with("l ") && line.contains("Follow logs"))
+    );
+    assert!(keys.contains(crate::keymap::Scope::Global.title()));
+    assert!(
+        !keys.contains("Masked YAML"),
+        "another view's keys are not sent"
+    );
+    assert!(keys.len() <= crate::advice::MAX_KEYS);
+    // A describe or YAML document: that view's keys, not the table's.
+    app.modal = Modal::Detail("POD / demo / api".into(), 0);
+    app.capture_ask_screen();
+    let keys = app.ask_keys.clone().unwrap_or_default();
+    assert!(keys.contains(crate::keymap::Scope::Detail.title()));
+    assert!(!keys.contains("Follow logs"));
     Ok(())
 }
 

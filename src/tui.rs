@@ -102,6 +102,8 @@ fn input_limit(label: &str) -> usize {
 #[derive(Clone)]
 struct AskThread {
     screen: String,
+    /// The keys of the view the screen was captured in (`keyhelp::ask_key_reference`).
+    keys: String,
     turns: Vec<(String, String)>,
     /// Context/scope generation; a follow-up after a switch is refused.
     epoch: u64,
@@ -339,6 +341,8 @@ struct App {
     /// Cluster, user, version and usage shown by the k9s-style header block.
     header: header_block::State,
     ask_screen: Option<String>,
+    /// Captured with `ask_screen`: the keys of that view, for Copilot.
+    ask_keys: Option<String>,
     /// The Secret and key a value prompt in front belongs to.
     secret_draft: Option<SecretDraft>,
     /// Masked text of the documents that show values, by the hash of the
@@ -1335,6 +1339,7 @@ pub fn run(mut options: Options) -> Result<()> {
         doc_search: doc_search::DocSearch::default(),
         header: header_block::State::default(),
         ask_screen: None,
+        ask_keys: None,
         secret_draft: None,
         masked_documents: Vec::new(),
         ask_status: None,

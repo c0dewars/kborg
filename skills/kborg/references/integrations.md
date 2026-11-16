@@ -64,6 +64,7 @@ KBorg has its own optional GitHub Copilot integration, separate from whatever as
   | `:explain` | Asks about the error on the status line; unbound out of the box, so bind `explain` in `keymap.yaml` |
 
 - **Approval:** each request shows the exact text to be sent and waits for approval. Answers are advice and are never run.
+- **Keys:** a question carries the keys of the view it was asked from, with the person's own bindings, so in-app answers name keys that work for them.
 - **Platforms:** answers inside KBorg work on Apple Silicon Macs. On other platforms setup only completes the GitHub sign-in.
 - **Enterprise:** `TENANT.ghe.com` hosts are supported.
 
