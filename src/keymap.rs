@@ -655,6 +655,12 @@ pub const ACTIONS: &[Action] = &[
     act("log.fullscreen", Log, &["f"], "Full screen"),
     act("log.lock", Log, &["L"], "Lock the horizontal column"),
     act("log.clear", Log, &["C"], "Clear the visible buffer"),
+    act(
+        "log.copy",
+        Log,
+        &["c"],
+        "Copy mouse-selected log text to the clipboard",
+    ),
     act("log.mark", Log, &["m"], "Insert a mark line"),
     act("log.all", Log, &["a"], "Toggle all ordinary containers"),
     act(

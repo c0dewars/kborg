@@ -3,8 +3,12 @@ use crate::{
     logs::{self, ReadOptions},
     safety,
 };
-use crossterm::event::KeyCode;
+use crossterm::event::{KeyCode, MouseButton, MouseEvent, MouseEventKind};
 use std::cell::Cell;
+
+mod selection;
+use selection::Selection;
+pub use selection::Viewport;
 
 const FILTER_BYTES: usize = 512;
 const MARK: &str = "[---------------- KBorg log mark ----------------]";
@@ -46,6 +50,7 @@ pub enum LogAction {
     AllContainers,
     Clear,
     Mark,
+    Copy,
 }
 
 enum Filter {
@@ -119,6 +124,8 @@ pub struct LogView {
     show_help: bool,
     errors_only: bool,
     warnings_only: bool,
+    selection: Option<Selection>,
+    clipboard_status: Option<String>,
     // Only viewport geometry is cached during immutable rendering, to make a
     // later PageUp/PageDown correspond to the viewport actually shown.
     viewport: Cell<(usize, usize)>,
@@ -150,6 +157,8 @@ impl LogView {
             show_help: false,
             errors_only: false,
             warnings_only: false,
+            selection: None,
+            clipboard_status: None,
             viewport: Cell::new((80, 20)),
             local_time: Cell::new(false),
         }
@@ -174,6 +183,7 @@ impl LogView {
     /// Switch source identity without retaining a frozen window from the old
     /// container. Preferences survive; a paused view freezes fresh records.
     pub fn replace_source(&mut self, text: String) {
+        self.clear_selection();
         self.text = bounded_text(&text);
         self.paused = None;
         self.offset = 0;
@@ -185,6 +195,100 @@ impl LogView {
     }
     pub fn is_filtering(&self) -> bool {
         self.draft.is_some()
+    }
+    pub fn clear_selection(&mut self) {
+        self.selection = None;
+        self.clipboard_status = None;
+    }
+    pub(crate) fn check_selection_viewport(&mut self, viewport: Viewport) {
+        if self
+            .selection
+            .as_ref()
+            .is_some_and(|selection| !selection.matches(viewport))
+        {
+            self.clear_selection();
+        }
+    }
+    pub fn dragging(&self) -> bool {
+        self.selection
+            .as_ref()
+            .is_some_and(|selection| selection.dragging)
+    }
+    pub fn mouse_selection(
+        &mut self,
+        mouse: MouseEvent,
+        viewport: Viewport,
+        local_time: bool,
+    ) -> bool {
+        if self.is_filtering() {
+            return false;
+        }
+        match mouse.kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                self.clear_selection();
+                if !viewport.contains(mouse) {
+                    return false;
+                }
+                let columns = usize::from(viewport.columns);
+                let lines = self
+                    .render_with(columns, usize::from(viewport.rows), local_time)
+                    .into_iter()
+                    .map(|line| crate::text::shown(&line, columns))
+                    .collect();
+                self.selection = Selection::start(viewport, mouse, lines);
+                true
+            }
+            MouseEventKind::Drag(MouseButton::Left) | MouseEventKind::Up(MouseButton::Left) => {
+                let Some(selection) = self.selection.as_mut() else {
+                    return false;
+                };
+                if !selection.dragging || !selection.matches(viewport) {
+                    return false;
+                }
+                selection.update(mouse);
+                if !selection.dragging && selection.is_empty() {
+                    self.selection = None;
+                }
+                true
+            }
+            _ => false,
+        }
+    }
+    pub fn selected_rows(&self, viewport: Viewport) -> Option<&[String]> {
+        self.selection
+            .as_ref()
+            .filter(|selection| selection.matches(viewport))
+            .map(|selection| selection.lines.as_slice())
+    }
+    pub fn selection_highlight(&self, viewport: Viewport, row: usize) -> Option<(u16, u16, &str)> {
+        self.selection
+            .as_ref()
+            .filter(|selection| selection.matches(viewport))
+            .and_then(|selection| selection.highlight(row))
+    }
+    pub fn selected_text(&self) -> Option<String> {
+        self.selection
+            .as_ref()
+            .filter(|selection| !selection.dragging)
+            .and_then(Selection::text)
+    }
+    pub fn copy_status(&self) -> Option<&str> {
+        self.clipboard_status.as_deref()
+    }
+    pub(crate) fn record_copy(&mut self, result: crate::Result<crate::clipboard::ClipboardTarget>) {
+        use crate::clipboard::ClipboardTarget;
+        if result.is_ok() {
+            self.clear_selection();
+        }
+        self.clipboard_status = Some(match result {
+            Ok(ClipboardTarget::System) => {
+                "Selected log text copied to the system clipboard.".into()
+            }
+            Ok(ClipboardTarget::Terminal) => {
+                "Selected log text sent to the terminal clipboard (OSC 52).".into()
+            }
+            Err(error) => error,
+        });
     }
     pub fn title(&self) -> String {
         format!(
@@ -352,6 +456,14 @@ impl LogView {
         }
     }
     pub fn key(&mut self, code: KeyCode) -> LogAction {
+        if code == KeyCode::Char('c') && !self.is_filtering() {
+            return LogAction::Copy;
+        }
+        let had_selection = self.selection.is_some();
+        self.clear_selection();
+        if had_selection && code == KeyCode::Esc {
+            return LogAction::None;
+        }
         if let Some(mut draft) = self.draft.take() {
             match code {
                 KeyCode::Esc => {
@@ -587,6 +699,50 @@ fn bounded_text(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn selecting_log_text_keeps_the_display_stable_and_preserves_wide_glyphs() {
+        crate::text::with_mode(true, || {
+            let left = MouseButton::Left;
+            let mouse = |kind, column, row| MouseEvent {
+                kind,
+                column,
+                row,
+                modifiers: crossterm::event::KeyModifiers::NONE,
+            };
+            let mut view = LogView::new(
+                "unselected\nα漢 end\n next!\nlast".into(),
+                ReadOptions::default(),
+            );
+            let viewport = Viewport::new(8, 20, 4);
+            // Select upward, ending on the second display cell of 漢.
+            assert!(view.mouse_selection(
+                mouse(MouseEventKind::Down(left), 5, 10),
+                viewport,
+                false
+            ));
+            view.update("more logs arrived".into());
+            assert!(view.mouse_selection(mouse(MouseEventKind::Drag(left), 3, 9), viewport, false));
+            assert!(view.dragging());
+            assert!(view.selected_text().is_none());
+            assert_eq!(
+                view.selection_highlight(viewport, 1),
+                Some((1, 6, "漢 end"))
+            );
+            assert_eq!(
+                view.selected_rows(viewport).map(|rows| rows[0].as_str()),
+                Some("unselected")
+            );
+            assert!(view.mouse_selection(mouse(MouseEventKind::Up(left), 3, 9), viewport, false));
+            assert_eq!(view.selected_text().as_deref(), Some("漢 end\n next"));
+            view.record_copy(Err("Clipboard unavailable".into()));
+            assert_eq!(view.copy_status(), Some("Clipboard unavailable"));
+            assert_eq!(view.selected_text().as_deref(), Some("漢 end\n next"));
+            view.record_copy(Ok(crate::clipboard::ClipboardTarget::System));
+            assert!(view.selected_rows(viewport).is_none());
+            assert_eq!(view.render(20, 4), ["more logs arrived"]);
+        });
+    }
+
     #[test]
     fn severity_filters_combine_without_losing_export_timestamps_or_paused_window() {
         let mut view=LogView::new("2026-10-23T10:00:00Z INFO ok\n2026-10-23T10:00:01Z ERROR failed\n2026-10-23T10:00:02Z WARN retry\n[Stopped: bounded]\n".into(),ReadOptions::default());

@@ -10,7 +10,7 @@ use crossterm::{
     cursor,
     event::{
         self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
-        Event, KeyCode, KeyEventKind, KeyModifiers, MouseEvent, MouseEventKind,
+        Event, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
     },
     execute, queue,
     style::{self, Color},
@@ -501,12 +501,8 @@ struct App {
 }
 impl App {
     fn copy_text(&self, text: &str) -> Result<()> {
-        use base64::Engine;
-        let encoded =
-            base64::engine::general_purpose::STANDARD.encode(safety::safe_text(text, 253));
         let mut stdout = io::stdout().lock();
-        write!(stdout, "\x1b]52;c;{encoded}\x07")
-            .and_then(|_| stdout.flush())
+        crate::clipboard::write_terminal(&mut stdout, &safety::safe_text(text, 253))
             .map_err(|_| "clipboard request failed".into())
     }
     /// Registers a clickable region of the frame being drawn.
@@ -589,10 +585,7 @@ impl App {
     }
     /// A mouse event; `true` quits, like a key.
     fn mouse(&mut self, mouse: MouseEvent, width: u16, height: u16) -> Result<bool> {
-        let left = matches!(
-            mouse.kind,
-            MouseEventKind::Down(crossterm::event::MouseButton::Left)
-        );
+        let left = matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left));
         if matches!(self.modal, Modal::None | Modal::LiveOverview(..))
             && mouse.row == 0
             && (self.ui.header.show || matches!(self.modal, Modal::LiveOverview(..)))
@@ -607,6 +600,24 @@ impl App {
         // The palette owns the keyboard while it is open.
         if self.palette.is_some() {
             return Ok(false);
+        }
+        if width >= 28
+            && height >= 10
+            && self.mouse_captured()
+            && matches!(
+                mouse.kind,
+                MouseEventKind::Down(MouseButton::Left)
+                    | MouseEventKind::Drag(MouseButton::Left)
+                    | MouseEventKind::Up(MouseButton::Left)
+            )
+        {
+            let top = self.view_top(width, height);
+            if let Modal::Follow(view) = &mut self.modal {
+                let viewport = log_viewport(log_panel_area(view, top, width, height));
+                if view.mouse_selection(mouse, viewport, self.ui.local_time()) {
+                    return Ok(false);
+                }
+            }
         }
         if left && let Some(action) = self.click_at(mouse.column, mouse.row) {
             match action {
@@ -731,6 +742,11 @@ impl App {
         } else {
             execute!(io::stdout(), EnableMouseCapture)
         };
+        if result.is_ok()
+            && let Modal::Follow(view) = &mut self.modal
+        {
+            view.clear_selection();
+        }
         self.status = if result.is_err() {
             self.copy_mode = !self.copy_mode;
             "The terminal refused the mouse mode change.".into()
@@ -1884,14 +1900,24 @@ pub fn run(mut options: Options) -> Result<()> {
                         dirty = true;
                     }
                 }
-                Event::Resize(_, _) => dirty = true,
-                // Pointer movement alone changes nothing on screen.
+                Event::Resize(_, _) => {
+                    if let Modal::Follow(view) = &mut app.modal {
+                        view.clear_selection();
+                    }
+                    dirty = true;
+                }
+                // Only a log selection uses pointer drags.
                 Event::Mouse(mouse)
                     if !app.write_inflight
-                        && !matches!(
-                            mouse.kind,
-                            MouseEventKind::Moved | MouseEventKind::Drag(_)
-                        ) =>
+                        && match mouse.kind {
+                            MouseEventKind::Moved => false,
+                            MouseEventKind::Drag(MouseButton::Left) => {
+                                app.mouse_captured()
+                                    && matches!(&app.modal, Modal::Follow(view) if view.dragging())
+                            }
+                            MouseEventKind::Drag(_) => false,
+                            _ => true,
+                        } =>
                 {
                     let (w, h) = terminal::size().map_err(|_| "terminal size failed")?;
                     if app.mouse(mouse, w, h)? {

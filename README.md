@@ -110,6 +110,7 @@ KBorg shows the context, cluster and namespace and asks before it connects. From
 | `/` | Filter rows (`/!` inverse, `/-f` fuzzy, `/-l` label selector) |
 | `Enter`, `d`, `y` | Drill down, describe, YAML; `/` then `n` / `N` searches inside |
 | `l`, `p` | Logs, previous logs |
+| Left-drag, then `c` in Logs | Highlight visible log text and copy the selection to the clipboard |
 | `s`, `a`, `F` | Shell, attach, port-forward (`F` also works on a Service or a workload: it picks a ready Pod) |
 | `s`, `r` on workloads | Scale, restart |
 | `U`, `u` | Jump to the owner (Pod → ReplicaSet → Deployment); Pods that use a ConfigMap, Secret, PVC or ServiceAccount |
@@ -119,7 +120,7 @@ KBorg shows the context, cluster and namespace and asks before it connects. From
 | `c`, `u`, `r` on Nodes | Cordon, uncordon, drain |
 | `N` `A` `S` `R` `T` `P` `C` `M`, `:sort COLUMN` | Sort by name, age, status, readiness, restarts, namespace, CPU, memory, or any column |
 | `Shift-Left` `Shift-Right`, `Shift-Up` `Shift-Down` | Move the sort to the next column; sort it ascending or descending. A click on a column title does the same |
-| Mouse | Click a row, a column title, a key hint in the header or a footer button; double-click opens a row; the wheel scrolls. `Ctrl-Y` (copy mode) hands the mouse back to the terminal to select text |
+| Mouse | Click a row, a column title, a key hint in the header or a footer button; double-click opens a row; the wheel scrolls. `Ctrl-Y` (copy mode) hands the mouse back to the terminal to select and copy text |
 | Ctrl-Z, Ctrl-W | Only rows that need attention; wide columns |
 | `D`, `kborg dashboard` | Dashboard |
 | `:helm`, `:secrets`, `:lint`, `:scan`, `:metrics` | Releases, Secrets, checks, scans, metrics |

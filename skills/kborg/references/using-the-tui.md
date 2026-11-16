@@ -125,6 +125,7 @@ Values are typed into a hidden prompt (Tab shows them) or read from `@/path/to/f
 - **Range:** `0` tail, `1` head, `2`..`6` the last 1m, 5m, 15m, 30m or 1h.
 - **Display:** `s` autoscroll, `w` wrap, `t` timestamps, `f` fullscreen.
 - **Filter:** `e` errors only, `W` warnings only.
+- **Copy:** Drag with the left mouse button to highlight visible log text, then press `c` to copy it to the clipboard. Esc or scrolling clears the selection. Over SSH, or if the system clipboard is unavailable, the terminal must support OSC 52 clipboard requests. Ctrl-Y lets you select and copy with the terminal itself.
 - **Export:** Ctrl-S opens a private export preview of the logs.
 
 ## Copilot (optional)

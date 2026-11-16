@@ -1025,6 +1025,7 @@ pub(super) fn log_hints(app: &App) -> (String, String) {
     let mut parts = pairs(
         app,
         &[
+            ("log.copy", "copy selection"),
             ("log.filter", "filter"),
             ("log.errors", "errors"),
             ("log.warnings", "warnings"),
