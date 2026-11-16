@@ -18,9 +18,9 @@
   </p>
 </div>
 
-![KBorg tour: browsing Pods and Nodes, the keys for each view, search inside YAML, logs, a reviewed scale, the multi-cluster dashboard and 20,000 Pods filtered as you type](docs/screenshots/tour.gif)
+![KBorg 0.9.0 in Catppuccin Mocha, showing startup context search, Nodes, log selection, Copilot setup, the multi-cluster dashboard, and filtering 20,000 demo Pods](docs/screenshots/tour.gif)
 
-<p align="center"><sub>Recorded from the real binary in <code>kborg demo</code>: sample data, no cluster needed. <a href="docs/FEATURE_TOUR.md">How it was made</a>.</sub></p>
+<p align="center"><sub>Recorded from the published 0.9.0 binary with synthetic data. <a href="docs/FEATURE_TOUR.md">How it was made</a>.</sub></p>
 
 ## Why KBorg
 
