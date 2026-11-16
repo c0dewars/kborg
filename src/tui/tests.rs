@@ -8047,3 +8047,32 @@ fn the_command_prompt_suggests_the_best_completion_inline() -> Result<()> {
     );
     Ok(())
 }
+
+/// Long context, cluster and user names (EKS ARNs) show whole when the
+/// terminal has room, and otherwise lose their middle, never the cluster
+/// name at the end; the key columns still fit beside them.
+#[test]
+fn the_header_shows_long_cluster_names_whole_or_keeps_their_end() {
+    let (mut app, _replies, _commands) = harness();
+    app.items = shared(ui_pods());
+    let arn = "arn:aws:eks:eu-central-1:188289755449:cluster/payments-prod-eu";
+    app.context = arn.into();
+    app.header.apply(HeaderInfo {
+        cluster: arn.into(),
+        user: arn.into(),
+        version: Some("v1.35.9-eks-91f89a9".into()),
+        usage: None,
+    });
+    let wide = screen(&app, 200, 30);
+    for row in &wide[2..=4] {
+        assert!(row.contains(arn), "{row}");
+    }
+    assert!(hint_shown(&wide, "?", "all keys"), "{}", wide[2]);
+    let narrow = screen(&app, 100, 30);
+    for row in &narrow[2..=4] {
+        assert!(
+            row.contains('~') && row.contains("payments-prod-eu"),
+            "{row}"
+        );
+    }
+}
