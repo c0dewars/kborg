@@ -8,6 +8,7 @@ use std::{
 };
 
 pub const TITLE: &str = "COPILOT SETUP";
+const ACCOUNT_SIGN_IN_STATUS: &str = "Copilot answers inside KBorg are not available on this platform yet.\n\nIn-app answers currently require Apple Silicon macOS. You can use the official Copilot CLI on its own with `copilot login`.\n\nNo question or cluster data was sent.\n\nEnter: GitHub account sign-in only  /  Esc: return";
 pub enum Outcome {
     Ready(PathBuf),
     AccountSignedIn { host: String, account: String },
@@ -27,12 +28,12 @@ pub fn saved_policy() -> Option<PathBuf> {
 }
 pub fn status_text(explicit: Option<&Path>) -> String {
     if !supported() {
-        return "Copilot answers inside KBorg are not available on this platform yet.\n\nIn-app answers currently require Apple Silicon macOS. You can use the official Copilot CLI on its own with `copilot login`.\n\nNo question or cluster data was sent.\n\nEnter: GitHub account sign-in only  /  Esc: return".into();
+        return ACCOUNT_SIGN_IN_STATUS.into();
     }
     let path = explicit.map(Path::to_path_buf).or_else(saved_policy);
     match path {
         Some(path) => match advice::load_options(&path) {
-            Ok(options) => format!("Copilot connection saved\n\nHost: {}\nAccount: {}\nModel: {}\n\nUse :ask QUESTION from any resource view. You'll review what is shared before each request. Model access depends on your Copilot plan and organization policy.\n\nEnter: manage connection  /  Esc: return", options.host, options.gh_cli.as_ref().map(|gh|gh.account.as_str()).unwrap_or("dedicated credential"), options.model),
+            Ok(options) => format!("Copilot connection saved\n\nHost: {}\nCredentials: {}\nModel: {}\n\nUse :ask QUESTION from any resource view. You'll review what is shared before each request. Model access depends on your Copilot plan and organization policy.\n\nEnter: manage connection  /  Esc: return", options.host, if options.gh_cli.is_some() { "GitHub CLI account" } else { "dedicated credential" }, options.model),
             Err(error) => format!("Copilot connection needs attention\n\n{}\n\nEnter: repair connection  /  Esc: return", safety::safe_text(&error, 4096)),
         },
         None => "Connect GitHub Copilot\n\nReuse your GitHub CLI account or sign in through your browser.\nReview the detected GitHub and Copilot tools before they run.\n\nSetup sends no cluster data and makes no model request.\n\nIn a terminal, run `kborg copilot setup`.".into(),
@@ -392,9 +393,12 @@ fn select_stored_account(accounts: &[String]) -> Result<AccountChoice> {
     };
     println!("Saved accounts: @{}", accounts.join(", @"));
     let account = input(
-        "Enter an account name or type /login for browser sign-in",
-        first,
+        "Enter an account name, press Enter for the first account, or use /login",
+        "",
     )?;
+    if account.is_empty() {
+        return Ok(AccountChoice::Stored(first.clone()));
+    }
     if account == "/login" {
         return Ok(AccountChoice::Browser);
     }
@@ -408,7 +412,11 @@ fn select_stored_account(accounts: &[String]) -> Result<AccountChoice> {
 fn choose_connection(config: &Path) -> Result<(String, AccountChoice)> {
     let accounts = stored_accounts(config, "github.com")?;
     let default = AccountChoice::default_for(&accounts);
-    println!("GitHub account\n  1  {} on GitHub.com", default.label());
+    let action = match &default {
+        AccountChoice::Stored(_) => "Use the default GitHub CLI account",
+        AccountChoice::Browser => "Sign in with your browser",
+    };
+    println!("GitHub account\n  1  {action} on GitHub.com");
     if !accounts.is_empty() {
         println!("  2  Another GitHub.com account");
     }
@@ -425,7 +433,7 @@ fn choose_connection(config: &Path) -> Result<(String, AccountChoice)> {
     }
 }
 fn account_sign_in() -> Result<Outcome> {
-    println!("{}", status_text(None));
+    println!("{ACCOUNT_SIGN_IN_STATUS}");
     if !confirm("Continue with GitHub account sign-in only?")? {
         return Err("Sign-in canceled; nothing was sent or changed".into());
     }
@@ -504,15 +512,7 @@ pub fn interactive() -> Result<Outcome> {
     if original.is_some() {
         match advice::load_options(&destination) {
             Ok(options) => {
-                println!(
-                    "Saved connection: {} / {}",
-                    options.host,
-                    options
-                        .gh_cli
-                        .as_ref()
-                        .map(|gh| gh.account.as_str())
-                        .unwrap_or("dedicated credential")
-                );
+                println!("Saved connection on {}", options.host);
                 match input("1 verify connection / 2 repair or change connection", "1")?.as_str() {
                     "1" => {
                         advice::validate_setup(&options)?;
@@ -574,7 +574,7 @@ pub fn interactive() -> Result<Outcome> {
         serde_json::from_value(policy.clone()).map_err(|_| "Cannot encode Copilot connection")?;
     println!("\nChecking the Copilot runtime and GitHub account...");
     advice::validate_setup(&options)?;
-    if !confirm(&format!("Save @{account} on {host} for Copilot?"))? {
+    if !confirm("Save this Copilot connection?")? {
         return Err("Copilot setup canceled; no connection saved".into());
     }
     let bytes = serde_json::to_vec_pretty(&policy).map_err(|_| "Cannot encode connection")?;
