@@ -360,9 +360,12 @@ mod tests {
         assert!(text.is_ascii(), "the editor takes ASCII only");
         assert!(
             text.contains("  ca.crt: |\n    -----BEGIN CERTIFICATE-----"),
-            "{text}"
+            "a multi-line value is a literal block"
         );
-        assert!(text.contains("keep:\n  - blob.bin"), "{text}");
+        assert!(
+            text.contains("keep:\n  - blob.bin"),
+            "a binary value is kept"
+        );
         let edited = parse(text, &doc.version)?;
         let mut expected: Vec<(&str, &[u8])> = entries
             .iter()
@@ -401,8 +404,8 @@ mod tests {
             ("other: hunter2\n", "not valid"),
         ] {
             let error = parse(bad, "1").err().ok_or(bad)?;
-            assert!(error.contains(message), "{bad}: {error}");
-            assert!(!error.contains("hunter"), "{error}");
+            assert!(error.contains(message), "the error names the problem");
+            assert!(!error.contains("hunter"), "an error never quotes a value");
         }
         assert!(parse("data:\n", "1")?.values.is_empty());
         Ok(())

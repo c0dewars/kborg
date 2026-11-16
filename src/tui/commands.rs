@@ -907,7 +907,8 @@ impl App {
                 self.secret_prompt(namespace, name, uid, None);
             }
             Outcome::EditAll(namespace, name, uid) => {
-                self.status = format!("Reading every key of Secret {name} for the editor...");
+                // Fixed text: a Secret's name never goes to the status line.
+                self.status = "Reading every key of the Secret for the editor...".into();
                 self.send(Task::SecretDocument(namespace, name, uid));
             }
             Outcome::Create(namespace) => {
@@ -1202,10 +1203,8 @@ impl App {
                     match parsed {
                         Ok(edited) => {
                             let doc = &editor.draft;
-                            self.status = format!(
-                                "Comparing with Secret {} and preparing the review...",
-                                doc.name
-                            );
+                            self.status =
+                                "Comparing with the Secret and preparing the review...".into();
                             self.send(Task::SecretPrepare(
                                 doc.namespace.clone(),
                                 doc.name.clone(),
