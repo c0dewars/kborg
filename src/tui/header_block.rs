@@ -142,10 +142,19 @@ fn info_lines(app: &App, value_width: usize) -> Vec<(&'static str, Vec<(String, 
             vec![(display(value, value_width), role)]
         }
     };
+    // Context, cluster and user names keep their ending when cut: in an EKS
+    // ARN or a GKE name the cluster's own name is the last part.
+    let identity = |value: &str| {
+        if value.is_empty() {
+            vec![("-".to_owned(), "muted")]
+        } else {
+            vec![(crate::text::shown_middle(value, value_width), "text")]
+        }
+    };
     let mut lines = vec![
-        ("Context", known(&app.context, "text")),
-        ("Cluster", known(&app.header.cluster, "text")),
-        ("User", known(&app.header.user, "text")),
+        ("Context", identity(&app.context)),
+        ("Cluster", identity(&app.header.cluster)),
+        ("User", identity(&app.header.user)),
         (
             "Namespace",
             known(namespace_label(&app.namespace), "accent"),
@@ -310,8 +319,20 @@ pub(super) fn render(
     for line in 0..UiConfig::BLOCK_ROWS {
         row(out, y + line, width, "", color("text"), bg)?;
     }
-    // Info: a third of the width, between 40 and 52 cells.
-    let info_width = (width / 3).clamp(40, 52);
+    // Info: a third of the width, between 40 and 52 cells, or wider for long
+    // context, cluster or user names (up to half the width), so the whole
+    // name shows when there is room; the key columns move right.
+    let longest = [&app.context, &app.header.cluster, &app.header.user]
+        .iter()
+        .map(|value| text_cells(value))
+        .max()
+        .unwrap_or(0);
+    let info_width = (width / 3).clamp(40, 52).max(
+        LABEL_WIDTH
+            .saturating_add(longest)
+            .saturating_add(1)
+            .min(width / 2),
+    );
     let value_width = usize::from(info_width - LABEL_WIDTH);
     for (line, (label, values)) in info_lines(app, value_width).into_iter().enumerate() {
         let y = y + line as u16;

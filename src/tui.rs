@@ -34,6 +34,7 @@ mod format;
 mod header_block;
 #[path = "ui_helm.rs"]
 mod helm_ui;
+mod input;
 mod keyhelp;
 mod keys;
 #[path = "ui_live_reload.rs"]
@@ -1647,6 +1648,7 @@ pub fn run(mut options: Options) -> Result<()> {
     draw(&mut app)?;
     let mut dirty = false;
     let mut last_activity = Instant::now();
+    let mut input = input::Input::new(input::Terminal);
     loop {
         if app.receive() {
             dirty = true;
@@ -1831,9 +1833,13 @@ pub fn run(mut options: Options) -> Result<()> {
             draw(&mut app)?;
             dirty = false;
         }
-        if event::poll(loop_tick(&app, last_activity)).map_err(|_| "input failed")? {
+        if input.poll(loop_tick(&app, last_activity))? {
             last_activity = Instant::now();
-            match event::read().map_err(|_| "input failed")? {
+            // A split escape sequence that is not a mouse report is dropped.
+            let Some(event) = input.read()? else {
+                continue;
+            };
+            match event {
                 Event::Key(key) if key.kind == KeyEventKind::Press => {
                     if key.modifiers.contains(KeyModifiers::CONTROL)
                         && key.code == KeyCode::Char('c')
