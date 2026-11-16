@@ -1375,11 +1375,12 @@ fn familiar_commands_complete_recall_and_keep_scoped_back_history() {
     assert!(app.key(KeyCode::Tab).is_ok());
     assert!(app.key(KeyCode::Enter).is_ok());
     assert_eq!(app.kind(), "deployments.apps");
-    assert_eq!(app.history.last().map(String::as_str), Some("deploy"));
+    // Tab takes the best completion: the resource, not the short name.
+    assert_eq!(app.history.last().map(String::as_str), Some("deployments"));
     assert!(app.key(KeyCode::Char(':')).is_ok());
     assert!(app.key(KeyCode::Char('é')).is_ok());
     assert!(app.key(KeyCode::Up).is_ok());
-    assert!(matches!(&app.modal,Modal::Input("Command",text) if text=="deploy"));
+    assert!(matches!(&app.modal,Modal::Input("Command",text) if text=="deployments"));
     assert!(app.key(KeyCode::Down).is_ok());
     assert!(matches!(&app.modal,Modal::Input("Command",text) if text=="é"));
     assert!(app.key(KeyCode::Left).is_ok());
@@ -7926,6 +7927,97 @@ fn every_table_scrolls_sideways_without_losing_or_repeating_a_column() -> Result
         checked > 300 && drawn.len() >= 10,
         "{checked} tables, {} layouts",
         drawn.len()
+    );
+    Ok(())
+}
+
+/// The `:` prompt completes like k9s: the best match first (a short name's
+/// resource, then the shortest command or resource), greyed out after the
+/// cursor; Tab or Right at the end takes it, Tab again cycles.
+#[test]
+fn the_command_prompt_suggests_the_best_completion_inline() -> Result<()> {
+    let (mut app, _replies, _commands) = harness();
+    app.kinds.push(crate::gateway::Kind {
+        plural: "nodeclaims".into(),
+        kind: "NodeClaim".into(),
+        group: "karpenter.sh".into(),
+        version: "v1".into(),
+        namespaced: false,
+        short_names: vec!["nc".into(), "nodeclaim".into()],
+    });
+    let first = |app: &App, text: &str| app.suggestions(text).into_iter().next();
+    assert_eq!(first(&app, "po").as_deref(), Some("pods"));
+    assert_eq!(first(&app, "dep").as_deref(), Some("deployments"));
+    assert_eq!(
+        first(&app, "svc").as_deref(),
+        Some("services"),
+        "a short name's resource"
+    );
+    assert_eq!(first(&app, "no").as_deref(), Some("nodes"));
+    assert_eq!(
+        first(&app, "nodec").as_deref(),
+        Some("nodeclaims"),
+        "CRDs too"
+    );
+    assert_eq!(first(&app, "nc").as_deref(), Some("nodeclaims"));
+    assert_eq!(app.ghost("po").as_deref(), Some("ds"));
+    // A command that changes something or quits is never suggested for you.
+    assert_eq!(app.ghost("de").as_deref(), Some("ployments"), "not delete");
+    assert_eq!(app.ghost("dele"), None);
+    assert_eq!(app.ghost("dra"), None);
+    assert_ne!(app.ghost("qu").as_deref(), Some("it"), "never quit");
+    assert_eq!(app.ghost("qui"), None);
+    assert_eq!(
+        app.ghost("res").as_deref(),
+        Some("ourcequotas"),
+        "a resource, never restart"
+    );
+    assert_eq!(app.ghost("rest"), None);
+    assert!(
+        app.suggestions("dele").contains(&"delete".to_owned()),
+        "Tab still reaches it"
+    );
+    assert_eq!(
+        app.ghost("metr").as_deref(),
+        Some("ics"),
+        "commands that only show something are"
+    );
+    assert_eq!(app.ghost("he").as_deref(), Some("lm"));
+    assert_eq!(
+        app.ghost("svc"),
+        None,
+        "nothing to add inline; Tab still swaps it"
+    );
+    assert_eq!(app.ghost(""), None);
+    // Later words: namespaces after a resource, sort keys after sort.
+    app.known_namespaces = vec!["kube-system".into(), "shop".into()];
+    assert_eq!(first(&app, "pods sh").as_deref(), Some("pods shop"));
+    assert_eq!(first(&app, "sort re").as_deref(), Some("sort ready"));
+    // On screen: the rest of the best match after the cursor.
+    app.modal = Modal::None;
+    app.key(KeyCode::Char(':'))?;
+    for c in "dep".chars() {
+        app.key(KeyCode::Char(c))?;
+    }
+    let shown = screen(&app, 100, 24).join("\n");
+    assert!(shown.contains(":dep|loyments"), "{shown}");
+    assert!(shown.contains("Tab or Right accept"), "{shown}");
+    // Right at the end takes it; Right elsewhere still moves the cursor.
+    app.key(KeyCode::Right)?;
+    assert!(matches!(&app.modal, Modal::Input("Command", text) if text == "deployments"));
+    app.key(KeyCode::Home)?;
+    app.key(KeyCode::Right)?;
+    assert_eq!(app.command_cursor, 1);
+    assert!(matches!(&app.modal, Modal::Input("Command", text) if text == "deployments"));
+    // Tab cycles through the matches in the same order.
+    app.modal = Modal::Input("Command", "po".into());
+    app.command_cursor = 2;
+    app.completion = None;
+    app.key(KeyCode::Tab)?;
+    assert!(matches!(&app.modal, Modal::Input("Command", text) if text == "pods"));
+    app.key(KeyCode::Tab)?;
+    assert!(
+        matches!(&app.modal, Modal::Input("Command", text) if text != "pods" && text.starts_with("po"))
     );
     Ok(())
 }
