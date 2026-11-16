@@ -426,6 +426,18 @@ impl App {
             .map(|(rank, value)| (rank, format!("{prefix}{value}")))
             .collect()
     }
+    /// The best completion of `text` that Tab or Right takes, when it is
+    /// not `text` itself: never a command that acts.
+    pub(super) fn best_completion(&self, text: &str) -> Option<String> {
+        if text.is_empty() {
+            return None;
+        }
+        self.ranked_suggestions(text)
+            .into_iter()
+            .next()
+            .filter(|(rank, best)| *rank < 4 && best != text)
+            .map(|(_, best)| best)
+    }
     /// The rest of the best completion of `text`, shown greyed out after the
     /// cursor as in k9s; `None` when nothing longer starts with it.
     pub(super) fn ghost(&self, text: &str) -> Option<String> {

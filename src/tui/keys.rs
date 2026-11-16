@@ -1066,13 +1066,14 @@ impl App {
                             .unwrap_or(0);
                         self.modal = Modal::Input("Command", text);
                     }
-                    // At the end of the line Right takes the greyed suggestion.
+                    // At the end of the line Right takes the greyed suggestion,
+                    // also when it replaces a short name (`svc` -> services).
                     KeyCode::Right
                         if self.command_cursor == text.len()
                             && self.completion.is_none()
-                            && self.ghost(&text).is_some() =>
+                            && self.best_completion(&text).is_some() =>
                     {
-                        text.push_str(&self.ghost(&text).unwrap_or_default());
+                        text = self.best_completion(&text).unwrap_or(text);
                         self.command_cursor = text.len();
                         self.modal = Modal::Input("Command", text);
                     }
