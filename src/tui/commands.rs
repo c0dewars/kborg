@@ -95,6 +95,19 @@ impl App {
             ("revert", []) => self.undo_last(),
             ("columns" | "cols", []) => self.show_columns(),
             ("ctx-config", []) => self.edit_context_settings(),
+            ("identity", []) => {
+                let value = |text: &str| if text.is_empty() {
+                    "Unavailable".into()
+                } else {
+                    safety::safe_text(text, 4096)
+                };
+                self.modal = Modal::Detail(format!(
+                    "Connection identity\n\nContext\n{}\n\nCluster\n{}\n\nUser\n{}\n\nNamespace\n{}\n\nKubernetes version\n{}",
+                    value(&self.context), value(&self.header.cluster), value(&self.header.user),
+                    value(header_block::namespace_label(&self.namespace)),
+                    value(self.header.version.as_deref().unwrap_or("")),
+                ), 0);
+            }
             ("ui", [action]) if action == "reload" => self.reload_ui()?,
             ("overview", []) => self.modal = Modal::Input(OVERVIEW_CONTEXTS_LABEL, self.context.clone()),
             ("metrics", []) => { self.metrics_resources = false; self.request_metrics(); }
@@ -1226,6 +1239,27 @@ impl App {
     }
     /// Capture what the user is looking at before the command prompt covers it.
     pub(super) fn capture_ask_screen(&mut self) {
+        self.ask_source = Some(self.ask_source_label());
+        self.ask_status = (self.sticky_status || self.status.contains(crate::errors::NEXT))
+            .then(|| self.status.clone());
+        if let Modal::Follow(view) = &self.modal
+            && let Some(selection) = view.selected_text()
+        {
+            // A mouse selection is a narrower evidence scope than the log screen.
+            let excerpt = safety::safe_lines(&selection, crate::advice::MAX_SCREEN - 1100);
+            let clipped = if excerpt != selection {
+                " (bounded for transfer)"
+            } else {
+                ""
+            };
+            let context = safety::safe_text(&self.context, 512);
+            self.ask_screen = Some(format!(
+                "{HIGHLIGHTED_LOG_EXCERPT}{clipped}\nSOURCE: {}\nCONTEXT: {context}\n\n{excerpt}",
+                self.ask_source.as_deref().unwrap_or("Logs")
+            ));
+            self.ask_keys = Some(keyhelp::ask_key_reference(self));
+            return;
+        }
         // Opening the prompt hides a revealed Secret value anyway; hide it
         // first so it can never reach the :ask snapshot.
         if let Modal::Secrets(view) = &mut self.modal {
@@ -1247,9 +1281,54 @@ impl App {
             screen.push_str("\n\n");
             screen.push_str(&lines);
         }
-        // Errors carry a next step; a sticky status is a warning to act on.
-        self.ask_status = (self.sticky_status || self.status.contains(crate::errors::NEXT))
-            .then(|| self.status.clone());
+    }
+    fn ask_source_label(&self) -> String {
+        let context = header_block::identity_name(&self.context);
+        let namespace = if self.namespace == "*" {
+            "all namespaces"
+        } else {
+            &self.namespace
+        };
+        let title = render::screen_title(self, &self.modal);
+        let label = match &self.modal {
+            Modal::Follow(view) => {
+                let title = if view.previous {
+                    "Previous logs"
+                } else {
+                    "Logs"
+                };
+                match &self.log_target {
+                    Some(target) if target.membership.is_some() => {
+                        format!("{title} · {context} · {} · Pod group", target.namespace)
+                    }
+                    Some(target) => {
+                        let container = if target.all {
+                            "all containers"
+                        } else {
+                            target.container.as_deref().unwrap_or("default container")
+                        };
+                        format!(
+                            "{title} · {context} · {}/{} · {container}",
+                            target.namespace, target.pod
+                        )
+                    }
+                    None => format!("{title} · {context} · {namespace}"),
+                }
+            }
+            Modal::LiveOverview(dashboard) => match &dashboard.logs {
+                Some(logs) => format!("Dashboard logs · {}", logs.title),
+                None => format!("Dashboard · {} contexts", dashboard.rows.len()),
+            },
+            _ => format!("{title} · {context} · {namespace}"),
+        };
+        safety::safe_text(&label, 512)
+    }
+    pub(super) fn clear_ask_capture(&mut self) {
+        self.ask_screen = None;
+        self.ask_keys = None;
+        self.ask_source = None;
+        self.ask_status = None;
+        self.pending_copilot_question = None;
     }
     /// The reverse of `action` on `target`, read from the object as the table
     /// has it just before the change: the old replica count, the old image,
@@ -1512,7 +1591,7 @@ impl App {
             return;
         }
         let mut text = crate::copilot_setup::status_text(self.options.copilot_policy.as_deref());
-        if crate::copilot_setup::supported() {
+        if crate::copilot_setup::supported() && self.options.copilot_policy.is_some() {
             // The user's own keys, so the guidance matches a remapped keymap.
             let key = |action: &str| {
                 self.keymap
@@ -1520,7 +1599,7 @@ impl App {
                     .unwrap_or_else(|| "(unbound)".into())
             };
             text.push_str(&format!(
-                "\n\nKEYS AND COMMANDS\n  {:<10} :ask QUESTION   Ask about the screen in front (tables, describe, YAML, logs, dashboard)\n  {:<10} :explain        Explain the error on the status line (bind a key: explain in keymap.yaml)\n  f          on an answer   Ask a follow-up about the same screen\n  :copilot                  Minimized diagnostics for the selected object\n  :copilot setup | status   Connect, change account or check the connection\nEvery request shows exactly what is sent and waits for your approval.",
+                "\n\nKEYS AND COMMANDS\n  {:<10} :ask QUESTION   Ask about the screen in front (tables, describe, YAML, logs, dashboard)\n  {:<10} :explain        Explain the error on the status line (bind a key: explain in keymap.yaml)\n  f          in Copilot chat   Ask a follow-up about the same screen\n  :copilot                     Minimized diagnostics for the selected object\n  :copilot setup | status      Connect, change account or check the connection\nEvery request shows exactly what is sent and waits for your approval.",
                 key("ask"),
                 key("explain"),
             ));
@@ -1530,8 +1609,7 @@ impl App {
     pub(super) fn finish_copilot_setup(&mut self, result: Result<crate::copilot_setup::Outcome>) {
         match result {
             Ok(crate::copilot_setup::Outcome::AccountSignedIn {host, account}) => {
-                self.ask_screen = None;
-                self.pending_copilot_question = None;
+                self.clear_ask_capture();
                 self.copilot_notice("GITHUB ACCOUNT SELECTED", &format!("Stored account selected: {account}\nHost: {host}\n\nCredentials remain in the official GitHub CLI. In-app Copilot answers are still unavailable on this platform; login alone cannot enable the missing containment backend. No question or cluster data was sent.\n\nEsc returns to Kubernetes."));
             }
             Ok(crate::copilot_setup::Outcome::Ready(path)) => {
@@ -1544,7 +1622,7 @@ impl App {
                     self.show_copilot_setup();
                 }
             }
-            Err(error) => self.copilot_notice(crate::copilot_setup::TITLE, &format!("Setup did not finish. No question or cluster data was sent.\n\n{}\n\nS retries setup. Esc returns.", safety::safe_text(&error, 8192))),
+            Err(error) => self.copilot_notice(crate::copilot_setup::TITLE, &format!("Setup did not finish. No question or cluster data was sent.\n\n{}\n\nEnter: retry  /  Esc: return", safety::safe_text(&error, 8192))),
         }
     }
     /// Keep the bounded sanitized capture until the connection is available,
@@ -1568,15 +1646,14 @@ impl App {
             if self.options.allow_copilot_screen && crate::copilot_setup::supported() {
                 self.pending_copilot_question = Some(question);
             } else {
-                self.pending_copilot_question = None;
-                self.ask_screen = None;
+                self.clear_ask_capture();
             }
             self.show_copilot_setup();
             return;
         }
         if self.busy {
             self.copilot_notice("COPILOT BUSY", "Wait for the current request to finish, then open :ask QUESTION again. Nothing was sent.");
-            self.ask_screen = None;
+            self.clear_ask_capture();
             return;
         }
         let Some(screen) = self.ask_screen.take() else {
@@ -1584,12 +1661,17 @@ impl App {
             return;
         };
         let keys = self.ask_keys.take().unwrap_or_default();
+        let source = self
+            .ask_source
+            .take()
+            .unwrap_or_else(|| "Captured view".into());
+        self.clear_ask_capture();
         if let Err(error) = crate::advice::screen_bundle(&question, &screen, &keys, &[]) {
             self.copilot_notice("ASK COPILOT / invalid capture", &format!("{error}\n\nEsc returns. Capture the screen again with :ask QUESTION. Nothing was sent."));
             return;
         }
-        self.pending_copilot_question = None;
         let thread = AskThread {
+            source,
             screen,
             keys,
             turns: Vec::new(),
@@ -1609,20 +1691,42 @@ impl App {
             self.options.copilot_policy.clone(),
         ));
         if !self.busy {
-            self.ask_inflight = None;
-            self.copilot_notice("COPILOT NOT STARTED", "Request queue unavailable. Esc returns; ask again when the worker is available. Nothing was sent.");
+            let notice = "Request queue unavailable. Nothing was sent.";
+            if !self.restore_failed_follow_up(notice) {
+                self.copilot_notice("COPILOT NOT STARTED", notice);
+            }
         }
+    }
+    fn restore_follow_up(&mut self, question: &str, notice: &str) -> bool {
+        if !matches!(self.subviews.last(), Some(Modal::AdviceChat(_))) {
+            return false;
+        }
+        self.ask_draft = question.into();
+        self.ask_notice = Some(notice.into());
+        self.close_subview();
+        true
+    }
+    pub(super) fn restore_failed_follow_up(&mut self, notice: &str) -> bool {
+        self.ask_inflight
+            .take()
+            .is_some_and(|(question, _)| self.restore_follow_up(&question, notice))
     }
     /// `f` on an answer: another question about the same captured screen,
     /// carrying the conversation so far. It is reviewed and approved again.
     pub(super) fn ask_follow_up(&mut self, question: &str) {
+        if !self.options.allow_copilot_screen {
+            let notice = "Screen questions are disabled by the operator configuration.";
+            if !self.restore_follow_up(question, notice) {
+                self.copilot_notice("COPILOT DISABLED", notice);
+            }
+            return;
+        }
         let question = match crate::advice::validate_question(question) {
             Ok(question) => question,
             Err(error) => {
-                self.copilot_notice(
-                    "FOLLOW-UP / question needed",
-                    &format!("{error}\n\nEsc returns. Nothing was sent."),
-                );
+                if !self.restore_follow_up(question, &error) {
+                    self.copilot_notice("FOLLOW-UP / question needed", &error);
+                }
                 return;
             }
         };
@@ -1632,11 +1736,19 @@ impl App {
         };
         if thread.epoch != self.epoch {
             self.ask_thread = None;
+            self.ask_draft.clear();
+            self.ask_notice = None;
+            if matches!(self.subviews.last(), Some(Modal::AdviceChat(_))) {
+                self.subviews.pop();
+            }
             self.copilot_notice("FOLLOW-UP / context changed", "The context or scope changed since that answer, so its screen is out of date. Press : on the current screen and type ask QUESTION. Nothing was sent.");
             return;
         }
         if self.busy {
-            self.copilot_notice("COPILOT BUSY", "Wait for the current request to finish, then ask the follow-up again. Nothing was sent.");
+            let notice = "Wait for the current request to finish, then retry the follow-up.";
+            if !self.restore_follow_up(&question, notice) {
+                self.copilot_notice("COPILOT BUSY", notice);
+            }
             return;
         }
         self.send_ask(question, thread);
@@ -1645,7 +1757,7 @@ impl App {
     /// prompt opened, together with the screen, through the same review.
     pub(super) fn explain_status(&mut self) {
         let Some(error) = self.ask_status.take() else {
-            self.ask_screen = None;
+            self.clear_ask_capture();
             self.copilot_notice("EXPLAIN / no error", "The status line shows no error to explain. Run :explain while an error or warning is on the status line. Nothing was sent.");
             return;
         };
@@ -1936,8 +2048,26 @@ impl App {
         }
     }
     pub(super) fn changed(&mut self) {
-        self.pending_copilot_question = None;
-        self.ask_screen = None;
+        self.clear_ask_capture();
+        if matches!(
+            self.modal,
+            Modal::AdviceChat(_) | Modal::Input(ASK_LABEL | FOLLOW_UP_LABEL, _)
+        ) || (self.ask_inflight.is_some()
+            && matches!(
+                self.modal,
+                Modal::AdviceLoading | Modal::AdviceReview(_) | Modal::AdviceRunning
+            ))
+        {
+            self.modal = Modal::None;
+        }
+        if self.ask_inflight.take().is_some()
+            && let Some(cancel) = self.advice_cancel.take()
+        {
+            let _ = cancel.send(());
+        }
+        self.ask_thread = None;
+        self.ask_draft.clear();
+        self.ask_notice = None;
         self.worker.forward.cancel();
         self.selection_ui.restoring = None;
         self.selection_ui.focus = None;
@@ -1969,13 +2099,20 @@ impl App {
         self.log_target = None;
     }
     pub(super) fn connect(&mut self) {
+        self.connect_with_namespace_default("");
+    }
+    pub(super) fn connect_with_namespace_default(&mut self, namespace: &str) {
         self.prepare_context_settings();
         self.namespace_override = false;
         self.changed();
         self.connected = false;
         self.server = "connecting...".into();
         self.connecting_epoch = Some(self.epoch);
-        self.send(Task::Connect(self.options.connection.clone()));
+        let mut connection = self.options.connection.clone();
+        if connection.namespace.is_empty() && !namespace.is_empty() {
+            connection.namespace = self.context_namespace().unwrap_or_else(|| namespace.into());
+        }
+        self.send(Task::Connect(connection));
     }
     pub(super) fn expire_table_metrics(&mut self, now: Instant) -> bool {
         if !self.table_metrics.expired(now) {

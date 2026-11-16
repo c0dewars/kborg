@@ -14,7 +14,8 @@ The mark reads **K&lt;B**: an orange K whose arms form a `<` chevron, which doub
 | `kborg-icon.png` | 1024 px app icon on a dark rounded tile |
 | `kborg-logo.png` | Wordmark lockup for light backgrounds (packaged with releases) |
 | `kborg-logo-dark.png` | Wordmark lockup for dark backgrounds |
+| `kborg-logo-mocha.png` | Catppuccin Mocha wordmark on a Mocha base tile for the README |
 
-All four are generated from one geometry by [`scripts/make-logo.py`](../scripts/make-logo.py) (Pillow). The wordmark uses macOS's Avenir Next Heavy, rasterized into the PNGs; pass `--font` to use another bold face.
+[`scripts/make-logo.py`](../scripts/make-logo.py) generates the assets from one geometry using Pillow. The wordmark uses macOS's Avenir Next Heavy. Pass `--font` to use another bold face.
 
 The earlier teal connected-squares emblem (2026-10-10) is retained as `k8borg-logo-concept.png` for history.

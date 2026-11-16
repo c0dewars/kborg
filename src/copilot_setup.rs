@@ -27,15 +27,15 @@ pub fn saved_policy() -> Option<PathBuf> {
 }
 pub fn status_text(explicit: Option<&Path>) -> String {
     if !supported() {
-        return "Copilot answers inside KBorg are not available on this platform yet.\n\nThe contained integration currently runs on macOS Apple Silicon only. Windows, Linux/WSL and Intel macOS do not have a validated containment backend; login alone cannot enable it. No question, screen, token or cluster data has been sent.\n\nYou can use the official GitHub Copilot CLI separately: install it from https://docs.github.com/copilot/how-tos/copilot-cli/set-up-copilot-cli/install-copilot-cli, then run `copilot login` (or `copilot login --host TENANT.ghe.com`). Review anything you copy into it yourself.\n\nPress S to sign in to GitHub with a one-time code and link (GitHub.com or your company domain). This stores the account in the official GitHub CLI only; it does not enable unsupported in-app answers.\n\nKBorg's Kubernetes features continue to work without Copilot. Esc returns.\n".into();
+        return "Copilot answers inside KBorg are not available on this platform yet.\n\nIn-app answers currently require Apple Silicon macOS. You can use the official Copilot CLI on its own with `copilot login`.\n\nNo question or cluster data was sent.\n\nEnter: GitHub account sign-in only  /  Esc: return".into();
     }
     let path = explicit.map(Path::to_path_buf).or_else(saved_policy);
     match path {
         Some(path) => match advice::load_options(&path) {
-            Ok(options) => format!("Copilot connection saved\n\nHost: {}\nAccount: {}\nModel: {}\n\nUse :ask QUESTION from the screen you want help with, or :copilot for minimized selected-resource diagnostics. Every transfer is reviewed first; answers never execute commands. Credentials and containment are rechecked for each request. A saved policy does not prove an active subscription or enterprise entitlement.\n\nS runs setup / verifies the saved connection. Esc returns.", options.host, options.gh_cli.as_ref().map(|gh|gh.account.as_str()).unwrap_or("dedicated credential"), options.model),
-            Err(error) => format!("Copilot connection needs attention\n\n{}\n\nS opens setup. Setup can repair or change the connection after review, retaining a private backup. Esc returns.", safety::safe_text(&error, 4096)),
+            Ok(options) => format!("Copilot connection saved\n\nHost: {}\nAccount: {}\nModel: {}\n\nUse :ask QUESTION from any resource view. You'll review what is shared before each request. Model access depends on your Copilot plan and organization policy.\n\nEnter: manage connection  /  Esc: return", options.host, options.gh_cli.as_ref().map(|gh|gh.account.as_str()).unwrap_or("dedicated credential"), options.model),
+            Err(error) => format!("Copilot connection needs attention\n\n{}\n\nEnter: repair connection  /  Esc: return", safety::safe_text(&error, 4096)),
         },
-        None => "Connect GitHub Copilot\n\nPress S to start guided setup, or run `kborg copilot setup` in a terminal.\n\nAlready use the Copilot CLI? Setup takes about a minute: KBorg finds your installed Copilot (an npm install works; it uses the native binary inside it) and GitHub CLIs, lets you choose github.com or TENANT.ghe.com, and reuses the account `gh` is signed in with. If you are not signed in, it offers GitHub's browser login. No token copying or JSON editing is required.\n\nThe contained runtime is native Copilot 1.0.91 or later on Apple Silicon: a later version is accepted when it passes the same containment checks. A compatible official installation and a Copilot entitlement are required. You approve the exact installed executables before they run; KBorg pins them and writes the connection locally. No cluster data is sent during setup.\n\nS: start setup | Esc: return".into(),
+        None => "Connect GitHub Copilot\n\nReuse your GitHub CLI account or sign in through your browser.\nReview the detected GitHub and Copilot tools before they run.\n\nSetup sends no cluster data and makes no model request.\n\nIn a terminal, run `kborg copilot setup`.".into(),
     }
 }
 fn input(label: &str, default: &str) -> Result<String> {
@@ -74,7 +74,7 @@ fn confirm(label: &str) -> Result<bool> {
         "y" | "yes"
     ))
 }
-fn executable(name: &str) -> Result<PathBuf> {
+fn executable(name: &str, edit: bool) -> Result<PathBuf> {
     let found = crate::extensions::resolve_on_path(name).or_else(|| {
         if cfg!(windows) {
             crate::extensions::resolve_on_path(&format!("{name}.exe"))
@@ -85,23 +85,24 @@ fn executable(name: &str) -> Result<PathBuf> {
     // `npm install -g @github/copilot` puts a Node loader on PATH; the native
     // binary it starts is inside the same installation.
     let found = match found {
-        Some(loader) if name == "copilot" => match npm_native(&loader) {
-            Some(native) => {
-                println!(
-                    "Found the native Copilot binary inside the npm installation:\n  {}",
-                    safety::safe_text(&native.display().to_string(), 512)
-                );
-                Some(native)
-            }
-            None => Some(loader),
-        },
+        Some(loader) if name == "copilot" => Some(npm_native(&loader).unwrap_or(loader)),
         found => found,
     };
-    let default = found
-        .as_ref()
-        .map(|path| path.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    let selected = PathBuf::from(input(&format!("Official {name} executable"), &default)?);
+    let selected = match found {
+        Some(path) if !edit => path,
+        found => {
+            if found.is_none() {
+                println!(
+                    "Install the official {name} CLI or enter the path to an existing installation."
+                );
+            }
+            let default = found
+                .as_deref()
+                .map(Path::to_string_lossy)
+                .unwrap_or_default();
+            PathBuf::from(input(&format!("Official {name} executable"), &default)?)
+        }
+    };
     if !selected.is_absolute() {
         return Err(format!(
             "Install official {name}, then choose its absolute native executable path. No program was run."
@@ -350,62 +351,100 @@ fn login_fingerprint(path: &Path) -> Result<String> {
         .map(|byte| format!("{byte:02x}"))
         .collect())
 }
-fn choose_host() -> Result<String> {
-    println!("1. GitHub.com\n2. Company GitHub Enterprise Cloud (*.ghe.com)");
-    let choice = input("Where do you use Copilot?", "1")?;
-    let domain = if choice == "2" {
-        input("Company domain (for example company.ghe.com)", "")?
-    } else {
-        String::new()
-    };
-    setup_host(&choice, &domain)
+#[derive(Debug, PartialEq, Eq)]
+enum AccountChoice {
+    Stored(String),
+    Browser,
 }
-fn select_account(gh: &Path, pin: &str, config: &Path, host: &str) -> Result<String> {
-    let mut accounts = stored_accounts(config, host)?;
-    let login = if accounts.is_empty() {
-        confirm("No stored account. Get a one-time GitHub login code/link? yes/no")?
-    } else {
-        println!("Stored accounts: {}", accounts.join(", "));
-        match input("1 reuse a stored account / 2 sign in with a new code", "1")?.as_str() {
-            "1" => false,
-            "2" => true,
-            _ => return Err("Setup canceled; no connection changed".into()),
+impl AccountChoice {
+    fn default_for(accounts: &[String]) -> Self {
+        accounts
+            .first()
+            .cloned()
+            .map_or(Self::Browser, Self::Stored)
+    }
+    fn label(&self) -> String {
+        match self {
+            Self::Stored(account) => format!("Use @{account}"),
+            Self::Browser => "Sign in with your browser".into(),
         }
+    }
+    fn resolve(self, gh: &Path, pin: &str, config: &Path, host: &str) -> Result<String> {
+        match self {
+            Self::Stored(account) => Ok(account),
+            Self::Browser => {
+                browser_login(gh, pin, config, host)?;
+                stored_accounts(config, host)?
+                    .into_iter()
+                    .next()
+                    .ok_or_else(|| {
+                        "GitHub CLI did not report a signed-in account. Run setup again to retry."
+                            .into()
+                    })
+            }
+        }
+    }
+}
+
+fn select_stored_account(accounts: &[String]) -> Result<AccountChoice> {
+    let Some(first) = accounts.first() else {
+        return Ok(AccountChoice::Browser);
     };
-    if login {
-        browser_login(gh, pin, config, host)?;
-        accounts = stored_accounts(config, host)?;
+    println!("Saved accounts: @{}", accounts.join(", @"));
+    let account = input(
+        "Enter an account name or type /login for browser sign-in",
+        first,
+    )?;
+    if account == "/login" {
+        return Ok(AccountChoice::Browser);
     }
-    if accounts.is_empty() {
-        return Err("No stored account selected. Run setup again to finish GitHub login. No KBorg policy was saved.".into());
+    let account = account.strip_prefix('@').unwrap_or(&account);
+    if accounts.iter().any(|saved| saved == account) {
+        Ok(AccountChoice::Stored(account.into()))
+    } else {
+        Err("Choose a listed account or use /login to sign in".into())
     }
-    println!("Stored accounts: {}", accounts.join(", "));
-    let account = input("Account to use", &accounts[0])?;
-    if !accounts.contains(&account) {
-        return Err("Choose one of the stored accounts; no account was switched".into());
+}
+fn choose_connection(config: &Path) -> Result<(String, AccountChoice)> {
+    let accounts = stored_accounts(config, "github.com")?;
+    let default = AccountChoice::default_for(&accounts);
+    println!("GitHub account\n  1  {} on GitHub.com", default.label());
+    if !accounts.is_empty() {
+        println!("  2  Another GitHub.com account");
     }
-    Ok(account)
+    println!("  3  Company GitHub Enterprise Cloud");
+    match input("Choose an account option", "1")?.as_str() {
+        "1" => Ok(("github.com".into(), default)),
+        "2" if !accounts.is_empty() => Ok(("github.com".into(), select_stored_account(&accounts)?)),
+        "3" => {
+            let host = setup_host(&input("Company domain (for example company.ghe.com)", "")?)?;
+            let account = select_stored_account(&stored_accounts(config, &host)?)?;
+            Ok((host, account))
+        }
+        _ => Err("Setup canceled; no connection changed".into()),
+    }
 }
 fn account_sign_in() -> Result<Outcome> {
     println!("{}", status_text(None));
-    if !confirm("Continue with GitHub account sign-in only? yes/no")? {
+    if !confirm("Continue with GitHub account sign-in only?")? {
         return Err("Sign-in canceled; nothing was sent or changed".into());
     }
-    let host = choose_host()?;
-    let gh = executable("gh")?;
-    let pin = login_fingerprint(&gh)?;
     let config = gh_config()?;
+    let (host, account) = choose_connection(&config)?;
+    let gh = executable("gh", true)?;
+    let pin = login_fingerprint(&gh)?;
     println!(
         "{}",
         safety::review_display(&format!(
-            "GitHub account login\nHost: {host}\nExecutable: {}\n\nUse only an official GitHub CLI installation you trust. It runs with your user permissions and manages its own credential storage. No cluster context is passed. This does not enable in-app Copilot answers on this platform.",
+            "Review GitHub account sign-in\nHost: {host}\nAccount: {}\nExecutable: {}\n\nUse an official GitHub CLI installation you trust. It runs with your user permissions and manages its own credentials.",
+            account.label(),
             gh.display()
         ))?
     );
-    if !confirm("Trust this GitHub CLI for account login? yes/no")? {
+    if !confirm("Trust this GitHub CLI and continue?")? {
         return Err("Sign-in canceled".into());
     }
-    let account = select_account(&gh, &pin, &config, &host)?;
+    let account = account.resolve(&gh, &pin, &config, &host)?;
     let path = safety::config_dir()?.join("copilot-account.json");
     let value = serde_json::to_vec_pretty(
         &serde_json::json!({"schema_version":1,"host":host,"account":account}),
@@ -417,14 +456,10 @@ fn account_sign_in() -> Result<Outcome> {
     );
     Ok(Outcome::AccountSignedIn { host, account })
 }
-fn setup_host(choice: &str, domain: &str) -> Result<String> {
-    match choice {
-        "1" => Ok("github.com".into()),
-        "2" => match crate::copilot::Deployment::parse(domain, Some("ghe.com"))? {
-            crate::copilot::Deployment::EnterpriseCloud(host) => Ok(host),
-            _ => Err("Company login requires a TENANT.ghe.com hostname".into()),
-        },
-        _ => Err("Choose 1 for GitHub.com or 2 for your company's Enterprise Cloud".into()),
+fn setup_host(domain: &str) -> Result<String> {
+    match crate::copilot::Deployment::parse(domain, Some("ghe.com"))? {
+        crate::copilot::Deployment::EnterpriseCloud(host) => Ok(host),
+        _ => Err("Company login requires a TENANT.ghe.com hostname".into()),
     }
 }
 fn save_policy(destination: &Path, original: Option<&[u8]>, bytes: &[u8]) -> Result<()> {
@@ -457,7 +492,9 @@ pub fn interactive() -> Result<Outcome> {
     if !supported() {
         return account_sign_in();
     }
-    println!("Connect GitHub Copilot — no Kubernetes data is sent during setup.\n");
+    println!(
+        "Connect GitHub Copilot\nSetup sends no Kubernetes data and makes no model request.\n"
+    );
     let destination = safety::config_dir()?.join("copilot-policy.json");
     let original = if destination.exists() {
         Some(safety::read_small(&destination, 16 * 1024)?)
@@ -476,7 +513,7 @@ pub fn interactive() -> Result<Outcome> {
                         .map(|gh| gh.account.as_str())
                         .unwrap_or("dedicated credential")
                 );
-                match input("1 keep and verify / 2 change host or account", "1")?.as_str() {
+                match input("1 verify connection / 2 repair or change connection", "1")?.as_str() {
                     "1" => {
                         advice::validate_setup(&options)?;
                         return Ok(Outcome::Ready(destination));
@@ -494,39 +531,55 @@ pub fn interactive() -> Result<Outcome> {
             ),
         }
     }
-    let host = choose_host()?;
-    let native = executable("copilot")?;
-    let gh = executable("gh")?;
-    let native_pin = advice::setup_fingerprint(&native)?;
-    let gh_pin = login_fingerprint(&gh)?;
     let config = gh_config()?;
-    println!(
-        "{}",
-        safety::review_display(&format!(
-            "Host: {host}\nCopilot: {}\nGitHub CLI: {}\n\nOnly continue if these are official installations you trust. Matching local hashes pin these bytes; they do not establish publisher identity. GitHub login may request account permissions; review them in your browser. Model access still requires your Copilot plan and company policy.\n",
-            native.display(),
-            gh.display()
-        ))?
-    );
-    if !confirm("Trust these installed tools for this Copilot connection? yes/no")? {
-        return Err("Copilot setup canceled; no connection saved".into());
-    }
-    let account = select_account(&gh, &gh_pin, &config, &host)?;
+    let (host, account) = choose_connection(&config)?;
+    let mut edit = false;
+    let (native, native_pin, gh, gh_pin) = loop {
+        let native = executable("copilot", edit)?;
+        let gh = executable("gh", edit)?;
+        println!(
+            "\n{}",
+            safety::review_display(&format!(
+                "Review connection\nHost: {host}\nAccount: {}\n\nCopilot CLI: {}\nGitHub CLI: {}\n\nContinue if you trust these official installations. KBorg pins the binaries and checks the Copilot sandbox. If GitHub opens your browser, review the requested permissions there.",
+                account.label(),
+                native.display(),
+                gh.display()
+            ))?
+        );
+        let (native_pin, gh_pin) =
+            match (advice::setup_fingerprint(&native), login_fingerprint(&gh)) {
+                (Ok(native_pin), Ok(gh_pin)) => (native_pin, gh_pin),
+                (Err(error), _) | (_, Err(error)) if !edit => {
+                    println!(
+                        "{}\nChoose the native executable paths to continue.",
+                        safety::safe_text(&error, 1024)
+                    );
+                    edit = true;
+                    continue;
+                }
+                (Err(error), _) | (_, Err(error)) => return Err(error),
+            };
+        match input("Trust these tools and continue? (yes / paths / no)", "no")?
+            .to_ascii_lowercase()
+            .as_str()
+        {
+            "y" | "yes" => break (native, native_pin, gh, gh_pin),
+            "paths" => edit = true,
+            _ => return Err("Copilot setup canceled; no connection saved".into()),
+        }
+    };
+    let account = account.resolve(&gh, &gh_pin, &config, &host)?;
     let policy = serde_json::json!({"schema_version":1,"executable":native,"expected_sha256":native_pin,"host":host,"gh_cli":{"executable":gh,"expected_sha256":gh_pin,"account":account,"config_dir":config},"model":"auto","seconds":60});
     let options: advice::Options =
         serde_json::from_value(policy.clone()).map_err(|_| "Cannot encode Copilot connection")?;
-    println!(
-        "Checking the pinned runtime, sandbox and selected stored account. No model request is made..."
-    );
+    println!("\nChecking the Copilot runtime and GitHub account...");
     advice::validate_setup(&options)?;
-    if !confirm("Save this connection for reviewed Copilot requests? yes/no")? {
+    if !confirm(&format!("Save @{account} on {host} for Copilot?"))? {
         return Err("Copilot setup canceled; no connection saved".into());
     }
     let bytes = serde_json::to_vec_pretty(&policy).map_err(|_| "Cannot encode connection")?;
     save_policy(&destination, original.as_deref(), &bytes)?;
-    println!(
-        "Copilot connection saved. Return to a resource screen and use :ask QUESTION. Every transfer is reviewed first."
-    );
+    println!("Copilot connected. Use :ask QUESTION from any resource view.");
     Ok(Outcome::Ready(destination))
 }
 #[cfg(test)]
@@ -590,11 +643,7 @@ mod tests {
     #[test]
     fn company_login_rejects_unknown_hosts_and_injection() {
         assert_eq!(
-            setup_host("1", "").unwrap_or_else(|error| panic!("setup fixture failed: {error:?}")),
-            "github.com"
-        );
-        assert_eq!(
-            setup_host("2", "company.ghe.com")
+            setup_host("company.ghe.com")
                 .unwrap_or_else(|error| panic!("setup fixture failed: {error:?}")),
             "company.ghe.com"
         );
@@ -606,9 +655,20 @@ mod tests {
             "company.ghe.com/path",
             "company.ghe.com\n",
         ] {
-            assert!(setup_host("2", host).is_err(), "{host:?}");
+            assert!(setup_host(host).is_err(), "{host:?}");
         }
-        assert!(setup_host("cancel", "").is_err());
+    }
+    #[test]
+    fn default_setup_reuses_the_active_account_or_offers_browser_login() {
+        let data = serde_json::json!({"github.com":{"user":"primary","users":{"alternate":{}}}});
+        assert_eq!(
+            AccountChoice::default_for(&account_names(&data, "github.com")),
+            AccountChoice::Stored("primary".into()),
+        );
+        assert_eq!(
+            AccountChoice::default_for(&account_names(&data, "company.ghe.com")),
+            AccountChoice::Browser,
+        );
     }
     #[test]
     fn policy_replacement_keeps_backup_and_refuses_concurrent_changes() {

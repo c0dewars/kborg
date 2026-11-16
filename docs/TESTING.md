@@ -23,9 +23,9 @@ For changes newer than the RC tag, install `--branch release/next` instead. Matc
 
 ## Connection acceptance
 
-Prepare a context with your normal company/cloud CLI, then start KBorg in that terminal. Confirm the correct context name appears. Exit with Esc and verify no auth helper/API call occurred. Start again, choose No, filter for another existing context, review it and choose Yes. Check that your original kubeconfig current-context is unchanged. Repeat with explicit `--kubeconfig`, merged `KUBECONFIG` and `--context`.
+Prepare a context with your normal company/cloud CLI, then start KBorg in that terminal. Confirm the correct context name appears. Exit with Esc and verify no auth helper/API call occurred. Start again, press `c`, filter for another existing context, and press Enter to review the highlighted row. Choose **Connect** and verify the requested view and namespace. Check that your original kubeconfig current-context is unchanged. Repeat with explicit `--kubeconfig`, merged `KUBECONFIG` and `--context`.
 
-Automated local-only negative-path checks (Unix/WSL PTY; synthetic kubeconfig and a loopback listener, no real credentials):
+The automated check covers the default scope, overrides, the active-row highlight, cancellation, and approval. It uses a synthetic kubeconfig and a loopback listener in a Unix or WSL PTY.
 
 ```sh
 python3 scripts/test-connection-startup.py --binary target/release/kborg \

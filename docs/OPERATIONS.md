@@ -45,11 +45,11 @@ ls ~/rpmbuild/RPMS/x86_64/
 
 ## Connect using your existing company setup
 
-Run your normal company login/context CLI (for example `orbit-use`) and then `kborg` in the same terminal. KBorg uses `--kubeconfig` if supplied, otherwise merged `KUBECONFIG` files, otherwise `~/.kube/config`. It proposes the current context (or `--context NAME`) and names the cluster/namespace before any connection or credential-helper execution.
+Run your normal company login/context CLI (for example `orbit-use`) and then `kborg` in the same terminal. KBorg uses `--kubeconfig` if supplied, otherwise merged `KUBECONFIG` files, otherwise `~/.kube/config`. It proposes the current context (or `--context NAME`) and shows the cluster and launch scope before any connection or credential helper runs. A standard launch opens Nodes with all namespaces. Use `--namespace NAME` or a per-context namespace and view to set a different scope.
 
 - **Enter/Y:** connect with the authentication already in that kubeconfig.
-- **N:** filter/select another existing context, then review it.
-- **Esc/Ctrl-C:** exit without connecting.
+- **C:** open the searchable context list. Move the highlight with the arrow keys and press Enter to review that context.
+- **Esc:** return from the picker or exit from the connection review. **Ctrl-C** exits from either screen.
 
 No manual token entry, generated KBorg credential file or second cluster configuration is needed. Existing local file-trust checks reject symlinked kubeconfig paths; if your company CLI uses a symlink, pass the existing physical file with `--kubeconfig` rather than copying credentials. Changing the selection affects this KBorg session only. If provider login expires, use your existing login CLI again. Corporate VPN, RBAC and required helper executables still apply. Offline demo and machine-readable CLI commands do not show the interactive startup prompt.
 

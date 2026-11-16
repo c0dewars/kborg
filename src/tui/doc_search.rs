@@ -105,6 +105,9 @@ impl DocSearch {
     pub(super) fn typing(&self) -> bool {
         self.draft.is_some()
     }
+    pub(super) fn draft(&self) -> Option<&str> {
+        self.draft.as_deref()
+    }
     /// The hint row while a search is typed or applied. `lines` are the
     /// wrapped document lines and `offset` the top line shown.
     pub(super) fn hint(&self, lines: &[&str], offset: usize) -> Option<String> {
@@ -122,6 +125,9 @@ impl DocSearch {
             .filter(|(_, line)| !matches(line, &self.query).is_empty())
             .map(|(index, _)| index)
             .collect();
+        if hits.is_empty() {
+            return Some(format!("No match for /{} | Esc clear", self.query));
+        }
         let current = hits.iter().position(|line| *line >= offset).unwrap_or(0) + 1;
         Some(format!(
             "/{}   line {current} of {} matching | n next | N previous | Esc clear",
@@ -134,14 +140,41 @@ impl DocSearch {
 impl App {
     /// Search keys of a document view. True when the key was used.
     pub(super) fn document_search_key(&mut self, code: KeyCode) -> bool {
-        let (width, _) = terminal::size().unwrap_or((80, 24));
-        let Some(wrapped) = document_text(self, &self.modal)
-            .map(|text| wrap_text(&text, usize::from(width.saturating_sub(2))))
-        else {
-            self.doc_search.clear();
+        let (width, height) = terminal::size().unwrap_or((80, 24));
+        if !self.doc_search.typing()
+            && !matches!(code, KeyCode::Char('/'))
+            && (self.doc_search.query().is_empty()
+                || !matches!(code, KeyCode::Esc | KeyCode::Char('n' | 'N')))
+        {
+            if !self.doc_search.query().is_empty()
+                && !matches!(self.modal, Modal::AdviceChat(..))
+                && document_text(self, &self.modal).is_none()
+            {
+                self.doc_search.clear();
+            }
             return false;
+        }
+        let (wrapped, chat_offset) = match (&self.modal, &self.ask_thread) {
+            (Modal::AdviceChat(scroll), Some(thread)) => {
+                let (lines, offset) = advice_chat::search_document(
+                    thread,
+                    scroll,
+                    width,
+                    height,
+                    self.view_top(width, height),
+                );
+                (lines, Some(offset))
+            }
+            _ => {
+                let Some(text) = document_text(self, &self.modal) else {
+                    self.doc_search.clear();
+                    return false;
+                };
+                (wrap_text(&text, usize::from(width.saturating_sub(2))), None)
+            }
         };
-        let offset = offset_mut(&mut self.modal).map_or(0, |offset| *offset);
+        let offset =
+            chat_offset.unwrap_or_else(|| offset_mut(&mut self.modal).map_or(0, |offset| *offset));
         let hits = |query: &str| -> Vec<usize> {
             wrapped
                 .lines()
@@ -165,10 +198,16 @@ impl App {
                             "No match for {}.",
                             safety::safe_text(draft.trim(), MAX_QUERY)
                         );
+                        if matches!(self.modal, Modal::AdviceChat(..)) {
+                            self.ask_notice = Some(self.status.clone());
+                        }
                         self.doc_search.clear();
                         return true;
                     }
                     self.doc_search.query = query;
+                    if matches!(self.modal, Modal::AdviceChat(..)) {
+                        self.ask_notice = None;
+                    }
                     // The first match at or below the top line, else wrap.
                     hits.iter()
                         .find(|line| **line >= offset)
@@ -194,6 +233,9 @@ impl App {
             let active = !self.doc_search.query.is_empty();
             match code {
                 KeyCode::Char('/') => {
+                    if matches!(self.modal, Modal::AdviceChat(..)) {
+                        self.ask_notice = None;
+                    }
                     self.doc_search.draft = Some(String::new());
                     return true;
                 }
@@ -219,8 +261,12 @@ impl App {
                 _ => return false,
             }
         };
-        if let (Some(line), Some(offset)) = (target, offset_mut(&mut self.modal)) {
-            *offset = line;
+        if let Some(line) = target {
+            if let Modal::AdviceChat(scroll) = &mut self.modal {
+                scroll.jump_to_match(line);
+            } else if let Some(offset) = offset_mut(&mut self.modal) {
+                *offset = line;
+            }
         }
         true
     }

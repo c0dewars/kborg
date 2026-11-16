@@ -8,6 +8,7 @@ terminal prompt) pointing into a green B. Output:
   assets/kborg-icon.png        1024px app icon on a dark rounded tile
   assets/kborg-logo.png        wordmark lockup for light backgrounds
   assets/kborg-logo-dark.png   wordmark lockup for dark backgrounds
+  assets/kborg-logo-mocha.png  Catppuccin Mocha wordmark for the README
 
 Requires Pillow. The wordmark uses macOS's Avenir Next Heavy; pass --font to
 use another bold face.
@@ -70,15 +71,15 @@ def b_mask(scale):
     return mask
 
 
-def mark(size, tile=False):
+def mark(size, tile=False, colors=(ORANGE, GREEN)):
     scale = 4
     canvas = Image.new("RGBA", (1000 * scale, 1000 * scale), (0, 0, 0, 0))
     if tile:
         ImageDraw.Draw(canvas).rounded_rectangle(
             [0, 0, 1000 * scale - 1, 1000 * scale - 1], radius=224 * scale, fill=TILE
         )
-    for mask, colors in ((k_mask(scale), ORANGE), (b_mask(scale), GREEN)):
-        canvas.paste(gradient(canvas.size, colors), (0, 0), mask)
+    for mask, stops in zip((k_mask(scale), b_mask(scale)), colors):
+        canvas.paste(gradient(canvas.size, stops), (0, 0), mask)
     return canvas.resize((size, size), Image.LANCZOS)
 
 
@@ -106,10 +107,10 @@ def svg():
 """
 
 
-def lockup(ink, font_path, height=480):
-    icon = mark(height)
+def lockup(ink, font_path, height=480, colors=(ORANGE, GREEN)):
+    icon = mark(height, colors=colors)
     font = ImageFont.truetype(font_path, int(height * 0.62), index=8 if font_path.endswith(".ttc") else 0)
-    parts = (("K", ORANGE), ("B", GREEN), ("org", ink))
+    parts = (("K", colors[0]), ("B", colors[1]), ("org", ink))
     probe = ImageDraw.Draw(Image.new("RGBA", (1, 1)))
     gap = int(height * 0.14)
     widths = [probe.textlength(text, font=font) for text, _ in parts]
@@ -128,6 +129,18 @@ def lockup(ink, font_path, height=480):
     return image
 
 
+def mocha_lockup(font_path):
+    wordmark = lockup(
+        "#CDD6F4", font_path, colors=(("#FAB387", "#EBA0AC"), ("#A6E3A1", "#94E2D5"))
+    )
+    tile = Image.new("RGBA", wordmark.size)
+    ImageDraw.Draw(tile).rounded_rectangle(
+        (0, 0, tile.width - 1, tile.height - 1), radius=64, fill="#1E1E2E"
+    )
+    tile.alpha_composite(wordmark)
+    return tile
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--assets", type=Path, default=Path(__file__).resolve().parent.parent / "assets")
@@ -138,6 +151,7 @@ def main():
     mark(1024, tile=True).save(args.assets / "kborg-icon.png")
     lockup(INK_LIGHT_BG, args.font).save(args.assets / "kborg-logo.png")
     lockup(INK_DARK_BG, args.font).save(args.assets / "kborg-logo-dark.png")
+    mocha_lockup(args.font).save(args.assets / "kborg-logo-mocha.png")
     print("wrote", ", ".join(p.name for p in sorted(args.assets.glob("kborg-*"))))
 
 

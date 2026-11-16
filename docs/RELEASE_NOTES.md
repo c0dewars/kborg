@@ -1,3 +1,11 @@
+# KBorg 0.9.0 — 2026-11-16
+
+- **Start in Nodes with all namespaces.** A standard cluster launch opens the Nodes view. Explicit namespace options and per-context startup settings still apply. Press `c` on the connection review to search contexts. The active row is highlighted across the terminal, and EKS entries show the cluster name, region, and account.
+- **Read cluster identity at a glance.** The header leads with the EKS cluster name. Run `:identity` to see the exact context, cluster, user, and API endpoint.
+- **Select and copy log text.** Drag across Logs to select text, then press `c` to copy it to the system clipboard. The highlight shows the text that will be copied.
+- **Ask Copilot in a chat tied to the current view.** Answers wrap in a dedicated chat, and follow-ups keep the captured source. A log selection can scope the question to those lines. Each transfer has its own review, and Esc returns to the source view.
+- **Connect Copilot with fewer prompts.** Open `:copilot setup` and press Enter. KBorg offers your active GitHub CLI account or browser sign-in, then shows the detected tools together for review. In-app answers are available on Apple Silicon macOS.
+
 # KBorg 0.8.3 — 2026-11-16
 
 - **Fixed two split mouse input cases.** Pressing Escape just before a split SGR wheel report could let the report's digits switch namespaces. A split report from an unsupported mouse button could also act as a left click. KBorg now repairs a split report that follows Escape and discards reports for unsupported buttons.

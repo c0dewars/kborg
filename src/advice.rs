@@ -931,7 +931,7 @@ pub fn screen_bundle(
         )
     };
     Ok(format!(
-        "{earlier}QUESTION:\n{question}\n\nSCREEN (exact text visible in KBorg):\n{screen}{keys}"
+        "{earlier}QUESTION:\n{question}\n\nSCREEN CONTEXT (view or highlighted excerpt):\n{screen}{keys}"
     ))
 }
 

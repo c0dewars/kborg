@@ -2,18 +2,17 @@
 
 Goal: every k9s plugin works in KBorg unchanged, it is easy to write a new one, and people can find and install plugins from a store (`:plugins` / `kborg plugin install NAME`). This builds on the k9s model of "everything on by default, every change reviewed".
 
-## Why `:nodeclaims` and most k9s plugins don't work today
+## Current compatibility gaps
 
-Three things are missing. None of them is specific to Karpenter.
+KBorg 0.8.0 added CRD `additionalPrinterColumns`, so resources such as Karpenter NodeClaims, Argo Applications, and Flux Kustomizations can use the columns their CRDs define. The remaining gaps are in the plugin runner and schema.
 
-1. **Custom resources get Pod columns.** `:nodeclaims` opens on a Karpenter cluster, because discovery finds every CRD. The table, though, uses KBorg's generic columns (NAME, READY, STATUS, RESTARTS, AGE), and for a NodeClaim those are mostly empty. k9s shows the CRD's own `additionalPrinterColumns` (TYPE, CAPACITY, ZONE, NODE, READY). KBorg never reads them (`grep additionalPrinterColumns src` finds only the Helm CRD check). So any operator's resources (NodeClaims, NodePools, Argo Applications, Flux Kustomizations, Certificates, CNPG Clusters) look unimplemented, even though they are listed and watched. **Fixed in 0.8.0** (phase A below).
-2. **The extension contract was built for a locked-down product.** `src/handoff.rs` and `src/extensions.rs` date from the opt-in security model. A plugin:
+1. **The runner supports captured output.** A registered plugin:
    - gets the object as JSON on stdin and a 15-second limit
    - has its output captured, never the terminal
    - has to be registered by hand with an absolute, SHA-pinned path
    - is refused or flagged when it is a `sh -c` script
-   - needs `--allow-extensions --allow-tools`, which contradicts the product model (everything on).
-3. **The k9s plugin schema has moved on.** `plugins::Meta` has `deny_unknown_fields` and no `override` or `inputs`. Up to 15 of the 135 community plugins (9 use `override`, 6 use `inputs`) fail to parse for that reason alone (argocd, flux, debug-container, pvc-resize, karpenter).
+   - is subject to the `allow_extensions` and `allow_tools` operator settings.
+2. **The k9s plugin schema has moved on.** `plugins::Meta` has `deny_unknown_fields` and no `override` or `inputs`. Up to 15 of the 135 community plugins in the survey (9 use `override`, 6 use `inputs`) fail to parse for that reason alone (argocd, flux, debug-container, pvc-resize, karpenter).
 
 Counted on the 135 plugins in `derailed/k9s/plugins` (55 files, Apache-2.0):
 
@@ -150,7 +149,7 @@ The ported packs use relations and actions where they can and keep the original 
 | **D. Store** | `c0dewars/kborg-plugins` repo, signed index, install/update/remove/search, `packs.lock`, suggested packs from CRDs, mirror env var, operator allow-list | `kborg plugin install karpenter` from a clean config; a tampered index is refused; an update shows the diff |
 | **E. Port** | All 55 k9s files as packs; 10 native packs with relations/actions; docs and skill reference | CI lints and demo-tests every pack |
 
-Releases: **A** ships in 0.8.0 (read lazily, one CRD GET per resource per connection, rather than with the discovery cache). **B + C** are 0.9.0. **D + E** are 0.10.0.
+**A** shipped in 0.8.0, with lazy reads of one CRD per resource per connection. **B** is the next plugin milestone. Schedule **C**, then **D + E**, once the runtime is validated. See the [roadmap](ROADMAP.md#next-release-priorities) for the proposed 0.9.0 scope.
 
 ## Decisions to confirm
 

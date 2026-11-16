@@ -20,6 +20,7 @@ use crossterm::{
     },
 };
 use serde_json::Value;
+mod advice_chat;
 #[path = "ui_advice.rs"]
 mod advice_ui;
 #[path = "ui_charts.rs"]
@@ -74,14 +75,14 @@ use worker::*;
 
 const OVERVIEW_CONTEXTS_LABEL: &str = "Overview contexts (comma separated, max 9)";
 const ASK_LABEL: &str = "Ask Copilot about this screen";
+const HIGHLIGHTED_LOG_EXCERPT: &str = "HIGHLIGHTED LOG EXCERPT";
 const FOLLOW_UP_LABEL: &str = "Follow-up question (same screen)";
 const SECRET_NAME_LABEL: &str = "New Secret name";
 const SECRET_KEY_LABEL: &str = "New Secret key";
 const SECRET_VALUE_LABEL: &str = "New Secret value";
 /// A typed Secret value; a longer one comes from a file (`@PATH`).
 const SECRET_VALUE_BYTES: usize = 4096;
-/// Title of a Copilot answer document; `f` there asks a follow-up.
-const ADVICE_TITLE: &str = "COPILOT ADVICE / review independently";
+const ADVICE_TITLE: &str = "COPILOT DIAGNOSIS / review independently";
 const OVERVIEW_INPUT_BYTES: usize = crate::overview::MAX_LIVE_CONTEXTS * 254 - 1;
 fn input_limit(label: &str) -> usize {
     if label == OVERVIEW_CONTEXTS_LABEL {
@@ -115,6 +116,8 @@ struct Undo {
 /// A screen capture and the questions and answers about it so far.
 #[derive(Clone)]
 struct AskThread {
+    /// Display label captured at the origin. The reviewed payload uses `screen`.
+    source: String,
     screen: String,
     /// The keys of the view the screen was captured in (`keyhelp::ask_key_reference`).
     keys: String,
@@ -178,6 +181,7 @@ enum Modal {
     AdviceReview(Box<advice_ui::Review>),
     AdviceLoading,
     AdviceRunning,
+    AdviceChat(advice_chat::Scroll),
     AdviceDocument(String, String, usize),
     HelmReview(Box<helm_ui::Review>),
     HelmRunning(String, Instant, bool),
@@ -377,6 +381,8 @@ struct App {
     overview_events: Option<(String, std::result::Result<Vec<Value>, String>)>,
     /// Captured with `ask_screen`: the keys of that view, for Copilot.
     ask_keys: Option<String>,
+    /// Local source label captured with the masked screen and keys.
+    ask_source: Option<String>,
     /// The Secret and key a value prompt in front belongs to.
     secret_draft: Option<SecretDraft>,
     /// Masked text of the documents that show values, by the hash of the
@@ -388,6 +394,8 @@ struct App {
     ask_thread: Option<AskThread>,
     /// The screen question in flight: its question and the thread it extends.
     ask_inflight: Option<(String, AskThread)>,
+    ask_draft: String,
+    ask_notice: Option<String>,
     /// k9s-format views.yaml: per-resource columns and default sort.
     views: crate::views::Views,
     /// Data-only ui.yaml: borders, chrome rows, table style, color overrides.
@@ -572,7 +580,8 @@ impl App {
         if self.doc_search.typing() {
             return false;
         }
-        palette::command_prompt_allowed(&self.modal)
+        matches!(self.modal, Modal::AdviceChat(_))
+            || palette::command_prompt_allowed(&self.modal)
             || (!review_ui::strict()
                 && matches!(
                     self.modal,
@@ -1414,20 +1423,44 @@ pub fn run(mut options: Options) -> Result<()> {
     {
         return Ok(());
     }
+    let context_directory = safety::config_dir()
+        .ok()
+        .map(|dir| dir.join(crate::context_config::DIR_NAME));
     if !options.connection.demo {
+        let single_namespace = options.connection.namespace.clone();
         // Resolve remembered dashboards before consent so every startup target
         // is named before any worker/client or auth helper can be started.
         if options.dashboard_last
             && options.dashboard.is_empty()
             && let Some(last) = crate::dashboard_memory::load()?
         {
-            options.connection.namespace = last.namespace;
+            if options.connection.namespace.is_empty() {
+                options.connection.namespace = last.namespace;
+            }
             options.dashboard = last.contexts;
         }
-        if !connection_prompt::confirm(&mut options, &theme)? {
+        if !connection_prompt::confirm(
+            &mut options,
+            &theme,
+            single_namespace,
+            context_directory.as_deref(),
+        )? {
             return Ok(());
         }
     }
+    let nodes_startup = !options.connection.demo
+        && !options.dashboard_last
+        && options.dashboard.is_empty()
+        && options.selector.is_empty();
+    let kinds = crate::gateway::kinds();
+    let kind_index = if nodes_startup {
+        kinds
+            .iter()
+            .position(|kind| kind.kind == "Node")
+            .unwrap_or(0)
+    } else {
+        0
+    };
     let (aliases, alias_error) = match crate::aliases::load() {
         Ok(aliases) => (aliases, None),
         Err(error) => (Default::default(), Some(error)),
@@ -1451,7 +1484,11 @@ pub fn run(mut options: Options) -> Result<()> {
     let config_watch = crate::config_watch::Watcher::from_env(&theme.id, ui.reload);
     let worker = worker();
     let mut app = App {
-        namespace: options.connection.namespace.clone(),
+        namespace: if nodes_startup && options.connection.namespace.is_empty() {
+            "*".into()
+        } else {
+            options.connection.namespace.clone()
+        },
         context: options
             .connection
             .context
@@ -1460,8 +1497,8 @@ pub fn run(mut options: Options) -> Result<()> {
         server: "connecting...".into(),
         theme,
         options,
-        kinds: crate::gateway::kinds(),
-        kind_index: 0,
+        kinds,
+        kind_index,
         items: vec![],
         selected: 0,
         filter: String::new(),
@@ -1495,11 +1532,14 @@ pub fn run(mut options: Options) -> Result<()> {
         crd_views_requested: Default::default(),
         overview_events: None,
         ask_keys: None,
+        ask_source: None,
         secret_draft: None,
         masked_documents: Vec::new(),
         ask_status: None,
         ask_thread: None,
         ask_inflight: None,
+        ask_draft: String::new(),
+        ask_notice: None,
         views,
         ui,
         wide: false,
@@ -1570,11 +1610,7 @@ pub fn run(mut options: Options) -> Result<()> {
         palette: None,
         visited: Default::default(),
         config_watch,
-        ctx_settings: context_settings::State::new(
-            safety::config_dir()
-                .ok()
-                .map(|dir| dir.join(crate::context_config::DIR_NAME)),
-        ),
+        ctx_settings: context_settings::State::new(context_directory),
         worker,
     };
     if first_run {
@@ -1658,6 +1694,8 @@ pub fn run(mut options: Options) -> Result<()> {
         app.connecting_epoch = Some(app.epoch);
         app.server = "connecting...".into();
         app.send(Task::Connect(app.options.connection.clone()));
+    } else if nodes_startup {
+        app.connect_with_namespace_default("*");
     } else {
         app.connect();
     }
