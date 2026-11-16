@@ -334,7 +334,7 @@ pub(super) fn screen_title(app: &App, modal: &Modal) -> String {
     };
     match modal {
         // A prompt or filter over another screen keeps that screen's name.
-        Modal::Input("Command", _) | Modal::Filter(..) => app
+        Modal::Input("Command" | FOLLOW_UP_LABEL, _) | Modal::Filter(..) => app
             .subviews
             .last()
             .map(|below| screen_title(app, below))
@@ -375,6 +375,7 @@ pub(super) fn screen_title(app: &App, modal: &Modal) -> String {
         | Modal::WriteReview(..)
         | Modal::WriteRunning => "Review change".to_owned(),
         Modal::AdviceReview(..)
+        | Modal::AdviceChat(..)
         | Modal::AdviceLoading
         | Modal::AdviceRunning
         | Modal::AdviceDocument(..) => "Copilot".to_owned(),
@@ -847,8 +848,22 @@ pub(super) fn render_log_modal(
         }
     }
     let (actions, ranges) = keyhelp::log_hints(app);
+    let selection_actions;
     let actions = if view.is_filtering() {
         view.help()
+    } else if view.has_selection() && view.copy_status().is_none() {
+        let mut hints = Vec::with_capacity(3);
+        if let Some(key) = app.keymap.primary("log.copy") {
+            hints.push(format!("{key} copy"));
+        }
+        if app.options.allow_copilot_screen && !app.copy_mode {
+            let key = app.keymap.primary("ask").unwrap_or_else(|| ":ask".into());
+            hints.push(format!("{key} ask about selection"));
+        }
+        hints.push("Esc clear selection".into());
+        selection_actions = hints.join(" | ");
+        app.add_hint_clicks(h - 2, &selection_actions);
+        &selection_actions
     } else {
         view.copy_status().unwrap_or(&actions)
     };
@@ -1267,6 +1282,19 @@ fn render_frame(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
             if mode_inline { bg } else { surface },
         )
         .map_err(|_| "draw failed")?;
+    }
+    if let Some((scroll, draft)) = advice_chat::view(app) {
+        let first_blank = chrome
+            .header
+            .into_iter()
+            .chain(chrome.identity)
+            .map(|row| row + 1)
+            .max()
+            .unwrap_or(0);
+        for y in first_blank..view_top {
+            row(out, y, w, "", fg, bg).map_err(|_| "draw failed")?;
+        }
+        return advice_chat::paint(app, scroll, draft, w, h, view_top, out);
     }
     let freshness = if app.busy || app.list_loading {
         "LOADING"
@@ -1790,6 +1818,15 @@ fn render_frame(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
         }
         modal => {
             let title = match modal {
+                Modal::Input(ASK_LABEL, _)
+                    if app
+                        .ask_screen
+                        .as_deref()
+                        .is_some_and(|capture| capture.starts_with(HIGHLIGHTED_LOG_EXCERPT)) =>
+                {
+                    "Ask Copilot about highlighted logs"
+                }
+                Modal::AdviceChat(..) => "Copilot chat",
                 Modal::Input(label, _) | Modal::Picker(label, ..) => *label,
                 Modal::Follow(view) => return render_log_modal(app, view, w, h, out),
                 Modal::Helm(table) => table.title(),
@@ -2062,7 +2099,7 @@ fn render_frame(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
                         .map(str::to_owned)
                         .collect()
                 }
-                Modal::None => vec![],
+                Modal::None | Modal::AdviceChat(..) => vec![],
                 Modal::Filter(..) => vec![],
             };
             let document = doc_search::document_text(app, modal);
@@ -2205,6 +2242,9 @@ fn render_frame(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
                 "1..9 focus | Enter Pods | w warnings | ? keymap | Esc back"
             } else if matches!(modal, Modal::AdviceRunning) {
                 "Ctrl-C cancel | waiting for advice | no automatic execution"
+            } else if matches!(modal, Modal::AdviceDocument(title, ..) if title == crate::copilot_setup::TITLE)
+            {
+                "Enter setup | Esc back"
             } else if matches!(modal, Modal::AdviceDocument(..) | Modal::AdviceLoading) {
                 "PgUp/PgDown scroll | Esc back"
             } else if matches!(modal, Modal::ScanRunning(..)) {

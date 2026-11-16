@@ -66,6 +66,12 @@ impl App {
     /// view, so the app keeps one header; only the dashboard (its own fixed
     /// layout) and full-screen logs give its rows to their content.
     pub(super) fn chrome(&self, width: u16, height: u16) -> Chrome {
+        if advice_chat::view(self).is_some() {
+            let mut chrome = self.ui.chrome();
+            chrome.summary = None;
+            chrome.top = BAR_ROWS;
+            return chrome;
+        }
         let open = match &self.modal {
             Modal::None => false,
             Modal::LiveOverview(..) => return UiConfig::default().chrome(),
@@ -79,6 +85,9 @@ impl App {
     /// The first row of a view's panel: below the header block when the
     /// terminal has room for it, else below the three-row bar.
     pub(super) fn view_top(&self, width: u16, height: u16) -> u16 {
+        if advice_chat::view(self).is_some() {
+            return BAR_ROWS;
+        }
         self.ui
             .block_chrome(width, height, true)
             .map_or(BAR_ROWS, |chrome| chrome.top)
@@ -95,12 +104,11 @@ impl App {
     /// True when a request was sent.
     pub(super) fn poll_header_info(&mut self) -> bool {
         let (width, height) = terminal::size().unwrap_or((0, 0));
-        let usage = self.ui.header.usage;
+        let usage = self.ui.header.usage && self.ui.block_chrome(width, height, false).is_some();
         if !self.connected
             || self.busy
             || self.stale
             || !matches!(self.modal, Modal::None)
-            || self.ui.block_chrome(width, height, false).is_none()
             || (!usage && !self.header.cluster.is_empty())
             || self
                 .header
@@ -133,6 +141,47 @@ pub(super) fn namespace_label(namespace: &str) -> &str {
     if namespace == "*" { "all" } else { namespace }
 }
 
+/// An EKS cluster ARN has a human-readable name and an account/region scope.
+fn eks_identity(value: &str) -> Option<(&str, &str, &str)> {
+    let (partition, rest) = value.strip_prefix("arn:")?.split_once(':')?;
+    if partition != "aws"
+        && !(partition.starts_with("aws-")
+            && partition
+                .bytes()
+                .all(|c| c.is_ascii_lowercase() || c == b'-'))
+    {
+        return None;
+    }
+    let (region, rest) = rest.strip_prefix("eks:")?.split_once(':')?;
+    let (account, resource) = rest.split_once(':')?;
+    let name = resource.strip_prefix("cluster/")?;
+    (!region.is_empty()
+        && region
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || c == b'-')
+        && account.len() == 12
+        && account.bytes().all(|c| c.is_ascii_digit())
+        && !name.is_empty()
+        && name
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'-' | b'_')))
+    .then_some((name, region, account))
+}
+
+pub(super) fn identity_name(value: &str) -> &str {
+    eks_identity(value).map_or(value, |(name, _, _)| name)
+}
+
+pub(super) fn context_display(value: &str, width: usize) -> String {
+    if let Some((name, region, account)) = eks_identity(value) {
+        let scope = format!("  {region}/{account}");
+        if name.len() + scope.len() <= width {
+            return format!("{name}{scope}");
+        }
+    }
+    crate::text::shown_middle(identity_name(value), width)
+}
+
 /// The five info lines as (label, value spans in theme roles).
 fn info_lines(app: &App, value_width: usize) -> Vec<(&'static str, Vec<(String, &'static str)>)> {
     let known = |value: &str, role: &'static str| {
@@ -142,32 +191,67 @@ fn info_lines(app: &App, value_width: usize) -> Vec<(&'static str, Vec<(String, 
             vec![(display(value, value_width), role)]
         }
     };
-    // Context, cluster and user names keep their ending when cut: in an EKS
-    // ARN or a GKE name the cluster's own name is the last part.
-    let identity = |value: &str| {
+    let identity = |value: &str, role| {
         if value.is_empty() {
             vec![("-".to_owned(), "muted")]
         } else {
-            vec![(crate::text::shown_middle(value, value_width), "text")]
+            vec![(context_display(value, value_width), role)]
         }
     };
+    let shared_eks = (app.context == app.header.cluster)
+        .then(|| eks_identity(&app.context))
+        .flatten();
+    let cluster = if let Some((_, region, account)) = shared_eks {
+        ("EKS", known(&format!("{region}  /  {account}"), "text"))
+    } else {
+        ("Cluster", identity(&app.header.cluster, "text"))
+    };
+    let user = if app.header.user == app.context && eks_identity(&app.context).is_some() {
+        known("Same as context", "muted")
+    } else {
+        identity(&app.header.user, "text")
+    };
     let mut lines = vec![
-        ("Context", identity(&app.context)),
-        ("Cluster", identity(&app.header.cluster)),
-        ("User", identity(&app.header.user)),
+        (
+            "Context",
+            if shared_eks.is_some() {
+                vec![(
+                    crate::text::shown_middle(identity_name(&app.context), value_width),
+                    "accent",
+                )]
+            } else {
+                identity(&app.context, "accent")
+            },
+        ),
+        cluster,
+        ("User", user),
         (
             "Namespace",
             known(namespace_label(&app.namespace), "accent"),
         ),
     ];
     if app.ui.header.usage {
-        let mut spans = known(app.header.version.as_deref().unwrap_or(""), "text");
+        let mut spans = Vec::with_capacity(5);
         if let Some((cpu, memory)) = app.header.usage {
             for (label, value) in [("CPU", cpu), ("MEM", memory)] {
                 let (text, role) = percent(value);
                 spans.push((format!("   {label} "), "muted"));
                 spans.push((text, role));
             }
+        }
+        let metrics_width: usize = spans.iter().map(|(text, _)| crate::text::width(text)).sum();
+        let version_width = value_width.saturating_sub(metrics_width);
+        if version_width > 0 {
+            let version = app
+                .header
+                .version
+                .as_deref()
+                .filter(|value| !value.is_empty())
+                .unwrap_or("-");
+            spans.insert(
+                0,
+                (crate::text::shown_middle(version, version_width), "text"),
+            );
         }
         lines.push(("K8s", spans));
     }
@@ -324,9 +408,16 @@ pub(super) fn render(
     // name shows when there is room; the key columns move right.
     let longest = [&app.context, &app.header.cluster, &app.header.user]
         .iter()
-        .map(|value| text_cells(value))
+        .map(|value| text_cells(identity_name(value)))
         .max()
         .unwrap_or(0);
+    // Reserve room for both metric values when the compact cluster name
+    // would otherwise leave the version and usage competing for space.
+    let longest = if app.ui.header.usage && app.header.usage.is_some() {
+        longest.max(text_cells(app.header.version.as_deref().unwrap_or("-")).saturating_add(22))
+    } else {
+        longest
+    };
     let info_width = (width / 3).clamp(40, 52).max(
         LABEL_WIDTH
             .saturating_add(longest)

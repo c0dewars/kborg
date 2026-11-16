@@ -1,8 +1,5 @@
 <div align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="assets/kborg-logo-dark.png">
-    <img src="assets/kborg-logo.png" alt="KBorg" width="360">
-  </picture>
+  <img src="assets/kborg-logo-mocha.png" alt="KBorg" width="360">
   <h3>Every cluster at a glance. Every change reviewed.</h3>
   <p>A fast Kubernetes terminal UI with k9s keys, a multi-cluster dashboard and a review before every change.</p>
   <p>
@@ -14,10 +11,10 @@
     <a href="#documentation">Docs</a>
   </p>
   <p>
-    <img alt="Release 0.8.3" src="https://img.shields.io/badge/release-0.8.3-FF7A1A">
-    <img alt="Rust" src="https://img.shields.io/badge/built%20with-Rust-0FA968">
-    <img alt="Windows, macOS and Linux" src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-0B1220">
-    <img alt="Apache 2.0" src="https://img.shields.io/badge/license-Apache%202.0-3BE08A">
+    <img alt="Release 0.8.3" src="https://img.shields.io/badge/release-0.8.3-45475a?labelColor=181825">
+    <img alt="Rust" src="https://img.shields.io/badge/built%20with-Rust-45475a?labelColor=181825">
+    <img alt="Windows, macOS and Linux" src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-45475a?labelColor=181825">
+    <img alt="Apache 2.0" src="https://img.shields.io/badge/license-Apache%202.0-45475a?labelColor=181825">
   </p>
 </div>
 
@@ -54,7 +51,7 @@ sudo dnf install ./kborg-0.8.3-1.x86_64.rpm   # Fedora / RHEL
 **Any platform, from source** (needs Rust):
 
 ```sh
-cargo install --locked --git https://github.com/c0dewars/kborg --tag v0.8.3
+cargo install --locked --git https://github.com/c0dewars/kborg --tag v0.9.0
 ```
 
 Release archives exist for macOS, Linux and Windows on x86_64 and ARM64. Every file is signed; see [verify a download](#verify-a-download). Shell completions: `kborg completions zsh|bash|fish|powershell`.
@@ -74,13 +71,13 @@ kborg
 kborg --context prod-eu
 ```
 
-KBorg shows the context, cluster and namespace and asks before it connects. From there:
+KBorg opens in **Nodes** with **all namespaces** for a standard cluster launch. Use `--namespace NAME` or set a per-context namespace and view for a different starting point. Review the connection and press Enter, or press `c` to search for another context.
 
 - `:` opens the command prompt (`:deploy`, `:nodes`, `:ns payments`), and `?` lists the keys for the view in front of you.
 - `kborg --contexts prod-eu,prod-us,staging` opens the dashboard; `kborg dashboard` brings the last one back.
 - `kborg --read-only` only looks. `kborg doctor` checks your terminal, kubeconfig and cluster access and says what to fix.
 
-![KBorg dashboard on a live cluster: Pod health, Node usage, degraded workloads and restart hotspots](docs/screenshots/dashboard-health.png)
+![KBorg demo dashboard with Pod health, Node usage, workloads, and warnings for two sample clusters](docs/screenshots/dashboard-health.png)
 
 ## What you can do
 
@@ -97,7 +94,7 @@ KBorg shows the context, cluster and namespace and asks before it connects. From
 | **Metrics** | CPU and memory per Pod and Node, usage against requests and limits, live charts. Needs [metrics-server](https://github.com/kubernetes-sigs/metrics-server#installation); without it KBorg shows `-`, never zero. |
 | **Errors** | Messages that say what failed, why and what to do next, down to the exact `kubectl auth can-i` check for a permission problem. |
 
-![Cross-cluster tail: two clusters' checkout services merged in timestamp order](docs/screenshots/cross-cluster-tail.png)
+![KBorg demo cross-cluster tail with logs from two sample workloads merged in timestamp order](docs/screenshots/cross-cluster-tail.png)
 
 ## Keys
 
@@ -156,7 +153,7 @@ Everything lives in KBorg's configuration folder (macOS `~/Library/Application S
 | `hotkeys.yaml`, `aliases.yaml`, plugins | Your own keys, command names and k9s plugins |
 | `contexts/NAME.yaml` | Per-cluster namespace, view, theme, header badge, read-only or typed confirmations (`:ctx-config`) — [reference](docs/themes.md#per-context-settings) |
 
-![All built-in themes rendered by KBorg](docs/screenshots/themes.png)
+[Browse the built-in theme gallery](docs/screenshots/themes.png).
 
 ## Copilot (optional)
 
@@ -166,7 +163,7 @@ KBorg can ask GitHub Copilot about what is on your screen. It needs the Copilot 
 kborg copilot setup
 ```
 
-Setup finds your installed `copilot` and `gh`, reuses the account `gh` is signed in with, and takes about a minute. Then Ctrl-G (or `:ask QUESTION`) asks about the view in front, `f` on an answer asks a follow-up, and `:copilot` sends a minimized diagnostic for the selected object.
+In KBorg, use `:copilot setup` and press Enter. Setup offers your active GitHub CLI account first, or opens GitHub in your browser to sign in. Review the detected tools and save the connection. Ctrl-G (or `:ask QUESTION`) asks about the view in front. The answer opens in a chat with the captured context. Press `f` to write a follow-up, Enter to review it, and Esc from the chat to return to your view. `:copilot` prepares a minimized diagnostic for the selected object.
 
 Before anything is sent you see the exact text and approve it. Answers are advice only; KBorg never runs what Copilot suggests. Copilot itself runs in a sandbox that can reach only GitHub.
 
@@ -239,7 +236,7 @@ KBorg has had internal security reviews but no independent audit. Details and li
 - Any modern terminal. Ghostty, kitty, WezTerm, Alacritty, iTerm2, VS Code and Windows Terminal get 24-bit color; Terminal.app, tmux and screen get 256 colors; plain consoles fall back to 16 colors and ASCII.
 - The header's key hints and one-item-per-line layout need a 100x24 terminal; smaller ones get a compact header.
 
-Good to know: the macOS release binaries are signed but not yet notarized, so macOS may ask you to confirm the first run of a downloaded binary. The Homebrew install builds from source and is not affected.
+Release archives come with Sigstore signatures. macOS may ask you to confirm the first run of a downloaded binary when the build has no Apple notarization. Homebrew builds from source.
 
 ## Documentation
 

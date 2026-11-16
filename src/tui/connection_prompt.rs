@@ -1,7 +1,17 @@
 //! Local-only startup consent. No worker, client, or credential helper exists
 //! until this screen returns an explicit Yes.
 use super::*;
-use crate::gateway::ConnectionCatalog;
+use crate::{context_config, gateway::ConnectionCatalog};
+use std::path::Path;
+
+struct StartupScope<'a> {
+    directory: Option<&'a Path>,
+    single_namespace: &'a str,
+    dashboard_namespace: &'a str,
+    dashboard: bool,
+    nodes_default: bool,
+    writable: bool,
+}
 
 struct Prompt {
     targets: Vec<usize>,
@@ -51,6 +61,12 @@ impl Prompt {
             .map(|(i, _)| i)
             .collect()
     }
+    fn open_picker(&mut self) {
+        self.picker = true;
+        self.cursor = self.targets.first().copied().unwrap_or(0);
+        self.filter.clear();
+        self.yes = true;
+    }
     fn key(
         &mut self,
         key: event::KeyEvent,
@@ -61,9 +77,14 @@ impl Prompt {
         if key.kind != KeyEventKind::Press {
             return Decision::Wait;
         }
-        if key.code == KeyCode::Esc
-            || (key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c'))
-        {
+        if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
+            return Decision::Quit;
+        }
+        if key.code == KeyCode::Esc {
+            if self.picker && !self.targets.is_empty() {
+                self.picker = false;
+                return Decision::Wait;
+            }
             return Decision::Quit;
         }
         if key
@@ -78,16 +99,24 @@ impl Prompt {
                 .iter()
                 .position(|index| *index == self.cursor)
                 .unwrap_or(0);
+            let last = matches.len().saturating_sub(1);
+            let next = match key.code {
+                KeyCode::Up => position.saturating_sub(1),
+                KeyCode::Down => (position + 1).min(last),
+                KeyCode::PageUp => position.saturating_sub(page),
+                KeyCode::PageDown => (position + page).min(last),
+                KeyCode::Home => 0,
+                KeyCode::End => last,
+                _ => position,
+            };
             match key.code {
-                KeyCode::Up => {
-                    if let Some(index) = matches.get(position.saturating_sub(1)) {
-                        self.cursor = *index;
-                    }
-                }
-                KeyCode::Down => {
-                    if let Some(index) =
-                        matches.get((position + 1).min(matches.len().saturating_sub(1)))
-                    {
+                KeyCode::Up
+                | KeyCode::Down
+                | KeyCode::Home
+                | KeyCode::End
+                | KeyCode::PageUp
+                | KeyCode::PageDown => {
+                    if let Some(index) = matches.get(next) {
                         self.cursor = *index;
                     }
                 }
@@ -113,10 +142,10 @@ impl Prompt {
             return Decision::Wait;
         }
         match key.code {
-            KeyCode::Char('n' | 'N') => self.picker = true,
+            KeyCode::Char('n' | 'N' | 'c' | 'C') => self.open_picker(),
             KeyCode::Left | KeyCode::Right | KeyCode::Tab => self.yes = !self.yes,
             KeyCode::Char('y' | 'Y') if bottom => return Decision::Connect,
-            KeyCode::Enter if !self.yes => self.picker = true,
+            KeyCode::Enter if !self.yes => self.open_picker(),
             KeyCode::Enter if bottom => return Decision::Connect,
             KeyCode::Down => self.offset = self.offset.saturating_add(1),
             KeyCode::Up => self.offset = self.offset.saturating_sub(1),
@@ -126,24 +155,67 @@ impl Prompt {
         }
         Decision::Wait
     }
-    fn review(&self, catalog: &ConnectionCatalog, writable: bool) -> Result<String> {
-        let mut text = format!("Kubeconfig: {}\n\n", catalog.source);
+    fn review(&self, catalog: &ConnectionCatalog, scope: &StartupScope<'_>) -> Result<String> {
+        let mut text = String::new();
+        let single = self.single_selection || !scope.dashboard;
         for index in &self.targets {
             let context = &catalog.contexts[*index];
+            let config = scope.directory.map_or(Ok(None), |directory| {
+                context_config::load_in(directory, &context.name)
+            });
+            let settings_invalid = config.is_err();
+            let config = config.unwrap_or(None);
+            let explicit_namespace = if single {
+                scope.single_namespace
+            } else {
+                scope.dashboard_namespace
+            };
+            let namespace = if !explicit_namespace.is_empty() {
+                explicit_namespace.into()
+            } else if single {
+                config
+                    .as_ref()
+                    .and_then(context_config::ContextConfig::namespace)
+                    .unwrap_or_else(|| {
+                        if scope.nodes_default {
+                            "*".into()
+                        } else {
+                            context.namespace.clone()
+                        }
+                    })
+            } else {
+                context.namespace.clone()
+            };
+            let namespace = match namespace.as_str() {
+                "*" => "All namespaces",
+                name => name,
+            };
+            let writable = scope.writable
+                && !settings_invalid
+                && !config.as_ref().is_some_and(|config| config.read_only);
             text.push_str(&format!(
-                "Context: {}\nCluster: {}\nAPI host: {}\nNamespace: {}\n\n",
-                context.name, context.cluster, context.server, context.namespace
+                "Context: {}\nCluster: {}\nAPI host: {}\nNamespace: {namespace}\n",
+                context.name, context.cluster, context.server,
             ));
-            if context.insecure_tls {
-                text.push_str("TLS verification is disabled by this kubeconfig.\n\n");
+            if single {
+                let view = config
+                    .as_ref()
+                    .and_then(|config| config.view.as_deref())
+                    .unwrap_or(if scope.nodes_default { "Nodes" } else { "Pods" });
+                text.push_str(&format!("Opens in: {view}\n"));
             }
+            text.push_str(if writable {
+                "Access: read and write; changes still require review.\n"
+            } else {
+                "Access: read only.\n"
+            });
+            if context.insecure_tls {
+                text.push_str("TLS verification is disabled by this kubeconfig.\n");
+            }
+            text.push('\n');
         }
-        text.push_str("Use the credentials already configured by your cluster CLI.\nNo token setup is needed in KBorg.\nConfigured login helpers may run after you choose Yes.\n\n");
-        text.push_str(if writable {
-            "Access: read and write; changes still require review.\n"
-        } else {
-            "Access: read only.\n"
-        });
+        text.push_str(&format!("Kubeconfig: {}\n", catalog.source));
+        text.push_str("Configured login helpers may run after you connect.\n\n");
         text.push_str("Connect to this kubeconfig context?");
         safety::review_display(&text)
     }
@@ -166,23 +238,36 @@ fn wrap(text: &str, width: usize) -> Vec<String> {
 fn paint(
     prompt: &mut Prompt,
     catalog: &ConnectionCatalog,
-    options: &Options,
+    scope: &StartupScope<'_>,
     theme: &Theme,
+    color: bool,
 ) -> Result<(bool, usize)> {
     let (width, height) = terminal::size().map_err(|_| "Cannot read terminal size")?;
-    let mut out = io::stdout();
-    let fg = if options.color {
-        theme.get("text").color()
-    } else {
-        Color::Reset
+    let mut out = Vec::new();
+    let themed = color && !theme.terminal;
+    let color = |role| {
+        if themed {
+            theme.get(role).color()
+        } else {
+            Color::Reset
+        }
     };
-    let bg = if options.color {
-        theme.get("background").color()
-    } else {
-        Color::Reset
+    let (fg, bg) = (color("text"), color("background"));
+    let (selected_fg, selected_bg) = (color("selection_text"), color("selection_background"));
+    let muted = color("muted");
+    let selected = |out: &mut Vec<u8>, x, y, width, text: &str| -> io::Result<()> {
+        if !themed {
+            queue!(out, style::SetAttribute(style::Attribute::Reverse))?;
+        }
+        cell(out, x, y, width, text, selected_fg, selected_bg)?;
+        if !themed {
+            queue!(out, style::SetAttribute(style::Attribute::NoReverse))?;
+        }
+        Ok(())
     };
-    execute!(
+    queue!(
         out,
+        terminal::BeginSynchronizedUpdate,
         themes::BackgroundColor(bg),
         terminal::Clear(ClearType::All)
     )
@@ -190,7 +275,7 @@ fn paint(
     if width < 40 || height < 10 {
         row(&mut out, 0, width, "Resize to 40x10; Esc exits", fg, bg)
             .map_err(|_| "Connection prompt draw failed")?;
-        out.flush().map_err(|_| "Connection prompt flush failed")?;
+        present(out)?;
         return Ok((false, 1));
     }
     let page = usize::from(height - 5);
@@ -199,7 +284,8 @@ fn paint(
     } else {
         "KBorg | Connect to Kubernetes"
     };
-    row(&mut out, 0, width, title, fg, bg).map_err(|_| "Connection prompt draw failed")?;
+    row(&mut out, 0, width, title, color("accent"), bg)
+        .map_err(|_| "Connection prompt draw failed")?;
     let bottom;
     if prompt.picker {
         let matches = prompt.matches(catalog);
@@ -212,19 +298,38 @@ fn paint(
             &mut out,
             1,
             width,
-            &format!("Filter: {}", safety::safe_text(&prompt.filter, 253)),
-            fg,
+            &format!(
+                "{}/{} contexts  /  Filter: {}",
+                if matches.is_empty() { 0 } else { position + 1 },
+                matches.len(),
+                safety::safe_text(&prompt.filter, 253),
+            ),
+            muted,
             bg,
         )
         .map_err(|_| "Connection prompt draw failed")?;
         for (line, index) in matches.iter().skip(start).take(page).enumerate() {
+            let active = *index == prompt.cursor;
             let text = format!(
-                "{} {}",
-                if *index == prompt.cursor { ">" } else { " " },
-                catalog.contexts[*index].name
+                "{} {} {}",
+                if active { ">" } else { " " },
+                if Some(*index) == catalog.selected {
+                    "*"
+                } else {
+                    " "
+                },
+                header_block::context_display(
+                    &catalog.contexts[*index].name,
+                    usize::from(width - 4)
+                ),
             );
-            row(&mut out, line as u16 + 2, width, &text, fg, bg)
-                .map_err(|_| "Connection prompt draw failed")?;
+            let y = line as u16 + 2;
+            if active {
+                selected(&mut out, 0, y, width, &text)
+            } else {
+                row(&mut out, y, width, &text, fg, bg)
+            }
+            .map_err(|_| "Connection prompt draw failed")?;
         }
         if matches.is_empty() {
             row(
@@ -242,51 +347,92 @@ fn paint(
             &mut out,
             height - 2,
             width,
-            "Type to filter | Arrows select | Enter reviews | Esc exits",
-            fg,
+            "Enter review  /  Arrows or PgUp/PgDn move",
+            muted,
+            bg,
+        )
+        .map_err(|_| "Connection prompt draw failed")?;
+        row(
+            &mut out,
+            height - 1,
+            width,
+            if prompt.targets.is_empty() {
+                "Type to filter  /  Esc exit"
+            } else {
+                "Type to filter  /  Esc back  /  * startup target"
+            },
+            muted,
             bg,
         )
         .map_err(|_| "Connection prompt draw failed")?;
     } else {
-        let lines = wrap(
-            &prompt.review(catalog, options.connection.writable)?,
-            usize::from(width),
-        );
+        let lines = wrap(&prompt.review(catalog, scope)?, usize::from(width));
         prompt.offset = prompt.offset.min(lines.len().saturating_sub(page));
         bottom = prompt.offset + page >= lines.len();
         for (line, text) in lines.iter().skip(prompt.offset).take(page).enumerate() {
             row(&mut out, line as u16 + 2, width, text, fg, bg)
                 .map_err(|_| "Connection prompt draw failed")?;
         }
-        let buttons = if bottom {
-            if prompt.yes {
-                "[ Yes ]   No     Enter / Y connects; N chooses another"
-            } else {
-                "  Yes   [ No ]   Enter chooses another; Y connects"
-            }
+        let buttons = if prompt.yes {
+            "[ Connect ]    Choose context"
         } else {
-            "Down / PgDn: review remaining details before connecting"
+            "  Connect    [ Choose context ]"
         };
         row(&mut out, height - 2, width, buttons, fg, bg)
             .map_err(|_| "Connection prompt draw failed")?;
+        if bottom && prompt.yes {
+            selected(&mut out, 0, height - 2, 11, "[ Connect ]")
+                .map_err(|_| "Connection prompt draw failed")?;
+        } else if !prompt.yes {
+            selected(&mut out, 13, height - 2, 18, "[ Choose context ]")
+                .map_err(|_| "Connection prompt draw failed")?;
+        }
         row(
             &mut out,
             height - 1,
             width,
-            "Left/Right: Yes/No | N: another context | Esc: exit",
-            fg,
+            if bottom {
+                "Enter confirm  /  C choose  /  Esc exit"
+            } else {
+                "Down/PgDn read  /  C choose  /  Esc exit"
+            },
+            muted,
             bg,
         )
         .map_err(|_| "Connection prompt draw failed")?;
     }
-    out.flush().map_err(|_| "Connection prompt flush failed")?;
+    present(out)?;
     Ok((bottom, page))
 }
-pub(super) fn confirm(options: &mut Options, theme: &Theme) -> Result<bool> {
-    let catalog = crate::gateway::connection_catalog(&options.connection)?;
+fn present(mut frame: Vec<u8>) -> Result<()> {
+    queue!(frame, terminal::EndSynchronizedUpdate).map_err(|_| "Connection prompt draw failed")?;
+    let mut out = io::stdout().lock();
+    out.write_all(&frame)
+        .and_then(|()| out.flush())
+        .map_err(|_| "Connection prompt flush failed".into())
+}
+pub(super) fn confirm(
+    options: &mut Options,
+    theme: &Theme,
+    single_namespace: String,
+    directory: Option<&Path>,
+) -> Result<bool> {
+    let connection = Connection {
+        namespace: single_namespace.clone(),
+        ..options.connection.clone()
+    };
+    let catalog = crate::gateway::connection_catalog(&connection)?;
     let mut prompt = Prompt::new(&catalog, &options.dashboard)?;
+    let scope = StartupScope {
+        directory,
+        single_namespace: &single_namespace,
+        dashboard_namespace: &options.connection.namespace,
+        dashboard: options.dashboard_last || !options.dashboard.is_empty(),
+        nodes_default: options.selector.is_empty(),
+        writable: options.connection.writable,
+    };
     loop {
-        let (bottom, page) = paint(&mut prompt, &catalog, options, theme)?;
+        let (bottom, page) = paint(&mut prompt, &catalog, &scope, theme, options.color)?;
         match event::read().map_err(|_| "Connection prompt input failed")? {
             Event::Key(key) => match prompt.key(key, &catalog, bottom, page) {
                 Decision::Quit => return Ok(false),
@@ -302,6 +448,7 @@ pub(super) fn confirm(options: &mut Options, theme: &Theme) -> Result<bool> {
                     if prompt.single_selection {
                         options.dashboard.clear();
                         options.dashboard_last = false;
+                        options.connection.namespace = single_namespace;
                     }
                     return Ok(true);
                 }
@@ -376,18 +523,52 @@ mod tests {
     #[test]
     fn multi_context_and_no_current_are_reviewed_before_connecting() -> Result<()> {
         let mut catalog = catalog();
-        let prompt = Prompt::new(&catalog, &["company-dev".into()])?;
+        let mut prompt = Prompt::new(&catalog, &["company-dev".into()])?;
+        let scope = StartupScope {
+            directory: None,
+            single_namespace: "",
+            dashboard_namespace: "",
+            dashboard: true,
+            nodes_default: true,
+            writable: false,
+        };
         assert_eq!(prompt.targets, vec![0, 1]);
-        let review = prompt.review(&catalog, false)?;
+        let review = prompt.review(&catalog, &scope)?;
         assert!(review.contains("company-prod") && review.contains("company-dev"));
-        assert!(review.contains("Access: read only"));
+        assert!(review.contains("Access: read only") && review.contains("Namespace: team"));
         assert!(wrap(&review, 40).iter().all(|line| line.len() <= 40));
         assert!(Prompt::new(&catalog, &["unknown".into()]).is_err());
         catalog.contexts[0].insecure_tls = true;
         assert!(
             prompt
-                .review(&catalog, false)?
+                .review(&catalog, &scope)?
                 .contains("TLS verification is disabled")
+        );
+        prompt.key(key(KeyCode::Char('c')), &catalog, true, 10);
+        prompt.key(key(KeyCode::End), &catalog, false, 10);
+        assert_eq!(prompt.cursor, 1);
+        assert_eq!(
+            prompt.key(key(KeyCode::Esc), &catalog, false, 10),
+            Decision::Wait
+        );
+        assert_eq!(prompt.targets, vec![0, 1]);
+        prompt.key(key(KeyCode::Char('c')), &catalog, true, 10);
+        assert_eq!(prompt.cursor, 0);
+        prompt.key(key(KeyCode::PageDown), &catalog, false, 10);
+        assert_eq!(
+            prompt.key(key(KeyCode::Enter), &catalog, false, 10),
+            Decision::Wait
+        );
+        let review = prompt.review(&catalog, &scope)?;
+        assert!(review.contains("Namespace: All namespaces") && review.contains("Opens in: Nodes"));
+        let explicit = StartupScope {
+            single_namespace: "payments",
+            ..scope
+        };
+        assert!(
+            prompt
+                .review(&catalog, &explicit)?
+                .contains("Namespace: payments")
         );
         catalog.selected = None;
         assert!(Prompt::new(&catalog, &[])?.picker);

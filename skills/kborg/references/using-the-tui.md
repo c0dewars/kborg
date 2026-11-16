@@ -130,4 +130,4 @@ Values are typed into a hidden prompt (Tab shows them) or read from `@/path/to/f
 
 ## Copilot (optional)
 
-`kborg copilot setup` connects GitHub Copilot. Then Ctrl-G or `:ask QUESTION` asks about the screen in front of the person, and `:copilot` asks about the selected object. KBorg shows the exact text it will send and waits for approval. Answers are advice only: KBorg never runs a suggested command.
+`kborg copilot setup` connects GitHub Copilot. Then Ctrl-G or `:ask QUESTION` asks about the screen in front of the person, and `:copilot` asks about the selected object. KBorg shows the exact text it will send and waits for approval. In the screen chat, `f` opens the follow-up composer, Enter reviews the new transfer, and Esc from the chat returns to the original view. Answers are advice only: KBorg never runs a suggested command.

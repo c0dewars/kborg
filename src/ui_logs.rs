@@ -272,6 +272,11 @@ impl LogView {
             .filter(|selection| !selection.dragging)
             .and_then(Selection::text)
     }
+    pub(super) fn has_selection(&self) -> bool {
+        self.selection
+            .as_ref()
+            .is_some_and(|selection| !selection.dragging && !selection.is_empty())
+    }
     pub fn copy_status(&self) -> Option<&str> {
         self.clipboard_status.as_deref()
     }

@@ -115,6 +115,8 @@ Header, hint and table settings apply to the resource table view. The dashboard 
 
 Like k9s `clusters/CONTEXT/config.yaml`, each kubeconfig context can have its own file, `contexts/NAME.yaml` in the KBorg config folder. `:ctx-config` opens the current context's file in `$VISUAL`/`$EDITOR` (a commented template when none exists) and applies it when you save; edits made outside KBorg apply within about a second. `kborg contexts` lists each context with its settings.
 
+The header leads with the cluster name for EKS ARN contexts and shows the region and account when space permits. Use `:identity` to inspect the full context, cluster, user, and namespace.
+
 ```yaml
 version: 1
 namespace: payments        # default namespace (all = every namespace); --namespace wins

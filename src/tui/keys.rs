@@ -242,7 +242,11 @@ impl App {
                 _ => self.modal = Modal::Export(draft),
             },
             Modal::AdviceReview(mut review) => match code {
-                KeyCode::Esc => self.close_subview(),
+                KeyCode::Esc => {
+                    if !self.restore_failed_follow_up("Transfer canceled. Nothing was sent.") {
+                        self.close_subview();
+                    }
+                }
                 KeyCode::Enter => {
                     let (width, height) =
                         approval_size().map_err(|_| "cannot read terminal size for approval")?;
@@ -260,11 +264,14 @@ impl App {
                         ));
                         if !self.write_inflight {
                             self.advice_cancel = None;
-                            self.modal = Modal::AdviceDocument(
-                                "COPILOT NOT STARTED".into(),
-                                "Request queue unavailable; prepare and review again.".into(),
-                                0,
-                            );
+                            let notice = "Request queue unavailable. Nothing was sent.";
+                            if !self.restore_failed_follow_up(notice) {
+                                self.modal = Modal::AdviceDocument(
+                                    "COPILOT NOT STARTED".into(),
+                                    notice.into(),
+                                    0,
+                                );
+                            }
                         }
                     }
                 }
@@ -281,29 +288,46 @@ impl App {
                 }
             },
             Modal::AdviceLoading => {
-                if !matches!(code, KeyCode::Esc | KeyCode::Char('q')) {
+                if matches!(code, KeyCode::Esc | KeyCode::Char('q')) {
+                    if !self.restore_failed_follow_up("Transfer canceled. Nothing was sent.") {
+                        self.close_subview();
+                    }
+                } else {
                     self.modal = Modal::AdviceLoading;
                 }
             }
             Modal::AdviceRunning => self.modal = Modal::AdviceRunning,
+            Modal::AdviceChat(mut scroll) => match code {
+                KeyCode::Esc | KeyCode::Char('q') => {
+                    self.ask_thread = None;
+                    self.ask_draft.clear();
+                    self.ask_notice = None;
+                    self.close_subview();
+                }
+                KeyCode::Char('f') if self.ask_thread.is_some() => {
+                    self.ask_notice = None;
+                    self.push_subview(Modal::AdviceChat(scroll));
+                    self.modal = Modal::Input(FOLLOW_UP_LABEL, std::mem::take(&mut self.ask_draft));
+                }
+                _ => {
+                    if let Some(thread) = &self.ask_thread {
+                        let (width, height) = terminal::size().unwrap_or((80, 24));
+                        scroll.key(thread, code, width, height, self.view_top(width, height));
+                    }
+                    self.modal = Modal::AdviceChat(scroll);
+                }
+            },
             Modal::AdviceDocument(title, text, offset) => {
-                if title == crate::copilot_setup::TITLE && matches!(code, KeyCode::Char('s' | 'S'))
+                if title == crate::copilot_setup::TITLE
+                    && matches!(code, KeyCode::Enter | KeyCode::Char('s' | 'S'))
                 {
                     if self.options.allow_copilot_screen {
                         self.pending_copilot_setup = true;
                     }
                     self.modal = Modal::AdviceDocument(title, text, offset);
-                } else if title == ADVICE_TITLE
-                    && self.ask_thread.is_some()
-                    && matches!(code, KeyCode::Char('f'))
-                {
-                    // Esc on the question returns to this answer.
-                    self.push_subview(Modal::AdviceDocument(title, text, offset));
-                    self.modal = Modal::Input(FOLLOW_UP_LABEL, String::new());
                 } else if matches!(code, KeyCode::Esc | KeyCode::Char('q')) {
                     if title == crate::copilot_setup::TITLE || title == "COPILOT DISABLED" {
-                        self.pending_copilot_question = None;
-                        self.ask_screen = None;
+                        self.clear_ask_capture();
                     }
                     self.close_subview();
                 } else {
@@ -1150,7 +1174,10 @@ impl App {
                         self.selection_ui.deleting = None;
                         self.restore_selection_view();
                     } else if label == FOLLOW_UP_LABEL {
-                        // Back to the answer the follow-up was opened from.
+                        self.ask_draft = text;
+                        self.close_subview();
+                    } else if label == ASK_LABEL {
+                        self.clear_ask_capture();
                         self.close_subview();
                     }
                 }

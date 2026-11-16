@@ -102,6 +102,9 @@ fn harness() -> Harness {
             ask_status: None,
             ask_thread: None,
             ask_inflight: None,
+            ask_source: None,
+            ask_draft: String::new(),
+            ask_notice: None,
             views: Default::default(),
             ui: Default::default(),
             wide: false,
@@ -6083,71 +6086,267 @@ fn advice_answer(answer: &str) -> crate::advice::AdviceOutput {
     }
 }
 
-/// Roadmap F4: a follow-up reuses the reviewed screen and the conversation,
-/// and goes through a fresh preview and approval.
+fn answer_copilot_request(
+    app: &mut App,
+    replies: &mpsc::SyncSender<(u64, Reply)>,
+    answer: &str,
+) -> Result<()> {
+    app.modal = Modal::AdviceRunning;
+    app.busy = true;
+    app.write_inflight = true;
+    app.command_epoch = Some(app.epoch);
+    replies
+        .send((app.epoch, Reply::AdviceOutcome(Ok(advice_answer(answer)))))
+        .map_err(|_| "reply closed")?;
+    app.receive();
+    assert!(!app.busy && !app.write_inflight);
+    Ok(())
+}
+
 #[test]
 fn ask_follow_up_carries_the_screen_and_conversation_into_a_new_review() -> Result<()> {
     let (mut app, replies, mut commands) = harness();
+    app.options.allow_copilot_screen = true;
     let thread = AskThread {
         screen: "pod api Pending".into(),
         keys: "  l                Follow logs".into(),
+        source: "demo / test / pod api".into(),
         turns: Vec::new(),
         epoch: app.epoch,
     };
+    app.push_subview(Modal::Detail("Original view".into(), 0));
     app.ask_inflight = Some(("why pending?".into(), thread));
-    app.modal = Modal::AdviceRunning;
-    replies
-        .send((
-            app.epoch,
-            Reply::AdviceOutcome(Ok(advice_answer("No node has 4 CPUs free."))),
-        ))
-        .map_err(|_| "reply closed")?;
-    app.receive();
-    assert!(
-        matches!(&app.modal, Modal::AdviceDocument(title, text, _) if title == ADVICE_TITLE && text.contains("f asks a follow-up"))
-    );
-    // Esc on the follow-up question returns to the answer.
+    answer_copilot_request(&mut app, &replies, "No node has 4 CPUs free.")?;
+    assert!(matches!(app.modal, Modal::AdviceChat(..)));
+    assert_eq!(app.subviews.len(), 1);
+
     app.key(KeyCode::Char('f'))?;
     assert!(matches!(app.modal, Modal::Input(FOLLOW_UP_LABEL, _)));
     app.key(KeyCode::Esc)?;
-    assert!(matches!(&app.modal, Modal::AdviceDocument(title, ..) if title == ADVICE_TITLE));
+    assert!(matches!(app.modal, Modal::AdviceChat(..)));
+    assert!(commands.try_recv().is_err());
+
     app.key(KeyCode::Char('f'))?;
-    type_text(&mut app, "which node is closest?")?;
+    let question = "which node is closest?";
+    type_text(&mut app, question)?;
     app.key(KeyCode::Enter)?;
     assert!(matches!(app.modal, Modal::AdviceLoading));
     match commands.try_recv() {
         Ok((_, Task::AskPrepare(question, screen, keys, history, _))) => {
             assert_eq!(question, "which node is closest?");
             assert_eq!(screen, "pod api Pending");
-            // A follow-up sends the same key reference as the first question.
             assert_eq!(keys, "  l                Follow logs");
             assert_eq!(
                 history,
-                vec![(
-                    "why pending?".to_owned(),
-                    "No node has 4 CPUs free.".to_owned()
-                )]
+                vec![("why pending?".into(), "No node has 4 CPUs free.".into())]
             );
         }
         _ => return Err("expected a follow-up AskPrepare".into()),
     }
-    // A diagnostic answer is not a conversation: no follow-up offered.
-    app.ask_inflight = None;
-    app.ask_thread = None;
+    assert!(commands.try_recv().is_err());
     replies
-        .send((app.epoch, Reply::AdviceOutcome(Ok(advice_answer("ok")))))
+        .send((
+            app.epoch,
+            Reply::AdvicePrepared(Ok((None, "Reviewed follow-up payload".into()))),
+        ))
         .map_err(|_| "reply closed")?;
     app.receive();
-    assert!(matches!(&app.modal, Modal::AdviceDocument(_, text, _) if !text.contains("follow-up")));
+    assert!(matches!(app.modal, Modal::AdviceReview(..)));
+    app.key_with_approval_size(KeyCode::Enter, || Ok((80, 24)))?;
+    assert!(matches!(app.modal, Modal::AdviceReview(..)));
+    assert!(
+        commands.try_recv().is_err(),
+        "a preview cannot execute a request"
+    );
+    app.key(KeyCode::Esc)?;
+    assert!(matches!(app.modal, Modal::AdviceChat(..)));
+    assert_eq!(
+        app.ask_thread
+            .as_ref()
+            .ok_or("expected a chat")?
+            .turns
+            .len(),
+        1
+    );
+
+    app.key(KeyCode::Char('f'))?;
+    assert!(matches!(&app.modal, Modal::Input(FOLLOW_UP_LABEL, text) if text == question));
+    app.key(KeyCode::Enter)?;
+    assert!(matches!(commands.try_recv(), Ok((_, Task::AskPrepare(..)))));
+    app.modal = Modal::AdviceRunning;
+    app.write_inflight = true;
+    replies
+        .send((
+            app.epoch,
+            Reply::AdviceOutcome(Err("Synthetic provider failure".into())),
+        ))
+        .map_err(|_| "reply closed")?;
+    app.receive();
+    assert!(!app.busy && !app.write_inflight);
+    assert!(matches!(app.modal, Modal::AdviceChat(..)));
+    assert_eq!(
+        app.ask_thread
+            .as_ref()
+            .ok_or("expected a chat")?
+            .turns
+            .len(),
+        1
+    );
+    assert!(
+        app.ask_notice
+            .as_deref()
+            .is_some_and(|notice| notice.contains("Synthetic provider failure"))
+    );
+
+    app.key(KeyCode::Char('f'))?;
+    assert!(matches!(&app.modal, Modal::Input(FOLLOW_UP_LABEL, text) if text == question));
+    app.key(KeyCode::Enter)?;
+    assert!(matches!(commands.try_recv(), Ok((_, Task::AskPrepare(..)))));
+    answer_copilot_request(&mut app, &replies, "The west worker has 3 CPUs.")?;
+    assert!(matches!(app.modal, Modal::AdviceChat(..)));
+    let thread = app
+        .ask_thread
+        .as_ref()
+        .ok_or("expected two answered turns")?;
+    assert_eq!(thread.turns.len(), 2);
+    assert_eq!(thread.turns[1].0, question);
+    assert_eq!(thread.turns[1].1, "The west worker has 3 CPUs.");
+    app.key(KeyCode::Esc)?;
+    assert!(matches!(&app.modal, Modal::Detail(text, _) if text == "Original view"));
+    assert!(app.subviews.is_empty());
     Ok(())
+}
+
+#[test]
+fn diagnostic_advice_cannot_follow_up_on_a_previous_screen_conversation() -> Result<()> {
+    let (mut app, replies, mut commands) = harness();
+    app.ask_thread = Some(AskThread {
+        screen: "earlier screen".into(),
+        keys: String::new(),
+        source: "demo / test / pod api".into(),
+        turns: vec![("why?".into(), "because".into())],
+        epoch: app.epoch,
+    });
+    answer_copilot_request(&mut app, &replies, "Diagnostic advice.")?;
+    assert!(
+        matches!(&app.modal, Modal::AdviceDocument(_, text, _) if text.contains("Diagnostic advice."))
+    );
+    app.key(KeyCode::Char('f'))?;
+    assert!(matches!(app.modal, Modal::AdviceDocument(..)));
+    assert!(commands.try_recv().is_err());
+    Ok(())
+}
+
+#[test]
+fn copilot_chat_retains_the_latest_turns() -> Result<()> {
+    let (mut app, replies, _) = harness();
+    let thread = AskThread {
+        screen: "demo checkout-api CrashLoopBackOff".into(),
+        keys: String::new(),
+        source: "demo / payments / checkout-api".into(),
+        turns: (0..crate::advice::MAX_TURNS)
+            .map(|index| (format!("Prompt {index}"), format!("Answer {index}")))
+            .collect(),
+        epoch: app.epoch,
+    };
+    app.ask_inflight = Some(("Latest question".into(), thread));
+    answer_copilot_request(&mut app, &replies, "Latest response")?;
+    let thread = app
+        .ask_thread
+        .as_ref()
+        .ok_or("expected latest chat history")?;
+    assert_eq!(thread.turns.len(), crate::advice::MAX_TURNS);
+    assert_eq!(
+        thread.turns.first().map(|turn| turn.0.as_str()),
+        Some("Prompt 1")
+    );
+    assert_eq!(
+        thread.turns.last().map(|turn| turn.0.as_str()),
+        Some("Latest question")
+    );
+    Ok(())
+}
+
+#[test]
+fn copilot_chat_reflows_with_context_and_controls_across_terminal_sizes() -> Result<()> {
+    let (mut app, replies, mut commands) = harness();
+    let question = "Why is the checkout Pod restarting?";
+    let source = "demo / payments / checkout-api";
+    let thread = AskThread {
+        screen: "demo checkout-api CrashLoopBackOff".into(),
+        keys: "  l    Logs".into(),
+        source: source.into(),
+        turns: Vec::new(),
+        epoch: app.epoch,
+    };
+    let answer = format!(
+        "## Probe failures\nThe readiness check failed after the rollout. 東京 👩‍💻\n\
+         \x1b]52;c;synthetic-payload\x07\n\n\
+         - Inspect the previous container logs.\n\
+         - Compare the probe's port with the listening port.\n\n\
+         ```shell\nkubectl describe pod checkout-api -n payments\n```\n\n\
+         {}\n{}\nLast step: confirm the probe path.",
+        "nonbreaking".repeat(28),
+        "Inspect the captured rollout and compare the previous log lines.\n".repeat(26),
+    );
+    app.ask_inflight = Some((question.into(), thread));
+    answer_copilot_request(&mut app, &replies, &answer)?;
+    crate::text::with_mode(true, || -> Result<()> {
+        for (width, height) in [(48, 16), (80, 24), (120, 34)] {
+            let rows = screen(&app, width, height);
+            if width == 120 {
+                let top = usize::from(app.view_top(width, height));
+                for row in &rows[top..usize::from(height - 2)] {
+                    assert!(row.starts_with("     ") && row.ends_with("     "));
+                }
+            }
+            let frame = rows.join("\n");
+            assert!(frame.contains("Copilot chat"));
+            assert!(frame.contains(&format!("Captured: {source}")));
+            assert!(frame.contains(question));
+            assert!(frame.contains("Probe failures"));
+            assert!(frame.contains("f follow-up") && frame.contains("Esc back"));
+            assert!(!frame.contains("sort: name") && !frame.contains("METRICS loading"));
+        }
+        app.key(KeyCode::End)?;
+        for (width, height) in [(48, 16), (120, 34), (80, 24)] {
+            let frame = screen(&app, width, height).join("\n");
+            assert!(frame.contains("Last step: confirm the probe path."));
+            assert!(frame.contains("f follow-up") && frame.contains("Esc back"));
+        }
+        app.key(KeyCode::Char('/'))?;
+        type_text(&mut app, "Probe failures")?;
+        let search = screen(&app, 80, 24).join("\n");
+        assert!(search.contains("Search > Probe failures"));
+        app.key(KeyCode::Enter)?;
+        assert_eq!(app.doc_search.query(), "probe failures");
+        assert!(screen(&app, 80, 24).join("\n").contains("Probe failures"));
+        app.key(KeyCode::Esc)?;
+        assert!(app.doc_search.query().is_empty());
+        assert!(matches!(app.modal, Modal::AdviceChat(..)));
+        app.key(KeyCode::Char('f'))?;
+        type_text(&mut app, "Which port should I check?")?;
+        for (width, height) in [(48, 16), (80, 24), (120, 34)] {
+            let frame = screen(&app, width, height).join("\n");
+            assert!(frame.contains("Captured:"));
+            assert!(frame.contains("Which port should I check?"));
+            assert!(frame.contains("Enter review") && frame.contains("Esc cancel"));
+        }
+        assert!(commands.try_recv().is_err());
+        app.key(KeyCode::Esc)?;
+        assert!(matches!(app.modal, Modal::AdviceChat(..)));
+        Ok(())
+    })
 }
 
 #[test]
 fn ask_follow_up_after_a_context_switch_sends_nothing() -> Result<()> {
     let (mut app, _replies, mut commands) = harness();
+    app.options.allow_copilot_screen = true;
     app.ask_thread = Some(AskThread {
         screen: "pod api Pending".into(),
         keys: String::new(),
+        source: "demo / test / pod api".into(),
         turns: vec![("why?".into(), "because".into())],
         epoch: app.epoch,
     });
@@ -6286,6 +6485,32 @@ fn ask_from_filtered_logs_adds_the_selected_lines() -> Result<()> {
     assert!(captured.contains("100 of 100 matching lines"), "{captured}");
     assert!(captured.contains("line-0 ERROR") && captured.contains("line-297 ERROR"));
     assert!(!captured.contains("line-1 ok"));
+    Ok(())
+}
+
+#[test]
+fn ask_from_highlighted_logs_excludes_unselected_screen_content() -> Result<()> {
+    let (mut app, _replies, mut commands) = harness();
+    app.options.allow_copilot_screen = true;
+    app.options.mouse = true;
+    app.modal = Modal::Follow(Box::new(crate::ui_logs::LogView::new(
+        "outside above\nkeep this log\nkeep this too\noutside below".into(),
+        crate::logs::ReadOptions::default(),
+    )));
+    let (w, h) = (100, 30);
+    let (x, y) = find_on_screen(&app, w, h, "keep this log").ok_or("missing log line")?;
+    let left = MouseButton::Left;
+    app.mouse(mouse_event(MouseEventKind::Down(left), x, y), w, h)?;
+    app.mouse(mouse_event(MouseEventKind::Drag(left), x + 12, y + 1), w, h)?;
+    app.mouse(mouse_event(MouseEventKind::Up(left), x + 12, y + 1), w, h)?;
+    assert!(screen(&app, w, h)[usize::from(h - 2)].contains("ask about selection"));
+    app.key(KeyCode::Char(':'))?;
+    let capture = app.ask_screen.as_deref().ok_or("missing capture")?;
+    let bundle = crate::advice::screen_bundle("what happened?", capture, "", &[])?;
+    assert!(bundle.contains("HIGHLIGHTED LOG EXCERPT"));
+    assert!(bundle.contains("keep this log\nkeep this too"));
+    assert!(!bundle.contains("outside above") && !bundle.contains("outside below"));
+    assert!(commands.try_recv().is_err());
     Ok(())
 }
 
@@ -8085,31 +8310,30 @@ fn the_command_prompt_suggests_the_best_completion_inline() -> Result<()> {
     Ok(())
 }
 
-/// Long context, cluster and user names (EKS ARNs) show whole when the
-/// terminal has room, and otherwise lose their middle, never the cluster
-/// name at the end; the key columns still fit beside them.
 #[test]
-fn the_header_shows_long_cluster_names_whole_or_keeps_their_end() {
+fn eks_identity_prioritizes_the_name_and_keeps_the_full_lookup() -> Result<()> {
     let (mut app, _replies, _commands) = harness();
     app.items = shared(ui_pods());
-    let arn = "arn:aws:eks:eu-central-1:188289755449:cluster/payments-prod-eu";
+    let arn = "arn:aws:eks:eu-central-1:123456789012:cluster/payments-prod-eu";
     app.context = arn.into();
     app.header.apply(HeaderInfo {
         cluster: arn.into(),
         user: arn.into(),
         version: Some("v1.35.9-eks-91f89a9".into()),
-        usage: None,
+        usage: Some((Some(7), Some(32))),
     });
-    let wide = screen(&app, 200, 30);
-    for row in &wide[2..=4] {
-        assert!(row.contains(arn), "{row}");
+    for width in [100, 200] {
+        let frame = screen(&app, width, 30);
+        assert!(frame[2].starts_with(" Context    payments-prod-eu"));
+        assert!(frame[3].contains("eu-central-1  /  123456789012"));
+        assert!(frame[4].starts_with(" User       Same as context"));
+        assert!(hint_shown(&frame, "?", "all keys"));
+        assert!(frame[6].contains("CPU 7%") && frame[6].contains("MEM 32%"));
     }
-    assert!(hint_shown(&wide, "?", "all keys"), "{}", wide[2]);
-    let narrow = screen(&app, 100, 30);
-    for row in &narrow[2..=4] {
-        assert!(
-            row.contains('~') && row.contains("payments-prod-eu"),
-            "{row}"
-        );
-    }
+    let compact = screen(&app, 72, 24);
+    assert!(compact[1].contains("payments-prod-eu"));
+    app.command("identity")?;
+    assert!(matches!(&app.modal, Modal::Detail(text, _) if text.matches(arn).count() == 3));
+    assert_eq!(app.context, arn);
+    Ok(())
 }

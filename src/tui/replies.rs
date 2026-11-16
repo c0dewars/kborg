@@ -333,48 +333,68 @@ impl App {
                     if !matches!(self.modal, Modal::AdviceLoading) {
                         continue;
                     }
-                    self.modal = match result {
+                    match result {
                         Ok((prepared, text)) => {
                             self.status = "Copilot preview ready; nothing sent.".into();
-                            Modal::AdviceReview(Box::new(advice_ui::Review::new(
+                            self.modal = Modal::AdviceReview(Box::new(advice_ui::Review::new(
                                 prepared, text, self.epoch,
-                            )))
+                            )));
                         }
-                        Err(error) => Modal::AdviceDocument(
-                            "COPILOT SETUP / no request sent".into(),
-                            error,
-                            0,
-                        ),
+                        Err(error) => {
+                            if !self.restore_failed_follow_up(&error) {
+                                self.modal = Modal::AdviceDocument(
+                                    "COPILOT SETUP / no request sent".into(),
+                                    error,
+                                    0,
+                                );
+                            }
+                        }
                     };
                 }
                 Reply::AdviceOutcome(result) => {
                     self.advice_cancel = None;
-                    let inflight = self.ask_inflight.take();
-                    self.modal = match result {
+                    if !matches!(self.modal, Modal::AdviceRunning) {
+                        continue;
+                    }
+                    match result {
                         Ok(output) => {
                             let answer = safety::safe_lines(&output.answer, 64 * 1024);
-                            // A screen answer continues its conversation; `f` follows up.
-                            let follow_up = match inflight {
-                                Some((question, mut thread)) => {
-                                    thread.turns.push((question, answer.clone()));
-                                    self.ask_thread = Some(thread);
-                                    "\n\nf asks a follow-up about the same screen (reviewed again before anything is sent) | Esc closes"
+                            if let Some((question, mut thread)) = self.ask_inflight.take() {
+                                thread.turns.push((question, answer));
+                                let overflow =
+                                    thread.turns.len().saturating_sub(crate::advice::MAX_TURNS);
+                                thread.turns.drain(..overflow);
+                                self.ask_thread = Some(thread);
+                                self.ask_draft.clear();
+                                self.ask_notice = None;
+                                // Only the origin remains on the stack after a follow-up.
+                                if matches!(self.subviews.last(), Some(Modal::AdviceChat(_))) {
+                                    self.subviews.pop();
                                 }
-                                None => "",
-                            };
-                            Modal::AdviceDocument(
-                                ADVICE_TITLE.into(),
-                                format!(
-                                    "READ-ONLY ADVICE / no commands executed\n\n{answer}\n\nCheck suggestions against live state before taking action.{follow_up}"
-                                ),
-                                0,
-                            )
+                                self.modal = Modal::AdviceChat(advice_chat::Scroll::default());
+                            } else {
+                                self.modal = Modal::AdviceDocument(
+                                    ADVICE_TITLE.into(),
+                                    format!(
+                                        "READ-ONLY ADVICE / no commands executed\n\n{answer}\n\nCheck suggestions against live state before taking action."
+                                    ),
+                                    0,
+                                );
+                            }
+                            self.status =
+                                "Copilot request finished. No automatic remediation.".into();
                         }
                         Err(error) => {
-                            Modal::AdviceDocument("COPILOT REQUEST STOPPED".into(), error, 0)
+                            if !self.restore_failed_follow_up(&error) {
+                                self.modal = Modal::AdviceDocument(
+                                    "COPILOT REQUEST STOPPED".into(),
+                                    error,
+                                    0,
+                                );
+                            }
+                            self.status = "Copilot request stopped.".into();
                         }
                     };
-                    self.status = "Copilot request finished. No automatic remediation.".into();
                 }
                 Reply::HelmPrepared(generation, result) => {
                     if generation != self.helm_generation

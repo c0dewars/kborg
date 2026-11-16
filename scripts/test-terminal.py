@@ -565,7 +565,7 @@ def main():
             idle_bytes = len(all_output) - idle_bytes
             assert "RESOURCES [Tab]" not in screen.text(), "permanent sidebar returned"
             keys(b":dep")
-            capture("command-completion", [":dep", ":deploy", "Tab complete"])
+            capture("command-completion", [":dep", ":deploy", "Tab or Right accept"])
             keys(b"\t\r")
             capture("deployments", ["deployments", "2/2 ready"])
             keys(b":po /api\r")

@@ -186,14 +186,14 @@ def connection_tour(s):
     s.frame(3000)
     s.caption = "Context, cluster and namespace are named before connecting"
     s.frame(2500)
-    s.keys(b"n", 0.3)
+    s.keys(b"c", 0.3)
     s.wait(r"Choose an existing context", 8)
-    s.caption = "No opens a searchable list; your kubeconfig stays unchanged"
+    s.caption = "Press C to search contexts and move the highlighted row"
     s.type("dev", 200)
     s.frame(2500)
     s.keys(b"\r", 0.3)
     s.wait(r"Context: company-dev", 8)
-    s.caption = "Enter / Y connects; Esc exits without running a login helper"
+    s.caption = "Review the context and the starting view before connecting"
     s.frame(3500)
     # Do not connect, contact an API, or run a helper in a public recording.
     s.keys(b"\x1b", 0.3)
