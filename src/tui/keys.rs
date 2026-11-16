@@ -1066,6 +1066,16 @@ impl App {
                             .unwrap_or(0);
                         self.modal = Modal::Input("Command", text);
                     }
+                    // At the end of the line Right takes the greyed suggestion.
+                    KeyCode::Right
+                        if self.command_cursor == text.len()
+                            && self.completion.is_none()
+                            && self.ghost(&text).is_some() =>
+                    {
+                        text.push_str(&self.ghost(&text).unwrap_or_default());
+                        self.command_cursor = text.len();
+                        self.modal = Modal::Input("Command", text);
+                    }
                     KeyCode::Right => {
                         self.command_cursor = text[self.command_cursor..]
                             .chars()

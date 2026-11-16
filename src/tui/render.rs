@@ -1680,7 +1680,7 @@ fn render_frame(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
                 out,
                 h - 2,
                 w,
-                " Tab complete  Up/Down history  Enter go  Esc cancel",
+                " Tab or Right accept the suggestion  Tab again next  Up/Down history  Enter go  Esc cancel",
                 color("muted"),
                 bg,
             )
@@ -1703,6 +1703,26 @@ fn render_frame(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
                 color("selection_background"),
             )
             .map_err(|_| "draw failed")?;
+            // The rest of the best completion, greyed out after the cursor.
+            if start == 0
+                && cursor == text.len()
+                && app.completion.is_none()
+                && let Some(rest) = app.ghost(text)
+            {
+                let x = text_cells(text).saturating_add(2);
+                if x.saturating_add(1) < w {
+                    cell(
+                        out,
+                        x,
+                        h - 1,
+                        w - x,
+                        &rest,
+                        color("muted"),
+                        color("selection_background"),
+                    )
+                    .map_err(|_| "draw failed")?;
+                }
+            }
         }
         Modal::Filter(_, text, ..) => {
             row(

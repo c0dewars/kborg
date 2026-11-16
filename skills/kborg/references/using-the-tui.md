@@ -11,6 +11,7 @@ For exact keys, use `kborg keymap --json`: the person may have remapped some, an
 | `:pod /REGEX`, `:pod app=web,tier!=batch` | Filter, or a server-side label selector |
 | `:pod @CONTEXT` | Switch context, same resource |
 | `:ctx`, `:ns` | Context or namespace picker |
+| Tab or Right in the `:` prompt | Take the greyed suggestion (`:de` -> `deployments`); Tab again cycles; Up/Down is history |
 | `/TEXT`, `/!TEXT`, `/-f TEXT`, `/-l LABELS` | Filter rows: regex, inverse, fuzzy, label selector |
 | Ctrl-P | Command palette: fuzzy search over commands and actions |
 | `:q` | Quit |

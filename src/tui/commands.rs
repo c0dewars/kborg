@@ -296,24 +296,75 @@ impl App {
         }
         Ok(false)
     }
+    /// Completions for the `:` prompt, best first: for the first word, the
+    /// resource a short name stands for (`po` -> pods, `deploy` ->
+    /// deployments), then resources and aliases that start with it, then
+    /// commands that only show something, then other names, and last the
+    /// commands that change something or quit. Later words complete
+    /// contexts, sort keys or namespaces.
     pub(super) fn suggestions(&self, text: &str) -> Vec<String> {
+        self.ranked_suggestions(text)
+            .into_iter()
+            .map(|(_, value)| value)
+            .collect()
+    }
+    /// Commands a completion must never pick for you: they change the
+    /// cluster or leave KBorg (each still asks first, or quits).
+    const ACTING: &'static [&'static str] = &[
+        "delete",
+        "drain",
+        "cordon",
+        "uncordon",
+        "scale",
+        "image",
+        "restart",
+        "edit",
+        "edit-container",
+        "yaml-edit",
+        "helm-install",
+        "helm-crds",
+        "helm-crds-upgrade",
+        "helm-crds-delete",
+        "helm-crds-migrate",
+        "helm-test",
+        "scan",
+        "benchmark",
+        "benchmarks",
+        "be",
+        "q",
+        "q!",
+        "qa",
+        "Q",
+        "quit",
+        "exit",
+    ];
+    /// (rank, completion): 0 a short name's resource, 1 resources and
+    /// aliases, 2 commands that show something, 3 other names, 4 commands
+    /// that act (never the greyed suggestion).
+    fn ranked_suggestions(&self, text: &str) -> Vec<(u8, String)> {
         let (prefix, token) = text
             .rsplit_once(' ')
             .map(|(prefix, token)| (format!("{prefix} "), token))
             .unwrap_or((String::new(), text));
-        let mut values = if prefix.is_empty() {
-            let mut values = nav::SPECIAL
+        // (rank, value): lower ranks come first.
+        let mut ranked: Vec<(u8, String)> = if prefix.is_empty() {
+            let mut values: Vec<(u8, String)> = nav::SPECIAL
                 .iter()
-                .map(|s| (*s).to_owned())
-                .collect::<Vec<_>>();
-            values.extend(self.aliases.keys().cloned());
+                .map(|s| {
+                    (
+                        if Self::ACTING.contains(s) { 4 } else { 2 },
+                        (*s).to_owned(),
+                    )
+                })
+                .collect();
+            values.extend(self.aliases.keys().map(|alias| (1, alias.clone())));
             for kind in &self.kinds {
-                values.extend([
-                    kind.plural.clone(),
-                    kind.kind.to_ascii_lowercase(),
-                    kind.key(),
-                ]);
-                values.extend(kind.short_names.clone());
+                let named = !token.is_empty()
+                    && (kind.short_names.iter().any(|name| name == token)
+                        || kind.kind.eq_ignore_ascii_case(token));
+                values.push((if named { 0 } else { 1 }, kind.plural.clone()));
+                values.extend([(3, kind.kind.to_ascii_lowercase()), (3, kind.key())]);
+                values.extend(kind.short_names.iter().map(|name| (3, name.clone())));
             }
             values
         } else if token.starts_with('@') || matches!(prefix.trim(), "ctx" | "context" | "contexts")
@@ -322,15 +373,18 @@ impl App {
                 .unwrap_or_default()
                 .into_iter()
                 .map(|s| {
-                    if token.starts_with('@') {
-                        format!("@{s}")
-                    } else {
-                        s
-                    }
+                    (
+                        1,
+                        if token.starts_with('@') {
+                            format!("@{s}")
+                        } else {
+                            s
+                        },
+                    )
                 })
                 .collect()
         } else if prefix.trim() == "sort" {
-            vec![
+            [
                 "name",
                 "namespace",
                 "status",
@@ -341,21 +395,51 @@ impl App {
                 "memory",
             ]
             .into_iter()
-            .map(str::to_owned)
+            .map(|value| (1, value.to_owned()))
             .collect()
         } else {
-            let mut values = self.known_namespaces.clone();
-            values.extend(["all".into(), self.namespace.clone()]);
+            let mut values: Vec<(u8, String)> = self
+                .known_namespaces
+                .iter()
+                .map(|ns| (1, ns.clone()))
+                .collect();
+            values.extend([(1, "all".into()), (1, self.namespace.clone())]);
             values
         };
-        values.retain(|value| value.starts_with(token));
-        values.sort();
-        values.dedup();
-        values
+        ranked.retain(|(rank, value)| *rank == 0 || value.starts_with(token));
+        // Commands keep their alphabetical order after the first word.
+        let first_word = prefix.is_empty();
+        ranked.sort_by(|(a, x), (b, y)| {
+            a.cmp(b).then_with(|| {
+                if first_word {
+                    x.len().cmp(&y.len()).then_with(|| x.cmp(y))
+                } else {
+                    x.cmp(y)
+                }
+            })
+        });
+        let mut seen = std::collections::HashSet::new();
+        ranked
             .into_iter()
+            .filter(|(_, value)| seen.insert(value.clone()))
             .take(100)
-            .map(|value| format!("{prefix}{value}"))
+            .map(|(rank, value)| (rank, format!("{prefix}{value}")))
             .collect()
+    }
+    /// The rest of the best completion of `text`, shown greyed out after the
+    /// cursor as in k9s; `None` when nothing longer starts with it.
+    pub(super) fn ghost(&self, text: &str) -> Option<String> {
+        if text.is_empty() {
+            return None;
+        }
+        // A command that acts is never offered greyed out; Tab still
+        // reaches it on purpose.
+        self.ranked_suggestions(text)
+            .into_iter()
+            .next()
+            .filter(|(rank, _)| *rank < 4)
+            .and_then(|(_, best)| best.strip_prefix(text).map(str::to_owned))
+            .filter(|rest| !rest.is_empty())
     }
     pub(super) fn remember_command(&mut self, text: &str) {
         let text = text.trim();
