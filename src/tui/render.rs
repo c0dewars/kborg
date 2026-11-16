@@ -1704,10 +1704,14 @@ fn render_frame(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
             )
             .map_err(|_| "draw failed")?;
             // The rest of the best completion, greyed out after the cursor.
+            // A short name shows what it completes to: `:svc|  -> services`.
+            let hint = app
+                .ghost(text)
+                .or_else(|| app.best_completion(text).map(|best| format!("  -> {best}")));
             if start == 0
                 && cursor == text.len()
                 && app.completion.is_none()
-                && let Some(rest) = app.ghost(text)
+                && let Some(rest) = hint
             {
                 let x = text_cells(text).saturating_add(2);
                 if x.saturating_add(1) < w {

@@ -7988,6 +7988,13 @@ fn the_command_prompt_suggests_the_best_completion_inline() -> Result<()> {
         None,
         "nothing to add inline; Tab still swaps it"
     );
+    assert_eq!(app.best_completion("svc").as_deref(), Some("services"));
+    assert_eq!(app.best_completion("services"), None, "already complete");
+    assert_eq!(
+        app.best_completion("dele"),
+        None,
+        "never a command that acts"
+    );
     assert_eq!(app.ghost(""), None);
     // Later words: namespaces after a resource, sort keys after sort.
     app.known_namespaces = vec!["kube-system".into(), "shop".into()];
@@ -8009,6 +8016,19 @@ fn the_command_prompt_suggests_the_best_completion_inline() -> Result<()> {
     app.key(KeyCode::Right)?;
     assert_eq!(app.command_cursor, 1);
     assert!(matches!(&app.modal, Modal::Input("Command", text) if text == "deployments"));
+    // A short name: the hint names the resource; Right and Tab take it.
+    for key in [KeyCode::Right, KeyCode::Tab] {
+        app.modal = Modal::Input("Command", "svc".into());
+        app.command_cursor = 3;
+        app.completion = None;
+        let shown = screen(&app, 100, 24).join("\n");
+        assert!(shown.contains(":svc|  -> services"), "{shown}");
+        app.key(key)?;
+        assert!(
+            matches!(&app.modal, Modal::Input("Command", text) if text == "services"),
+            "{key:?}"
+        );
+    }
     // Tab cycles through the matches in the same order.
     app.modal = Modal::Input("Command", "po".into());
     app.command_cursor = 2;
