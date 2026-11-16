@@ -1,4 +1,4 @@
-# KBorg — unreleased
+# KBorg 0.8.0 — 2026-11-16
 
 - **Undo the last change.** After a scale, an image change, or a suspend or resume succeeds, `z` (or `:revert`) prepares the reverse: the old replica count, the old image, or the opposite suspend. It goes through the same review, dry run and approval as any change. The old value is read just before the change is approved. The reverse is bound to that object's UID, so it is refused if the object was replaced. Restarts, deletes, kills and triggers cannot be undone and offer no undo; a failed change leaves nothing to undo, and any later change replaces it. (`:undo` stays the k9s-style alias of `:rollback`.)
 - **A short first-run tour.** After you pick a theme on the very first start, three tips show how to get around: `:` and a resource name, `?` for the keys of any view (and that every change shows a review first), and Ctrl-P for the palette. Each tip names your own keys. Enter shows the next, Esc skips the rest, and `:tour` shows it again any time.
