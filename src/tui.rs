@@ -98,6 +98,19 @@ fn input_limit(label: &str) -> usize {
     }
 }
 
+/// The reverse of the last change that has one, prepared on `z` or `:revert`
+/// as a normal reviewed change of the same object.
+#[derive(Clone, Debug, PartialEq)]
+struct Undo {
+    resource: String,
+    namespace: String,
+    name: String,
+    uid: String,
+    action: Action,
+    /// What the reverse does, for the status line.
+    label: String,
+}
+
 /// A screen capture and the questions and answers about it so far.
 #[derive(Clone)]
 struct AskThread {
@@ -146,6 +159,8 @@ enum Modal {
     ),
     Editor(Box<ContainerDraft>),
     YamlEditor(Box<crate::ui_yaml::Editor>),
+    /// The whole-Secret editor: values on screen, never on disk or in :ask.
+    SecretEditor(Box<crate::ui_yaml::Editor<crate::secret_document::SecretDoc>>),
     WriteReview(Box<WriteReview>),
     WriteRunning,
     Export(crate::exports::Draft),
@@ -340,7 +355,25 @@ struct App {
     doc_search: doc_search::DocSearch,
     /// Cluster, user, version and usage shown by the k9s-style header block.
     header: header_block::State,
+    /// The tour tip on screen (`:tour`, and after the first-run theme picker).
+    tour: Option<usize>,
+    /// The reverse of the change being executed; kept as `undo` if it succeeds.
+    undo_pending: Option<Undo>,
+    /// The reverse of the last successful change that has one.
+    undo: Option<Undo>,
+    /// First run: start the tour when the theme picker closes.
+    tour_after_themes: bool,
     ask_screen: Option<String>,
+    /// Pods per Node for the PODS column: when counted, counts, truncated.
+    node_pods: Option<(Instant, std::collections::BTreeMap<String, usize>, bool)>,
+    node_pods_requested: Option<Instant>,
+    /// Default views of custom resources from their CRD's printer columns,
+    /// keyed `group/version/plural`, and the resources already asked for
+    /// (once per connection, whatever the answer).
+    crd_views: crate::views::Views,
+    crd_views_requested: std::collections::HashSet<String>,
+    /// Events of the object the describe view shows, by its UID.
+    overview_events: Option<(String, std::result::Result<Vec<Value>, String>)>,
     /// Captured with `ask_screen`: the keys of that view, for Copilot.
     ask_keys: Option<String>,
     /// The Secret and key a value prompt in front belongs to.
@@ -366,6 +399,9 @@ struct App {
     sort_column: Option<String>,
     /// What a left click does, per region of the frame drawn last.
     clicks: std::cell::RefCell<Vec<Click>>,
+    /// Accessible mode: where the terminal cursor goes after a frame (the
+    /// selected row), so screen readers follow the selection.
+    focus: std::cell::Cell<Option<(u16, u16)>>,
     /// Copy mode: the mouse is released so the terminal can select text.
     copy_mode: bool,
     /// Time and screen row of the last row click, to tell a double click.
@@ -403,6 +439,19 @@ struct App {
     /// The scope exceeded the live-watch cap: show the first bounded page
     /// through periodic lists instead of an empty, blocked table.
     bounded_poll: bool,
+    /// Columns of the table scrolled out to the left (Left/Right), clamped
+    /// by each paint, and how many the last paint hid left and right.
+    table_scroll: std::cell::Cell<usize>,
+    table_hidden: std::cell::Cell<(usize, usize)>,
+    /// Pages of a bounded-poll scope: for each page read so far, its start
+    /// token (the first page has none) and the position of its first object;
+    /// `list_page` is the page shown.
+    list_pages: Vec<(Option<String>, usize)>,
+    list_page: usize,
+    /// The next page's start token and the server's count of the objects
+    /// after this page, from the last bounded list.
+    list_next: Option<String>,
+    list_remaining: Option<i64>,
     /// API discovery waits until the first watch has been requested, so the
     /// initial rows never queue behind a slow catalog.
     pending_discovery: bool,
@@ -584,6 +633,33 @@ impl App {
         if matches!(self.modal, Modal::LiveOverview(..)) {
             return Ok(false);
         }
+        // Ctrl or Shift with the wheel scrolls sideways: the table's columns,
+        // or the lines of the log view. A sideways wheel does it unmodified.
+        let sideways = mouse
+            .modifiers
+            .intersects(KeyModifiers::CONTROL | KeyModifiers::SHIFT);
+        let horizontal = match mouse.kind {
+            MouseEventKind::ScrollDown if sideways => Some(true),
+            MouseEventKind::ScrollUp if sideways => Some(false),
+            MouseEventKind::ScrollRight => Some(true),
+            MouseEventKind::ScrollLeft => Some(false),
+            _ => None,
+        };
+        if let Some(right) = horizontal {
+            match self.modal {
+                Modal::None => self.scroll_columns(right),
+                Modal::Follow(_) => {
+                    let code = if right { KeyCode::Right } else { KeyCode::Left };
+                    for _ in 0..3 {
+                        if self.key_event(code, KeyModifiers::NONE)? {
+                            return Ok(true);
+                        }
+                    }
+                }
+                _ => {}
+            }
+            return Ok(false);
+        }
         if !matches!(self.modal, Modal::None) {
             // The wheel scrolls the view in front, three lines a notch.
             let code = match mouse.kind {
@@ -677,6 +753,14 @@ impl App {
             .get(self.kind_index)
             .map(Kind::key)
             .unwrap_or_else(|| "pods".into())
+    }
+    /// The first `count` rows in table order, without collecting the rest.
+    fn first_visible(&self, count: usize) -> Vec<&Value> {
+        self.visible_order()
+            .iter()
+            .take(count)
+            .filter_map(|&index| self.items.get(index).map(|object| &**object))
+            .collect()
     }
     fn visible(&self) -> Vec<&Value> {
         self.visible_order()
@@ -874,12 +958,50 @@ impl App {
             crate::watch::Projection::Metadata
         }
     }
+    /// The PODS cell of a Node: its count, `N+` when the count stopped at its
+    /// bound, `-` before the first count.
+    fn node_pods_text(&self, node: &Value) -> Option<String> {
+        let (_, counts, truncated) = self.node_pods.as_ref()?;
+        let name = node["metadata"]["name"].as_str()?;
+        let count = counts.get(name).copied().unwrap_or(0);
+        Some(if *truncated {
+            format!("{count}+")
+        } else {
+            count.to_string()
+        })
+    }
+    /// Whether the table in front shows the PODS column (Nodes by default).
+    fn shows_node_pods(&self) -> bool {
+        self.kind() == "nodes"
+            && self.current_view().is_some_and(|view| {
+                view.columns
+                    .iter()
+                    .any(|column| column.computed == Some(crate::views::Computed::Pods))
+            })
+    }
     /// The view for the current resource: views.yaml first, then the
-    /// built-in k9s-style columns for the kinds that have them.
+    /// built-in k9s-style columns for the kinds that have them, then a
+    /// custom resource's CRD printer columns.
     fn current_view(&self) -> Option<&crate::views::View> {
         let kind = self.kinds.get(self.kind_index)?;
         let find = |views| crate::views::find(views, &kind.group, &kind.version, &kind.plural);
-        find(&self.views).or_else(|| find(crate::views::builtin()))
+        find(&self.views)
+            .or_else(|| find(crate::views::builtin()))
+            .or_else(|| find(&self.crd_views))
+    }
+    /// Ask once per connection for the CRD columns of the custom resource in
+    /// front, unless views.yaml or a built-in view already sets its columns.
+    fn request_printer_columns(&mut self) {
+        let Some(kind) = self.kinds.get(self.kind_index) else {
+            return;
+        };
+        if kind.group.is_empty() || self.current_view().is_some() {
+            return;
+        }
+        let key = format!("{}/{}/{}", kind.group, kind.version, kind.plural);
+        if self.crd_views_requested.insert(key.clone()) {
+            self.send(Task::PrinterColumns(key));
+        }
     }
     /// Text of the column titled `title` for sorting by any column.
     fn column_text(&self, object: &Value, title: &str) -> String {
@@ -890,7 +1012,13 @@ impl App {
             && (spec.path.is_some() || spec.computed.is_some())
         {
             let usage = self.table_metrics.usage(object, Instant::now());
-            return format::custom_value(spec, object, now, usage);
+            return format::custom_value(
+                spec,
+                object,
+                now,
+                usage,
+                self.node_pods_text(object).as_deref(),
+            );
         }
         format::builtin_column(title).map_or_else(String::new, |column| column.value(object, now))
     }
@@ -904,6 +1032,7 @@ impl App {
             let _ = crate::favorites::save(&self.recent);
         }
         if self.kind_index != self.last_scope.2 {
+            self.table_scroll.set(0);
             if let Some((title, descending)) =
                 self.current_view().and_then(|view| view.sort.clone())
             {
@@ -1339,6 +1468,15 @@ pub fn run(mut options: Options) -> Result<()> {
         doc_search: doc_search::DocSearch::default(),
         header: header_block::State::default(),
         ask_screen: None,
+        tour: None,
+        tour_after_themes: false,
+        undo_pending: None,
+        undo: None,
+        node_pods: None,
+        node_pods_requested: None,
+        crd_views: Default::default(),
+        crd_views_requested: Default::default(),
+        overview_events: None,
         ask_keys: None,
         secret_draft: None,
         masked_documents: Vec::new(),
@@ -1351,6 +1489,7 @@ pub fn run(mut options: Options) -> Result<()> {
         sort_desc: false,
         sort_column: None,
         clicks: std::cell::RefCell::new(Vec::new()),
+        focus: std::cell::Cell::new(None),
         copy_mode: false,
         last_click: None,
         recent: crate::favorites::load(),
@@ -1380,6 +1519,12 @@ pub fn run(mut options: Options) -> Result<()> {
         watching: false,
         watch_blocked: false,
         bounded_poll: false,
+        table_scroll: std::cell::Cell::new(0),
+        table_hidden: std::cell::Cell::new((0, 0)),
+        list_pages: vec![(None, 0)],
+        list_page: 0,
+        list_next: None,
+        list_remaining: None,
         pending_discovery: false,
         sticky_status: false,
         namespace_override: false,
@@ -1418,6 +1563,7 @@ pub fn run(mut options: Options) -> Result<()> {
     if first_run {
         themes::use_theme(themes::DEFAULT_THEME)?;
         app.theme_picker()?;
+        app.tour_after_themes = true;
         app.status = "Welcome! Arrows preview, Enter chooses; Esc keeps Flexoki Dark.".into();
     }
     if let Some(error) = ui_error {
@@ -1634,6 +1780,7 @@ pub fn run(mut options: Options) -> Result<()> {
                         app.namespace.clone(),
                         app.selector.clone(),
                         app.field_selector.clone(),
+                        app.list_start(),
                     )
                 } else {
                     Task::Watch(
@@ -1646,6 +1793,9 @@ pub fn run(mut options: Options) -> Result<()> {
                 },
             );
             dirty = true;
+        }
+        if app.connected && !app.options.connection.demo && matches!(app.modal, Modal::None) {
+            app.request_printer_columns();
         }
         if app.pending_discovery && app.connected && !app.busy {
             app.pending_discovery = false;
@@ -1687,7 +1837,7 @@ pub fn run(mut options: Options) -> Result<()> {
                 Event::Key(key) if key.kind == KeyEventKind::Press => {
                     if key.modifiers.contains(KeyModifiers::CONTROL)
                         && key.code == KeyCode::Char('c')
-                        && !matches!(app.modal, Modal::YamlEditor(_))
+                        && !matches!(app.modal, Modal::YamlEditor(_) | Modal::SecretEditor(_))
                     {
                         if matches!(app.modal, Modal::AdviceRunning) {
                             let _ = app.key_event(KeyCode::Char('c'), KeyModifiers::CONTROL);
@@ -1716,8 +1866,13 @@ pub fn run(mut options: Options) -> Result<()> {
                     dirty = true;
                 }
                 Event::Paste(text) => {
-                    if let Modal::YamlEditor(editor) = &mut app.modal {
-                        if let Err(error) = editor.paste(&text) {
+                    let pasted = match &mut app.modal {
+                        Modal::YamlEditor(editor) => Some(editor.paste(&text)),
+                        Modal::SecretEditor(editor) => Some(editor.paste(&text)),
+                        _ => None,
+                    };
+                    if let Some(result) = pasted {
+                        if let Err(error) = result {
                             app.status = error;
                         }
                         dirty = true;

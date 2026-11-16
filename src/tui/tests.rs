@@ -87,6 +87,15 @@ fn harness() -> Harness {
             doc_search: doc_search::DocSearch::default(),
             header: header_block::State::default(),
             ask_screen: None,
+            tour: None,
+            tour_after_themes: false,
+            undo_pending: None,
+            undo: None,
+            overview_events: None,
+            node_pods: None,
+            node_pods_requested: None,
+            crd_views: Default::default(),
+            crd_views_requested: Default::default(),
             ask_keys: None,
             secret_draft: None,
             masked_documents: Vec::new(),
@@ -99,6 +108,7 @@ fn harness() -> Harness {
             sort_desc: false,
             sort_column: None,
             clicks: std::cell::RefCell::new(Vec::new()),
+            focus: std::cell::Cell::new(None),
             copy_mode: false,
             last_click: None,
             recent: Default::default(),
@@ -128,6 +138,12 @@ fn harness() -> Harness {
             watching: false,
             watch_blocked: false,
             bounded_poll: false,
+            table_scroll: std::cell::Cell::new(0),
+            table_hidden: std::cell::Cell::new((0, 0)),
+            list_pages: vec![(None, 0)],
+            list_page: 0,
+            list_next: None,
+            list_remaining: None,
             pending_discovery: false,
             sticky_status: false,
             namespace_override: false,
@@ -2082,11 +2098,68 @@ fn human_overview_uses_redacted_object_fields_and_json_remains_accessible() {
     app.items = shared(vec![pod.clone()]);
     assert!(app.key(KeyCode::Char('d')).is_ok());
     assert!(matches!(commands.try_recv(), Ok((_, Task::Inspect(..)))));
-    assert!(replies.send((12, Reply::Object(Box::new(pod)))).is_ok());
+    assert!(
+        replies
+            .send((12, Reply::Object(Box::new(pod), Ok(Vec::new()))))
+            .is_ok()
+    );
     app.receive();
     assert!(matches!(app.modal, Modal::Overview(..)));
     assert!(app.key(KeyCode::Char('J')).is_ok());
     assert!(matches!(app.modal, Modal::Detail(..)));
+}
+#[test]
+fn describe_shows_the_last_termination_and_the_objects_own_events() -> Result<()> {
+    let (mut app, replies, _commands) = harness();
+    let pod = serde_json::json!({"apiVersion":"v1","kind":"Pod",
+        "metadata":{"name":"web-1","namespace":"shop","uid":"uid-web-1"},
+        "spec":{"containers":[{"name":"app","image":"web:1"}]},
+        "status":{"phase":"Running","containerStatuses":[{"name":"app","ready":false,"restartCount":4,
+            "state":{"waiting":{"reason":"CrashLoopBackOff"}},
+            "lastState":{"terminated":{"reason":"OOMKilled","exitCode":137,"finishedAt":"2026-11-16T09:00:00Z"}}}]}});
+    let event = serde_json::json!({"involvedObject":{"kind":"Pod","name":"web-1","namespace":"shop","uid":"uid-web-1"},
+        "type":"Warning","reason":"BackOff","count":4,"message":"Back-off restarting failed container app",
+        "lastTimestamp":"2026-11-16T09:01:00Z"});
+    replies
+        .send((
+            app.epoch,
+            Reply::Object(Box::new(pod.clone()), Ok(vec![event])),
+        ))
+        .map_err(|_| "reply closed")?;
+    app.receive();
+    let text = screen(&app, 140, 60).join("\n");
+    assert!(
+        text.contains("LAST TERMINATION"),
+        "last termination section shown"
+    );
+    assert!(
+        text.contains("OOMKilled (exit 137)"),
+        "termination reason and exit code shown"
+    );
+    assert!(
+        text.contains("EVENTS (newest first)"),
+        "events section shown"
+    );
+    assert!(text.contains("BackOff"), "the object's event shown");
+    // Events read for another object never show under this one.
+    app.overview_events = Some(("other-uid".into(), Ok(Vec::new())));
+    let text = super::doc_search::overview_document(&app, &pod);
+    assert!(
+        !text.contains("EVENTS"),
+        "stale events of another object are not shown"
+    );
+    assert!(
+        text.ends_with("J JSON   y YAML   Esc close"),
+        "the key hint stays last"
+    );
+    // A refused event read says so instead of looking like no events.
+    app.overview_events = Some(("uid-web-1".into(), Err("events are forbidden".into())));
+    let text = super::doc_search::overview_document(&app, &pod);
+    assert!(
+        text.contains("unavailable: events are forbidden"),
+        "refusal is explained"
+    );
+    Ok(())
 }
 #[test]
 fn extensions_need_both_flags_and_unknown_names_do_not_open_a_review() {
@@ -2748,9 +2821,65 @@ fn oversized_scope_falls_back_to_bounded_polling_instead_of_an_empty_table() -> 
         .map_err(|_| "reply closed")?;
     app.receive();
     assert_eq!(app.items.len(), 1000);
-    assert!(app.truncated && app.status.contains("Showing the first 1000 objects"));
+    assert!(app.truncated && app.status.contains("Page 1: objects 1–1000"));
     app.changed();
     assert!(!app.bounded_poll);
+    Ok(())
+}
+#[test]
+fn bounded_scopes_page_with_angle_brackets_and_reset_on_scope_change() -> Result<()> {
+    let (mut app, replies, _commands) = harness();
+    app.connected = true;
+    app.turn_list_page(true);
+    assert!(app.status.contains("This list is complete"));
+    app.bounded_poll = true;
+    let page = |from: usize, to: usize| {
+        (from..to)
+            .map(|i| object(&format!("cfg-{i:05}")))
+            .collect::<Vec<_>>()
+    };
+    replies
+        .send((
+            app.epoch,
+            Reply::Items(serde_json::json!({"items": page(0, 10_000), "truncated": true, "continue": "tok-2", "remaining": 2500})),
+        ))
+        .map_err(|_| "reply closed")?;
+    app.receive();
+    assert!(
+        app.status
+            .contains("Page 1: objects 1–10000 of 12500 (too large to watch live")
+    );
+    assert!(app.status.contains("> next;"), "{}", app.status);
+    assert_eq!(app.list_start(), None);
+    app.turn_list_page(false);
+    assert!(app.status.contains("first page"));
+    app.refresh = false;
+    app.turn_list_page(true);
+    assert!(app.refresh && app.items.is_empty() && app.list_page == 1);
+    assert_eq!(app.list_start().as_deref(), Some("tok-2"));
+    replies
+        .send((
+            app.epoch,
+            Reply::Items(serde_json::json!({"items": page(10_000, 12_500), "truncated": true})),
+        ))
+        .map_err(|_| "reply closed")?;
+    app.receive();
+    assert!(
+        app.status.contains("Page 2: objects 10001–12500 (")
+            && app.status.contains("last page; < previous"),
+        "{}",
+        app.status
+    );
+    app.turn_list_page(true);
+    assert!(app.status.contains("Page 2 is the last page"));
+    app.turn_list_page(false);
+    assert_eq!((app.list_page, app.list_start()), (0, None));
+    app.list_page = 1;
+    app.changed();
+    assert_eq!(
+        (app.list_page, app.list_pages.len(), app.list_start()),
+        (0, 1, None)
+    );
     Ok(())
 }
 #[test]
@@ -4706,9 +4835,14 @@ fn unicode_truncation_keeps_clusters_whole_and_columns_aligned() {
                 assert!(row.contains('~'), "{width}: long name not marked: {row}");
                 assert_eq!(crate::text::width(row), usize::from(width));
             }
-            // The ZWJ family is drawn whole or not at all, never a lone member.
-            let family = rows.iter().find(|row| row.contains("family-"));
-            assert!(family.is_some_and(|row| row.contains(FAMILY) || !row.contains('\u{1f468}')));
+            // The ZWJ family is drawn whole or not at all, never a lone member
+            // (names lose their middle now, so check every row).
+            for row in &rows {
+                assert!(
+                    row.contains(FAMILY) || !row.contains('\u{1f468}'),
+                    "{width}: split family in {row}"
+                );
+            }
         }
     });
 }
@@ -5355,6 +5489,159 @@ fn header_names_the_screen_in_front() {
         .push(Modal::Picker("Namespace", vec!["default".into()], 0));
     app.modal = Modal::Input("Command", String::new());
     assert!(title(&app).contains("Namespaces"), "{}", title(&app));
+}
+#[test]
+fn dashboard_charts_show_the_saved_day_and_week() {
+    let (mut app, _replies, _commands) = harness();
+    let mut dashboard = dashboard_ui::Dashboard::new(&["prod".into()], false);
+    let now = dashboard_ui::unix_now();
+    let mut history = crate::dashboard_history::History::memory("prod");
+    // Yesterday's restarts and today's, five-minute buckets.
+    history.record(now - 26 * 3600, 2, Some(4), Some(30), Some(50));
+    history.record(now - 20 * 3600, 1, Some(6), Some(35), Some(55));
+    history.record(now - 600, 0, Some(1), Some(20), Some(40));
+    dashboard.trends.insert("prod".into(), {
+        let mut trend = dashboard_ui::Trend::default();
+        trend.history = Some(history);
+        trend
+    });
+    dashboard.key(KeyCode::Char('H'));
+    app.modal = Modal::LiveOverview(dashboard);
+    let frame = screen(&app, 140, 40).join("\n");
+    assert!(frame.contains("CHARTS prod / last 24 hours"), "{frame}");
+    assert!(
+        frame.contains("RESTARTS per 5 minutes  latest +1"),
+        "{frame}"
+    );
+    assert!(frame.contains("-12h"), "a day-long time axis: {frame}");
+    if let Modal::LiveOverview(dashboard) = &mut app.modal {
+        dashboard.key(KeyCode::Char('H'));
+    }
+    let frame = screen(&app, 140, 40).join("\n");
+    assert!(
+        frame.contains("last 7 days") && frame.contains("-7d"),
+        "{frame}"
+    );
+    // The live range has no samples yet and says how to see the history.
+    if let Modal::LiveOverview(dashboard) = &mut app.modal {
+        dashboard.key(KeyCode::Char('H'));
+    }
+    assert!(
+        screen(&app, 140, 40)
+            .join("\n")
+            .contains("H: last 24 hours or 7 days")
+    );
+}
+#[test]
+fn accessible_mode_drops_motion_and_boxes_and_puts_the_cursor_on_the_selection() -> Result<()> {
+    let ui = crate::ui_config::parse("accessible: true\nborders: rounded\nsplash: true\n")?;
+    assert!(ui.accessible && ui.splash == Some(false));
+    assert_eq!(
+        ui.borders,
+        crate::ui_config::Borders::None,
+        "it wins over the file"
+    );
+    assert!(!ui.header.logo && !ui.table.zebra && !ui.dashboard.trend);
+    for (value, on) in [("1", true), ("yes", true), ("0", false), ("", false)] {
+        assert_eq!(
+            crate::ui_config::accessible_requested(Some(std::ffi::OsStr::new(value))),
+            on
+        );
+    }
+    let (mut app, _replies, _commands) = harness();
+    app.items = shared(ui_pods());
+    app.selected = 1;
+    let raw = |app: &App| {
+        let mut output = Vec::new();
+        assert!(render(app, 120, 30, &mut output).is_ok());
+        String::from_utf8_lossy(&output).into_owned()
+    };
+    assert!(
+        !raw(&app).ends_with("\u{1b}[?25h"),
+        "the cursor stays hidden by default"
+    );
+    app.ui = ui;
+    let frame = raw(&app);
+    assert!(frame.ends_with("\u{1b}[?25h"), "shown last");
+    let (x, y) = app.focus.get().ok_or("focus")?;
+    let rows = screen(&app, 120, 30);
+    assert!(
+        rows[usize::from(y)].contains("web"),
+        "{}",
+        rows[usize::from(y)]
+    );
+    assert!(frame.contains(&format!("\u{1b}[{};{}H\u{1b}[?25h", y + 1, x + 1)));
+    // No box drawing anywhere.
+    assert!(
+        rows.iter().all(|row| !row.contains(['╭', '│', '─', '+'])),
+        "{rows:#?}"
+    );
+    // Over a document the cursor goes to the status line.
+    app.modal = Modal::Detail("kind: Pod".into(), 0);
+    assert!(raw(&app).contains("\u{1b}[30;1H\u{1b}[?25h"));
+    Ok(())
+}
+#[test]
+fn header_trail_names_the_kind_object_and_screen() {
+    let (mut app, _replies, _commands) = harness();
+    let name = "payments-api-7d4f9c8b6-x2kqp";
+    app.modal = Modal::Overview(
+        Box::new(
+            serde_json::json!({"kind": "Pod", "metadata": {"name": name, "namespace": "test"}}),
+        ),
+        0,
+    );
+    let sep = if crate::text::unicode() {
+        " › "
+    } else {
+        " > "
+    };
+    let top = screen(&app, 120, 30)[0].clone();
+    assert!(
+        top.contains(&format!("Pods{sep}{name}{sep}details")),
+        "{top}"
+    );
+    // Narrow: the name loses its middle, the suffix and the screen stay.
+    let trail = super::render::header_trail(&app, &app.modal, 30);
+    assert!(trail.ends_with(&format!("x2kqp{sep}details")), "{trail}");
+    assert!(
+        trail.starts_with("Pods") && crate::text::width(&trail) <= 30,
+        "{trail}"
+    );
+    // No room for a name: the plain title, fitted.
+    assert!(crate::text::width(&super::render::header_trail(&app, &app.modal, 12)) <= 12);
+    // A command prompt over it keeps the trail of the screen underneath.
+    let below = std::mem::replace(&mut app.modal, Modal::Input("Command", String::new()));
+    app.subviews.push(below);
+    assert!(screen(&app, 120, 30)[0].contains(name));
+    // Screens about no single object keep their name.
+    app.subviews.clear();
+    app.modal = Modal::Detail("kind: Pod".into(), 0);
+    assert!(screen(&app, 120, 30)[0].contains("Pod / details"));
+    // A name from the cluster is sanitized before it reaches the terminal.
+    app.modal = Modal::Overview(
+        Box::new(serde_json::json!({"metadata": {"name": "evil\u{1b}[2Jname"}})),
+        0,
+    );
+    assert!(!super::render::header_trail(&app, &app.modal, 60).contains('\u{1b}'));
+}
+#[test]
+fn column_titles_stay_put_while_the_rows_scroll() {
+    let (mut app, _replies, _commands) = harness();
+    app.items = shared(
+        (0..200)
+            .map(|n| serde_json::json!({"kind":"Pod","metadata":{"name":format!("pod-{n:03}"),"namespace":"test","uid":format!("uid-{n}")},"status":{"phase":"Running"}}))
+            .collect(),
+    );
+    let titles = |frame: &[String]| frame.iter().position(|line| line.contains("NAME"));
+    let top = screen(&app, 120, 30);
+    let at = titles(&top).unwrap_or(0);
+    assert!(top[at + 1].contains("pod-000"), "{}", top[at + 1]);
+    app.selected = 150;
+    let scrolled = screen(&app, 120, 30);
+    assert_eq!(titles(&scrolled), Some(at), "the titles keep their row");
+    assert!(!scrolled.iter().any(|line| line.contains("pod-000")));
+    assert!(scrolled.iter().any(|line| line.contains("pod-150")));
 }
 /// Live reload: a watcher on a private temp folder, polled with simulated time.
 #[cfg(unix)]
@@ -6439,6 +6726,221 @@ fn node(name: &str) -> Value {
     serde_json::json!({"kind":"Node","metadata":{"name":name,"uid":format!("uid-{name}"),"creationTimestamp":"2026-10-10T07:00:00Z","labels":{"node-role.kubernetes.io/control-plane":""}},"spec":{"taints":[{"key":"a"},{"key":"b"}]},"status":{"conditions":[{"type":"Ready","status":"True"}],"allocatable":{"cpu":"4","memory":"8Gi","pods":"110"},"addresses":[{"type":"InternalIP","address":"10.0.0.7"},{"type":"Hostname","address":name}],"nodeInfo":{"architecture":"arm64","kubeletVersion":"v1.35.0","osImage":"Ubuntu 24.04","kernelVersion":"6.8.0"}}})
 }
 
+#[test]
+fn undo_prepares_the_reverse_of_the_last_reversible_change_for_review() -> Result<()> {
+    let (mut app, replies, mut commands) = harness();
+    let deployment = serde_json::json!({"kind":"Deployment","metadata":{"name":"web","namespace":"shop","uid":"uid-web"},
+        "spec":{"replicas":3,"template":{"spec":{"containers":[{"name":"app","image":"web:1.4"}]}}}});
+    let cronjob = serde_json::json!({"kind":"CronJob","metadata":{"name":"nightly","namespace":"shop","uid":"uid-cj"},"spec":{"suspend":false}});
+    app.items = shared(vec![deployment, cronjob]);
+    let target = |resource: &str, name: &str, uid: &str| crate::policy::Target {
+        session: "s".into(),
+        resource: resource.into(),
+        namespace: "shop".into(),
+        name: name.into(),
+        uid: uid.into(),
+        version: "1".into(),
+    };
+    let web = target("deployments", "web", "uid-web");
+    // The reverse is read from the object as it is before the change.
+    let scale = app
+        .inverse_of(&web, &Action::Scale(5))
+        .ok_or("scale has a reverse")?;
+    assert_eq!(
+        (scale.action.clone(), scale.label.as_str()),
+        (Action::Scale(3), "scale back to 3")
+    );
+    let image = app
+        .inverse_of(
+            &web,
+            &Action::SetImage {
+                container: "app".into(),
+                image: "web:1.5".into(),
+            },
+        )
+        .ok_or("image has a reverse")?;
+    assert_eq!(
+        image.action,
+        Action::SetImage {
+            container: "app".into(),
+            image: "web:1.4".into()
+        }
+    );
+    let resume = app
+        .inverse_of(
+            &target("cronjobs", "nightly", "uid-cj"),
+            &Action::Suspend(true),
+        )
+        .ok_or("suspend has a reverse")?;
+    assert_eq!(
+        (resume.action.clone(), resume.label.as_str()),
+        (Action::Suspend(false), "resume")
+    );
+    for irreversible in [
+        Action::Restart,
+        Action::Delete,
+        Action::Kill,
+        Action::Trigger,
+    ] {
+        assert!(
+            app.inverse_of(&web, &irreversible).is_none(),
+            "no undo for {irreversible:?}"
+        );
+    }
+    // Nothing to undo yet.
+    app.undo_last();
+    assert!(
+        app.status.starts_with("Nothing to undo"),
+        "explains what can be undone"
+    );
+    // A successful change keeps its reverse and says how to use it.
+    app.undo_pending = Some(scale.clone());
+    replies
+        .send((app.epoch, Reply::WriteOutcome(Ok("scaled".into()))))
+        .map_err(|_| "reply closed")?;
+    app.receive();
+    assert_eq!(app.undo.as_ref(), Some(&scale));
+    assert!(app.status.contains("z or :revert") && app.status.contains("scale back to 3"));
+    // `z` prepares it as a normal reviewed change of the same object.
+    app.modal = Modal::None;
+    app.busy = false;
+    app.options.connection.writable = true;
+    app.key(KeyCode::Char('z'))?;
+    let mut prepared = None;
+    while let Ok((_, task)) = commands.try_recv() {
+        if let Task::Prepare(resource, namespace, name, uid, action) = task {
+            prepared = Some((resource, namespace, name, uid, action));
+        }
+    }
+    assert_eq!(
+        prepared,
+        Some((
+            "deployments".into(),
+            "shop".into(),
+            "web".into(),
+            Some("uid-web".into()),
+            Action::Scale(3)
+        ))
+    );
+    // A failed change clears the undo; read-only refuses it.
+    app.undo_pending = Some(scale.clone());
+    replies
+        .send((app.epoch, Reply::WriteOutcome(Err("conflict".into()))))
+        .map_err(|_| "reply closed")?;
+    app.receive();
+    assert!(app.undo.is_none(), "a failed change leaves nothing to undo");
+    app.undo = Some(scale);
+    app.options.connection.writable = false;
+    app.busy = false;
+    app.command("revert")?;
+    assert!(
+        app.status.contains("changes are off"),
+        "read-only refuses the undo"
+    );
+    while let Ok((_, task)) = commands.try_recv() {
+        assert!(
+            !matches!(task, Task::Prepare(..)),
+            "nothing prepared when read-only"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn the_tour_shows_three_tips_with_the_operators_keys_and_esc_skips_it() -> Result<()> {
+    let (mut app, _replies, _commands) = harness();
+    app.keymap = crate::keymap::parse("keys:\n  help: F1\n")?;
+    app.command("tour")?;
+    let tip = |app: &App| match &app.modal {
+        Modal::Detail(text, _) => text.clone(),
+        _ => String::new(),
+    };
+    assert!(
+        tip(&app).starts_with("WELCOME TO KBORG / tip 1 of 3"),
+        "first tip"
+    );
+    app.key(KeyCode::Enter)?;
+    assert!(tip(&app).contains("tip 2 of 3"), "Enter shows the next tip");
+    assert!(
+        tip(&app).contains("Press F1 in any view"),
+        "the operator's own help key"
+    );
+    app.key(KeyCode::Right)?;
+    assert!(tip(&app).contains("tip 3 of 3"), "Right also moves on");
+    app.key(KeyCode::Enter)?;
+    assert!(
+        matches!(app.modal, Modal::None),
+        "the tour ends after the last tip"
+    );
+    assert!(
+        app.tour.is_none() && app.status.contains(":tour"),
+        "the end says how to see it again"
+    );
+    // Esc skips the rest at any tip.
+    app.command("tour")?;
+    app.key(KeyCode::Esc)?;
+    assert!(
+        matches!(app.modal, Modal::None) && app.tour.is_none(),
+        "Esc skips the tour"
+    );
+    // Enter in an ordinary document is not a tour step.
+    app.modal = Modal::Detail("plain document".into(), 0);
+    app.key(KeyCode::Enter)?;
+    assert!(matches!(&app.modal, Modal::Detail(text, _) if text == "plain document"));
+    // First run: closing the theme picker starts the tour, once.
+    app.modal = Modal::None;
+    app.theme_picker()?;
+    app.tour_after_themes = true;
+    app.key(KeyCode::Esc)?;
+    assert!(
+        tip(&app).contains("tip 1 of 3"),
+        "the first-run tour follows the theme picker"
+    );
+    assert!(!app.tour_after_themes, "only once");
+    Ok(())
+}
+
+#[test]
+fn nodes_show_a_pods_column_counted_in_the_background() -> Result<()> {
+    let (mut app, replies, mut commands) = harness();
+    show_kind(&mut app, "nodes");
+    app.items = shared(vec![node("worker-1"), node("worker-2")]);
+    let header = screen(&app, 200, 30).join("\n");
+    assert!(header.contains("PODS"), "the Nodes view has a PODS column");
+    // Before the first count the cell is unknown, never a misleading zero.
+    assert_eq!(app.node_pods_text(&node("worker-1")), None);
+    // The metrics refresh asks for a count once, not again within 30 seconds.
+    app.refresh_table_metrics();
+    let mut asked = 0;
+    while let Ok((_, task)) = commands.try_recv() {
+        asked += usize::from(matches!(task, Task::NodePods));
+    }
+    assert_eq!(asked, 1, "one count requested");
+    app.refresh_table_metrics();
+    while let Ok((_, task)) = commands.try_recv() {
+        assert!(
+            !matches!(task, Task::NodePods),
+            "no second count while the first is recent"
+        );
+    }
+    let counts = std::collections::BTreeMap::from([("worker-1".to_owned(), 7)]);
+    replies
+        .send((app.epoch, Reply::NodePods(Ok((counts.clone(), false)))))
+        .map_err(|_| "reply closed")?;
+    app.receive();
+    assert_eq!(app.node_pods_text(&node("worker-1")).as_deref(), Some("7"));
+    assert_eq!(app.node_pods_text(&node("worker-2")).as_deref(), Some("0"));
+    // A count that stopped at its bound says so.
+    replies
+        .send((app.epoch, Reply::NodePods(Ok((counts, true)))))
+        .map_err(|_| "reply closed")?;
+    app.receive();
+    assert_eq!(app.node_pods_text(&node("worker-1")).as_deref(), Some("7+"));
+    // The PODS column sorts as a number like the other predefined counts.
+    assert_eq!(app.column_text(&node("worker-1"), "PODS"), "7+");
+    Ok(())
+}
+
 /// Nodes get the k9s columns without a views.yaml; views.yaml still wins.
 #[test]
 fn nodes_show_the_k9s_columns_and_views_yaml_overrides_them() -> Result<()> {
@@ -6466,14 +6968,53 @@ fn nodes_show_the_k9s_columns_and_views_yaml_overrides_them() -> Result<()> {
         wide.contains("INTERNAL-IP") && wide.contains("10.0.0.7"),
         "{wide}"
     );
-    // Too narrow for everything: columns drop from the right, AGE last of all.
+    // Too narrow for everything: the columns that do not fit wait to the
+    // right, NAME stays, and Left/Right move the window, as in k9s.
     app.wide = false;
     let narrow = screen(&app, 100, 30).join("\n");
     assert!(
-        narrow.contains("AGE") && narrow.contains("ROLE"),
+        narrow.contains("ROLE") && narrow.contains("more>"),
         "{narrow}"
     );
-    assert!(!narrow.contains("MEM/A"), "{narrow}");
+    assert!(
+        !narrow.contains("MEM/A") && !narrow.contains(" AGE"),
+        "{narrow}"
+    );
+    app.key_event(KeyCode::Left, KeyModifiers::NONE)?;
+    assert_eq!(app.table_scroll.get(), 0, "nothing to the left yet");
+    app.key_event(KeyCode::Right, KeyModifiers::NONE)?;
+    let moved = screen(&app, 100, 30).join("\n");
+    assert!(
+        moved.contains("<1") && moved.contains("worker-1") && !moved.contains(" STATUS "),
+        "{moved}"
+    );
+    for _ in 0..30 {
+        app.key_event(KeyCode::Right, KeyModifiers::NONE)?;
+        let _ = screen(&app, 100, 30);
+    }
+    let end = screen(&app, 100, 30).join("\n");
+    assert!(
+        end.contains("AGE")
+            && end.contains("MEM/A")
+            && end.contains("worker-1")
+            && !end.contains("more>"),
+        "the last columns come into view and scrolling stops there: {end}"
+    );
+    let stopped = app.table_scroll.get();
+    app.key_event(KeyCode::Right, KeyModifiers::NONE)?;
+    let _ = screen(&app, 100, 30);
+    assert_eq!(app.table_scroll.get(), stopped);
+    // Wide enough for all: no window, and Right says so.
+    let _ = screen(&app, 220, 30);
+    app.key_event(KeyCode::Right, KeyModifiers::NONE)?;
+    assert!(app.status.contains("Every column fits"), "{}", app.status);
+    // Another resource starts at its first column.
+    let _ = screen(&app, 100, 30);
+    show_kind(&mut app, "pods");
+    app.sync_scope();
+    assert_eq!(app.table_scroll.get(), 0);
+    show_kind(&mut app, "nodes");
+    app.sync_scope();
     // Usage percentages need the metrics sample; without one they read n/a.
     assert!(frame.contains("n/a"), "{frame}");
     // views.yaml replaces the built-in columns for its resource.
@@ -6582,7 +7123,7 @@ fn views_show_configmap_data_and_copilot_captures_get_the_masked_text() -> Resul
     // Describe lists the keys and values; its JSON and YAML keep the split.
     assert!(
         replies
-            .send((app.epoch, Reply::Object(Box::new(object))))
+            .send((app.epoch, Reply::Object(Box::new(object), Ok(Vec::new()))))
             .is_ok()
     );
     app.receive();
@@ -7024,5 +7565,367 @@ fn secret_keys_are_set_added_removed_and_secrets_deleted_through_a_review() -> R
         sent(&mut commands),
         Some(Task::SecretPrepare(_, _, _, Change::Remove { key })) if key == "blob.bin"
     ));
+    Ok(())
+}
+
+/// A custom resource shows its CRD's printer columns, as in k9s; views.yaml
+/// still wins, and each resource is asked for once per connection.
+#[test]
+fn custom_resources_show_their_crd_columns() -> Result<()> {
+    let (mut app, replies, mut commands) = harness();
+    app.connected = true;
+    app.kinds.push(crate::gateway::Kind {
+        plural: "nodeclaims".into(),
+        kind: "NodeClaim".into(),
+        group: "karpenter.sh".into(),
+        version: "v1".into(),
+        namespaced: false,
+        short_names: vec!["nodeclaim".into()],
+    });
+    show_kind(&mut app, "nodeclaims");
+    app.items = shared(vec![crate::views::nodeclaim()]);
+    let before = screen(&app, 160, 20).join("\n");
+    assert!(!before.contains("CAPACITY"), "generic columns first");
+    app.request_printer_columns();
+    app.request_printer_columns();
+    let mut asked = Vec::new();
+    while let Ok((_, task)) = commands.try_recv() {
+        if let Task::PrinterColumns(key) = task {
+            asked.push(key);
+        }
+    }
+    assert_eq!(asked, ["karpenter.sh/v1/nodeclaims"]);
+    let view =
+        crate::views::printer_view(&crate::views::nodeclaim_crd(), "v1", false).ok_or("view")?;
+    replies
+        .send((
+            app.epoch,
+            Reply::PrinterColumns(asked[0].clone(), Ok(Some(view))),
+        ))
+        .map_err(|_| "reply closed")?;
+    app.receive();
+    let after = screen(&app, 160, 20).join("\n");
+    for text in [
+        "TYPE",
+        "CAPACITY",
+        "ZONE",
+        "NODE",
+        "READY",
+        "m5.large",
+        "spot",
+        "us-east-1a",
+        "True",
+        // Sized to the values, as in k9s: the Node name is whole.
+        "ip-10-0-1-23.ec2.internal",
+    ] {
+        assert!(after.contains(text), "{text}\n{after}");
+    }
+    assert!(
+        !after.contains("NODEPOOL"),
+        "priority columns wait for Ctrl-W"
+    );
+    app.wide = true;
+    let wide = screen(&app, 160, 20).join("\n");
+    for text in [
+        "NODEPOOL",
+        "NODECLASS",
+        "DRIFTED",
+        "aws:///us-east-1a/i-0abc",
+    ] {
+        assert!(wide.contains(text), "{text}\n{wide}");
+    }
+    app.wide = false;
+    assert_eq!(
+        app.column_text(&crate::views::nodeclaim(), "CAPACITY"),
+        "spot"
+    );
+    // views.yaml wins over the CRD's columns.
+    app.views = crate::views::parse(
+        "views:\n  nodeclaims:\n    columns: [NAME, 'POOL:.metadata.labels.karpenter\\.sh/nodepool', AGE]\n",
+    )?;
+    let custom = screen(&app, 160, 20).join("\n");
+    assert!(
+        custom.contains("POOL") && !custom.contains("CAPACITY"),
+        "{custom}"
+    );
+    Ok(())
+}
+
+/// `E` opens the whole Secret in KBorg's editor: values on screen, never in
+/// an :ask capture or $EDITOR; Ctrl-S sends the parsed document for review.
+#[test]
+fn the_whole_secret_editor_keeps_values_out_of_ask_and_reviews_the_document() -> Result<()> {
+    let (mut app, replies, mut commands) = harness();
+    app.namespace = "demo".into();
+    app.options.connection.allow_secret_reveal = true;
+    app.options.connection.allow_secret_edit = true;
+    app.options.connection.writable = true;
+    app.command("secrets")?;
+    let _ = commands.try_recv();
+    let data = crate::secrets::demo_data();
+    replies
+        .send((
+            app.epoch,
+            Reply::Secrets(crate::secrets::SecretIndex {
+                namespace: "demo".into(),
+                items: vec![crate::secrets::entry(
+                    "api-credentials",
+                    "demo-secret-uid",
+                    None,
+                    Some(&data),
+                )],
+                truncated: false,
+            }),
+        ))
+        .map_err(|_| "reply closed")?;
+    app.receive();
+    assert!(screen(&app, 160, 30).join("\n").contains("E edit all"));
+    app.key_event(KeyCode::Char('E'), KeyModifiers::SHIFT)?;
+    assert!(matches!(
+        commands.try_recv(),
+        Ok((_, Task::SecretDocument(ns, name, uid)))
+            if (ns.as_str(), name.as_str(), uid.as_str()) == ("demo", "api-credentials", "demo-secret-uid")
+    ));
+    let mut secret = crate::secrets::demo_secret("demo");
+    let document =
+        crate::secret_document::render("demo", "api-credentials", "demo-secret-uid", &secret);
+    crate::secrets::wipe_secret(&mut secret);
+    replies
+        .send((
+            app.epoch,
+            Reply::SecretDocument("demo-secret-uid".into(), document),
+        ))
+        .map_err(|_| "reply closed")?;
+    app.receive();
+    assert!(matches!(app.modal, Modal::SecretEditor(..)));
+    let shown = screen(&app, 160, 30).join("\n");
+    assert!(shown.contains("SECRET EDITOR") && shown.contains("not-a-real-password"));
+    // :ask captures the editor's name only, then the editor comes back.
+    app.capture_ask_screen();
+    let captured = app.ask_screen.take().unwrap_or_default();
+    assert!(captured.contains("SECRET EDITOR") && !captured.contains("not-a-real-password"));
+    assert!(matches!(app.modal, Modal::SecretEditor(..)));
+    // No $EDITOR: it would write the values to a file.
+    app.key_event(KeyCode::Char('e'), KeyModifiers::CONTROL)?;
+    assert!(app.status.contains("$EDITOR is not offered") && !app.pending_editor);
+    // Typing edits the draft: a word at the end of the first comment line.
+    app.key_event(KeyCode::End, KeyModifiers::NONE)?;
+    app.key_event(KeyCode::Char('Z'), KeyModifiers::SHIFT)?;
+    app.key_event(KeyCode::Char('s'), KeyModifiers::CONTROL)?;
+    let prepare = commands.try_recv();
+    assert!(
+        matches!(&prepare, Ok((_, Task::SecretPrepare(ns, name, uid, crate::secret_edit::Change::Document(edited))))
+            if (ns.as_str(), name.as_str(), uid.as_str()) == ("demo", "api-credentials", "demo-secret-uid")
+                && edited.version == "1" && edited.values.len() == 3 && edited.keep == ["blob.bin"]),
+        "the document goes to review"
+    );
+    assert!(
+        matches!(app.modal, Modal::SecretEditor(..)),
+        "the draft stays open"
+    );
+    // Esc returns to the Secrets view.
+    app.key_event(KeyCode::Esc, KeyModifiers::NONE)?;
+    assert!(matches!(app.modal, Modal::Secrets(..)));
+    Ok(())
+}
+
+/// NAMESPACE and NAME stay put while the other columns scroll; a sideways
+/// wheel moves them too.
+#[test]
+fn namespace_and_name_stay_while_columns_scroll() -> Result<()> {
+    let (mut app, _replies, _commands) = harness();
+    show_kind(&mut app, "deployments");
+    app.items = shared(vec![
+        serde_json::json!({"apiVersion":"apps/v1","kind":"Deployment",
+        "metadata":{"name":"payments-api","namespace":"shop","uid":"u1","creationTimestamp":"2026-11-16T10:00:00Z"},
+        "spec":{"replicas":2,"template":{"spec":{"containers":[{"name":"main","image":"nginx"}]}}},
+        "status":{"replicas":2,"readyReplicas":2,"updatedReplicas":2,"availableReplicas":2}}),
+    ]);
+    let first = screen(&app, 70, 20).join("\n");
+    assert!(
+        first.contains("more>") && first.contains("READY"),
+        "{first}"
+    );
+    app.mouse(mouse_event(MouseEventKind::ScrollRight, 30, 12), 70, 20)?;
+    app.mouse(mouse_event(MouseEventKind::ScrollRight, 30, 12), 70, 20)?;
+    let moved = screen(&app, 70, 20).join("\n");
+    assert!(
+        moved.contains("NAMESPACE")
+            && moved.contains("shop")
+            && moved.contains("payments-api")
+            && moved.contains("<2"),
+        "{moved}"
+    );
+    assert!(!moved.contains("READY"), "{moved}");
+    app.mouse(mouse_event(MouseEventKind::ScrollLeft, 30, 12), 70, 20)?;
+    let _ = screen(&app, 70, 20);
+    assert_eq!(app.table_scroll.get(), 1);
+    // Ctrl or Shift with the ordinary wheel scrolls sideways too, and does
+    // not move the selected row.
+    let with = |kind, modifiers| MouseEvent {
+        modifiers,
+        ..mouse_event(kind, 30, 12)
+    };
+    let row = app.selected;
+    app.mouse(
+        with(MouseEventKind::ScrollDown, KeyModifiers::CONTROL),
+        70,
+        20,
+    )?;
+    let _ = screen(&app, 70, 20);
+    assert_eq!((app.table_scroll.get(), app.selected), (2, row));
+    app.mouse(with(MouseEventKind::ScrollUp, KeyModifiers::SHIFT), 70, 20)?;
+    app.mouse(
+        with(MouseEventKind::ScrollUp, KeyModifiers::CONTROL),
+        70,
+        20,
+    )?;
+    let _ = screen(&app, 70, 20);
+    assert_eq!((app.table_scroll.get(), app.selected), (0, row));
+    Ok(())
+}
+
+/// Every resource table, in normal and wide mode, at every width: NAME is
+/// always shown, the columns fit, scrolling right reaches every column once,
+/// in order, and stops at the last one; Left comes back to the start. (The
+/// keys themselves are checked on Nodes; this calls what they call.)
+#[test]
+fn every_table_scrolls_sideways_without_losing_or_repeating_a_column() -> Result<()> {
+    let (mut app, _replies, _commands) = harness();
+    app.kinds.push(crate::gateway::Kind {
+        plural: "nodeclaims".into(),
+        kind: "NodeClaim".into(),
+        group: "karpenter.sh".into(),
+        version: "v1".into(),
+        namespaced: false,
+        short_names: Vec::new(),
+    });
+    let crd = crate::views::printer_view(&crate::views::nodeclaim_crd(), "v1", false)
+        .ok_or("crd view")?;
+    app.crd_views
+        .insert("karpenter.sh/v1/nodeclaims".into(), crd);
+    let plurals: Vec<String> = app.kinds.iter().map(|kind| kind.plural.clone()).collect();
+    let title = |column: &format::Column, app: &App| {
+        format::column_title(
+            *column,
+            app.current_view().map_or(&[], |v| v.columns.as_slice()),
+        )
+        .to_owned()
+    };
+    let mut checked = 0;
+    // Kinds with the same columns draw the same frames: draw one of each.
+    let mut drawn = std::collections::HashSet::new();
+    for plural in &plurals {
+        show_kind(&mut app, plural);
+        app.sync_scope();
+        let mut object = crate::views::nodeclaim();
+        object["kind"] = serde_json::json!(plural);
+        object["metadata"]["name"] = serde_json::json!("payments-api-7d4f9c8b6-x2kqp");
+        object["metadata"]["namespace"] = serde_json::json!("shop");
+        app.items = shared(vec![object]);
+        for wide in [false, true] {
+            app.wide = wide;
+            // Every column the table has, from a terminal wide enough for all.
+            app.table_scroll.set(0);
+            let all: Vec<String> = render::table_columns(&app, 2000)
+                .iter()
+                .map(|(column, _)| title(column, &app))
+                .collect();
+            let draw = drawn.insert(all.clone());
+            // The layout breakpoints (46, 54, 64, 70, 94, 130 cells) and the extremes.
+            for width in [40u16, 47, 52, 59, 66, 70, 77, 99, 120, 136, 160, 200, 260] {
+                let column_width = usize::from(app.layout(width, 30).table.width - 5);
+                app.table_scroll.set(0);
+                let mut seen: Vec<String> = Vec::new();
+                for step in 0..all.len() + 2 {
+                    // A whole frame at the start and the end; the column
+                    // math in between.
+                    if step == 0 && draw {
+                        for row in &screen(&app, width, 30) {
+                            assert_eq!(
+                                crate::text::width(row),
+                                usize::from(width),
+                                "{plural} {width}: {row}"
+                            );
+                        }
+                    }
+                    let cols = render::table_columns(&app, column_width);
+                    let (left, right) = app.table_hidden.get();
+                    let titles: Vec<String> = cols.iter().map(|(c, _)| title(c, &app)).collect();
+                    let used: usize =
+                        cols.iter().map(|(_, w)| w).sum::<usize>() + cols.len().saturating_sub(1);
+                    let context = format!(
+                        "{plural} wide={wide} width={width} step={step}: {titles:?} of {all:?}"
+                    );
+                    assert!(titles.iter().any(|t| t == "NAME"), "{context}");
+                    assert!(used <= column_width, "{context}: {used} > {column_width}");
+                    // The shown columns are the table's, in order, none twice.
+                    let mut order = all.iter();
+                    assert!(titles.iter().all(|t| order.any(|a| a == t)), "{context}");
+                    let movable: Vec<&String> = titles
+                        .iter()
+                        .filter(|t| *t != "NAME" && *t != "NAMESPACE")
+                        .collect();
+                    let total = all
+                        .iter()
+                        .filter(|t| *t != "NAME" && *t != "NAMESPACE")
+                        .count();
+                    assert_eq!(
+                        left + movable.len() + right,
+                        total,
+                        "{context}: hidden {left}/{right}"
+                    );
+                    seen.extend(movable.into_iter().cloned());
+                    if right == 0 {
+                        if draw {
+                            for row in &screen(&app, width, 30) {
+                                assert_eq!(
+                                    crate::text::width(row),
+                                    usize::from(width),
+                                    "{plural} {width}: {row}"
+                                );
+                            }
+                        }
+                        break;
+                    }
+                    app.scroll_columns(true);
+                }
+                assert_eq!(
+                    app.table_hidden.get().1,
+                    0,
+                    "{plural} {width}: the last column is reachable"
+                );
+                seen.dedup();
+                let mut wanted: Vec<String> = all
+                    .iter()
+                    .filter(|t| *t != "NAME" && *t != "NAMESPACE")
+                    .cloned()
+                    .collect();
+                wanted.dedup();
+                for column in &wanted {
+                    assert!(
+                        seen.contains(column),
+                        "{plural} wide={wide} width={width}: {column} never shown"
+                    );
+                }
+                // One more Right changes nothing; Left goes all the way back.
+                let at_end = app.table_scroll.get();
+                app.scroll_columns(true);
+                let _ = render::table_columns(&app, column_width);
+                assert_eq!(app.table_scroll.get(), at_end, "{plural} {width}");
+                for _ in 0..all.len() + 1 {
+                    app.scroll_columns(false);
+                }
+                let _ = render::table_columns(&app, column_width);
+                assert_eq!(app.table_hidden.get().0, 0, "{plural} {width}");
+                checked += 1;
+            }
+        }
+    }
+    assert!(
+        checked > 300 && drawn.len() >= 10,
+        "{checked} tables, {} layouts",
+        drawn.len()
+    );
     Ok(())
 }

@@ -6,7 +6,7 @@ Updated 2026-11-16 for the 0.7.1 release. This file and [REMAINING_WORK.md](REMA
 
 **Browse and inspect**
 - Direct Kubernetes client; operator mode by default, with `--read-only` and company-profile restrictions; 35 built-in kinds plus discovered CRDs; context/namespace switching; regex, inverse, fuzzy and label filters; sorting; drilldown; redacted describe, YAML and JSON.
-- Live LIST/WATCH with relist, bounded caches (10,000 objects / 64 MiB), polling fallback and memoized filter/sort for large tables.
+- Live LIST/WATCH with relist, bounded caches (10,000 objects / 64 MiB), polling fallback with `<`/`>` paging past 10,000 objects, and memoized filter/sort for large tables.
 - Existing `KUBECONFIG` files or `~/.kube/config`, current context or `--context`; startup names the connection and asks Yes/No before any client or helper starts. No selects an existing context; no tokens are copied and the user's kubeconfig is not rewritten. Normal kubeconfig exec authentication is reused; a separate reviewed Unix helper mode remains available.
 - `:pulses`, `:xray`, `:workloads`, `:can`, `:subjects`, `:lint` (read-only misconfiguration report) and Ctrl-Z errors-only view.
 - k9s-format `views.yaml` columns (built-in and `TITLE:.json.path`), sort by any column in either direction, wide mode, recent namespaces on digits and recent contexts.
@@ -32,7 +32,7 @@ Updated 2026-11-16 for the 0.7.1 release. This file and [REMAINING_WORK.md](REMA
 - k9s-format aliases and `hotkeys.yaml`; registered read-only extensions runnable from the CLI and the TUI (`:ext`), with a k9s `plugins.yaml` importer.
 - Strict schema-1 configuration profiles that can forbid every capability flag.
 - Discoverable `:ask`/Copilot setup and status. Contained inference is macOS ARM64 only; real GitHub.com evidence exists. GHE.com/GHES compatibility is implemented but live enterprise acceptance remains open. Every transfer is reviewed; platform availability and account entitlement are prerequisites.
-- 20 themes plus custom palettes with WCAG AA contrast checks, animated startup, truecolor/256/16/monochrome output, contextual key hints, shell completions.
+- 22 themes (including two color-blind-safe Okabe-Ito palettes) plus custom palettes with WCAG AA contrast checks, animated startup, truecolor/256/16/monochrome output, contextual key hints, shell completions.
 - Homebrew formula, release archives with checksums, CycloneDX SBOM.
 - A skill for AI assistants (Agent Skills format: `kborg skill install`, a Claude Code plugin marketplace, `gh skill install`, and `kborg skill print` for chat apps). It covers read-only cluster investigation and help with every user setting. Supporting commands: `kborg describe`, `kborg keymap`, `kborg config check`, and `KBORG_READ_ONLY=1` to force read-only. Privacy and write-guard audits are in AI_ASSISTANTS_SECURITY.md.
 

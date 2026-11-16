@@ -1,5 +1,6 @@
 //! Bounded reads: watches, lists, gets, discovery and opt-in Secret inspection.
 use super::*;
+use std::collections::BTreeMap;
 
 impl Gateway {
     pub fn watch(&self, key: &str, ns: &str) -> Result<crate::watch::WatchFeed> {
@@ -275,6 +276,15 @@ impl Gateway {
             let kinds = discovery::collect(client)
                 .await
                 .map_err(|error| self.discovery_error(error))?;
+            // Best effort: without a config folder discovery just runs each time.
+            if let Some(folder) = discovery::cache::folder() {
+                let _ = discovery::cache::save(
+                    &folder,
+                    &self.discovery_key(),
+                    &kinds,
+                    discovery::cache::now(),
+                );
+            }
             self.kinds = kinds;
         }
         Ok(self.kinds.clone())
@@ -292,7 +302,28 @@ impl Gateway {
         selector: &str,
         fields: &str,
     ) -> Result<Value> {
+        self.list_from(key, ns, selector, fields, None).await
+    }
+    /// Up to MAX_OBJECTS objects starting at `start`, a continue token an
+    /// earlier list returned. A list that stops at the bound carries
+    /// `"continue"`, the token of the next page, so a scope too large to watch
+    /// can be read 10,000 objects at a time; pages end on page boundaries,
+    /// so no object is skipped or shown twice.
+    pub async fn list_from(
+        &self,
+        key: &str,
+        ns: &str,
+        selector: &str,
+        fields: &str,
+        start: Option<String>,
+    ) -> Result<Value> {
         crate::selectors::validate(selector)?;
+        if start
+            .as_ref()
+            .is_some_and(|token| token.is_empty() || token.len() > 16384)
+        {
+            return Err("invalid list page token".into());
+        }
         let scope = crate::selectors::field_scope(fields)?;
         let kind = self.find(key)?;
         if let Some(scope) = scope
@@ -320,12 +351,24 @@ impl Gateway {
         }
         let api = self.api(kind, ns)?;
         let mut items = Vec::new();
-        let mut continuation = None;
+        let mut continuation = start;
         let mut total_bytes = 0;
+        let mut remaining = None;
         let deadline = tokio::time::Instant::now() + OPERATION_BUDGET;
         let mut pages = 0;
         let mut seen_tokens = std::collections::HashSet::new();
+        let stop = |items: Vec<Value>, next: Option<String>, remaining: Option<i64>| {
+            let mut value = json!({"items":items,"truncated":true,"source":"cluster"});
+            if let Some(next) = next {
+                value["continue"] = json!(next);
+            }
+            if let Some(remaining) = remaining.filter(|n| *n >= 0) {
+                value["remaining"] = json!(remaining);
+            }
+            value
+        };
         loop {
+            let page_start = continuation.clone();
             let params = ListParams {
                 limit: Some(LIST_PAGE),
                 label_selector: (!selector.is_empty()).then(|| selector.to_owned()),
@@ -336,8 +379,19 @@ impl Gateway {
             let list = tokio::time::timeout_at(deadline, api.list(&params))
                 .await
                 .map_err(|_| "list budget exceeded; narrow namespace scope")?
-                .map_err(|e| self.api_error(e))?;
+                .map_err(|e| match e {
+                    kube::Error::Api(status) if status.code == 410 && page_start.is_some() => {
+                        "this page's list token expired; press < to go back to the first page"
+                            .to_owned()
+                    }
+                    e => self.api_error(e),
+                })?;
             pages += 1;
+            let before = items.len();
+            // A page that does not fit whole is left for the next list.
+            if before + list.items.len() > MAX_OBJECTS && before > 0 {
+                return Ok(stop(items, page_start, remaining));
+            }
             for item in list.items {
                 let mut value = serde_json::to_value(item).map_err(|_| "cannot decode object")?;
                 value["kind"] = json!(kind.kind);
@@ -345,16 +399,21 @@ impl Gateway {
                 safety::redact(&mut value);
                 total_bytes += value.to_string().len();
                 if items.len() >= MAX_OBJECTS || total_bytes > MAX_BODY {
-                    return Ok(json!({"items":items,"truncated":true,"source":"cluster"}));
+                    if before == 0 {
+                        return Ok(stop(items, None, None));
+                    }
+                    items.truncate(before);
+                    return Ok(stop(items, page_start, remaining));
                 }
                 items.push(value);
             }
+            remaining = list.metadata.remaining_item_count;
             continuation = list.metadata.continue_.filter(|s| !s.is_empty());
             if continuation.is_none() {
                 break;
             }
-            if pages >= MAX_LIST_PAGES {
-                return Ok(json!({"items":items,"truncated":true,"source":"cluster"}));
+            if pages >= MAX_LIST_PAGES || items.len() >= MAX_OBJECTS {
+                return Ok(stop(items, continuation, remaining));
             }
             if let Some(token) = &continuation
                 && !seen_tokens.insert(token.clone())
@@ -366,6 +425,148 @@ impl Gateway {
                 .map_err(|_| "list budget exceeded; narrow namespace scope")?;
         }
         Ok(json!({"items":items,"truncated":false,"source":"cluster"}))
+    }
+    /// Pods on each Node that have not finished (not Succeeded or Failed), as
+    /// `kubectl describe node` counts them, for the Nodes table's PODS column.
+    /// Pages are read with a server-side phase filter and only each Pod's Node
+    /// name is kept. `true` when the count stopped at the bound (50,000 Pods).
+    pub async fn pods_per_node(&self) -> Result<(BTreeMap<String, usize>, bool)> {
+        const FINISHED: &str = "status.phase!=Succeeded,status.phase!=Failed";
+        const MAX_PAGES: usize = 100;
+        let mut counts = BTreeMap::new();
+        let mut count = |pod: &Value| {
+            let finished = matches!(
+                pod["status"]["phase"].as_str(),
+                Some("Succeeded" | "Failed")
+            );
+            if let (Some(node), false) = (pod["spec"]["nodeName"].as_str(), finished) {
+                *counts.entry(safety::safe_text(node, 253)).or_insert(0) += 1;
+            }
+        };
+        if self.is_demo() {
+            self.demo
+                .iter()
+                .filter(|v| v["kind"] == "Pod")
+                .for_each(&mut count);
+            return Ok((counts, false));
+        }
+        let kind = self.find("pods")?;
+        let api = self.api(kind, "*")?;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+        let mut continuation = None;
+        for _ in 0..MAX_PAGES {
+            let params = ListParams {
+                limit: Some(LIST_PAGE),
+                field_selector: Some(FINISHED.into()),
+                continue_token: continuation,
+                ..Default::default()
+            };
+            let list = tokio::time::timeout_at(deadline, api.list(&params))
+                .await
+                .map_err(|_| "counting Pods per Node timed out")?
+                .map_err(|e| self.api_error(e))?;
+            for pod in &list.items {
+                count(&serde_json::json!({
+                    "spec": {"nodeName": pod.data["spec"]["nodeName"]},
+                    "status": {"phase": pod.data["status"]["phase"]},
+                }));
+            }
+            continuation = list.metadata.continue_.filter(|token| !token.is_empty());
+            if continuation.is_none() {
+                return Ok((counts, false));
+            }
+        }
+        Ok((counts, true))
+    }
+    /// The default view of a custom resource from its CRD's
+    /// `additionalPrinterColumns`, as k9s and kubectl show them. `None` for
+    /// built-in kinds, aggregated APIs (no CRD), demo data and CRDs without
+    /// columns. One bounded GET of the CRD (8 MiB, 10 s); the caller keeps
+    /// the generic columns when this fails, for example without permission
+    /// to read CRDs.
+    pub async fn printer_columns(&self, key: &str) -> Result<Option<crate::views::View>> {
+        const BUILT_IN: &[&str] = &[
+            "apps",
+            "batch",
+            "policy",
+            "autoscaling",
+            "events.k8s.io",
+            "networking.k8s.io",
+            "rbac.authorization.k8s.io",
+            "storage.k8s.io",
+            "scheduling.k8s.io",
+            "coordination.k8s.io",
+            "node.k8s.io",
+            "discovery.k8s.io",
+            "admissionregistration.k8s.io",
+            "apiextensions.k8s.io",
+            "apiregistration.k8s.io",
+            "certificates.k8s.io",
+            "authentication.k8s.io",
+            "authorization.k8s.io",
+            "flowcontrol.apiserver.k8s.io",
+            "resource.k8s.io",
+            "internal.apiserver.k8s.io",
+            "storagemigration.k8s.io",
+            "metrics.k8s.io",
+        ];
+        const LIMIT: usize = 8 * 1024 * 1024;
+        let kind = self.find(key)?.clone();
+        if kind.group.is_empty() || BUILT_IN.contains(&kind.group.as_str()) || self.is_demo() {
+            return Ok(None);
+        }
+        let client = self.client.as_ref().ok_or("not connected")?;
+        let path = format!(
+            "/apis/apiextensions.k8s.io/v1/customresourcedefinitions/{}.{}",
+            kind.plural, kind.group
+        );
+        let read = async {
+            let request = http::Request::get(path)
+                .header(http::header::ACCEPT, "application/json")
+                .body(kube::client::Body::empty())
+                .map_err(|_| "invalid CRD request")?;
+            let response = client
+                .send(request)
+                .await
+                .map_err(|_| "CRD read failed; details suppressed")?;
+            let status = response.status().as_u16();
+            if status == 404 {
+                return Ok(None);
+            }
+            if !response.status().is_success() {
+                return Err(crate::errors::http_status(
+                    "CRD columns",
+                    status,
+                    &crate::errors::Scope::default(),
+                ));
+            }
+            let bytes = http_body_util::BodyExt::collect(http_body_util::Limited::new(
+                response.into_body(),
+                LIMIT,
+            ))
+            .await
+            .map_err(|_| "CRD exceeded 8 MiB or failed")?
+            .to_bytes();
+            serde_json::from_slice::<Value>(&bytes)
+                .map(Some)
+                .map_err(|_| "invalid CRD JSON".to_owned())
+        };
+        let Some(crd) = tokio::time::timeout(Duration::from_secs(10), read)
+            .await
+            .map_err(|_| "CRD read exceeded 10 seconds")??
+        else {
+            return Ok(None);
+        };
+        if crd["spec"]["group"] != kind.group.as_str()
+            || crd["spec"]["names"]["plural"] != kind.plural.as_str()
+        {
+            return Err("CRD read returned another resource".into());
+        }
+        Ok(crate::views::printer_view(
+            &crd,
+            &kind.version,
+            kind.namespaced,
+        ))
     }
     pub(super) async fn raw_get(&self, key: &str, ns: &str, name: &str) -> Result<Value> {
         if name.is_empty()

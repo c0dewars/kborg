@@ -29,6 +29,8 @@ impl App {
                 && !matches!(
                     &reply,
                     Reply::Metrics(..)
+                        | Reply::NodePods(..)
+                        | Reply::PrinterColumns(..)
                         | Reply::HeaderInfo(..)
                         | Reply::Overview(..)
                         | Reply::ScanOutcome(..)
@@ -190,6 +192,9 @@ impl App {
                     self.subviews.clear();
                     self.stale = true;
                     self.refresh = true;
+                    // Any change replaces the undo; only a successful reversible one sets it.
+                    let pending = self.undo_pending.take();
+                    self.undo = if result.is_ok() { pending } else { None };
                     self.modal = Modal::Detail(
                         match result {
                             Ok(text) => text,
@@ -199,8 +204,14 @@ impl App {
                         },
                         0,
                     );
-                    self.status =
-                        "Operation finished. Inspect the outcome before continuing.".into();
+                    self.status = match &self.undo {
+                        Some(undo) => format!(
+                            "Operation finished. {} or :revert prepares the reverse ({}) for review.",
+                            keyhelp::key_label(self, "undo"),
+                            undo.label
+                        ),
+                        None => "Operation finished. Inspect the outcome before continuing.".into(),
+                    };
                 }
                 Reply::Export(draft) => {
                     let previous = std::mem::replace(&mut self.modal, Modal::Export(draft));
@@ -216,6 +227,8 @@ impl App {
                     if self.connected_context_settings(&c) {
                         continue;
                     }
+                    self.crd_views.clear();
+                    self.crd_views_requested.clear();
                     let context_view = self.take_context_view();
                     let selected_kind = context_view
                         .clone()
@@ -275,11 +288,10 @@ impl App {
                     self.truncated = value["truncated"] == true;
                     self.selected = self.selected.min(self.visible().len().saturating_sub(1));
                     self.stale = false;
+                    self.list_next = value["continue"].as_str().map(str::to_owned);
+                    self.list_remaining = value["remaining"].as_i64();
                     self.status = if self.bounded_poll {
-                        format!(
-                            "Showing the first {} objects: this scope is too large to watch live. Refreshing every 30s; /-l LABELS or :ns narrows it.",
-                            self.items.len()
-                        )
+                        self.page_status()
                     } else {
                         format!(
                             "{} objects | cached filter | refresh every 5s",
@@ -460,7 +472,14 @@ impl App {
                     self.forward_form(via.namespace, via.pod, Some(via.uid), via.remote_port);
                     self.status = via.note;
                 }
-                Reply::Object(object) => self.modal = Modal::Overview(object, 0),
+                Reply::Object(object, events) => {
+                    let uid = object["metadata"]["uid"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_owned();
+                    self.overview_events = Some((uid, events));
+                    self.modal = Modal::Overview(object, 0);
+                }
                 Reply::Drill(object) => self.modal = Modal::PodContainers(object, 0),
                 Reply::Directory(directory) => self.modal = Modal::Directory(directory, 0),
                 Reply::Subjects(title, namespace, index) => {
@@ -514,6 +533,36 @@ impl App {
                         view.yaml(&uid, doc);
                     }
                 }
+                Reply::SecretDocument(uid, result) => match result {
+                    // Only for the Secrets view it was asked from.
+                    Ok((doc, text))
+                        if matches!(self.modal, Modal::Secrets(..)) && doc.uid == uid =>
+                    {
+                        if let Modal::Secrets(view) = &mut self.modal {
+                            view.hide();
+                            view.notice.clear();
+                        }
+                        let editor = crate::ui_yaml::Editor::with_text(
+                            doc,
+                            text.as_str(),
+                            crate::secret_document::MAX_DOCUMENT,
+                        );
+                        drop(text);
+                        let previous = std::mem::replace(
+                            &mut self.modal,
+                            Modal::SecretEditor(Box::new(editor)),
+                        );
+                        self.push_subview(previous);
+                        self.status = "Edit values, add or delete keys. Ctrl-S reviews; Esc cancels. Values are never written to disk.".into();
+                    }
+                    Ok(_) => {}
+                    Err(error) => {
+                        if let Modal::Secrets(view) = &mut self.modal {
+                            view.notice.clear();
+                        }
+                        self.status = error;
+                    }
+                },
                 Reply::Overview(feed) => {
                     if matches!(self.modal, Modal::LiveOverview(..)) {
                         match feed.snapshot() {
@@ -707,6 +756,24 @@ impl App {
                         self.status = "WATCH: synchronizing bounded snapshot...".into();
                     }
                 }
+                // Without CRD columns (none defined, or no permission to read
+                // the CRD) the table keeps its generic columns.
+                Reply::PrinterColumns(key, result) => {
+                    if let Ok(Some(view)) = result {
+                        self.crd_views.insert(key, view);
+                    }
+                }
+                Reply::NodePods(result) => match result {
+                    Ok((counts, truncated)) => {
+                        self.node_pods = Some((Instant::now(), counts, truncated));
+                    }
+                    // Keep the last counts; they are at most a refresh old.
+                    Err(error) => {
+                        if self.node_pods.is_none() {
+                            self.status = format!("PODS column unavailable: {error}");
+                        }
+                    }
+                },
                 Reply::Metrics(scope, namespace, result) => {
                     let now = Instant::now();
                     // Retry from completion, so a stalled provider cannot keep
@@ -819,10 +886,14 @@ impl App {
         self.overview = None;
         let mut connection = self.options.connection.clone();
         connection.namespace = self.namespace.clone();
-        self.modal = Modal::LiveOverview(dashboard_ui::Dashboard::new(
-            &names,
-            self.options.connection.demo,
-        ));
+        // Chart history is kept on this machine for real clusters only.
+        let history = (!self.options.connection.demo && self.ui.dashboard.history)
+            .then(crate::dashboard_history::folder)
+            .flatten();
+        self.modal = Modal::LiveOverview(
+            dashboard_ui::Dashboard::new(&names, self.options.connection.demo)
+                .with_history(history),
+        );
         if let Err(error) = crate::dashboard_memory::remember_scope(&names, &self.namespace) {
             self.status = format!("Dashboard opened; it could not be remembered: {error}");
         }
@@ -954,6 +1025,16 @@ impl App {
             self.namespace.clone(),
             false,
         ));
+        // PODS on Nodes: a full Pod count, so at most every 30 seconds.
+        // Gated on the request, so a slow count is never sent twice.
+        if self.shows_node_pods()
+            && self
+                .node_pods_requested
+                .is_none_or(|at| at.elapsed() >= Duration::from_secs(30))
+        {
+            self.node_pods_requested = Some(Instant::now());
+            self.send(Task::NodePods);
+        }
     }
     pub(super) fn request_metrics(&mut self) {
         if self.busy {
@@ -1491,7 +1572,7 @@ impl App {
         .chain(self.plugin_menu())
         .collect()
     }
-    fn action_allowed(&self, action: &Action) -> bool {
+    pub(super) fn action_allowed(&self, action: &Action) -> bool {
         match action {
             Action::Scale(_) => scalable(&self.kind()),
             Action::Restart => ["deployments.apps", "statefulsets.apps", "daemonsets.apps"]

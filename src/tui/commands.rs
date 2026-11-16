@@ -91,6 +91,8 @@ impl App {
                 if let Some(sort) = sort { self.set_sort(sort); } else { self.status = "Sort: name | namespace | status | restarts | age | ready | cpu | memory".into(); }
             }
             ("themes", []) => self.theme_picker()?,
+            ("tour", []) => self.start_tour(),
+            ("revert", []) => self.undo_last(),
             ("columns" | "cols", []) => self.show_columns(),
             ("ctx-config", []) => self.edit_context_settings(),
             ("ui", [action]) if action == "reload" => self.reload_ui()?,
@@ -808,6 +810,10 @@ impl App {
                     format!("Name of the new key in {name}. Enter continues, Esc cancels.");
                 self.secret_prompt(namespace, name, uid, None);
             }
+            Outcome::EditAll(namespace, name, uid) => {
+                self.status = format!("Reading every key of Secret {name} for the editor...");
+                self.send(Task::SecretDocument(namespace, name, uid));
+            }
             Outcome::Create(namespace) => {
                 self.status = format!(
                     "Name of the new Secret in {namespace}. Enter continues to its first key, Esc cancels."
@@ -1059,9 +1065,69 @@ impl App {
                 safety::redact(&mut masked);
                 Modal::Overview(Box::new(masked), *offset)
             }
+            // The Secret editor shows values: :ask sees only what it is.
+            Modal::SecretEditor(editor) => Modal::Detail(
+                format!(
+                    "SECRET EDITOR\n\nEditing Secret {}/{} ({} keys). Its values are not part of this capture.",
+                    editor.draft.namespace, editor.draft.name, editor.draft.keys
+                ),
+                0,
+            ),
             _ => return None,
         };
         Some(std::mem::replace(&mut self.modal, masked))
+    }
+    /// A key in the whole-Secret editor. Ctrl-S compares the document with
+    /// the Secret and prepares the review while the editor stays open, so a
+    /// refused edit keeps the draft; Esc from the review returns to it.
+    pub(super) fn secret_editor_key(
+        &mut self,
+        mut editor: Box<crate::ui_yaml::Editor<crate::secret_document::SecretDoc>>,
+        key: crossterm::event::KeyEvent,
+    ) {
+        use crate::ui_yaml::Event;
+        match editor.key(key) {
+            Ok(Event::Cancel) => {
+                drop(editor);
+                self.close_subview();
+                self.status = "Secret edit cancelled; nothing was sent.".into();
+                return;
+            }
+            Ok(Event::Review) => {
+                let connection = &self.options.connection;
+                if !connection.writable || !connection.allow_secret_edit {
+                    self.status = "Secret changes are off in this session (--read-only or operator config allow_secret_edit: false).".into();
+                } else if self.busy {
+                    self.status = "Wait for the current request; the draft is kept.".into();
+                } else {
+                    let mut text = editor.text();
+                    let parsed = crate::secret_document::parse(&text, &editor.draft.version);
+                    crate::secrets::wipe(&mut text);
+                    match parsed {
+                        Ok(edited) => {
+                            let doc = &editor.draft;
+                            self.status = format!(
+                                "Comparing with Secret {} and preparing the review...",
+                                doc.name
+                            );
+                            self.send(Task::SecretPrepare(
+                                doc.namespace.clone(),
+                                doc.name.clone(),
+                                doc.uid.clone(),
+                                crate::secret_edit::Change::Document(edited),
+                            ));
+                        }
+                        Err(error) => self.status = error,
+                    }
+                }
+            }
+            Ok(Event::External) => {
+                self.status = "$EDITOR is not offered for Secrets: it would write the values to a file. Edit them here.".into();
+            }
+            Ok(Event::Continue) => {}
+            Err(error) => self.status = error,
+        }
+        self.modal = Modal::SecretEditor(editor);
     }
     /// Capture what the user is looking at before the command prompt covers it.
     pub(super) fn capture_ask_screen(&mut self) {
@@ -1089,6 +1155,202 @@ impl App {
         // Errors carry a next step; a sticky status is a warning to act on.
         self.ask_status = (self.sticky_status || self.status.contains(crate::errors::NEXT))
             .then(|| self.status.clone());
+    }
+    /// The reverse of `action` on `target`, read from the object as the table
+    /// has it just before the change: the old replica count, the old image,
+    /// the opposite suspend. `None` for changes that cannot be reversed
+    /// (restart, delete, kill, trigger) or when the old value is unknown.
+    pub(super) fn inverse_of(
+        &self,
+        target: &crate::policy::Target,
+        action: &Action,
+    ) -> Option<Undo> {
+        let object = self
+            .items
+            .iter()
+            .find(|object| object["metadata"]["uid"].as_str() == Some(target.uid.as_str()))?;
+        let containers =
+            |spec: &Value| -> Option<Vec<Value>> { spec["containers"].as_array().cloned() };
+        let (inverse, label) = match action {
+            Action::Scale(_) => {
+                // A missing replicas field is Kubernetes' default of 1.
+                let old = object["spec"]["replicas"].as_i64().unwrap_or(1);
+                let old = i32::try_from(old).ok()?;
+                (Action::Scale(old), format!("scale back to {old}"))
+            }
+            Action::SetImage { container, .. } => {
+                let pod_spec = if object["spec"]["template"].is_object() {
+                    &object["spec"]["template"]["spec"]
+                } else {
+                    &object["spec"]
+                };
+                let old = containers(pod_spec)?
+                    .into_iter()
+                    .find(|c| c["name"].as_str() == Some(container.as_str()))?
+                    .get("image")?
+                    .as_str()?
+                    .to_owned();
+                (
+                    Action::SetImage {
+                        container: container.clone(),
+                        image: old.clone(),
+                    },
+                    format!(
+                        "image of {container} back to {}",
+                        crate::safety::safe_text(&old, 200)
+                    ),
+                )
+            }
+            Action::Suspend(suspend) => (
+                Action::Suspend(!suspend),
+                if *suspend { "resume" } else { "suspend again" }.to_owned(),
+            ),
+            _ => return None,
+        };
+        Some(Undo {
+            resource: target.resource.clone(),
+            namespace: target.namespace.clone(),
+            name: target.name.clone(),
+            uid: target.uid.clone(),
+            action: inverse,
+            label,
+        })
+    }
+    /// Left/Right: move the window of columns that do not all fit.
+    pub(super) fn scroll_columns(&mut self, right: bool) {
+        let (left, hidden_right) = self.table_hidden.get();
+        if left == 0 && hidden_right == 0 {
+            self.status =
+                "Every column fits. Ctrl-W shows the wide columns; :columns lists them.".into();
+            return;
+        }
+        let scroll = self.table_scroll.get();
+        if right && hidden_right > 0 {
+            self.table_scroll.set(scroll + 1);
+        } else if !right && scroll > 0 {
+            self.table_scroll.set(scroll - 1);
+        }
+    }
+    /// The start token of the page of a bounded-poll scope shown now.
+    pub(super) fn list_start(&self) -> Option<String> {
+        if !self.bounded_poll {
+            return None;
+        }
+        self.list_pages
+            .get(self.list_page)
+            .and_then(|(token, _)| token.clone())
+    }
+    /// The position of the first object of the page shown.
+    pub(super) fn list_offset(&self) -> usize {
+        self.list_pages
+            .get(self.list_page)
+            .map_or(0, |(_, offset)| *offset)
+    }
+    /// The status line of a bounded-poll page.
+    pub(super) fn page_status(&self) -> String {
+        let first = self.list_offset();
+        let shown = self.items.len();
+        let range = if shown == 0 {
+            "no objects".to_owned()
+        } else {
+            format!("objects {}–{}", first + 1, first + shown)
+        };
+        let total = match (self.list_remaining, self.list_next.is_some()) {
+            (Some(rest), _) => {
+                format!(" of {}", first + shown + usize::try_from(rest).unwrap_or(0))
+            }
+            (None, true) => format!(" of {}+", first + shown + 1),
+            (None, false) => String::new(),
+        };
+        let keys = match (self.list_page > 0, self.list_next.is_some()) {
+            (true, true) => "> next, < previous",
+            (false, true) => "> next",
+            (true, false) => "last page; < previous",
+            (false, false) => "one page",
+        };
+        format!(
+            "Page {}: {range}{total} (too large to watch live; refreshed every 30s). {keys}; sort and / filter apply to this page; /-l LABELS or :ns narrows it on the server.",
+            self.list_page + 1
+        )
+    }
+    /// `>` / `<`: read the next or previous 10,000 objects of a scope too
+    /// large to watch. A complete list has no other page.
+    pub(super) fn turn_list_page(&mut self, forward: bool) {
+        if !self.bounded_poll {
+            self.status = "This list is complete: < and > page only a scope too large to watch (over 10,000 objects).".into();
+            return;
+        }
+        if forward {
+            let Some(next) = self.list_next.clone() else {
+                self.status = format!("Page {} is the last page.", self.list_page + 1);
+                return;
+            };
+            let offset = self.list_offset() + self.items.len();
+            self.list_pages.truncate(self.list_page + 1);
+            self.list_pages.push((Some(next), offset));
+            self.list_page += 1;
+        } else {
+            if self.list_page == 0 {
+                self.status = "This is the first page.".into();
+                return;
+            }
+            self.list_page -= 1;
+        }
+        self.list_next = None;
+        self.list_remaining = None;
+        self.replace_items(Vec::new());
+        self.selected = 0;
+        self.status = format!("Reading page {}...", self.list_page + 1);
+        self.refresh = true;
+    }
+    /// `z` / `:revert`: prepare the reverse of the last change as a normal
+    /// reviewed change of the same object (UID-bound, dry-run, approved).
+    pub(super) fn undo_last(&mut self) {
+        let Some(undo) = self.undo.clone() else {
+            self.status = "Nothing to undo: only scale, image changes and suspend/resume can be reversed, right after they succeed.".into();
+            return;
+        };
+        if !self.options.connection.writable {
+            self.status = "Undo is a change, and changes are off in this session (--read-only or operator config).".into();
+            return;
+        }
+        // The reverse targets the object the change was made on, whatever
+        // table is on screen now; the gateway still applies the operator
+        // config and RBAC when it prepares the review.
+        self.status = format!("Preparing the review to {}...", undo.label);
+        self.send(Task::Prepare(
+            undo.resource,
+            undo.namespace,
+            undo.name,
+            Some(undo.uid),
+            undo.action,
+        ));
+    }
+    /// The first-run tour (and `:tour`): three tips, one screen each. Enter
+    /// shows the next, Esc skips the rest. Keys are the operator's own.
+    pub(super) fn start_tour(&mut self) {
+        self.tour = Some(0);
+        let view = std::mem::replace(&mut self.modal, Modal::None);
+        if !matches!(view, Modal::None) {
+            self.push_subview(view);
+        }
+        self.modal = Modal::Detail(keyhelp::tour_text(self, 0), 0);
+    }
+    /// Enter on a tip: the next one, or the end of the tour.
+    pub(super) fn next_tip(&mut self) {
+        let next = self.tour.map_or(keyhelp::TOUR_TIPS, |step| step + 1);
+        if next < keyhelp::TOUR_TIPS {
+            self.tour = Some(next);
+            self.modal = Modal::Detail(keyhelp::tour_text(self, next), 0);
+        } else {
+            self.tour = None;
+            self.close_subview();
+            self.status = format!(
+                "That's the tour. {} shows it again; {} shows the keys of any view.",
+                ":tour",
+                keyhelp::key_label(self, "help")
+            );
+        }
     }
     /// `:columns`: the columns of this table, every predefined column and
     /// how to change them.
@@ -1543,7 +1805,11 @@ impl App {
         // behind them in the worker instead of being refused.
         let background = matches!(
             &task,
-            Task::Metrics(..) | Task::HeaderInfo(..) | Task::Overview(..)
+            Task::Metrics(..)
+                | Task::NodePods
+                | Task::PrinterColumns(..)
+                | Task::HeaderInfo(..)
+                | Task::Overview(..)
         );
         if self.busy && !background && !matches!(&task, Task::Connect(_)) {
             self.status = "Busy; wait for the current request.".into();
@@ -1591,6 +1857,10 @@ impl App {
         self.watching = false;
         self.watch_blocked = false;
         self.bounded_poll = false;
+        self.list_pages = vec![(None, 0)];
+        self.list_page = 0;
+        self.list_next = None;
+        self.list_remaining = None;
         self.sticky_status = false;
         self.worker.watch.invalidate(self.epoch);
         self.worker.logs.cancel();

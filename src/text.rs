@@ -189,6 +189,55 @@ pub fn fit(text: &str, width: usize) -> String {
     output
 }
 
+/// Like `fit`, but a longer text loses its middle instead of its end, so
+/// names that differ only in their suffix stay apart:
+/// `payments-api-7d4f9c8b6-x2kqp` in 18 cells is `payments-~b6-x2kqp`. Below 5
+/// cells it is plain `fit`. A wide cluster is never split.
+pub fn fit_middle(text: &str, width: usize) -> String {
+    let glyphs: Vec<(String, usize)> = clusters(text).collect();
+    let total: usize = glyphs.iter().map(|(_, cells)| cells).sum();
+    if total <= width || width < 5 {
+        return fit(text, width);
+    }
+    let room = width - 1;
+    let tail_room = room / 2;
+    let head_room = room - tail_room;
+    let mut head = String::new();
+    let mut used = 0;
+    for (glyph, cells) in &glyphs {
+        if used + cells > head_room {
+            break;
+        }
+        head.push_str(glyph);
+        used += cells;
+    }
+    let mut tail: Vec<&str> = Vec::new();
+    let mut used = 0;
+    for (glyph, cells) in glyphs.iter().rev() {
+        if used + cells > tail_room {
+            break;
+        }
+        tail.push(glyph);
+        used += cells;
+    }
+    tail.reverse();
+    format!("{head}~{}", tail.concat())
+}
+
+/// Untrusted text sanitized, middle-cut to `width` cells when longer, and
+/// padded: a NAME column.
+pub fn column_middle(text: &str, width: usize) -> String {
+    let mut output = fit_middle(&crate::safety::safe_text(text, budget(width)), width);
+    let used = self::width(&output);
+    output.extend(std::iter::repeat_n(' ', width.saturating_sub(used)));
+    output
+}
+
+/// Untrusted text sanitized and middle-cut to `width` cells when longer.
+pub fn shown_middle(text: &str, width: usize) -> String {
+    fit_middle(&crate::safety::safe_text(text, budget(width)), width)
+}
+
 /// `fit` and then pad with spaces to exactly `width` cells.
 pub fn pad(text: &str, width: usize) -> String {
     let mut output = fit(text, width);
@@ -280,6 +329,37 @@ mod tests {
 
     fn unicode<R>(f: impl FnOnce() -> R) -> R {
         with_mode(true, f)
+    }
+
+    #[test]
+    fn a_long_name_loses_its_middle_and_keeps_its_suffix() {
+        with_mode(false, || {
+            let name = "payments-api-7d4f9c8b6-x2kqp";
+            assert_eq!(fit_middle(name, 18), "payments-~b6-x2kqp");
+            assert_eq!(width(&fit_middle(name, 18)), 18);
+            // Short enough: unchanged; too narrow: plain end cut.
+            assert_eq!(fit_middle("web-1", 10), "web-1");
+            assert_eq!(fit_middle(name, 4), fit(name, 4));
+            // Two Pods of one ReplicaSet stay apart where an end cut would merge them.
+            let (a, b) = ("api-7d4f9c8b6-x2kqp", "api-7d4f9c8b6-m9zt4");
+            assert_eq!(fit(a, 12), fit(b, 12), "an end cut hides the difference");
+            assert_ne!(
+                fit_middle(a, 12),
+                fit_middle(b, 12),
+                "a middle cut keeps it"
+            );
+            assert_eq!(column_middle(a, 25).len(), 25, "padded to the column");
+            // Untrusted text is still sanitized.
+            assert!(!column_middle("evil\u{1b}[2Jname-long-suffix", 12).contains('\u{1b}'));
+        });
+        // Wide clusters are never split.
+        unicode(|| {
+            let wide = "東京東京東京東京-x2kqp";
+            let cut = fit_middle(wide, 9);
+            // 9 cells: 4 for the head (two wide glyphs), the marker, 4 for the tail.
+            assert_eq!(cut, "東京~2kqp");
+            assert_eq!(width(&cut), 9);
+        });
     }
 
     #[test]

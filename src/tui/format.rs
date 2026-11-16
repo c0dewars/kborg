@@ -531,7 +531,7 @@ pub(super) fn resource_label(kind: &Kind) -> String {
 }
 /// Command reference shown under every generated key section in `?` help.
 /// Keys are not listed here: they come from the keymap registry.
-pub(super) const COMMAND_HELP: &str = "NAVIGATE LIKE K9S\n  :pod :pods :po           Singular, plural or discovered short name\n  :pod NAMESPACE          Resource in namespace; all means all namespaces\n  :pod /api|web           Resource plus regex filter\n  :pod app=api,tier=web    Server-side label selector\n  :pod @CONTEXT           Switch context; context names retain their case\n  :ctx / :ctx NAME        Context picker (Pod view) / direct switch (same view)\n  :ns / :ns NAME          Namespace picker / direct switch (Pod view)\n  :aliases                Resource alias and hotkey picker; Enter navigates\n  :pulses / :pu           Read-only cluster health snapshot\n  :xray po|svc|dp [NS]    Ownership and service relationship snapshot\n  :screendump / :sd       Browse saved redacted resource snapshots\n  :can u:NAME             Read-only RBAC subject view\n  :dir PATH               Browse local manifests; a reviews an apply\n  :helm [NAMESPACE]       Native release metadata\n  :history RELEASE        Selected release revision history\n  :keymap [TEXT] / :keys  Every action, its keys and view (filterable)\n  :q :q! :qa :Q :quit     Quit (in-flight mutations must finish)\n\nFILTER SYNTAX\n  /PATTERN                Case-insensitive regex over namespace/name/status\n  /!PATTERN               Inverse regex\n  /-f PATTERN             Fuzzy subsequence match\n  /-l LABEL_SELECTOR      Apply server-side label selector on Enter\n\nRESOURCE COMMANDS\n  :sort COLUMN [asc|desc] Sort by any header column; Shift-Left/Right picks the column, a click on its title too\n  :faults                 Only objects that need attention (same as the faults key)\n  :export                 Save the selected resource's redacted YAML\n  :discover               Refresh API discovery\n  :cp-from [-r] PATH [L]  Reviewed copy of a Pod file or directory\n  :cp-to [-r] LOCAL PATH  Reviewed copy to a new Pod file or directory; never replaces\n  :apply FILE / :dir a    Dry-run, diff and reviewed server-side apply\n  :ext [NAME]             Run a registered extension or k9s plugin on the selection\n  :debug [CONTAINER]      Reviewed ephemeral debug container and shell\n  :pf / :bench N C [PATH] Forward list / benchmark the selected loopback forward\n  :lint / :popeye         Read-only misconfiguration check for the namespace\n  :scan / :scan ns        Scan selected or namespace images (trivy/grype on PATH)\n  :rollback [REV]         Reviewed rollback of a Deployment/StatefulSet/DaemonSet\n  :trigger                Trigger a Job from the selected CronJob (reviewed)\n  :edit-container         Focused container image/resource editor\n  :kill                   Reviewed zero-grace Pod kill\n  :cordon :uncordon :drain Reviewed node maintenance\n  CPU/MEM snapshots refresh every 15s while the table is visible; - means\n  unknown, never zero. ~ indicates Metrics API omitted UID; creation checked.\n  Table CPU/MEM labels are rounded; describe or :metrics shows exact quantities.\n\nHELM AND LOGS\n  Helm Enter / r          Release revision history\n  History Enter / v       Explicit selected revision stored values\n  Helm i / u / t / c      Install / upgrade / test / separately install chart CRDs\n  History r / Ctrl-D      Rollback selected revision / uninstall current release\n  Helm d / m / y          Metadata / resource identities / metadata YAML\n  Helm Ctrl-R / /         Refresh / filter; Esc returns to previous view\n  Sources: local .tgz or explicit OCI :TAG / @sha256:DIGEST.\n  --helm-keyring requires native Helm provenance verification during prepare.\n  :helm-crds prepares create-only Namespaced CRDs, retained on uninstall.\n  :helm-test runs stored tests; :helm-crds-upgrade reviews schema changes.\n  :helm-crds-delete is explicit, checks live instances and needs stronger approval.\n  :helm-crds-migrate reviews storage rewrites; controller proof gates finalization.\n  :copilot advice on the selection; shows what is sent first.\n  :ask [QUESTION] asks Copilot about the screen behind the prompt; shows the exact text first.\n  Ctrl-G asks from any view; f on an answer asks a follow-up (reviewed again).\n  :explain asks Copilot about the error on the status line, with the screen.\n  :logs LABEL_SELECTOR    Explicit namespace-scoped multi-Pod log capture\n  Group reloads keep the same Pod UIDs; close and reopen to capture new Pods.\n  :logs-live [SELECTOR]   Opt in to announced Pod joins/departures (10s refresh)\n  Pod logs honor the default-container annotation, otherwise merge multiple\n  ordinary containers. Each merged line carries a namespace/Pod/container.\n\nDESCRIBE, YAML AND JSON\n  /TEXT then n / N        Search the text shown, ignoring case; Esc clears\n\nKBORG COMMANDS\n  :actions                Discover actions with capability reasons\n  :scale :image :restart  Explicit reviewed workload operations\n  :metrics [resources]    Metrics / opt into requests-limit comparisons\n  :overview               Dashboard of up to nine explicit contexts\n  :themes                 Theme preview and custom palette creation\n  :mouse                  Copy mode: release the mouse to select and copy text; again takes it back\n  :columns                This table's columns, predefined columns and how to change them\n  :ctx-config             Edit this context's settings in $EDITOR (theme, badge, read-only)\n\nCUSTOMIZE\n  keymap.yaml remaps any action above except fixed keys; hotkeys.yaml binds\n  Shift-0..9, Alt, F1..F12 or free Ctrl keys to commands; aliases.yaml adds\n  command names; views.yaml sets columns. All live in the KBorg config folder.\n\nLIMITS AND SAFETY\n  Context, namespace and mode remain visible; DEMO is sample data.\n  STALE and TRUNCATED indicate incomplete data. Regex uses bounded Rust regex\n  syntax; look-around and backreferences are unavailable.\n  :secrets lists key names; x reveals one\n  key for 30s; y/d show masked YAML (values as sizes). Values are never\n  exported, copied or kept after Esc.\n  In :secrets, n creates a Secret, e sets a key's value, a adds a key, Ctrl-D\n  removes the key or deletes the Secret: each through a review that never\n  shows a value. u lists the Pods that use the Secret.\n  The YAML editor edits existing non-Secret objects: their fields, labels\n  and annotations. Hidden values, identity and status are preserved.\n  Helm values are stored overrides with\n  known fields redacted; custom keys can remain confidential. Complete\n  review is mandatory for lifecycle changes. Raw storage, chart files and notes are excluded.\n  Marked rows change together only through one batch review: delete, restart\n  or CronJob suspend/resume, at most 50 objects of one kind, each dry-run and\n  policy-checked and approved with y/Enter; it stops at the first failure.\n  Every change shows a review first: y/Enter applies, n/Esc cancels.\n  --read-only browses without changes; an operator --config can switch features off.\n  Esc, Enter, Ctrl-C and review confirmations can never be remapped.";
+pub(super) const COMMAND_HELP: &str = "NAVIGATE LIKE K9S\n  :pod :pods :po           Singular, plural or discovered short name\n  :pod NAMESPACE          Resource in namespace; all means all namespaces\n  :pod /api|web           Resource plus regex filter\n  :pod app=api,tier=web    Server-side label selector\n  :pod @CONTEXT           Switch context; context names retain their case\n  :ctx / :ctx NAME        Context picker (Pod view) / direct switch (same view)\n  :ns / :ns NAME          Namespace picker / direct switch (Pod view)\n  :aliases                Resource alias and hotkey picker; Enter navigates\n  :pulses / :pu           Read-only cluster health snapshot\n  :xray po|svc|dp [NS]    Ownership and service relationship snapshot\n  :screendump / :sd       Browse saved redacted resource snapshots\n  :can u:NAME             Read-only RBAC subject view\n  :dir PATH               Browse local manifests; a reviews an apply\n  :helm [NAMESPACE]       Native release metadata\n  :history RELEASE        Selected release revision history\n  :keymap [TEXT] / :keys  Every action, its keys and view (filterable)\n  :q :q! :qa :Q :quit     Quit (in-flight mutations must finish)\n\nFILTER SYNTAX\n  /PATTERN                Case-insensitive regex over namespace/name/status\n  /!PATTERN               Inverse regex\n  /-f PATTERN             Fuzzy subsequence match\n  /-l LABEL_SELECTOR      Apply server-side label selector on Enter\n\nRESOURCE COMMANDS\n  :sort COLUMN [asc|desc] Sort by any header column; Shift-Left/Right picks the column, a click on its title too\n  :faults                 Only objects that need attention (same as the faults key)\n  :export                 Save the selected resource's redacted YAML\n  :discover               Refresh API discovery\n  :cp-from [-r] PATH [L]  Reviewed copy of a Pod file or directory\n  :cp-to [-r] LOCAL PATH  Reviewed copy to a new Pod file or directory; never replaces\n  :apply FILE / :dir a    Dry-run, diff and reviewed server-side apply\n  :ext [NAME]             Run a registered extension or k9s plugin on the selection\n  :debug [CONTAINER]      Reviewed ephemeral debug container and shell\n  :pf / :bench N C [PATH] Forward list / benchmark the selected loopback forward\n  :lint / :popeye         Read-only misconfiguration check for the namespace\n  :scan / :scan ns        Scan selected or namespace images (trivy/grype on PATH)\n  :rollback [REV]         Reviewed rollback of a Deployment/StatefulSet/DaemonSet\n  :trigger                Trigger a Job from the selected CronJob (reviewed)\n  :edit-container         Focused container image/resource editor\n  :kill                   Reviewed zero-grace Pod kill\n  :cordon :uncordon :drain Reviewed node maintenance\n  CPU/MEM snapshots refresh every 15s while the table is visible; - means\n  unknown, never zero. ~ indicates Metrics API omitted UID; creation checked.\n  Table CPU/MEM labels are rounded; describe or :metrics shows exact quantities.\n\nHELM AND LOGS\n  Helm Enter / r          Release revision history\n  History Enter / v       Explicit selected revision stored values\n  Helm i / u / t / c      Install / upgrade / test / separately install chart CRDs\n  History r / Ctrl-D      Rollback selected revision / uninstall current release\n  Helm d / m / y          Metadata / resource identities / metadata YAML\n  Helm Ctrl-R / /         Refresh / filter; Esc returns to previous view\n  Sources: local .tgz or explicit OCI :TAG / @sha256:DIGEST.\n  --helm-keyring requires native Helm provenance verification during prepare.\n  :helm-crds prepares create-only Namespaced CRDs, retained on uninstall.\n  :helm-test runs stored tests; :helm-crds-upgrade reviews schema changes.\n  :helm-crds-delete is explicit, checks live instances and needs stronger approval.\n  :helm-crds-migrate reviews storage rewrites; controller proof gates finalization.\n  :copilot advice on the selection; shows what is sent first.\n  :ask [QUESTION] asks Copilot about the screen behind the prompt; shows the exact text first.\n  Ctrl-G asks from any view; f on an answer asks a follow-up (reviewed again).\n  :explain asks Copilot about the error on the status line, with the screen.\n  :logs LABEL_SELECTOR    Explicit namespace-scoped multi-Pod log capture\n  Group reloads keep the same Pod UIDs; close and reopen to capture new Pods.\n  :logs-live [SELECTOR]   Opt in to announced Pod joins/departures (10s refresh)\n  Pod logs honor the default-container annotation, otherwise merge multiple\n  ordinary containers. Each merged line carries a namespace/Pod/container.\n\nDESCRIBE, YAML AND JSON\n  /TEXT then n / N        Search the text shown, ignoring case; Esc clears\n\nKBORG COMMANDS\n  :actions                Discover actions with capability reasons\n  :scale :image :restart  Explicit reviewed workload operations\n  :metrics [resources]    Metrics / opt into requests-limit comparisons\n  :overview               Dashboard of up to nine explicit contexts\n  :themes                 Theme preview and custom palette creation\n  :tour                   Three tips to get started (shown on the first start)\n  :mouse                  Copy mode: release the mouse to select and copy text; again takes it back\n  :columns                This table's columns, predefined columns and how to change them\n  :ctx-config             Edit this context's settings in $EDITOR (theme, badge, read-only)\n\nCUSTOMIZE\n  keymap.yaml remaps any action above except fixed keys; hotkeys.yaml binds\n  Shift-0..9, Alt, F1..F12 or free Ctrl keys to commands; aliases.yaml adds\n  command names; views.yaml sets columns. All live in the KBorg config folder.\n\nLIMITS AND SAFETY\n  Context, namespace and mode remain visible; DEMO is sample data.\n  STALE and TRUNCATED indicate incomplete data. Regex uses bounded Rust regex\n  syntax; look-around and backreferences are unavailable.\n  :secrets lists key names; x reveals one\n  key for 30s; y/d show masked YAML (values as sizes). Values are never\n  exported, copied or kept after Esc.\n  In :secrets, n creates a Secret, e sets a key's value, a adds a key, Ctrl-D\n  removes the key or deletes the Secret: each through a review that never\n  shows a value. u lists the Pods that use the Secret.\n  The YAML editor edits existing non-Secret objects: their fields, labels\n  and annotations. Hidden values, identity and status are preserved.\n  Helm values are stored overrides with\n  known fields redacted; custom keys can remain confidential. Complete\n  review is mandatory for lifecycle changes. Raw storage, chart files and notes are excluded.\n  Marked rows change together only through one batch review: delete, restart\n  or CronJob suspend/resume, at most 50 objects of one kind, each dry-run and\n  policy-checked and approved with y/Enter; it stops at the first failure.\n  Every change shows a review first: y/Enter applies, n/Esc cancels.\n  --read-only browses without changes; an operator --config can switch features off.\n  Esc, Enter, Ctrl-C and review confirmations can never be remapped.";
 
 #[derive(Clone, Copy, Debug)]
 pub(super) struct Rect {
@@ -610,7 +610,7 @@ pub(super) fn builtin_column(title: &str) -> Option<Column> {
         _ => return None,
     })
 }
-fn default_width(column: Column) -> usize {
+pub(super) fn default_width(column: Column) -> usize {
     match column {
         Column::Namespace => 16,
         Column::Name => 1,
@@ -626,13 +626,17 @@ fn default_width(column: Column) -> usize {
     }
 }
 /// Columns for a configured view: hidden and (outside wide mode) wide-only
-/// columns are skipped, NAME takes the remaining width, and trailing columns
-/// are dropped when the terminal is too narrow.
+/// columns are skipped and NAME takes the remaining width. When they do not
+/// all fit, NAMESPACE and NAME stay and the other columns form a window that
+/// starts `scroll` columns in, as in k9s: Left/Right move it. Returns the
+/// columns shown and how many are hidden to the left and to the right.
 pub(super) fn view_columns(
     view: &crate::views::View,
     width: usize,
     wide: bool,
-) -> Vec<(Column, usize)> {
+    scroll: usize,
+    name: usize,
+) -> (Vec<(Column, usize)>, (usize, usize)) {
     let mut columns: Vec<(Column, usize)> = view
         .columns
         .iter()
@@ -660,20 +664,75 @@ pub(super) fn view_columns(
     {
         columns.insert(0, (Column::Name, 1));
     }
+    window(columns, width, scroll, name)
+}
+/// The columns that fit in `width` cells, as in k9s: NAMESPACE and NAME
+/// stay and the others form a window that starts `scroll` columns in, never
+/// past the point where the rest fits. NAME gets at least `name` cells and
+/// the width left over; NAMESPACE goes too when even NAME has no room.
+/// Returns the columns shown and how many are hidden to the left and right.
+pub(super) fn window(
+    mut columns: Vec<(Column, usize)>,
+    width: usize,
+    scroll: usize,
+    name: usize,
+) -> (Vec<(Column, usize)>, (usize, usize)) {
     let used = |columns: &[(Column, usize)]| {
         columns.iter().map(|(_, w)| w).sum::<usize>() + columns.len().saturating_sub(1)
     };
-    while used(&columns) + 12 > width && columns.len() > 1 {
-        // Drop from the right, but AGE (conventionally last) goes last of all.
-        let droppable = |keep_age: bool| {
-            columns.iter().rposition(|(column, _)| {
-                !matches!(column, Column::Name) && !(keep_age && matches!(column, Column::Age))
-            })
+    // NAME is listed 1 cell wide; it needs `name`.
+    let fits = |columns: &[(Column, usize)]| used(columns) + name.saturating_sub(1) <= width;
+    let pinned = |column: &Column| matches!(column, Column::Name | Column::Namespace);
+    let mut hidden = (0, 0);
+    if !fits(&columns) {
+        let only_pinned: Vec<_> = columns.iter().filter(|(c, _)| pinned(c)).copied().collect();
+        if !fits(&only_pinned) {
+            columns.retain(|(column, _)| !matches!(column, Column::Namespace));
+        }
+    }
+    if !fits(&columns) {
+        let window = |skip: usize| -> Vec<(Column, usize)> {
+            let mut moving = 0;
+            columns
+                .iter()
+                .filter(|(column, _)| {
+                    pinned(column) || {
+                        moving += 1;
+                        moving > skip
+                    }
+                })
+                .copied()
+                .collect()
         };
-        let Some(last) = droppable(true).or_else(|| droppable(false)) else {
-            break;
-        };
-        columns.remove(last);
+        let movable = columns.iter().filter(|(c, _)| !pinned(c)).count();
+        // Past the point where the rest fits, scrolling would only show less.
+        let last = (0..movable)
+            .find(|&skip| fits(&window(skip)))
+            .unwrap_or(movable.saturating_sub(1));
+        let skip = scroll.min(last);
+        let mut shown = window(skip);
+        let mut right = 0;
+        let mut first = None;
+        while !fits(&shown) {
+            let Some(drop) = shown.iter().rposition(|(column, _)| !pinned(column)) else {
+                break;
+            };
+            first = Some((drop, shown.remove(drop)));
+            right += 1;
+        }
+        // A column wider than the room next to NAME is shown cut to that
+        // room rather than skipped, so every column can be seen.
+        if let Some((at, (column, _))) = first
+            && !shown.iter().any(|(c, _)| !pinned(c))
+        {
+            let room = width.saturating_sub(used(&shown) + name.saturating_sub(1) + 1);
+            if room >= 4 {
+                shown.insert(at, (column, room));
+                right -= 1;
+            }
+        }
+        hidden = (skip, right);
+        columns = shown;
     }
     let occupied = used(&columns);
     if let Some((_, name_width)) = columns
@@ -682,7 +741,7 @@ pub(super) fn view_columns(
     {
         *name_width += width.saturating_sub(occupied);
     }
-    columns
+    (columns, hidden)
 }
 fn labels(object: &Value) -> String {
     object["metadata"]["labels"]
@@ -713,13 +772,18 @@ fn images(object: &Value) -> String {
         .join(",")
 }
 /// A custom or predefined column's value; `|T` columns show the age of a
-/// timestamp. `usage` feeds the predefined usage percentages.
+/// timestamp. `usage` feeds the predefined usage percentages and `pods` the
+/// PODS column of Nodes.
 pub(super) fn custom_value(
     spec: &crate::views::ColumnSpec,
     object: &Value,
     now: i64,
     usage: Option<&table_metrics::Usage>,
+    pods: Option<&str>,
 ) -> String {
+    if spec.computed == Some(crate::views::Computed::Pods) {
+        return pods.unwrap_or("-").to_owned();
+    }
     if let Some(computed) = spec.computed {
         return crate::views::computed_value(
             computed,
@@ -786,42 +850,6 @@ impl Column {
         }
     }
 }
-pub(super) fn columns(width: usize, namespaced: bool) -> Vec<(Column, usize)> {
-    // Name and health remain usable even when optional columns no longer fit.
-    let mut columns = Vec::new();
-    if namespaced && width >= 54 {
-        columns.push((Column::Namespace, if width >= 94 { 16 } else { 12 }));
-    }
-    columns.push((Column::Name, 1));
-    if width >= 46 {
-        columns.push((Column::Ready, 7));
-    }
-    columns.push((
-        Column::Status,
-        if width >= 64 {
-            20
-        } else if width >= 46 {
-            16
-        } else {
-            12
-        },
-    ));
-    if width >= 70 {
-        columns.push((Column::Restarts, 5));
-    }
-    if width >= 46 {
-        columns.push((Column::Age, 6));
-    }
-    let occupied: usize =
-        columns.iter().map(|(_, width)| width).sum::<usize>() + columns.len().saturating_sub(1);
-    if let Some((_, name_width)) = columns
-        .iter_mut()
-        .find(|(column, _)| matches!(column, Column::Name))
-    {
-        *name_width += width.saturating_sub(occupied);
-    }
-    columns
-}
 /// Header with an ascending (^) or descending (v) marker on the sorted column.
 /// Sort markers and the column separator come from ui.yaml `table`.
 pub(super) fn header_line(
@@ -874,6 +902,7 @@ pub(super) fn table_line_custom(
     object: &Value,
     now: i64,
     usage: Option<&table_metrics::Usage>,
+    pods: Option<&str>,
     custom: &[crate::views::ColumnSpec],
     style: &crate::ui_config::Table,
 ) -> String {
@@ -881,9 +910,10 @@ pub(super) fn table_line_custom(
         .iter()
         .map(|(column, width)| {
             let text = match column {
-                Column::Custom(index) => custom
-                    .get(usize::from(*index))
-                    .map_or_else(|| "-".into(), |spec| custom_value(spec, object, now, usage)),
+                Column::Custom(index) => custom.get(usize::from(*index)).map_or_else(
+                    || "-".into(),
+                    |spec| custom_value(spec, object, now, usage, pods),
+                ),
                 Column::Age => age_styled(object, now, style.long_age()),
                 _ => {
                     return table_line_with_metrics(&[(*column, *width)], Some(object), now, usage);
@@ -918,7 +948,12 @@ pub(super) fn table_line_with_metrics(
                     _ => column.value(object, now),
                 })
                 .unwrap_or_else(|| column.title().into());
-            padded(&text, *width)
+            // Generated names (web-7d4f9c8b6-x2kqp) differ at the end: keep it.
+            if object.is_some() && matches!(column, Column::Name) {
+                crate::text::column_middle(&text, *width)
+            } else {
+                padded(&text, *width)
+            }
         })
         .collect::<Vec<_>>()
         .join(" ")

@@ -115,11 +115,16 @@ pub fn validate(selector: &str) -> Result<()> {
     parse(selector).map(|_| ())
 }
 /// The only server-side field selectors KBorg sends: Pods on one Node, and the
-/// Events recorded for one exact Pod identity. Anything else is rejected.
+/// Events recorded for one exact object identity (kind, name and UID).
+/// Anything else is rejected.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum FieldScope<'a> {
     Node(&'a str),
-    PodEvents { name: &'a str, uid: &'a str },
+    ObjectEvents {
+        kind: &'a str,
+        name: &'a str,
+        uid: &'a str,
+    },
 }
 
 impl FieldScope<'_> {
@@ -127,24 +132,36 @@ impl FieldScope<'_> {
     pub fn kind(&self) -> &'static str {
         match self {
             Self::Node(_) => "Pod",
-            Self::PodEvents { .. } => "Event",
+            Self::ObjectEvents { .. } => "Event",
         }
     }
     pub fn matches(&self, object: &Value) -> bool {
         match self {
             Self::Node(node) => object["spec"]["nodeName"].as_str() == Some(node),
-            Self::PodEvents { name, uid } => {
+            Self::ObjectEvents { kind, name, uid } => {
                 let involved = &object["involvedObject"];
-                involved["kind"] == "Pod" && involved["name"] == *name && involved["uid"] == *uid
+                involved["kind"] == *kind && involved["name"] == *name && involved["uid"] == *uid
             }
         }
     }
 }
 
-const POD_EVENTS_PREFIX: &str = "involvedObject.kind=Pod,involvedObject.name=";
+const EVENTS_PREFIX: &str = "involvedObject.kind=";
+
+/// The field selector for the Events of one exact object.
+pub(crate) fn object_events_field(kind: &str, name: &str, uid: &str) -> String {
+    format!("{EVENTS_PREFIX}{kind},involvedObject.name={name},involvedObject.uid={uid}")
+}
 
 pub(crate) fn pod_events_field(name: &str, uid: &str) -> String {
-    format!("{POD_EVENTS_PREFIX}{name},involvedObject.uid={uid}")
+    object_events_field("Pod", name, uid)
+}
+
+/// A Kubernetes kind: an ASCII letter, then letters and digits.
+fn kind_name(kind: &str) -> bool {
+    (1..=63).contains(&kind.len())
+        && kind.as_bytes()[0].is_ascii_alphabetic()
+        && kind.bytes().all(|b| b.is_ascii_alphanumeric())
 }
 
 fn dns_subdomain(name: &str) -> bool {
@@ -184,16 +201,20 @@ pub(crate) fn field_scope(selector: &str) -> Result<Option<FieldScope<'_>>> {
         }
         return Ok(Some(FieldScope::Node(name)));
     }
-    if let Some(rest) = selector.strip_prefix(POD_EVENTS_PREFIX) {
+    if let Some(rest) = selector.strip_prefix(EVENTS_PREFIX) {
+        let invalid = || "invalid object event field selector";
+        let (kind, rest) = rest
+            .split_once(",involvedObject.name=")
+            .ok_or_else(invalid)?;
         let (name, uid) = rest
             .split_once(",involvedObject.uid=")
-            .ok_or("invalid Pod event field selector")?;
-        if !dns_subdomain(name) || !object_uid(uid) {
-            return Err("invalid Pod event field selector".into());
+            .ok_or_else(invalid)?;
+        if !kind_name(kind) || !dns_subdomain(name) || !object_uid(uid) {
+            return Err(invalid().into());
         }
-        return Ok(Some(FieldScope::PodEvents { name, uid }));
+        return Ok(Some(FieldScope::ObjectEvents { kind, name, uid }));
     }
-    Err("only spec.nodeName and exact Pod event field selectors are supported".into())
+    Err("only spec.nodeName and exact object event field selectors are supported".into())
 }
 pub fn matches(selector: &str, labels: &Value) -> bool {
     parse(selector).is_ok_and(|requirements| {
@@ -255,11 +276,25 @@ mod tests {
         let events = pod_events_field("api-7d9f", uid);
         assert_eq!(
             field_scope(&events),
-            Ok(Some(FieldScope::PodEvents {
+            Ok(Some(FieldScope::ObjectEvents {
+                kind: "Pod",
                 name: "api-7d9f",
                 uid
             }))
         );
+        // Any kind, exactly: a Deployment's events, never a Pod's of the same name.
+        let deployment = object_events_field("Deployment", "api", uid);
+        let scope = field_scope(&deployment).ok().flatten();
+        assert_eq!(
+            scope,
+            Some(FieldScope::ObjectEvents {
+                kind: "Deployment",
+                name: "api",
+                uid
+            })
+        );
+        let pod_event = serde_json::json!({"involvedObject":{"kind":"Pod","name":"api","uid":uid}});
+        assert!(scope.is_some_and(|s| !s.matches(&pod_event)));
         let event =
             serde_json::json!({"involvedObject":{"kind":"Pod","name":"api-7d9f","uid":uid}});
         assert!(
@@ -285,6 +320,10 @@ mod tests {
             "involvedObject.kind=Pod,involvedObject.name=api,involvedObject.uid=ABC",
             "involvedObject.kind=Pod,involvedObject.name=api,involvedObject.uid=a,type=Normal",
             "involvedObject.kind=Pod,involvedObject.name=a,b,involvedObject.uid=abc",
+            "involvedObject.kind=Pod,type=Normal,involvedObject.name=a,involvedObject.uid=abc",
+            "involvedObject.kind=,involvedObject.name=a,involvedObject.uid=abc",
+            "involvedObject.kind=9Pod,involvedObject.name=a,involvedObject.uid=abc",
+            "involvedObject.kind=Po d,involvedObject.name=a,involvedObject.uid=abc",
         ] {
             assert!(field_scope(hostile).is_err(), "{hostile}");
         }

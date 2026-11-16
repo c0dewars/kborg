@@ -381,7 +381,22 @@ impl Gateway {
             ],
             demo: vec![],
             kinds: kinds(),
-        })
+        }
+        .with_cached_discovery())
+    }
+    /// The discovery cache file of this server and kubeconfig identity.
+    fn discovery_key(&self) -> String {
+        discovery::cache::key(&self.server, &self.cluster, &self.user, &self.context)
+    }
+    /// Start with the cached catalog when a fresh one exists, so a custom
+    /// resource can be shown before discovery runs again.
+    fn with_cached_discovery(mut self) -> Self {
+        if let Some(kinds) = discovery::cache::folder().and_then(|folder| {
+            discovery::cache::load(&folder, &self.discovery_key(), discovery::cache::now())
+        }) {
+            self.kinds = kinds;
+        }
+        self
     }
     pub fn is_demo(&self) -> bool {
         self.client.is_none()

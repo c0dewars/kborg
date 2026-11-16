@@ -6,6 +6,8 @@ These are unofficial adaptations of [Flexoki by Steph Ango](https://stephango.co
 
 Run `kborg theme new my-theme --base catppuccin-mocha` to get a template and its path. The file is installed in the user theme directory; editing it changes the next load. Validate before selecting. To install a shared file, use `theme validate FILE`, `theme preview FILE`, then `theme install FILE` and `theme use ID`.
 
+Coming from k9s, `kborg theme import-k9s ~/.config/k9s/skins/NAME.yaml [--id ID]` turns a skin into a new custom theme (`k9s-NAME` by default; an existing theme is never replaced). Each role takes the first fixed k9s color with the same meaning: the table or body background and foreground, the table header for muted text, the focused border for the accent, the status colors for success, warning and danger, and the table cursor for the selection. Anchors and aliases are read, within a size budget; `#RRGGBB` and W3C color names are accepted. A color left to the terminal (`default`) comes from KBorg Dark. A color below 4.5:1 keeps its hue and is moved toward white or black just far enough, and the output names each adjusted color.
+
 ```json
 {"schema_version":1,"id":"my-theme","name":"My Theme","base":"catppuccin-mocha","colors":{"accent":"#2DD4BF","focus":"#2DD4BF"}}
 ```
@@ -43,6 +45,7 @@ The file is data only: at most 16 KiB, one document, no anchors, aliases, merge 
 | --- | --- | --- |
 | `version` | `1` | Schema version; anything else is rejected. |
 | `reload` | `true`, `false` | Apply saved config files live (see [Live reload](#live-reload)). |
+| `accessible` | `false`, `true` | Screen-reader and reduced-motion mode; `KBORG_ACCESSIBLE=1` turns it on too. It overrides these settings: no startup animation, no box drawing (`borders: none`), no logo, no zebra rows, ASCII charts and no card sparklines. The terminal cursor is placed on the selected table row after every frame (on the status line elsewhere), so screen readers that follow the cursor (VoiceOver, Orca) read the row you are on. For fully linear output use the CLI: `kborg list`, `kborg get`, `kborg describe`. Pair it with `okabe-ito-dark` / `okabe-ito-light` (color-blind safe) or `k8borg-high-contrast` (7:1). |
 | `theme` | unset, or a theme id | Theme for each session. It overrides the picker's saved choice; `--theme` still overrides it. The picker still previews, but the next start uses this id again. |
 | `splash` | unset, `true`, `false` | Startup animation. Unset keeps the `kborg startup on\|off` preference; `--no-splash` still turns it off. |
 | `borders` | `auto`, `rounded`, `square`, `ascii`, `none` | Panel frames. `auto` uses rounded glyphs in UTF-8 locales and ASCII otherwise. `none` draws blank frames and keeps the layout. |
@@ -71,6 +74,7 @@ The file is data only: at most 16 KiB, one document, no anchors, aliases, merge 
 | `dashboard.min_card_height` | `9`, `5`..`40` | Below this height per card the grid shows one focused card. |
 | `dashboard.trend` | `true`, `false` | Sparkline trend line on expanded cards. |
 | `dashboard.node_details` | `true`, `false` | Busiest-Node detail lines under NODES. |
+| `dashboard.history` | `true`, `false` | Keep 7 days of chart history on this machine, so the chart panel (`G`, then `H` for the last 24 hours or 7 days) survives restarts. Only counts and percentages are saved, in 5-minute points, in the private `history/` folder of the config folder, one file per cluster named by a hash. Never for demo data. `false` stops reading and writing it; delete the folder to remove it. |
 | `charts.style` | `auto`, `braille`, `blocks`, `ascii` | `:metrics` chart mode (`g`) and dashboard charts (`G`). `auto` uses braille dots (2x4 per cell, a line) in UTF-8 locales and ASCII otherwise; `blocks` draws an area chart with eighth blocks; `ascii` uses `#` columns. |
 | `charts.show_axes` | `true`, `false` | Value axis with units (millicores, Ki/Mi/Gi, %, counts) and a time axis. |
 | `charts.cpu_role`, `charts.memory_role` | `accent`, `success` | Palette roles for CPU and memory series. Axes use `muted` and reference lines `warning`. |

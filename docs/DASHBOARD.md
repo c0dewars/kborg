@@ -18,6 +18,7 @@ Press `D` from a resource table to open the current context and namespace. The h
 | `s` | Name and save the dashboard's context group and namespace |
 | `B` | Open saved selections |
 | `G` | Charts for the focused card (see below); `G` or Esc closes them |
+| `H` | Chart range: last 15 minutes, 24 hours or 7 days (opens the charts) |
 | `?` | Show the dashboard keymap and evidence legend; watches keep running |
 | Esc | Close help, or close the dashboard and cancel its watches |
 
@@ -31,7 +32,7 @@ Cards also raise two alerts. `RESTARTS` counts Pods whose busiest container has 
 
 ### Trend charts
 
-`G` replaces the cards with four live charts for the focused card's cluster over the trend window (one sample every 15 seconds, at most 60 samples, so 15 minutes): Pods needing attention, the restart delta per sample (increase of the summed container restart counters since the previous sample; a counter that drops because Pods were replaced counts as 0), and Node CPU and memory as a percentage of summed allocatable. Each chart has a value axis with units and a time axis ending at `now`. A sample whose evidence is unknown or denied is a gap, never zero; the first restart sample has no delta. Charts need two samples; until then the panel says it is collecting. Wide terminals (100+ columns) show a 2x2 grid, narrower ones stack the charts. The history is the same bounded, session-local trend the cards' sparklines use; nothing is persisted. Style and colors come from `ui.yaml` `charts:` ([themes.md](themes.md#uiyaml)).
+`G` replaces the cards with four live charts for the focused card's cluster over the trend window (one sample every 15 seconds, at most 60 samples, so 15 minutes): Pods needing attention, the restart delta per sample (increase of the summed container restart counters since the previous sample; a counter that drops because Pods were replaced counts as 0), and Node CPU and memory as a percentage of summed allocatable. Each chart has a value axis with units and a time axis ending at `now`. A sample whose evidence is unknown or denied is a gap, never zero; the first restart sample has no delta. Charts need two samples; until then the panel says it is collecting. Wide terminals (100+ columns) show a 2x2 grid, narrower ones stack the charts. The 15-minute range is the same bounded trend the cards' sparklines use. `H` switches to the last 24 hours or 7 days: for real clusters KBorg keeps one point per 5 minutes for 7 days on this machine (the bucket's most Pods needing attention, its restarts, its highest Node CPU and memory), so the charts survive restarts. Only those numbers and the context name are saved, in the private `history/` folder of the KBorg config folder, one file per cluster named by a hash, at most 256 KiB each, written at most once a minute. Demo data is never saved; `ui.yaml` `dashboard.history: false` stops reading and writing it, and deleting the folder removes it. Style and colors come from `ui.yaml` `charts:` ([themes.md](themes.md#uiyaml)).
 
 ![Dashboard trend charts](screenshots/dashboard-charts.png)
 

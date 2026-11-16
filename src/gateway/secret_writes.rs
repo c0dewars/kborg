@@ -1,4 +1,5 @@
-//! Reviewed Secret changes: set or remove one key, or delete the Secret.
+//! Reviewed Secret changes: set or remove one key, edit the whole Secret, or
+//! delete it.
 //! Values never reach a review, an audit record or an error.
 use super::*;
 use crate::secret_edit::{Change, Prepared, Shape, Usage};
@@ -126,6 +127,49 @@ impl Gateway {
         shape.version = "1".into();
         Ok(shape)
     }
+    /// The demo's sample Secret with its values, at resourceVersion 1.
+    fn demo_full_secret(namespace: &str, name: &str, uid: &str) -> Result<Secret> {
+        if (name, uid) != DEMO_SECRET {
+            return Err("Secret not found".into());
+        }
+        let mut secret = crate::secrets::demo_secret(namespace);
+        secret.metadata.resource_version = Some("1".into());
+        Ok(secret)
+    }
+    /// `E` in :secrets: every key and value of one Secret as an editable
+    /// document, for KBorg's editor only. Reading it is recorded like a
+    /// reveal (names only); the Secret is wiped before this returns.
+    pub async fn secret_document(
+        &self,
+        namespace: &str,
+        name: &str,
+        uid: &str,
+    ) -> Result<(
+        crate::secret_document::SecretDoc,
+        crate::secret_document::SecretText,
+    )> {
+        self.secret_edit_access(namespace)?;
+        crate::secrets::validate_target(namespace, name)?;
+        let api = self.secret_api(namespace)?;
+        let event = crate::audit_sink::Event::new("secret-edit-open", &self.context, &self.server)
+            .target(namespace, "secrets", name, uid)
+            .review(&format!(
+                "open Secret {namespace}/{name} uid {uid} in the editor"
+            ));
+        let audit = crate::audit_sink::intent(event)?;
+        let result = async {
+            let mut secret = match &api {
+                Some(api) => self.fetch_secret(api, name, uid).await?,
+                None => Self::demo_full_secret(namespace, name, uid)?,
+            };
+            let document = crate::secret_document::render(namespace, name, uid, &secret);
+            crate::secrets::wipe_secret(&mut secret);
+            document
+        }
+        .await;
+        audit.finish(&result)?;
+        result
+    }
     /// Build the review of one Secret change and check it with a server dry run.
     pub async fn prepare_secret(
         &self,
@@ -141,14 +185,32 @@ impl Gateway {
         if creating && !uid.is_empty() {
             return Err("a new Secret has no UID yet".into());
         }
-        let shape = match &api {
-            Some(api) if creating => self.absent_secret(api, namespace, name).await?,
-            Some(api) => self.secret_shape(api, name, uid).await?,
-            None if creating && name == DEMO_SECRET.0 => {
-                return Err(exists(namespace, name));
+        // The whole-Secret editor's document is compared with the Secret as
+        // it is now; only the shape and the key changes are kept.
+        let (shape, change) = match change {
+            Change::Document(edited) => {
+                let mut secret = match &api {
+                    Some(api) => self.fetch_secret(api, name, uid).await?,
+                    None => Self::demo_full_secret(namespace, name, uid)?,
+                };
+                let shape = Shape::of(&secret);
+                let change = crate::secret_edit::resolve(edited, &secret);
+                crate::secrets::wipe_secret(&mut secret);
+                (Some(shape), change?)
             }
-            None if creating => Shape::absent(),
-            None => Self::demo_shape(namespace, name, uid)?,
+            change => (None, change),
+        };
+        let shape = match (&api, shape) {
+            (_, Some(shape)) => shape,
+            (api, None) => match api {
+                Some(api) if creating => self.absent_secret(api, namespace, name).await?,
+                Some(api) => self.secret_shape(api, name, uid).await?,
+                None if creating && name == DEMO_SECRET.0 => {
+                    return Err(exists(namespace, name));
+                }
+                None if creating => Shape::absent(),
+                None => Self::demo_shape(namespace, name, uid)?,
+            },
         };
         crate::secret_edit::check(&shape, &change)?;
         let usage = self.secret_usage(namespace, name).await;
@@ -252,9 +314,20 @@ impl Gateway {
                 .data
                 .as_ref()
                 .is_some_and(|data| data.contains_key(key)),
+            Change::Edit { changes, .. } => changes.iter().all(|change| {
+                let stored = response
+                    .data
+                    .as_ref()
+                    .and_then(|data| data.get(&change.key));
+                match &change.value {
+                    Some(value) => stored.is_some_and(|bytes| bytes.0 == value.bytes()),
+                    None => stored.is_none(),
+                }
+            }),
             Change::Delete => true,
-            // Sent by the create branch above, never as a patch.
-            Change::Create { .. } => false,
+            // Sent by the create branch above, never as a patch; a document
+            // is resolved into an edit before it is reviewed.
+            Change::Create { .. } | Change::Document(_) => false,
         };
         crate::secrets::wipe_secret(&mut response);
         if !stored {

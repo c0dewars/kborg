@@ -28,6 +28,14 @@ pub enum Segment {
     Field(String),
     Index(usize),
     All,
+    /// `[?(@.type=="Ready")]`: the array elements whose field at `path`
+    /// equals (or, with `!=`, differs from) `value`, as CRD printer columns
+    /// select a condition.
+    Filter {
+        path: Vec<String>,
+        value: String,
+        equal: bool,
+    },
 }
 
 /// A predefined column whose value is worked out from the object (and, for
@@ -54,6 +62,9 @@ pub enum Computed {
     PercentMemoryLimit,
     /// Number of data keys in a ConfigMap or Secret.
     DataKeys,
+    /// Pods on a Node that have not finished; counted by the TUI, not read
+    /// from the Node object.
+    Pods,
 }
 
 /// Predefined columns usable by bare title in views.yaml, beyond the table's
@@ -127,6 +138,13 @@ const PREDEFINED: &[(&str, Source, u8, bool, &str)] = &[
         15,
         false,
         "Node external address",
+    ),
+    (
+        "PODS",
+        Source::Computed(Computed::Pods),
+        5,
+        true,
+        "Pods on the Node that have not finished (as kubectl describe node counts them)",
     ),
     (
         "PODS-MAX",
@@ -367,6 +385,9 @@ pub struct ColumnSpec {
     pub numeric: bool,
     /// `|T`: the value is a timestamp shown as an age.
     pub time: bool,
+    /// Sized to its values in the rows shown (CRD printer columns, as k9s
+    /// sizes them); `width` is then the floor.
+    pub auto: bool,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -408,6 +429,8 @@ fn parse_path(text: &str) -> Result<Vec<Segment>> {
                 let inner = inner.trim();
                 segments.push(if inner == "*" {
                     Segment::All
+                } else if let Some(filter) = inner.strip_prefix("?(") {
+                    parse_filter(filter).ok_or_else(invalid)?
                 } else if let Some(quoted) = inner
                     .strip_prefix('\'')
                     .and_then(|s| s.strip_suffix('\''))
@@ -428,6 +451,37 @@ fn parse_path(text: &str) -> Result<Vec<Segment>> {
         return Err(invalid());
     }
     Ok(segments)
+}
+
+/// `@.a.b=="v")`, `@.a != 'v')` or `@.a==3)`: the inside of a JSONPath
+/// filter after `?(`.
+fn parse_filter(text: &str) -> Option<Segment> {
+    let text = text.strip_suffix(')')?.trim();
+    let (left, right, equal) = match (text.split_once("=="), text.split_once("!=")) {
+        (Some((left, right)), _) => (left, right, true),
+        (None, Some((left, right))) => (left, right, false),
+        _ => return None,
+    };
+    let path: Vec<String> = left
+        .trim()
+        .strip_prefix("@.")?
+        .split('.')
+        .map(str::to_owned)
+        .collect();
+    if path.len() > 8 || path.iter().any(|field| field.is_empty()) {
+        return None;
+    }
+    let right = right.trim();
+    let value = right
+        .strip_prefix('"')
+        .and_then(|v| v.strip_suffix('"'))
+        .or_else(|| right.strip_prefix('\'').and_then(|v| v.strip_suffix('\'')))
+        .unwrap_or(right);
+    (value.len() <= 253).then(|| Segment::Filter {
+        path,
+        value: value.to_owned(),
+        equal,
+    })
 }
 
 /// True when `path` reads only what metadata-projected list rows keep
@@ -468,6 +522,26 @@ pub fn eval(path: &[Segment], value: &Value) -> Vec<String> {
                 Segment::All => value
                     .as_array()
                     .map(|a| a.iter().collect())
+                    .unwrap_or_default(),
+                Segment::Filter {
+                    path,
+                    value: want,
+                    equal,
+                } => value
+                    .as_array()
+                    .map(|a| {
+                        a.iter()
+                            .filter(|item| {
+                                let found = path
+                                    .iter()
+                                    .try_fold(*item, |v, field| v.get(field))
+                                    .map(|v| {
+                                        v.as_str().map_or_else(|| v.to_string(), str::to_owned)
+                                    });
+                                (found.as_deref() == Some(want.as_str())) == *equal
+                            })
+                            .collect()
+                    })
                     .unwrap_or_default(),
             })
             .collect();
@@ -533,7 +607,81 @@ fn parse_column(text: &str) -> Result<ColumnSpec> {
         hidden: attributes.contains('H'),
         numeric: numeric || attributes.contains('N'),
         time: attributes.contains('T'),
+        auto: false,
     })
+}
+
+/// The default view of a custom resource from its CRD's
+/// `additionalPrinterColumns` for `version`, as kubectl and k9s show it:
+/// NAMESPACE (when namespaced), NAME, the CRD's columns (priority above 0
+/// only in wide mode) and AGE. `None` when the CRD defines no columns or
+/// has no such version; a column whose JSONPath KBorg cannot read is left
+/// out.
+pub fn printer_view(crd: &Value, version: &str, namespaced: bool) -> Option<View> {
+    let columns = crd["spec"]["versions"]
+        .as_array()?
+        .iter()
+        .find(|v| v["name"] == version)?["additionalPrinterColumns"]
+        .as_array()
+        .filter(|columns| !columns.is_empty())?;
+    let bare = |title: &str| ColumnSpec {
+        title: title.into(),
+        path: None,
+        computed: None,
+        width: None,
+        wide: false,
+        hidden: false,
+        numeric: false,
+        time: false,
+        auto: false,
+    };
+    let mut view = View::default();
+    if namespaced {
+        view.columns.push(bare("NAMESPACE"));
+    }
+    view.columns.push(bare("NAME"));
+    for column in columns.iter().take(MAX_COLUMNS) {
+        let title: String = column["name"]
+            .as_str()
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_uppercase()
+            .chars()
+            .map(|c| if c == ' ' { '-' } else { c })
+            .filter(|c| c.is_ascii_alphanumeric() || "-_%()/".contains(*c))
+            .take(32)
+            .collect();
+        let Some(path) = column["jsonPath"]
+            .as_str()
+            .filter(|path| path.len() <= 512)
+            .and_then(|path| parse_path(path.trim()).ok())
+        else {
+            continue;
+        };
+        if title.is_empty()
+            || view.columns.iter().any(|c| c.title == title)
+            || view.columns.len() >= MAX_COLUMNS - 1
+        {
+            continue;
+        }
+        let kind = column["type"].as_str().unwrap_or("string");
+        let time = kind == "date";
+        let numeric = matches!(kind, "integer" | "number");
+        let width = if time { 6 } else { title.len().max(5) + 1 };
+        view.columns.push(ColumnSpec {
+            width: u8::try_from(width).ok(),
+            auto: !time,
+            wide: column["priority"].as_i64().unwrap_or(0) > 0,
+            numeric,
+            time,
+            path: Some(path),
+            ..bare(&title)
+        });
+    }
+    if !view.columns.iter().any(|c| c.title == "AGE") {
+        view.columns.push(bare("AGE"));
+    }
+    Some(view)
 }
 
 fn parse_sort(text: &str) -> Result<(String, bool)> {
@@ -601,17 +749,19 @@ pub const BUILTIN: &str = "\
 # A column is a predefined name, or TITLE:.json.path for any field. Attributes
 # follow a |: W shown only in wide mode (Ctrl-W), H hidden, N numeric sort,
 # T timestamp shown as an age. Example: ZONE:.metadata.labels['topology.kubernetes.io/zone']|W
+# Filters pick array elements: READY:.status.conditions[?(@.type=='Ready')].status
+# A custom resource without an entry here shows its CRD's own columns.
 #
 # Predefined names: NAMESPACE NAME READY STATUS RSTS AGE NODE IP CPU MEM LABELS IMAGES
 #   Nodes: ROLE ARCH TAINTS VERSION OS-IMAGE KERNEL RUNTIME INTERNAL-IP EXTERNAL-IP
-#          PODS-MAX %CPU %MEM CPU/A MEM/A
+#          PODS PODS-MAX %CPU %MEM CPU/A MEM/A
 #   Pods: %CPU/R %CPU/L %MEM/R %MEM/L QOS SA HOST-IP
 #   Workloads: UP-TO-DATE AVAILABLE DESIRED CURRENT COMPLETIONS SUCCEEDED SCHEDULE SUSPEND LAST-SCHEDULE
 #   Other: TYPE CLUSTER-IP PORTS CAPACITY VOLUME STORAGECLASS DATA CLASS HOSTS
 # :columns in KBorg lists them with what each shows.
 views:
   v1/nodes:
-    columns: [NAME, STATUS, ROLE, ARCH, TAINTS, VERSION, CPU, '%CPU', CPU/A, MEM, '%MEM', MEM/A, 'OS-IMAGE|W', 'KERNEL|W', 'INTERNAL-IP|W', 'EXTERNAL-IP|W', 'LABELS|W', AGE]
+    columns: [NAME, STATUS, ROLE, ARCH, TAINTS, VERSION, PODS, CPU, '%CPU', CPU/A, MEM, '%MEM', MEM/A, 'OS-IMAGE|W', 'KERNEL|W', 'INTERNAL-IP|W', 'EXTERNAL-IP|W', 'LABELS|W', AGE]
   apps/v1/deployments:
     columns: [NAMESPACE, NAME, READY, UP-TO-DATE, AVAILABLE, STATUS, 'IMAGES|W', 'LABELS|W', AGE]
   apps/v1/statefulsets:
@@ -741,6 +891,8 @@ pub fn computed_value(computed: Computed, object: &Value, usage: Option<(u64, u6
             let count = |field: &str| object[field].as_object().map_or(0, serde_json::Map::len);
             (count("data") + count("binaryData")).to_string()
         }
+        // The count lives outside the object; the table passes it in.
+        Computed::Pods => "-".into(),
     }
 }
 
@@ -770,6 +922,36 @@ pub fn find<'a>(views: &'a Views, group: &str, version: &str, plural: &str) -> O
     [qualified, dotted, plural.to_owned()]
         .iter()
         .find_map(|key| views.get(key))
+}
+
+/// Karpenter's NodeClaim CRD (karpenter.sh/v1) as the API server returns
+/// it, trimmed to what printer columns read.
+#[cfg(test)]
+pub(crate) fn nodeclaim_crd() -> Value {
+    serde_json::json!({"apiVersion":"apiextensions.k8s.io/v1","kind":"CustomResourceDefinition",
+      "metadata":{"name":"nodeclaims.karpenter.sh"},
+      "spec":{"group":"karpenter.sh","scope":"Cluster","names":{"kind":"NodeClaim","plural":"nodeclaims","singular":"nodeclaim"},
+        "versions":[{"name":"v1","served":true,"storage":true,"additionalPrinterColumns":[
+          {"jsonPath":".metadata.labels.node\\.kubernetes\\.io/instance-type","name":"Type","type":"string"},
+          {"jsonPath":".metadata.labels.karpenter\\.sh/capacity-type","name":"Capacity","type":"string"},
+          {"jsonPath":".metadata.labels.topology\\.kubernetes\\.io/zone","name":"Zone","type":"string"},
+          {"jsonPath":".status.nodeName","name":"Node","type":"string"},
+          {"jsonPath":".status.conditions[?(@.type==\"Ready\")].status","name":"Ready","type":"string"},
+          {"jsonPath":".metadata.creationTimestamp","name":"Age","type":"date"},
+          {"jsonPath":".status.providerID","name":"ID","priority":1,"type":"string"},
+          {"jsonPath":".metadata.labels.karpenter\\.sh/nodepool","name":"NodePool","priority":1,"type":"string"},
+          {"jsonPath":".spec.nodeClassRef.name","name":"NodeClass","priority":1,"type":"string"},
+          {"jsonPath":".status.conditions[?(@.type==\"Drifted\")].status","name":"Drifted","priority":1,"type":"string"}]}]}})
+}
+#[cfg(test)]
+pub(crate) fn nodeclaim() -> Value {
+    serde_json::json!({"apiVersion":"karpenter.sh/v1","kind":"NodeClaim",
+      "metadata":{"name":"default-x7k2p","creationTimestamp":"2026-11-16T10:00:00Z","labels":{
+        "node.kubernetes.io/instance-type":"m5.large","karpenter.sh/capacity-type":"spot",
+        "topology.kubernetes.io/zone":"us-east-1a","karpenter.sh/nodepool":"default"}},
+      "spec":{"nodeClassRef":{"name":"default"}},
+      "status":{"nodeName":"ip-10-0-1-23.ec2.internal","providerID":"aws:///us-east-1a/i-0abc",
+        "conditions":[{"type":"Launched","status":"True"},{"type":"Ready","status":"True"},{"type":"Drifted","status":"False"}]}})
 }
 
 #[cfg(test)]
@@ -950,6 +1132,113 @@ mod tests {
         // ConfigMaps keep their metadata-only rows: no built-in view reads their data.
         assert!(find(&views, "", "v1", "configmaps").is_none());
         assert!(predefined().count() >= 35);
+        Ok(())
+    }
+
+    #[test]
+    fn jsonpath_filters_select_conditions_as_printer_columns_do() -> Result<()> {
+        let object = nodeclaim();
+        let read = |path: &str| -> Result<Vec<String>> { Ok(eval(&parse_path(path)?, &object)) };
+        assert_eq!(
+            read(".status.conditions[?(@.type==\"Ready\")].status")?,
+            ["True"]
+        );
+        assert_eq!(
+            read(".status.conditions[?(@.type == 'Drifted')].status")?,
+            ["False"]
+        );
+        assert_eq!(
+            read(".status.conditions[?(@.type!=\"Ready\")].type")?,
+            ["Launched", "Drifted"]
+        );
+        assert!(read(".status.conditions[?(@.type==\"Gone\")].status")?.is_empty());
+        assert_eq!(
+            read(".metadata.labels.karpenter\\.sh/nodepool")?,
+            ["default"]
+        );
+        for bad in [
+            ".a[?(@.type)]",
+            ".a[?(type==\"x\")]",
+            ".a[?(@.==\"x\")]",
+            ".a[?(@.t==\"x\"]",
+        ] {
+            assert!(parse_path(bad).is_err(), "{bad}");
+        }
+        // views.yaml accepts the same filters.
+        let views = parse(
+            "views:\n  pods:\n    columns: [NAME, 'READY:.status.conditions[?(@.type==\"Ready\")].status']\n",
+        )?;
+        assert!(views["pods"].columns[1].path.is_some());
+        Ok(())
+    }
+
+    #[test]
+    fn crd_printer_columns_become_the_default_view() -> Result<()> {
+        let view = printer_view(&nodeclaim_crd(), "v1", false).ok_or("no view")?;
+        let titles: Vec<_> = view.columns.iter().map(|c| c.title.as_str()).collect();
+        assert_eq!(
+            titles,
+            [
+                "NAME",
+                "TYPE",
+                "CAPACITY",
+                "ZONE",
+                "NODE",
+                "READY",
+                "AGE",
+                "ID",
+                "NODEPOOL",
+                "NODECLASS",
+                "DRIFTED"
+            ]
+        );
+        let column = |title: &str| view.columns.iter().find(|c| c.title == title);
+        // priority > 0 is kubectl's -o wide: Ctrl-W here.
+        assert!(column("NODEPOOL").ok_or("NODEPOOL")?.wide && !column("NODE").ok_or("NODE")?.wide);
+        assert!(column("AGE").ok_or("AGE")?.time);
+        let node = column("NODE").ok_or("NODE")?;
+        assert_eq!(
+            eval(node.path.as_deref().ok_or("path")?, &nodeclaim()),
+            ["ip-10-0-1-23.ec2.internal"]
+        );
+        let ready = column("READY").ok_or("READY")?;
+        assert_eq!(
+            eval(ready.path.as_deref().ok_or("path")?, &nodeclaim()),
+            ["True"]
+        );
+        // Namespaced resources get NAMESPACE; AGE is added when the CRD has none.
+        let argo = serde_json::json!({"spec":{"versions":[{"name":"v1alpha1","additionalPrinterColumns":[
+            {"jsonPath":".status.sync.status","name":"Sync Status","type":"string"},
+            {"jsonPath":".status.health.status","name":"Health Status","type":"string"},
+            {"jsonPath":".status.sync.revision","name":"Revision","priority":10,"type":"string"},
+            {"jsonPath":"{.weird}","name":"Odd","type":"string"},
+            {"jsonPath":".metadata.name","name":"Name","type":"string"},
+            {"jsonPath":".spec.replicas","name":"Replicas","type":"integer"}]}]}});
+        let view = printer_view(&argo, "v1alpha1", true).ok_or("argo view")?;
+        let titles: Vec<_> = view.columns.iter().map(|c| c.title.as_str()).collect();
+        assert_eq!(
+            titles,
+            [
+                "NAMESPACE",
+                "NAME",
+                "SYNC-STATUS",
+                "HEALTH-STATUS",
+                "REVISION",
+                "REPLICAS",
+                "AGE"
+            ]
+        );
+        assert!(view.columns[5].numeric);
+        // Another version, or no columns: the generic table.
+        assert!(printer_view(&nodeclaim_crd(), "v1beta1", false).is_none());
+        assert!(
+            printer_view(
+                &serde_json::json!({"spec":{"versions":[{"name":"v1"}]}}),
+                "v1",
+                false
+            )
+            .is_none()
+        );
         Ok(())
     }
 }

@@ -3,8 +3,45 @@
 //! container's last termination and the object's recent events. The object
 //! comes from the CLI's strict projection (`Gateway::get`), so it shows what
 //! `kborg get` shows: credential-like fields and ConfigMap data stay masked.
+//! The TUI's describe view (`d`) appends the same two sections.
 use crate::safety;
 use serde_json::Value;
+
+/// The recent events of `object`, asked for by its exact kind, name and UID
+/// with a server-side field selector, so a busy namespace is not listed.
+/// Cluster-scoped objects (Nodes, PersistentVolumes) record theirs in `default`.
+pub async fn fetch_events(
+    gateway: &crate::gateway::Gateway,
+    object: &Value,
+) -> std::result::Result<Vec<Value>, String> {
+    let meta = &object["metadata"];
+    let (Some(kind), Some(name), Some(uid)) = (
+        object["kind"].as_str(),
+        meta["name"].as_str(),
+        meta["uid"].as_str(),
+    ) else {
+        return Err("the object has no kind, name or UID to match events by".into());
+    };
+    let namespace = meta["namespace"].as_str().unwrap_or("default");
+    let fields = crate::selectors::object_events_field(kind, name, uid);
+    // A UID that cannot go into a field selector (the demo cluster's are not
+    // real UUIDs) falls back to the namespace's events, matched below.
+    let fields = if crate::selectors::field_scope(&fields).is_ok() {
+        fields
+    } else {
+        String::new()
+    };
+    let list = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        gateway.list_fields("events", namespace, "", &fields),
+    )
+    .await
+    .map_err(|_| "the event list timed out".to_owned())??;
+    Ok(events_for(
+        object,
+        list["items"].as_array().map_or(&[][..], Vec::as_slice),
+    ))
+}
 
 /// Events listed under an object, newest first.
 pub const MAX_EVENTS: usize = 15;
@@ -26,11 +63,14 @@ fn when(event: &Value) -> &str {
         .unwrap_or("")
 }
 
-/// The events about this object (kind and name, and namespace when it has one).
+/// The events about this object: kind and name, the namespace when it has
+/// one, and the UID when the event records one, so the events of a deleted
+/// object of the same name never show under its replacement.
 pub fn events_for(object: &Value, events: &[Value]) -> Vec<Value> {
     let kind = &object["kind"];
     let name = &object["metadata"]["name"];
     let namespace = object["metadata"]["namespace"].as_str();
+    let uid = object["metadata"]["uid"].as_str();
     let mut found: Vec<Value> = events
         .iter()
         .filter(|event| {
@@ -38,6 +78,9 @@ pub fn events_for(object: &Value, events: &[Value]) -> Vec<Value> {
             &target["kind"] == kind
                 && &target["name"] == name
                 && namespace.is_none_or(|ns| target["namespace"].as_str() == Some(ns))
+                && target["uid"]
+                    .as_str()
+                    .is_none_or(|event_uid| Some(event_uid) == uid)
         })
         .cloned()
         .collect();
@@ -67,14 +110,18 @@ fn terminations(object: &Value) -> Vec<String> {
     lines
 }
 
-/// The full describe text: overview, last terminations, events.
-pub fn render(overview: &str, object: &Value, events: Result<&[Value], &str>) -> String {
+/// The full describe text: overview, last terminations, events (`None`
+/// while they are still being read).
+pub fn render(overview: &str, object: &Value, events: Option<Result<&[Value], &str>>) -> String {
     let mut out = overview.trim_end().to_owned();
     let terminations = terminations(object);
     if !terminations.is_empty() {
         out.push_str("\n\nLAST TERMINATION\n");
         out.push_str(&terminations.join("\n"));
     }
+    let Some(events) = events else {
+        return out;
+    };
     out.push_str("\n\nEVENTS (newest first)\n");
     match events {
         Err(error) => out.push_str(&format!("unavailable: {}", safety::safe_text(error, 300))),
@@ -115,10 +162,23 @@ mod tests {
             event("web-2", "shop", "2026-11-15T10:06:00Z", "NotThisPod"),
             event("web-1", "shop", "2026-11-15T10:07:00Z", "Pulled"),
         ];
+        // An event recording another UID belongs to an earlier object of this name.
+        let mut replaced = event("web-1", "shop", "2026-11-15T10:08:00Z", "OldPod");
+        replaced["involvedObject"]["uid"] = serde_json::json!("old-uid");
+        let mut current = event("web-1", "shop", "2026-11-15T10:09:00Z", "SameUid");
+        current["involvedObject"]["uid"] = serde_json::json!("uid-1");
+        let mut pod = pod;
+        pod["metadata"]["uid"] = serde_json::json!("uid-1");
+        let uid_events = events_for(&pod, &[replaced, current]);
+        let uid_reasons: Vec<&str> = uid_events
+            .iter()
+            .filter_map(|e| e["reason"].as_str())
+            .collect();
+        assert_eq!(uid_reasons, ["SameUid"]);
         let found = events_for(&pod, &events);
         let reasons: Vec<&str> = found.iter().filter_map(|e| e["reason"].as_str()).collect();
         assert_eq!(reasons, ["Pulled", "BackOff"]);
-        let shown = render("POD / shop / web-1", &pod, Ok(&found));
+        let shown = render("POD / shop / web-1", &pod, Some(Ok(&found)));
         assert!(
             shown.contains("LAST TERMINATION\napp  OOMKilled (exit 137) at 2026-11-15T10:00:00Z"),
             "{shown}"
@@ -128,9 +188,12 @@ mod tests {
             "{shown}"
         );
         assert!(
-            render("x", &pod, Ok(&[]))
+            render("x", &pod, Some(Ok(&[])))
                 .ends_with("none recorded (events expire after about an hour)")
         );
-        assert!(render("x", &pod, Err("forbidden")).ends_with("unavailable: forbidden"));
+        assert!(render("x", &pod, Some(Err("forbidden"))).ends_with("unavailable: forbidden"));
+        // Before the events arrive, only the overview and terminations show.
+        let early = render("x", &pod, None);
+        assert!(early.contains("LAST TERMINATION") && !early.contains("EVENTS"));
     }
 }

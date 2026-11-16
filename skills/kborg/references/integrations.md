@@ -10,7 +10,7 @@ Most k9s habits work unchanged: the `:` commands and aliases, `/` filters, `d` `
 | `views.yaml` | Copy unchanged |
 | `aliases.yaml` | Copy, keeping the `aliases:` map (see keys.md) |
 | `plugins.yaml` | `kborg extensions import-k9s PLUGINS.yaml` reports each plugin and prints the `register-k9s` command to run for it (see below) |
-| skins | Not imported. Make a theme instead: map the skin's background, foreground and highlight colors to theme roles (themes-and-looks.md) |
+| skins | `kborg theme import-k9s SKIN.yaml [--id ID]` saves it as a new custom theme (themes-and-looks.md) |
 | `clusters/CONTEXT/config.yaml` | Write `contexts/NAME.yaml` (clusters-and-safety.md) |
 | `config.yaml` | Not imported. Its useful settings live in `ui.yaml` and `contexts/NAME.yaml` |
 

@@ -40,7 +40,7 @@ KBorg's errors end with `Next:`, the step to take.
 | `CTX CONFIG?` badge, context read-only | `contexts/NAME.yaml` is invalid or writable by others: `kborg config check`, then `chmod go-w FILE` |
 | `READ ONLY` | `--read-only`, the context's `read_only`, or an operator config is in effect; the refusal message names which |
 | `STALE` that stays | The cluster is unreachable; KBorg reconnects by itself. `kborg doctor` checks access |
-| `TRUNCATED` | More than 10,000 objects; narrow it with a namespace (`:pod NAMESPACE`) or a label selector |
+| `TRUNCATED` | More than 10,000 objects; `>` / `<` show the next or previous 10,000, or narrow it with a namespace (`:pod NAMESPACE`) or a label selector |
 | Garbled boxes or `?` instead of letters | The terminal is not UTF-8. Set `LANG=en_US.UTF-8`, or use `text: ascii` and `borders: ascii` in `ui.yaml` |
 | Dull or wrong colors | The terminal lacks truecolor. Set `COLORTERM=truecolor` if it supports it, or pick a theme that suits 256 colors; `theme: terminal` uses the terminal's palette |
 | Exec login helper fails (aws, gcloud, kubelogin) | It must be on the PATH of the shell that starts KBorg. Run `kborg doctor` with the same `--context` |
@@ -51,5 +51,6 @@ KBorg's errors end with `Next:`, the step to take.
 ## Resetting
 
 - **One file:** delete it, and KBorg uses its built-in defaults. `kborg theme reset` restores the default theme.
-- **Everything:** move the config folder away. Saved selections (`selections/v1.json`), the last dashboard (`last-dashboard.json`) and custom themes live there too.
+- **Everything:** move the config folder away. Saved selections (`selections/v1.json`), the last dashboard (`last-dashboard.json`), dashboard chart history (`history/`), the API discovery cache (`cache/discovery/`, safe to delete) and custom themes live there too.
+- **A new CRD does not show up:** `:discover` runs discovery again. KBorg reuses a cached catalog for at most 10 minutes per cluster and user, and rediscovers after every connect anyway.
 - **Never stored there:** cluster data and credentials.

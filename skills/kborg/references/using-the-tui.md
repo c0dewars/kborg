@@ -46,7 +46,7 @@ Other views worth knowing:
 | `POLL` | Refreshed by polling instead of a watch (`--poll`) |
 | `CACHED` | The rows of the last list, with no live watch; Ctrl-R refreshes |
 | `SAMPLE` | Demo data (`kborg demo`), no cluster |
-| `TRUNCATED` | More objects exist than were read (the cap is 10,000); narrow the namespace or selector |
+| `TRUNCATED` | More objects exist than fit in one live table (10,000); `>` and `<` page through them 10,000 at a time, or narrow the namespace or selector |
 | `READ ONLY` | Changes are off (`--read-only`, operator config or the context's settings) |
 | `COPY MODE` | The mouse is released to the terminal (Ctrl-Y again takes it back) |
 
@@ -71,6 +71,7 @@ Each of these opens a review first.
 | Edit an object's YAML | `e`: fields, labels, annotations, ConfigMap data; Ctrl-S shows the diff and review, Ctrl-E opens `$EDITOR` |
 | Change an image or resources | `:image`, `:edit-container`; `kborg set-image`, `kborg set-resources` |
 | Scale, restart, roll back | `s` (scale) and `r` (restart) on workloads, `:rollback [REV]` |
+| Undo the last change | `z` or `:revert` after a scale, image change, suspend or resume: prepares the reverse for review |
 | Delete | Ctrl-D, or mark rows with Space for one batch review; Ctrl-K kills a Pod with zero grace |
 | Apply a manifest | `:apply FILE`, or `a` on a file in `:dir PATH`; dry run and field-level diff, conflicts never forced |
 | CronJobs | `t` triggers a Job now, `s` suspends or resumes |
@@ -110,9 +111,12 @@ The list shows names, types, key names and sizes, never values.
 | `n` | Create a Secret |
 | `e` | Set a key's value |
 | `a` | Add a key |
+| `E` | Edit the whole Secret: every key and value in KBorg's editor |
 | Ctrl-D | Remove a key, or delete the Secret |
 
 Values are typed into a hidden prompt (Tab shows them) or read from `@/path/to/file`. They never appear in a review, an export or an audit record.
+
+`E` shows every value as text, under `data:` (one `key: "value"` per line; multi-line values as `|` blocks). Values that are not text are listed under `keep:` and stay as they are. Change a value, add a key, or delete a key's line, then Ctrl-S: the review lists each key set, added or removed with its size, never a value. The editor never writes to disk, `$EDITOR` is not offered, and `:ask` never sees the values. If the Secret changed since it was opened, the edit is refused, so it cannot undo someone else's change.
 
 ## Logs
 

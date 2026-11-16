@@ -297,8 +297,10 @@ pub(super) fn dashboard(
     rect: Rect,
     trend: Option<&super::dashboard_ui::Trend>,
     context: &str,
+    range: super::dashboard_ui::Range,
     bg: Color,
 ) -> Result<()> {
+    use super::dashboard_ui::Range;
     if rect.height < 4 || rect.width < 20 {
         return Ok(());
     }
@@ -311,7 +313,7 @@ pub(super) fn dashboard(
     super::panel(
         out,
         rect,
-        &format!("CHARTS {context}"),
+        &format!("CHARTS {context} / {}", range.label()),
         true,
         ui_color(app, "accent"),
         bg,
@@ -319,34 +321,65 @@ pub(super) fn dashboard(
     )
     .map_err(|_| "draw failed")?;
     let now = Instant::now();
-    let points = trend.map(|trend| trend.points(now)).unwrap_or_default();
-    if points.len() < 2 {
+    let wall = super::dashboard_ui::unix_now();
+    let history = trend.and_then(|trend| trend.history.as_ref());
+    // Seconds before now, then attention, restarts, CPU and memory.
+    type Row = (f64, u64, Option<u64>, Option<u64>, Option<u64>);
+    let rows: Vec<Row> = if range == Range::Live {
+        trend
+            .map(|trend| trend.points(now))
+            .unwrap_or_default()
+            .iter()
+            .map(|p| {
+                let age = now.saturating_duration_since(p.at).as_secs_f64();
+                (age, p.attention, p.restarts_delta, p.cpu, p.memory)
+            })
+            .collect()
+    } else {
+        history
+            .map(|history| history.points(wall, range.seconds()))
+            .unwrap_or_default()
+            .iter()
+            .map(|p| {
+                let age = (wall - p.t).max(0) as f64;
+                (age, p.attention, p.restarts, p.cpu, p.memory)
+            })
+            .collect()
+    };
+    if rows.len() < 2 {
+        let message = match range {
+            Range::Live => {
+                "Collecting trend samples (one every 15s); charts appear after two. H: last 24 hours or 7 days."
+            }
+            _ if history.is_some_and(|history| history.saves()) => {
+                "Collecting history: one point per 5 minutes while the dashboard is open, kept 7 days on this machine. H changes the range."
+            }
+            _ => {
+                "History is not saved for demo data or with ui.yaml dashboard.history: false; it lasts while the dashboard is open. H changes the range."
+            }
+        };
         return cell(
             out,
             inner.x,
             inner.y,
             inner.width,
-            "Collecting trend samples (one every 15s); charts appear after two.",
+            message,
             ui_color(app, "muted"),
             bg,
         )
         .map_err(|_| "draw failed".into());
     }
-    let span = window(
-        points.first().map_or(0.0, |point| {
-            now.saturating_duration_since(point.at).as_secs_f64()
-        }),
-        super::dashboard_ui::TREND_WINDOW.as_secs_f64(),
-    );
-    let series = |pick: &dyn Fn(&super::dashboard_ui::TrendPoint) -> Option<u64>| {
-        points
-            .iter()
-            .map(|point| {
-                (
-                    -now.saturating_duration_since(point.at).as_secs_f64(),
-                    pick(point).map_or(f64::NAN, |v| v as f64),
-                )
-            })
+    let span = if range == Range::Live {
+        window(
+            rows.first().map_or(0.0, |row| row.0),
+            super::dashboard_ui::TREND_WINDOW.as_secs_f64(),
+        )
+    } else {
+        range.seconds() as f64
+    };
+    let series = |pick: &dyn Fn(&Row) -> Option<u64>| {
+        rows.iter()
+            .map(|row| (-row.0, pick(row).map_or(f64::NAN, |v| v as f64)))
             .collect::<Vec<_>>()
     };
     let count = |v: f64| chart::count_label(v);
@@ -358,16 +391,21 @@ pub(super) fn dashboard(
             .filter(|v| v.is_finite())
             .map_or("unknown".into(), format)
     };
-    let attention = series(&|p| Some(p.attention));
-    let restarts = series(&|p| p.restarts_delta);
-    let cpu = series(&|p| p.cpu);
-    let memory = series(&|p| p.memory);
+    let attention = series(&|row| Some(row.1));
+    let restarts = series(&|row| row.2);
+    let cpu = series(&|row| row.3);
+    let memory = series(&|row| row.4);
+    let (attention_title, restarts_title) = if range == Range::Live {
+        ("PODS NEEDING ATTENTION", "RESTARTS DELTA per sample")
+    } else {
+        (
+            "PODS NEEDING ATTENTION (most per 5 min)",
+            "RESTARTS per 5 minutes",
+        )
+    };
     let plots = [
         Plot {
-            header: format!(
-                "PODS NEEDING ATTENTION  latest {}",
-                latest(&attention, &count)
-            ),
+            header: format!("{attention_title}  latest {}", latest(&attention, &count)),
             points: attention,
             label: &count,
             binary: false,
@@ -378,7 +416,7 @@ pub(super) fn dashboard(
         },
         Plot {
             header: format!(
-                "RESTARTS DELTA per sample  latest {}",
+                "{restarts_title}  latest {}",
                 latest(&restarts, &|v| format!("+{}", count(v)))
             ),
             points: restarts,
