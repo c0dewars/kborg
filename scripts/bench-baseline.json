@@ -10,53 +10,53 @@
   },
   "platforms": {
     "Darwin-arm64": {
-      "recorded": "2026-11-14",
-      "commit": "f3eff58",
+      "recorded": "2026-11-16",
+      "commit": "5157d02",
       "machine": "Apple M2 Pro",
       "repeat": 3,
       "idle_seconds": 10,
-      "binary_bytes": 13826256,
+      "binary_bytes": 14355264,
       "metrics": {
         "binary": {
-          "size_mib": 13.19
+          "size_mib": 13.69
         },
         "demo-startup": {
-          "first_data_seconds": 0.046,
-          "rss_mib_median": 10.8,
-          "rss_mib_max": 11.0,
-          "cpu_percent_avg": 0.3,
-          "key_latency_ms_p50": 6.41,
-          "key_latency_ms_p95": 9.36,
-          "key_latency_ms_p99": 9.83
+          "first_data_seconds": 0.048,
+          "rss_mib_median": 10.9,
+          "rss_mib_max": 11.1,
+          "cpu_percent_avg": 0.39,
+          "key_latency_ms_p50": 6.26,
+          "key_latency_ms_p95": 7.53,
+          "key_latency_ms_p99": 7.92
         },
         "scale-5k": {
-          "first_data_seconds": 0.151,
-          "rss_mib_median": 130.1,
-          "rss_mib_max": 130.5,
-          "cpu_percent_avg": 2.06,
-          "key_latency_ms_p50": 8.75,
-          "key_latency_ms_p95": 11.98,
-          "key_latency_ms_p99": 12.72,
+          "first_data_seconds": 0.136,
+          "rss_mib_median": 131.0,
+          "rss_mib_max": 131.2,
+          "cpu_percent_avg": 2.08,
+          "key_latency_ms_p50": 9.37,
+          "key_latency_ms_p95": 10.85,
+          "key_latency_ms_p99": 11.91,
           "filter_seconds": 0.09,
-          "clear_filter_seconds": 0.012,
+          "clear_filter_seconds": 0.011,
           "sort_seconds": 0.008
         },
         "scale-20k": {
-          "first_data_seconds": 0.37,
-          "rss_mib_median": 482.0,
-          "rss_mib_max": 484.1,
-          "cpu_percent_avg": 5.07,
-          "key_latency_ms_p50": 8.65,
-          "key_latency_ms_p95": 12.35,
-          "key_latency_ms_p99": 13.01,
-          "filter_seconds": 0.194,
-          "clear_filter_seconds": 0.029,
-          "sort_seconds": 0.02
+          "first_data_seconds": 0.395,
+          "rss_mib_median": 486.1,
+          "rss_mib_max": 487.5,
+          "cpu_percent_avg": 5.66,
+          "key_latency_ms_p50": 9.37,
+          "key_latency_ms_p95": 10.59,
+          "key_latency_ms_p99": 11.08,
+          "filter_seconds": 0.161,
+          "clear_filter_seconds": 0.028,
+          "sort_seconds": 0.021
         },
         "demo-dashboard": {
-          "first_data_seconds": 0.051,
-          "rss_mib_median": 11.6,
-          "rss_mib_max": 11.7,
+          "first_data_seconds": 0.055,
+          "rss_mib_median": 11.8,
+          "rss_mib_max": 11.9,
           "cpu_percent_avg": 0.4,
           "dashboard_seconds": 0.015
         }
