@@ -1,5 +1,7 @@
-# KBorg — unreleased
+# KBorg 0.8.1 — 2026-11-16
 
+- **Fixed: fast scrolling changed the namespace or view by itself.** When the terminal delivered a mouse-wheel report in two parts, the input library read its first byte as an Esc key and the rest (`[<65;30;15M`) as typed keys: `[` went back a view, digits picked namespaces (`1` was often `default`, `0` all namespaces), letters sorted columns. KBorg now puts such a split report back together and handles it as the wheel event it was, and drops any other split escape sequence. A real Esc press waits up to 15 ms for this check, or up to 100 ms within a second of mouse use (SSH and tmux can split reports further apart). These reports never contain `y` or Enter, so no change could have been approved this way.
+- **Long cluster names show in full.** Context, Cluster and User in the header were cut at about 40 cells from the end, which hid the cluster's own name in an EKS ARN (`arn:aws:eks:REGION:ACCOUNT:cluster/NAME`). That column now widens to fit them, up to half the terminal, and a name that still does not fit loses its middle, so its end stays visible.
 - **Fixed: registering an extension could fail with "extension registry is busy" for no reason.** The registry lock gave up at the first try, so a program that another part of KBorg was starting at that same moment, and that briefly held a copy of the lock, made it fail. KBorg now waits up to two seconds for the lock. Found as a rare test failure in the 0.8.0 release build.
 
 # KBorg 0.8.0 — 2026-11-16

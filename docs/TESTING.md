@@ -1,4 +1,4 @@
-# Testing KBorg 0.8.0
+# Testing KBorg 0.8.1
 
 Thanks for testing. This guide gets you running in a few minutes and lists what to try. Report anything odd as a [bug](https://github.com/c0dewars/kborg/issues/new?template=bug.yml) or [feedback](https://github.com/c0dewars/kborg/issues/new?template=feedback.yml) issue. Report security problems privately through [vulnerability reporting](https://github.com/c0dewars/kborg/security/advisories/new), never in an issue.
 
@@ -13,7 +13,7 @@ Thanks for testing. This guide gets you running in a few minutes and lists what 
 Release candidate from source (needs Rust; `rustup` installs the pinned toolchain):
 
 ```sh
-cargo install --locked --git https://github.com/c0dewars/kborg --tag v0.8.0
+cargo install --locked --git https://github.com/c0dewars/kborg --tag v0.8.1
 kborg --version
 ```
 
