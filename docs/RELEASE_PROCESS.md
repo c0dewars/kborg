@@ -9,7 +9,7 @@
 | Linux | x64 | ubuntu-24.04 | x86_64-unknown-linux-gnu |
 | Linux | ARM64 | ubuntu-24.04-arm | aarch64-unknown-linux-gnu |
 | macOS | Intel | macos-15-intel | x86_64-apple-darwin |
-| macOS | Apple Silicon | macos-15 | aarch64-apple-darwin |
+| macOS | Apple Silicon | macos-26 | aarch64-apple-darwin |
 
 Runner availability for private repositories is listed in [GitHub's official runner reference](https://docs.github.com/en/actions/reference/runners/github-hosted-runners). Private builds consume the account's Actions allowance. GitHub runner labels select maintained images, not immutable operating-system snapshots. The Rust version and action commit revisions are pinned; dependency resolution uses Cargo.lock.
 
