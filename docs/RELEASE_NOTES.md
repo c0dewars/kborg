@@ -1,3 +1,9 @@
+# KBorg 0.8.2 — 2026-11-16
+
+0.8.2 is 0.8.1 built and released. The 0.8.1 release could not finish: GitHub did not supply an Apple Silicon macOS build machine in four attempts, so no 0.8.1 binaries were published. Everything listed under 0.8.1 below ships in 0.8.2.
+
+- **Release builds for Apple Silicon Macs run on GitHub's macOS 26 machines** (`macos-26`, was `macos-15`), in CI as well. The binaries target the same minimum macOS version as before; only the build machine changed.
+
 # KBorg 0.8.1 — 2026-11-16
 
 - **Fixed: fast scrolling changed the namespace or view by itself.** When the terminal delivered a mouse-wheel report in two parts, the input library read its first byte as an Esc key and the rest (`[<65;30;15M`) as typed keys: `[` went back a view, digits picked namespaces (`1` was often `default`, `0` all namespaces), letters sorted columns. KBorg now puts such a split report back together and handles it as the wheel event it was, and drops any other split escape sequence. A real Esc press waits up to 15 ms for this check, or up to 100 ms within a second of mouse use (SSH and tmux can split reports further apart). These reports never contain `y` or Enter, so no change could have been approved this way.

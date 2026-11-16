@@ -14,7 +14,7 @@
     <a href="#documentation">Docs</a>
   </p>
   <p>
-    <img alt="Release 0.8.1" src="https://img.shields.io/badge/release-0.8.1-FF7A1A">
+    <img alt="Release 0.8.2" src="https://img.shields.io/badge/release-0.8.2-FF7A1A">
     <img alt="Rust" src="https://img.shields.io/badge/built%20with-Rust-0FA968">
     <img alt="Windows, macOS and Linux" src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-0B1220">
     <img alt="Apache 2.0" src="https://img.shields.io/badge/license-Apache%202.0-3BE08A">
@@ -45,8 +45,8 @@ brew install c0dewars/tap/kborg
 **Debian, Ubuntu, Fedora, RHEL** — download the package for your CPU from the [latest release](https://github.com/c0dewars/kborg/releases/latest):
 
 ```sh
-sudo apt install ./kborg_0.8.1_amd64.deb      # Debian / Ubuntu
-sudo dnf install ./kborg-0.8.1-1.x86_64.rpm   # Fedora / RHEL
+sudo apt install ./kborg_0.8.2_amd64.deb      # Debian / Ubuntu
+sudo dnf install ./kborg-0.8.2-1.x86_64.rpm   # Fedora / RHEL
 ```
 
 **Windows** — download the ZIP for your CPU from the [latest release](https://github.com/c0dewars/kborg/releases/latest), extract it and run `kborg.exe` from Windows Terminal or PowerShell.
@@ -54,7 +54,7 @@ sudo dnf install ./kborg-0.8.1-1.x86_64.rpm   # Fedora / RHEL
 **Any platform, from source** (needs Rust):
 
 ```sh
-cargo install --locked --git https://github.com/c0dewars/kborg --tag v0.8.1
+cargo install --locked --git https://github.com/c0dewars/kborg --tag v0.8.2
 ```
 
 Release archives exist for macOS, Linux and Windows on x86_64 and ARM64. Every file is signed; see [verify a download](#verify-a-download). Shell completions: `kborg completions zsh|bash|fish|powershell`.
@@ -218,7 +218,7 @@ kborg config check             # validates every file in the config folder, with
 ### Verify a download
 
 ```sh
-gh attestation verify kborg-0.8.1-aarch64-apple-darwin.tar.gz --repo c0dewars/kborg
+gh attestation verify kborg-0.8.2-aarch64-apple-darwin.tar.gz --repo c0dewars/kborg
 ```
 
 `cosign verify-blob` and the checksum file work too; see [Release process](docs/RELEASE_PROCESS.md#verify-a-release-asset).
