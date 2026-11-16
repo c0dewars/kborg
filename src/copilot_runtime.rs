@@ -645,6 +645,9 @@ mod version_tests {
         assert!(local_session_switch(neither).is_err_and(|error| error.contains("will not send")));
     }
 
+    // The sandbox profile is macOS's; its paths are Unix paths, so the test
+    // runs where `Path` joins with `/` (it fails on Windows' backslashes).
+    #[cfg(unix)]
     #[test]
     fn the_sandbox_maps_code_only_from_copilots_own_cache_for_any_version() -> Result<()> {
         let state = Path::new("/private/var/folders/x/kborg-copilot-state");
