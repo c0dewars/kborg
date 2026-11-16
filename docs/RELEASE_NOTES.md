@@ -1,3 +1,7 @@
+# KBorg — unreleased
+
+- **Fixed: registering an extension could fail with "extension registry is busy" for no reason.** The registry lock gave up at the first try, so a program that another part of KBorg was starting at that same moment, and that briefly held a copy of the lock, made it fail. KBorg now waits up to two seconds for the lock. Found as a rare test failure in the 0.8.0 release build.
+
 # KBorg 0.8.0 — 2026-11-16
 
 - **Undo the last change.** After a scale, an image change, or a suspend or resume succeeds, `z` (or `:revert`) prepares the reverse: the old replica count, the old image, or the opposite suspend. It goes through the same review, dry run and approval as any change. The old value is read just before the change is approved. The reverse is bound to that object's UID, so it is refused if the object was replaced. Restarts, deletes, kills and triggers cannot be undone and offer no undo; a failed change leaves nothing to undo, and any later change replaces it. (`:undo` stays the k9s-style alias of `:rollback`.)

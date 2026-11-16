@@ -419,9 +419,19 @@ fn registry_lock(directory: &Path) -> Result<fs::File> {
         .open(&path)
         .map_err(|_| "cannot open extension registry lock")?;
     check_lock(&path)?;
-    file.try_lock()
-        .map_err(|_| "extension registry is busy; retry after the current local change")?;
-    Ok(file)
+    // Another KBorg holds the lock only for a moment, and so does a child
+    // process another thread is just starting (it carries a copy of the
+    // descriptor until it executes): wait up to two seconds before giving up.
+    for attempt in 0..40 {
+        match file.try_lock() {
+            Ok(()) => return Ok(file),
+            Err(fs::TryLockError::WouldBlock) if attempt < 39 => {
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            Err(_) => break,
+        }
+    }
+    Err("extension registry is busy; retry after the current local change".into())
 }
 fn check_entry(path: &Path) -> Result<()> {
     safety::checked_path(path)?;
