@@ -91,8 +91,10 @@ fn sgr_mouse(body: &str) -> Option<MouseEvent> {
         "m" => true,
         _ => return None,
     };
-    let mut numbers = fields.split(';').map(|n| n.parse::<u16>().ok());
-    let (code, x, y) = (numbers.next()??, numbers.next()??, numbers.next()??);
+    let mut numbers = fields.split(';');
+    let code = numbers.next()?.parse::<u8>().ok()?;
+    let x = numbers.next()?.parse::<u16>().ok()?;
+    let y = numbers.next()?.parse::<u16>().ok()?;
     if numbers.next().is_some() || x == 0 || y == 0 {
         return None;
     }
@@ -106,27 +108,28 @@ fn sgr_mouse(body: &str) -> Option<MouseEvent> {
     if code & 16 != 0 {
         modifiers |= KeyModifiers::CONTROL;
     }
-    let button = match code & 3 {
-        0 => Some(MouseButton::Left),
-        1 => Some(MouseButton::Middle),
-        2 => Some(MouseButton::Right),
-        _ => None,
+    // Match crossterm's SGR interpretation. Bits 6 and 7 extend the
+    // button number, so an unsupported button must never become a click.
+    let button = (code & 3) | ((code & 0xc0) >> 4);
+    let dragging = code & 32 != 0;
+    let kind = match (button, dragging) {
+        (0, false) => MouseEventKind::Down(MouseButton::Left),
+        (1, false) => MouseEventKind::Down(MouseButton::Middle),
+        (2, false) => MouseEventKind::Down(MouseButton::Right),
+        (0, true) => MouseEventKind::Drag(MouseButton::Left),
+        (1, true) => MouseEventKind::Drag(MouseButton::Middle),
+        (2, true) => MouseEventKind::Drag(MouseButton::Right),
+        (3, false) => MouseEventKind::Up(MouseButton::Left),
+        (3..=5, true) => MouseEventKind::Moved,
+        (4, false) => MouseEventKind::ScrollUp,
+        (5, false) => MouseEventKind::ScrollDown,
+        (6, false) => MouseEventKind::ScrollLeft,
+        (7, false) => MouseEventKind::ScrollRight,
+        _ => return None,
     };
-    let kind = if code & 64 != 0 {
-        match code & 3 {
-            0 => MouseEventKind::ScrollUp,
-            1 => MouseEventKind::ScrollDown,
-            2 => MouseEventKind::ScrollLeft,
-            _ => MouseEventKind::ScrollRight,
-        }
-    } else if code & 32 != 0 {
-        button.map_or(MouseEventKind::Moved, MouseEventKind::Drag)
-    } else {
-        match (button, release) {
-            (Some(button), false) => MouseEventKind::Down(button),
-            (Some(button), true) => MouseEventKind::Up(button),
-            (None, _) => MouseEventKind::Up(MouseButton::Left),
-        }
+    let kind = match (kind, release) {
+        (MouseEventKind::Down(button), true) => MouseEventKind::Up(button),
+        (kind, _) => kind,
     };
     Some(MouseEvent {
         kind,
@@ -157,7 +160,12 @@ impl<S: Source> Input<S> {
         Ok(event)
     }
     fn read_repaired(&mut self) -> Result<Option<Event>> {
-        if let Some(event) = self.pending.pop_front() {
+        // The lookahead after one Esc can be the start of another sequence.
+        let event = self
+            .pending
+            .pop_front()
+            .map_or_else(|| self.source.read(), Ok)?;
+        if !is_lone_escape(&event) {
             return Ok(Some(event));
         }
         let gap = if self
@@ -168,8 +176,7 @@ impl<S: Source> Input<S> {
         } else {
             GAP
         };
-        let event = self.source.read()?;
-        if !is_lone_escape(&event) || !self.source.poll(gap)? {
+        if !self.source.poll(gap)? {
             return Ok(Some(event));
         }
         let next = self.source.read()?;
@@ -259,6 +266,34 @@ mod tests {
         assert!(
             matches!(&drag[0], Some(Event::Mouse(m)) if matches!(m.kind, MouseEventKind::Drag(MouseButton::Left)))
         );
+        Ok(())
+    }
+
+    #[test]
+    fn escape_before_a_split_wheel_is_delivered_without_leaking_report_keys() -> Result<()> {
+        let escape = key(KeyCode::Esc);
+        let mut events = vec![escape.clone()];
+        events.extend(leaked("[<65;30;15M"));
+        assert_eq!(
+            all(events)?,
+            vec![
+                Some(escape),
+                Some(Event::Mouse(MouseEvent {
+                    kind: MouseEventKind::ScrollDown,
+                    column: 29,
+                    row: 14,
+                    modifiers: KeyModifiers::NONE,
+                })),
+            ]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn unsupported_split_mouse_buttons_cannot_become_left_clicks() -> Result<()> {
+        for code in [128, 192, 256] {
+            assert_eq!(all(leaked(&format!("[<{code};3;4M")))?, vec![None]);
+        }
         Ok(())
     }
 
