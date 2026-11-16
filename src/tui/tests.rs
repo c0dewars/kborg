@@ -2850,7 +2850,10 @@ fn bounded_scopes_page_with_angle_brackets_and_reset_on_scope_change() -> Result
         app.status
             .contains("Page 1: objects 1–10000 of 12500 (too large to watch live")
     );
-    assert!(app.status.contains("> next;"), "{}", app.status);
+    assert!(
+        app.status.contains("> next;"),
+        "the status names the next key"
+    );
     assert_eq!(app.list_start(), None);
     app.turn_list_page(false);
     assert!(app.status.contains("first page"));
@@ -7008,7 +7011,10 @@ fn nodes_show_the_k9s_columns_and_views_yaml_overrides_them() -> Result<()> {
     // Wide enough for all: no window, and Right says so.
     let _ = screen(&app, 220, 30);
     app.key_event(KeyCode::Right, KeyModifiers::NONE)?;
-    assert!(app.status.contains("Every column fits"), "{}", app.status);
+    assert!(
+        app.status.contains("Every column fits"),
+        "Right says every column fits"
+    );
     // Another resource starts at its first column.
     let _ = screen(&app, 100, 30);
     show_kind(&mut app, "pods");
