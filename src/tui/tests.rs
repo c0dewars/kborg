@@ -2023,6 +2023,43 @@ fn double_click_opens_a_row_and_copy_mode_releases_the_mouse() -> Result<()> {
     assert!(screen(&app, w, h).join("\n").contains("COPY MODE"));
     Ok(())
 }
+
+#[test]
+fn log_selection_stays_in_its_view_and_escape_clears_it() -> Result<()> {
+    let (mut app, _replies, _commands) = harness();
+    app.options.mouse = true;
+    app.options.color = false;
+    let mut view =
+        crate::ui_logs::LogView::new("first line\nsecond line".into(), Default::default());
+    view.fullscreen = true;
+    app.modal = Modal::Follow(Box::new(view));
+    let (width, height) = (120, 30);
+    assert!(screen(&app, width, height)[28].contains("c copy selection"));
+    app.key_event(KeyCode::Char('c'), KeyModifiers::NONE)?;
+    assert!(screen(&app, width, height)[28].contains("Drag across log text"));
+    let left = MouseButton::Left;
+    for (kind, x, y) in [
+        (MouseEventKind::Down(left), 7, 3),
+        (MouseEventKind::Drag(left), 6, 4),
+        (MouseEventKind::Up(left), 6, 4),
+    ] {
+        app.mouse(mouse_event(kind, x, y), width, height)?;
+    }
+    assert!(
+        matches!(&app.modal, Modal::Follow(view) if view.selected_text().as_deref() == Some("line\nsecond"))
+    );
+    let mut frame = Vec::new();
+    render(&app, width, height, &mut frame)?;
+    let frame = String::from_utf8_lossy(&frame);
+    assert!(frame.contains("\x1b[7m") && frame.contains("\x1b[27m"));
+
+    app.key_event(KeyCode::Esc, KeyModifiers::NONE)?;
+    assert!(matches!(&app.modal, Modal::Follow(view) if view.selected_text().is_none()));
+    app.key_event(KeyCode::Esc, KeyModifiers::NONE)?;
+    assert!(matches!(app.modal, Modal::None));
+    Ok(())
+}
+
 #[test]
 fn filter_and_sort_caches_follow_the_filter_the_sort_and_the_items() {
     let (mut app, _replies, _commands) = harness();

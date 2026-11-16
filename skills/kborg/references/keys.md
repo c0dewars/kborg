@@ -34,6 +34,7 @@ keys:
   toggle.wide: Alt-w
   explain: F2                 # an action that is unbound out of the box
   log.wrap: Alt-w             # other views use a prefix: log., dashboard., forward., ...
+  log.copy: Alt-c             # copy text highlighted by mouse drag in Logs
 scopes:
   dashboard:
     tail: T

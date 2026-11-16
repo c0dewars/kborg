@@ -42,7 +42,7 @@ Organization-managed policy: commit `0cb27f2` added a root-owned machine policy.
 | Other confidential object data (env values, annotations, CRD strings, logs) | API responses | Known-key redaction for display and export. Logs only with `--allow-logs`. KBorg does not claim to classify arbitrary confidential data. |
 | Local files | Config directory, exports, audit spool, saved selections, themes | Private modes (0700 directories, 0600 files), no symlinks, create-only or atomic replacement, size limits, strict schemas. |
 | Copilot / GitHub tokens | `gh` keychain entry or 0600 credential file; process memory; child environment | Bound to one host and account. Only the sandboxed Copilot child receives them, and only through the authenticated egress broker. |
-| User terminal | The TTY KBorg draws on | Untrusted bytes never reach the terminal as control sequences (no OSC 52 clipboard writes, hyperlinks, title changes, queries or bidi spoofing). Approval screens must be unambiguous. |
+| User terminal | The TTY KBorg draws on | KBorg sanitizes untrusted display text to prevent escape injection and bidi spoofing. Clipboard writes require an explicit copy action. Terminal clipboard writes encode sanitized text as the payload of an OSC 52 command. Approval screens must be unambiguous. |
 | Third-party executables (Helm, Cosign, gh, Copilot native, auth helpers, tools) | User-selected absolute paths | Run only after explicit review, with pinned hashes where implemented, a scrubbed environment, deadlines and process-group cleanup. |
 
 ## 3. Trust boundaries and threat model

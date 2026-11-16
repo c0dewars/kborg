@@ -550,6 +550,10 @@ pub(super) fn render_write_footer(
 }
 pub(super) fn draw(app: &mut App) -> Result<()> {
     let (w, h) = terminal::size().map_err(|_| "cannot read terminal size")?;
+    let view_top = app.view_top(w, h);
+    if let Modal::Follow(view) = &mut app.modal {
+        view.check_selection_viewport(log_viewport(log_panel_area(view, view_top, w, h)));
+    }
     if app
         .palette
         .as_ref()
@@ -727,6 +731,27 @@ pub(super) fn input_lines(label: &str, text: &str, width: usize, height: usize) 
     }
     lines
 }
+pub(super) fn log_panel_area(
+    view: &crate::ui_logs::LogView,
+    view_top: u16,
+    w: u16,
+    h: u16,
+) -> Rect {
+    let y = if view.fullscreen { 2 } else { view_top };
+    Rect {
+        x: 0,
+        y,
+        width: w,
+        height: h.saturating_sub(y + 2),
+    }
+}
+pub(super) fn log_viewport(rect: Rect) -> crate::ui_logs::Viewport {
+    crate::ui_logs::Viewport::new(
+        rect.y + 1,
+        rect.width.saturating_sub(2),
+        rect.height.saturating_sub(2),
+    )
+}
 pub(super) fn render_log_modal(
     app: &App,
     view: &crate::ui_logs::LogView,
@@ -742,17 +767,8 @@ pub(super) fn render_log_modal(
         }
     };
     let bg = color("background");
-    let y = if view.fullscreen {
-        2
-    } else {
-        app.view_top(w, h)
-    };
-    let rect = Rect {
-        x: 0,
-        y,
-        width: w,
-        height: h.saturating_sub(y + 2),
-    };
+    let rect = log_panel_area(view, app.view_top(w, h), w, h);
+    let viewport = log_viewport(rect);
     let title = app
         .log_target
         .as_ref()
@@ -789,28 +805,52 @@ pub(super) fn render_log_modal(
         })
         .unwrap_or_else(|| format!("LOGS {}", view.title()));
     panel(out, rect, &title, true, color("accent"), bg, &app.ui).map_err(|_| "draw failed")?;
-    for (index, line) in view
-        .render_with(
-            usize::from(w.saturating_sub(2)),
-            usize::from(rect.height.saturating_sub(2)),
+    let live_rows;
+    let lines = if let Some(rows) = view.selected_rows(viewport) {
+        rows
+    } else {
+        live_rows = view.render_with(
+            usize::from(viewport.columns),
+            usize::from(viewport.rows),
             app.ui.local_time(),
-        )
-        .iter()
-        .enumerate()
-    {
+        );
+        &live_rows
+    };
+    for (index, line) in lines.iter().enumerate() {
         let role = match crate::ui_logs::severity(line) {
             Some("error") => "danger",
             Some("warning") => "warning",
             _ => "text",
         };
-        cell(out, 1, y + 1 + index as u16, w - 2, line, color(role), bg)
+        let y = rect.y + 1 + index as u16;
+        cell(out, 1, y, viewport.columns, line, color(role), bg).map_err(|_| "draw failed")?;
+        if let Some((column, width, selected)) = view.selection_highlight(viewport, index) {
+            let reverse = !app.options.color || app.theme.terminal;
+            if reverse {
+                queue!(out, style::SetAttribute(style::Attribute::Reverse))
+                    .map_err(|_| "draw failed")?;
+            }
+            cell(
+                out,
+                column + 1,
+                y,
+                width,
+                selected,
+                color("selection_text"),
+                color("selection_background"),
+            )
             .map_err(|_| "draw failed")?;
+            if reverse {
+                queue!(out, style::SetAttribute(style::Attribute::NoReverse))
+                    .map_err(|_| "draw failed")?;
+            }
+        }
     }
     let (actions, ranges) = keyhelp::log_hints(app);
     let actions = if view.is_filtering() {
         view.help()
     } else {
-        actions.as_str()
+        view.copy_status().unwrap_or(&actions)
     };
     row(out, h - 2, w, actions, color("accent"), bg).map_err(|_| "draw failed")?;
     row(out, h - 1, w, &ranges, color("muted"), bg).map_err(|_| "draw failed")?;

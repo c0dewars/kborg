@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 pub mod chart;
 pub mod cli;
+mod clipboard;
 pub mod copilot;
 pub mod copilot_setup;
 pub mod gateway;

@@ -886,6 +886,14 @@ impl App {
                         self.close_subview();
                     }
                     LogAction::Reload(read) => self.reload_logs(view, read),
+                    LogAction::Copy => {
+                        let result = view
+                            .selected_text()
+                            .ok_or_else(|| "Drag across log text to select it first.".to_owned())
+                            .and_then(|text| crate::clipboard::copy_log_text(&text));
+                        view.record_copy(result);
+                        self.modal = Modal::Follow(view);
+                    }
                     LogAction::AllContainers => {
                         if self.busy {
                             self.status =
