@@ -16,6 +16,10 @@ pub fn supported() -> bool {
     cfg!(all(target_os = "macos", target_arch = "aarch64"))
 }
 pub fn saved_policy() -> Option<PathBuf> {
+    // Unit tests never pick up the developer's own saved connection.
+    if cfg!(test) {
+        return None;
+    }
     safety::config_dir()
         .ok()
         .map(|root| root.join("copilot-policy.json"))
@@ -31,7 +35,7 @@ pub fn status_text(explicit: Option<&Path>) -> String {
             Ok(options) => format!("Copilot connection saved\n\nHost: {}\nAccount: {}\nModel: {}\n\nUse :ask QUESTION from the screen you want help with, or :copilot for minimized selected-resource diagnostics. Every transfer is reviewed first; answers never execute commands. Credentials and containment are rechecked for each request. A saved policy does not prove an active subscription or enterprise entitlement.\n\nS runs setup / verifies the saved connection. Esc returns.", options.host, options.gh_cli.as_ref().map(|gh|gh.account.as_str()).unwrap_or("dedicated credential"), options.model),
             Err(error) => format!("Copilot connection needs attention\n\n{}\n\nS opens setup. Setup can repair or change the connection after review, retaining a private backup. Esc returns.", safety::safe_text(&error, 4096)),
         },
-        None => "Connect GitHub Copilot\n\nPress S to start guided setup, or run `kborg copilot setup` in a terminal.\n\nAlready use the Copilot CLI? Setup takes about a minute: KBorg finds your installed Copilot (an npm install works; it uses the native binary inside it) and GitHub CLIs, lets you choose github.com or TENANT.ghe.com, and reuses the account `gh` is signed in with. If you are not signed in, it offers GitHub's browser login. No token copying or JSON editing is required.\n\nThe currently validated contained runtime is native Copilot 1.0.91 on Apple Silicon. A compatible official installation and a Copilot entitlement are required. You approve the exact installed executables before they run; KBorg pins them and writes the connection locally. No cluster data is sent during setup.\n\nS: start setup | Esc: return".into(),
+        None => "Connect GitHub Copilot\n\nPress S to start guided setup, or run `kborg copilot setup` in a terminal.\n\nAlready use the Copilot CLI? Setup takes about a minute: KBorg finds your installed Copilot (an npm install works; it uses the native binary inside it) and GitHub CLIs, lets you choose github.com or TENANT.ghe.com, and reuses the account `gh` is signed in with. If you are not signed in, it offers GitHub's browser login. No token copying or JSON editing is required.\n\nThe contained runtime is native Copilot 1.0.91 or later on Apple Silicon: a later version is accepted when it passes the same containment checks. A compatible official installation and a Copilot entitlement are required. You approve the exact installed executables before they run; KBorg pins them and writes the connection locally. No cluster data is sent during setup.\n\nS: start setup | Esc: return".into(),
     }
 }
 fn input(label: &str, default: &str) -> Result<String> {

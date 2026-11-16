@@ -508,6 +508,22 @@ const PALETTES: &[(&str, &str, [&str; 7])] = &[
             "#FDF6E3", "#657B83", "#93A1A1", "#268BD2", "#859900", "#B58900", "#DC322F",
         ],
     ),
+    // Okabe-Ito colors, distinguishable with the common color-vision
+    // deficiencies: sky blue accent, bluish green, orange and vermillion.
+    (
+        "okabe-ito-dark",
+        "Color-blind safe Dark (Okabe-Ito)",
+        [
+            "#111418", "#F2F2F2", "#B8BDC4", "#56B4E9", "#009E73", "#E69F00", "#D55E00",
+        ],
+    ),
+    (
+        "okabe-ito-light",
+        "Color-blind safe Light (Okabe-Ito)",
+        [
+            "#FFFFFF", "#141414", "#4D4D4D", "#0072B2", "#009E73", "#E69F00", "#D55E00",
+        ],
+    ),
     (
         "terminal",
         "Terminal (host palette)",
@@ -517,40 +533,52 @@ const PALETTES: &[(&str, &str, [&str; 7])] = &[
     ),
 ];
 
+/// Every role of a theme from seven colors (background, text, muted, accent,
+/// success, warning, danger). Each foreground moves toward white or black
+/// until it reads at 4.5:1 on every surface the UI paints. With `keep_hue`
+/// it moves only as far as needed; without it, a color below 4.5:1 on the
+/// plain background first becomes white or black (the built-in themes).
+pub(crate) fn palette_colors(palette: [Rgb; 7], keep_hue: bool) -> BTreeMap<String, Rgb> {
+    let bg = palette[0];
+    let start = |color: Rgb| if keep_hue { color } else { legible(color, bg) };
+    let mut colors = BTreeMap::new();
+    colors.insert("background".into(), bg);
+    // Text first: every tinted surface is derived from it.
+    let text = legible_on_surfaces(start(palette[1]), bg, None);
+    colors.insert("text".into(), text);
+    for (role, color) in ["muted", "accent", "success", "warning", "danger"]
+        .into_iter()
+        .zip(&palette[2..])
+    {
+        colors.insert(
+            role.into(),
+            legible_on_surfaces(start(*color), bg, Some(text)),
+        );
+    }
+    let accent = colors["accent"];
+    colors.insert("focus".into(), accent);
+    colors.insert("selection_background".into(), accent);
+    colors.insert("selection_text".into(), legible(bg, accent));
+    colors.insert("status_background".into(), bg);
+    colors.insert("status_text".into(), colors["warning"]);
+    colors
+}
+/// A foreground made legible on `background`, as `palette_colors` does.
+pub(crate) fn readable_on(color: Rgb, background: Rgb) -> Rgb {
+    legible(color, background)
+}
+
 pub fn builtins() -> Vec<Theme> {
     PALETTES
         .iter()
         .map(|(id, name, hex)| {
-            let bg = Rgb::parse(hex[0]).unwrap_or(Rgb(0, 0, 0));
-            let mut colors = BTreeMap::new();
-            colors.insert("background".into(), bg);
-            for (role, color) in ["text", "muted", "accent", "success", "warning", "danger"]
-                .into_iter()
-                .zip(hex[1..].iter())
-            {
-                colors.insert(
-                    role.into(),
-                    legible(Rgb::parse(color).unwrap_or(Rgb(255, 255, 255)), bg),
-                );
-            }
-            // Text first: every tinted surface is derived from it.
-            let palette = |role: &str| colors.get(role).copied().unwrap_or(Rgb(255, 255, 255));
-            let text = legible_on_surfaces(palette("text"), bg, None);
-            let adjusted = ["muted", "accent", "success", "warning", "danger"]
-                .map(|role| (role, legible_on_surfaces(palette(role), bg, Some(text))));
-            colors.insert("text".into(), text);
-            for (role, color) in adjusted {
-                colors.insert(role.into(), color);
-            }
-            let accent = colors.get("accent").copied().unwrap_or(Rgb(255, 255, 255));
-            colors.insert("focus".into(), accent);
-            colors.insert("selection_background".into(), accent);
-            colors.insert("selection_text".into(), legible(bg, accent));
-            colors.insert("status_background".into(), bg);
-            colors.insert(
-                "status_text".into(),
-                colors.get("warning").copied().unwrap_or(accent),
+            // The color-blind-safe palettes keep their hues when made legible.
+            let keep_hue = id.starts_with("okabe-ito");
+            let mut colors = palette_colors(
+                hex.map(|hex| Rgb::parse(hex).unwrap_or(Rgb(255, 255, 255))),
+                keep_hue,
             );
+            let bg = colors["background"];
             // These reading-oriented palettes use quiet surfaces rather than a
             // saturated accent fill. Keep focus in the accent and ordinary
             // selected text in the original foreground. Their upstream faint
@@ -747,6 +775,15 @@ pub fn install(path: &Path) -> Result<String> {
     safety::write_new(&themes_dir()?.join(format!("{}.json", file.id)), &bytes)?;
     Ok(file.id)
 }
+/// Save a new custom theme after the same checks as `install`; an existing
+/// file of that id is never replaced.
+pub(crate) fn save_new(file: &ThemeFile) -> Result<PathBuf> {
+    file.resolve()?;
+    let path = themes_dir()?.join(format!("{}.json", file.id));
+    let bytes = serde_json::to_vec_pretty(file).map_err(|_| "cannot serialize theme")?;
+    safety::write_new(&path, &bytes)?;
+    Ok(path)
+}
 pub fn new_theme(id: &str, base: &str) -> Result<PathBuf> {
     let file = ThemeFile {
         schema_version: 1,
@@ -849,6 +886,27 @@ fn cloned_theme(id: &str, current: &Theme) -> Result<ThemeFile> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn accessible_themes_meet_their_promises() -> Result<()> {
+        let theme = |id: &str| builtins().into_iter().find(|t| t.id == id);
+        // High contrast: WCAG AAA (7:1) for every text role.
+        let high = theme("k8borg-high-contrast").ok_or("high contrast")?;
+        for role in ["text", "muted", "accent", "success", "warning", "danger"] {
+            let ratio = contrast(high.get(role), high.get("background"));
+            assert!(ratio >= 7.0, "{role} {ratio:.2}");
+        }
+        // Color-blind safe: readable, and the status hues stay apart.
+        for id in ["okabe-ito-dark", "okabe-ito-light"] {
+            let t = theme(id).ok_or(id)?;
+            t.validate()?;
+            let [s, w, d] = ["success", "warning", "danger"].map(|role| t.get(role));
+            assert!(s != w && w != d && s != d, "{id}");
+            // Bluish green stays green-blue, vermillion stays red-orange.
+            assert!(s.1 > s.0 && s.2 > s.0, "{id} success {s:?}");
+            assert!(d.0 > d.1 && d.0 > d.2, "{id} danger {d:?}");
+        }
+        Ok(())
+    }
     #[test]
     fn native_windows_fallback_uses_named_host_palette_colors() {
         use super::{Color, basic_index, native_color};
@@ -1017,7 +1075,7 @@ mod tests {
     use super::*;
     #[test]
     fn all_builtins_meet_fixed_palette_targets() {
-        assert_eq!(builtins().len(), 20);
+        assert_eq!(builtins().len(), 22);
         for t in builtins() {
             assert!(t.validate().is_ok(), "{}", t.id);
         }

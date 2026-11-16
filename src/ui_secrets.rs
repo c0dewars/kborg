@@ -56,6 +56,8 @@ pub enum Outcome {
     Add(String, String, String),
     /// namespace: ask for the name, first key and value of a new Secret
     Create(String),
+    /// namespace, name, uid: open every key and value in the Secret editor
+    EditAll(String, String, String),
     /// namespace, name: list the Pods that use the Secret
     UsedBy(String, String),
 }
@@ -189,6 +191,17 @@ impl View {
             }
         }
     }
+    /// `E`: the whole Secret in front, in the editor.
+    fn edit_all(&mut self) -> Outcome {
+        self.hide();
+        match self.current_secret() {
+            Some((namespace, name, uid)) => {
+                self.notice = "Opening the Secret in the editor...".into();
+                Outcome::EditAll(namespace, name, uid)
+            }
+            None => Outcome::Stay,
+        }
+    }
     /// `a`: a new key for the Secret in front.
     fn add(&mut self) -> Outcome {
         self.hide();
@@ -246,6 +259,7 @@ impl View {
                 }
                 KeyCode::Enter | KeyCode::Char('x') => return self.toggle_reveal(),
                 KeyCode::Char('e') => return self.edit(),
+                KeyCode::Char('E') => return self.edit_all(),
                 KeyCode::Char('a') => return self.add(),
                 _ => {}
             }
@@ -253,6 +267,7 @@ impl View {
         }
         match code {
             KeyCode::Char('e') => return self.edit(),
+            KeyCode::Char('E') => return self.edit_all(),
             KeyCode::Char('a') => return self.add(),
             KeyCode::Char('n') => {
                 self.hide();

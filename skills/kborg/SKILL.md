@@ -7,7 +7,7 @@ compatibility: Needs the kborg command (KBorg 0.7 or later) on PATH, or a person
 
 # KBorg
 
-KBorg is a terminal UI for Kubernetes that works like k9s (`:pods`, `/filter`, `d` describe, `l` logs, `s` shell) plus a CLI (`kborg list pods --json`). Everything is on by default, and every change shows a review that the person approves with `y` or Enter. It also has a dashboard of up to nine clusters, a reviewed YAML editor, Helm, masked Secrets and 20 themes, and all of it can be customized with small data files.
+KBorg is a terminal UI for Kubernetes that works like k9s (`:pods`, `/filter`, `d` describe, `l` logs, `s` shell) plus a CLI (`kborg list pods --json`). Everything is on by default, and every change shows a review that the person approves with `y` or Enter. It also has a dashboard of up to nine clusters, a reviewed YAML editor, Helm, masked Secrets and 22 themes (two color-blind safe), and all of it can be customized with small data files.
 
 You help a person who runs KBorg in two ways:
 - **Investigate their cluster.** Find out what is wrong by running KBorg's read-only commands yourself, or by asking them to run the commands.

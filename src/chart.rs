@@ -441,8 +441,16 @@ fn trim(text: String) -> String {
 /// A relative age label for the x axis: `-10m`, `-45s`.
 pub fn age_label(seconds: f64) -> String {
     let seconds = seconds.abs().round() as u64;
+    let (day, hour) = (86_400, 3_600);
     if seconds == 0 {
         "now".into()
+    } else if seconds >= 2 * day && seconds.is_multiple_of(hour) {
+        match (seconds / day, seconds % day / hour) {
+            (days, 0) => format!("-{days}d"),
+            (days, hours) => format!("-{days}d{hours}h"),
+        }
+    } else if seconds >= 2 * hour && seconds.is_multiple_of(hour) {
+        format!("-{}h", seconds / hour)
     } else if seconds >= 120 && seconds.is_multiple_of(60) {
         format!("-{}m", seconds / 60)
     } else if seconds >= 120 {
@@ -455,6 +463,22 @@ pub fn age_label(seconds: f64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn time_labels_reach_hours_and_days() {
+        for (seconds, label) in [
+            (0.0, "now"),
+            (90.0, "-90s"),
+            (900.0, "-15m"),
+            (3_600.0, "-60m"),
+            (43_200.0, "-12h"),
+            (86_400.0, "-24h"),
+            (302_400.0, "-3d12h"),
+            (604_800.0, "-7d"),
+        ] {
+            assert_eq!(age_label(seconds), label);
+        }
+    }
 
     fn spec<'a>(
         style: Style,

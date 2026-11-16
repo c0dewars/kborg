@@ -97,6 +97,10 @@ impl App {
         self.sticky_status = false;
         let modal = std::mem::replace(&mut self.modal, Modal::None);
         match modal {
+            Modal::SecretEditor(editor) => self.secret_editor_key(
+                editor,
+                crossterm::event::KeyEvent::new(code, KeyModifiers::NONE),
+            ),
             Modal::YamlEditor(mut editor) => {
                 match editor.key(crossterm::event::KeyEvent::new(code, KeyModifiers::NONE)) {
                     Ok(crate::ui_yaml::Event::Cancel) => self.close_subview(),
@@ -1195,7 +1199,14 @@ impl App {
                 _ => self.modal = Modal::Input(label, text),
             },
             Modal::Detail(text, mut offset) => match code {
-                KeyCode::Esc | KeyCode::Char('q') => self.close_subview(),
+                // A tour tip: Enter, Right or Space for the next, Esc skips the rest.
+                KeyCode::Enter | KeyCode::Right | KeyCode::Char(' ') if self.tour.is_some() => {
+                    self.next_tip();
+                }
+                KeyCode::Esc | KeyCode::Char('q') => {
+                    self.tour = None;
+                    self.close_subview();
+                }
                 _ => {
                     offset = scroll_offset(&text, offset, code, self.view_top_now());
                     self.modal = Modal::Detail(text, offset);
@@ -1214,7 +1225,7 @@ impl App {
                 }
                 _ => {
                     offset = scroll_offset(
-                        &overview_text(&object, &self.context),
+                        &super::doc_search::overview_document(self, &object),
                         offset,
                         code,
                         self.view_top_now(),
@@ -1515,7 +1526,12 @@ impl App {
                 _ => self.modal = Modal::Picker(label, list, index),
             },
             Modal::Themes(list, mut index, old) => match code {
-                KeyCode::Esc => self.theme = old,
+                KeyCode::Esc => {
+                    self.theme = old;
+                    if std::mem::take(&mut self.tour_after_themes) {
+                        self.start_tour();
+                    }
+                }
                 KeyCode::Down | KeyCode::Char('j') => {
                     index = (index + 1).min(list.len().saturating_sub(1));
                     if let Some(t) = list.get(index) {
@@ -1533,6 +1549,10 @@ impl App {
                 KeyCode::Enter => {
                     themes::use_theme(&self.theme.id)?;
                     self.status = format!("Theme saved: {}", self.theme.name);
+                    // First run: the theme is chosen, now three tips.
+                    if std::mem::take(&mut self.tour_after_themes) {
+                        self.start_tour();
+                    }
                 }
                 KeyCode::Char('N') => {
                     self.modal = Modal::NewTheme(String::new(), self.theme.clone(), old);
@@ -1585,7 +1605,11 @@ impl App {
                         return Ok(false);
                     }
                     match Approval::confirm(p.target.clone(), p.action.clone(), &text) {
-                        Ok(a) => self.send(Task::Execute(p, a)),
+                        Ok(a) => {
+                            // Read the old value now, before the change lands.
+                            self.undo_pending = self.inverse_of(&p.target, &p.action);
+                            self.send(Task::Execute(p, a));
+                        }
                         Err(e) => {
                             self.status = e;
                             self.modal = Modal::Confirm(p, text);
@@ -1757,6 +1781,12 @@ impl App {
         code: KeyCode,
         modifiers: KeyModifiers,
     ) -> Result<bool> {
+        if matches!(self.modal, Modal::SecretEditor(..)) {
+            if let Modal::SecretEditor(editor) = std::mem::replace(&mut self.modal, Modal::None) {
+                self.secret_editor_key(editor, crossterm::event::KeyEvent::new(code, modifiers));
+            }
+            return Ok(false);
+        }
         if matches!(self.modal, Modal::YamlEditor(..)) {
             if let Modal::YamlEditor(mut editor) = std::mem::replace(&mut self.modal, Modal::None) {
                 match editor.key(crossterm::event::KeyEvent::new(code, modifiers)) {

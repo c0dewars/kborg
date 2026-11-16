@@ -3,7 +3,8 @@ use super::*;
 
 pub(super) enum Task {
     Connect(Connection),
-    List(String, String, String, String),
+    /// Kind, namespace, label and field selectors, and the page's start token.
+    List(String, String, String, String, Option<String>),
     Watch(String, String, String, String, crate::watch::Projection),
     Metrics(crate::metrics::MetricsScope, String, bool),
     /// Header block data: cluster and user names, and on request the
@@ -79,6 +80,8 @@ pub(super) enum Task {
     SecretValue(String, String, String, String),
     /// Masked YAML of one Secret: namespace, name, uid.
     SecretYaml(String, String, String),
+    /// Every key and value of one Secret for the editor: namespace, name, uid.
+    SecretDocument(String, String, String),
     Xray(String, String),
     Workloads(String),
     Can(String, String),
@@ -86,6 +89,10 @@ pub(super) enum Task {
     Manifest(std::path::PathBuf),
     Helm(helm_ui::Request, u64),
     HelmPrepare(Box<helm_ui::WriteDraft>, u64),
+    /// Pods per Node for the Nodes table's PODS column.
+    NodePods,
+    /// A custom resource's CRD printer columns (`group/version/plural`).
+    PrinterColumns(String),
     /// question, screen, keys of that view, earlier turns, policy
     AskPrepare(
         String,
@@ -142,7 +149,15 @@ pub(super) enum Reply {
     ScanPrepared(Result<Box<crate::scan::Plan>>),
     ScanStarted,
     ScanOutcome(Result<crate::scan::Report>),
-    Object(Box<Value>),
+    /// Pods per Node (counts, whether the count stopped at its bound).
+    NodePods(std::result::Result<(std::collections::BTreeMap<String, usize>, bool), String>),
+    /// The resource (`group/version/plural`) and its CRD columns, if any.
+    PrinterColumns(
+        String,
+        std::result::Result<Option<crate::views::View>, String>,
+    ),
+    /// The describe overview and the object's recent events.
+    Object(Box<Value>, std::result::Result<Vec<Value>, String>),
     Export(crate::exports::Draft),
     YamlDraft(Box<crate::manifest_edit::Draft>),
     YamlPrepared(
@@ -162,6 +177,14 @@ pub(super) enum Reply {
     DashboardWorkloads(Vec<(String, Result<Vec<crate::workload_tail::WorkloadRef>>)>),
     SecretValue(String, String, Result<crate::secrets::Revealed>),
     SecretYaml(String, Result<crate::secrets::MaskedSecret>),
+    /// uid and the Secret editor's document (it wipes itself when dropped).
+    SecretDocument(
+        String,
+        Result<(
+            crate::secret_document::SecretDoc,
+            crate::secret_document::SecretText,
+        )>,
+    ),
     Helm(u64, Result<helm_ui::Response>),
     HelmPrepared(u64, Result<Box<crate::helm_lifecycle::Prepared>>),
     AdvicePrepared(Result<(Option<crate::advice::PreparedAdvice>, String)>),
@@ -632,6 +655,17 @@ pub(super) fn worker() -> Worker {
                         }
                         None => None,
                     }),
+                    Task::NodePods => Reply::NodePods(match gateway.as_ref() {
+                        Some(g) => g.pods_per_node().await,
+                        None => Err("Not connected.".into()),
+                    }),
+                    Task::PrinterColumns(key) => {
+                        let result = match gateway.as_ref() {
+                            Some(g) => g.printer_columns(&key).await,
+                            None => Err("Not connected.".into()),
+                        };
+                        Reply::PrinterColumns(key, result)
+                    }
                     Task::Metrics(scope, n, include_resources) => {
                         let result = if let Some(g) = gateway.as_ref() {
                             let future = async { if include_resources { crate::metrics::collect_with_allocations(g,scope,&n).await } else { crate::metrics::collect(g,scope,&n).await } };
@@ -853,7 +887,7 @@ pub(super) fn worker() -> Worker {
                             let log_generation=match &task{Task::CaptureLogs(_,_,generation)|Task::Containers(_,generation)|Task::Logs(_,generation,_)|Task::Follow(_,generation,_,_)=>Some(*generation),_=>None};
                             let future = async {
                                 Ok(match task {
-                                    Task::List(k,n,selector,fields) => Reply::Items(g.list_fields(&k,&n,&selector,&fields).await?),
+                                    Task::List(k,n,selector,fields,start) => Reply::Items(g.list_from(&k,&n,&selector,&fields,start).await?),
                                     Task::Namespaces => {
                                         let value = g.list("namespaces","*").await?;
                                         let mut names = vec!["all".to_owned()];
@@ -864,6 +898,7 @@ pub(super) fn worker() -> Worker {
                                     Task::Secrets(n)=>Reply::Secrets(g.secret_index(&n).await?),
                                     Task::SecretValue(n,name,uid,key)=>{let value=g.secret_value(&n,&name,&uid,&key).await;Reply::SecretValue(uid,key,value)},
                                     Task::SecretYaml(n,name,uid)=>{let doc=g.secret_yaml(&n,&name,&uid).await;Reply::SecretYaml(uid,doc)},
+                                    Task::SecretDocument(n,name,uid)=>{let doc=g.secret_document(&n,&name,&uid).await;Reply::SecretDocument(uid,doc)},
                                     Task::Xray(k,n)=>Reply::Detail(crate::insights::xray(g,&k,&n).await?),
                                     Task::Lint(n)=>{let (found,notes)=crate::lint::collect(g,&n).await?;Reply::Detail(crate::lint::report(&g.context,&n,&found,&notes))},
                                     Task::Workloads(n)=>Reply::Detail(crate::insights::workloads(g,&n).await?),
@@ -874,7 +909,12 @@ pub(super) fn worker() -> Worker {
                                         let object=g.get_shown(&k,&n,&name).await?;
                                         Reply::Shown(super::format::shown_json(&object)?,super::format::masked_json(&object)?)
                                     },
-                                    Task::Inspect(k,n,name) => Reply::Object(Box::new(g.get_shown(&k,&n,&name).await?)),
+                                    Task::Inspect(k,n,name) => {
+                                        let object=g.get_shown(&k,&n,&name).await?;
+                                        // Events and last terminations come with the overview, as in `kborg describe`.
+                                        let events=crate::describe::fetch_events(g,&object).await;
+                                        Reply::Object(Box::new(object),events)
+                                    },
                                     Task::Drill(k,n,name)=>Reply::Drill(Box::new(g.get(&k,&n,&name).await?)),
                                     Task::Yaml(k,n,name) => {
                                         let object=g.get_shown(&k,&n,&name).await?;
@@ -948,7 +988,7 @@ pub(super) fn worker() -> Worker {
                                         Reply::Prepared(Box::new(prepared))
                                     },
                                     Task::Execute(p,a) => Reply::Notice(g.execute(*p,a).await?),
-                                    Task::YamlPrepare(..) | Task::YamlExecute(..) | Task::SecretPrepare(..) | Task::SecretExecute(..) | Task::ApplyPrepare(..) | Task::ApplyExecute(..) | Task::NodeShellPrepare(..) | Task::NodeShellStart(..) | Task::DebugPrepare(..) | Task::DebugStart(..) | Task::ScanPrepare(..) | Task::ScanRun(..) | Task::Bench(..) | Task::NodeExecute(..) | Task::DashboardLogs(..) | Task::DashboardWorkloads(..) | Task::DashboardTail(..) | Task::Overview(..) | Task::Connect(_) | Task::Watch(..) | Task::Metrics(..) | Task::HeaderInfo(..) | Task::RunSession(..) | Task::RunForward(..) | Task::Directory(_) | Task::Manifest(_) | Task::Helm(..) | Task::HelmPrepare(..) | Task::HelmExecute(..) | Task::AskPrepare(..) | Task::AdvicePrepare(..) | Task::AdviceExecute(..) | Task::BatchPrepare(..) | Task::BatchExecute(..) => return Err("invalid worker task".into()),
+                                    Task::YamlPrepare(..) | Task::YamlExecute(..) | Task::SecretPrepare(..) | Task::SecretExecute(..) | Task::ApplyPrepare(..) | Task::ApplyExecute(..) | Task::NodeShellPrepare(..) | Task::NodeShellStart(..) | Task::DebugPrepare(..) | Task::DebugStart(..) | Task::ScanPrepare(..) | Task::ScanRun(..) | Task::Bench(..) | Task::NodeExecute(..) | Task::DashboardLogs(..) | Task::DashboardWorkloads(..) | Task::DashboardTail(..) | Task::Overview(..) | Task::Connect(_) | Task::Watch(..) | Task::Metrics(..) | Task::NodePods | Task::PrinterColumns(..) | Task::HeaderInfo(..) | Task::RunSession(..) | Task::RunForward(..) | Task::Directory(_) | Task::Manifest(_) | Task::Helm(..) | Task::HelmPrepare(..) | Task::HelmExecute(..) | Task::AskPrepare(..) | Task::AdvicePrepare(..) | Task::AdviceExecute(..) | Task::BatchPrepare(..) | Task::BatchExecute(..) => return Err("invalid worker task".into()),
                                 })
                             };
                             match tokio::time::timeout(Duration::from_secs(25), future).await {

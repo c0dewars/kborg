@@ -15,9 +15,13 @@ pub enum Event {
     /// Ctrl-E: edit the draft in `$VISUAL`/`$EDITOR`.
     External,
 }
-pub struct Editor {
-    pub draft: Draft,
+/// The editor over a manifest draft, or (`Editor<SecretDoc>`) over a whole
+/// Secret, whose lines are wiped when the editor is dropped.
+pub struct Editor<D = Draft> {
+    pub draft: D,
     lines: Vec<String>,
+    /// Largest text the buffer accepts, in bytes.
+    limit: usize,
     row: usize,
     column: usize,
     top: Cell<usize>,
@@ -25,8 +29,24 @@ pub struct Editor {
 }
 impl Editor {
     pub fn new(draft: Draft) -> Self {
-        let lines = draft
-            .text()
+        let text = draft.text().to_owned();
+        Self::with_text(draft, &text, MAX_DOCUMENT)
+    }
+}
+impl<D> Drop for Editor<D> {
+    // Edited Secret values must not outlive the editor; a manifest draft
+    // loses nothing by it.
+    fn drop(&mut self) {
+        for line in &mut self.lines {
+            let mut bytes = std::mem::take(line).into_bytes();
+            bytes.fill(0);
+            std::hint::black_box(&bytes);
+        }
+    }
+}
+impl<D> Editor<D> {
+    pub fn with_text(draft: D, text: &str, limit: usize) -> Self {
+        let lines = text
             .trim_end_matches('\n')
             .split('\n')
             .map(str::to_owned)
@@ -34,6 +54,7 @@ impl Editor {
         Self {
             draft,
             lines,
+            limit,
             row: 0,
             column: 0,
             top: Cell::new(0),
@@ -151,8 +172,8 @@ impl Editor {
     /// Replaces the whole draft with externally edited text under the same
     /// plain-text and size rules as paste.
     pub fn replace_text(&mut self, text: &str) -> Result<()> {
-        if text.len() > MAX_DOCUMENT {
-            return Err("YAML editor is limited to 64 KiB".into());
+        if text.len() > self.limit {
+            return Err(self.too_large());
         }
         if text.chars().any(|c| {
             !c.is_ascii() || (c != '\n' && safety::safe_text(&c.to_string(), 1).is_empty())
@@ -173,14 +194,19 @@ impl Editor {
         self.left.set(0);
         Ok(())
     }
+    fn too_large(&self) -> String {
+        format!("the editor is limited to {} KiB", self.limit / 1024)
+    }
     pub fn paste(&mut self, text: &str) -> Result<()> {
         if text.chars().any(|c| {
             !c.is_ascii() || (c != '\n' && safety::safe_text(&c.to_string(), 1).is_empty())
         }) {
             return Err("use plain text and YAML Unicode escapes; paste cannot contain controls or raw Unicode".into());
         }
-        if self.text().len().saturating_add(text.len()) > MAX_DOCUMENT {
-            return Err("YAML editor is limited to 64 KiB".into());
+        // Counted, not copied: the text may hold Secret values.
+        let length: usize = self.lines.iter().map(|line| line.len() + 1).sum();
+        if length.saturating_add(text.len()) > self.limit {
+            return Err(self.too_large());
         }
         let at = self.index();
         let tail = self.lines[self.row].split_off(at);

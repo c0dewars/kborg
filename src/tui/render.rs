@@ -367,6 +367,7 @@ pub(super) fn screen_title(app: &App, modal: &Modal) -> String {
             format!("Edit {}", one())
         }
         Modal::YamlEditor(..) => format!("Edit {} YAML", one()),
+        Modal::SecretEditor(editor) => format!("Edit Secret {}", editor.draft.name),
         Modal::Scale(..) => format!("Scale {}", one()),
         Modal::Export(..) => "Export".to_owned(),
         Modal::Confirm(..)
@@ -379,6 +380,56 @@ pub(super) fn screen_title(app: &App, modal: &Modal) -> String {
         | Modal::AdviceDocument(..) => "Copilot".to_owned(),
         Modal::ScanConfirm(..) | Modal::ScanRunning(..) => "Image scan".to_owned(),
         _ => kind(),
+    }
+}
+/// The object a screen is about, and what the screen does with it, for the
+/// header trail. A prompt or filter keeps the trail of the screen underneath.
+fn trail_object<'a>(app: &'a App, modal: &'a Modal) -> Option<(&'a str, &'static str)> {
+    match modal {
+        Modal::Input("Command", _) | Modal::Filter(..) => app
+            .subviews
+            .last()
+            .and_then(|below| trail_object(app, below)),
+        Modal::Overview(object, _) => object["metadata"]["name"]
+            .as_str()
+            .map(|name| (name, "details")),
+        Modal::PodContainers(object, _) => object["metadata"]["name"]
+            .as_str()
+            .map(|name| (name, "containers")),
+        Modal::Scale(_, _, name, ..) => Some((name.as_str(), "scale")),
+        Modal::Resources(_, _, name, ..) => Some((name.as_str(), "resources")),
+        Modal::Image(_, _, name, ..) => Some((name.as_str(), "image")),
+        Modal::EditContainers(_, _, name, ..) => Some((name.as_str(), "containers")),
+        _ => None,
+    }
+    .filter(|(name, _)| !name.is_empty())
+}
+/// The header bar's trail, in at most `width` cells: the screen in front, and
+/// for a screen about one object the kind, the object and the screen
+/// (`Pods › api-7d4f9c8b6-x2kqp › details`). A long name loses its middle, so
+/// its suffix stays readable; without room for that the plain title shows.
+pub(super) fn header_trail(app: &App, modal: &Modal, width: usize) -> String {
+    let title = screen_title(app, modal);
+    let Some((name, leaf)) = trail_object(app, modal) else {
+        return crate::text::fit(&title, width);
+    };
+    let separator = if crate::text::unicode() {
+        " › "
+    } else {
+        " > "
+    };
+    let kind = app
+        .kinds
+        .get(app.kind_index)
+        .map(resource_label)
+        .unwrap_or_else(|| app.kind());
+    let fixed = crate::text::width(&kind) + 2 * crate::text::width(separator) + leaf.len();
+    match width.checked_sub(fixed) {
+        Some(room) if room >= 5 => format!(
+            "{kind}{separator}{}{separator}{leaf}",
+            crate::text::shown_middle(name, room)
+        ),
+        _ => crate::text::fit(&title, width),
     }
 }
 pub(super) fn render_advice_footer(
@@ -766,6 +817,19 @@ pub(super) fn render_log_modal(
     out.flush().map_err(|_| "draw failed".into())
 }
 pub(super) fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
+    app.focus.set(None);
+    render_layers(app, w, h, out)?;
+    if app.ui.accessible {
+        // Screen readers read where the cursor is: the selected row, else
+        // the status line.
+        let (x, y) = app.focus.get().unwrap_or((0, h.saturating_sub(1)));
+        queue!(out, cursor::MoveTo(x, y), cursor::Show)
+            .and_then(|_| out.flush())
+            .map_err(|_| "draw failed")?;
+    }
+    Ok(())
+}
+fn render_layers(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
     render_frame(app, w, h, out)?;
     let Some(palette) = app.palette.as_deref() else {
         return Ok(());
@@ -800,6 +864,25 @@ pub(super) fn render(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<
     .and_then(|_| out.flush())
     .map_err(|_| "draw failed".into())
 }
+/// `view` with each auto-sized column as wide as its longest value in the
+/// first rows shown (at most 40 cells), never narrower than its title.
+fn sized_to_rows(app: &App, view: &crate::views::View) -> crate::views::View {
+    const ROWS: usize = 200;
+    const MAX: usize = 40;
+    let rows = app.first_visible(ROWS);
+    let now = k8s_openapi::jiff::Timestamp::now().as_second();
+    let mut view = view.clone();
+    for spec in view.columns.iter_mut().filter(|spec| spec.auto) {
+        let longest = rows
+            .iter()
+            .map(|row| crate::text::width(&super::format::custom_value(spec, row, now, None, None)))
+            .max()
+            .unwrap_or(0);
+        let floor = usize::from(spec.width.unwrap_or(0)).max(spec.title.len() + 1);
+        spec.width = u8::try_from((longest + 1).clamp(floor, MAX.max(floor))).ok();
+    }
+    view
+}
 /// The columns of the resource table in a panel with `column_width` cells
 /// for them: the active view's, or the built-in ones the width allows.
 pub(super) fn table_columns(app: &App, column_width: usize) -> Vec<(Column, usize)> {
@@ -809,27 +892,73 @@ pub(super) fn table_columns(app: &App, column_width: usize) -> Vec<(Column, usiz
         .is_some_and(|kind| kind.namespaced);
     let view = app.current_view();
     let style = &app.ui.table;
+    // NAME is never squeezed for a column that can scroll: it keeps room
+    // for the names shown (up to a third of the width, at least 13 cells).
+    let name = app
+        .first_visible(200)
+        .into_iter()
+        .map(|object| crate::text::width(object["metadata"]["name"].as_str().unwrap_or("")) + 1)
+        .max()
+        .unwrap_or(0)
+        .clamp(13, (column_width / 3).max(13));
     let mut cols = if let Some(view) = view {
-        view_columns(view, column_width, app.wide)
+        let scroll = app.table_scroll.get();
+        let (cols, hidden) = if view.columns.iter().any(|spec| spec.auto) {
+            view_columns(
+                &sized_to_rows(app, view),
+                column_width,
+                app.wide,
+                scroll,
+                name,
+            )
+        } else {
+            view_columns(view, column_width, app.wide, scroll, name)
+        };
+        // Scrolling never runs past the last column.
+        app.table_scroll.set(hidden.0);
+        app.table_hidden.set(hidden);
+        cols
     } else {
-        let measured = matches!(app.kind().as_str(), "pods" | "nodes") && column_width >= 70;
-        let node_columns =
-            app.kind() == "pods" && (column_width >= 130 || (app.wide && column_width >= 90));
-        let ip_column = node_columns && (column_width >= 155 || (app.wide && column_width >= 110));
-        let reserved = if measured { 20 } else { 0 }
-            + if node_columns { 23 } else { 0 }
-            + if ip_column { 17 } else { 0 };
-        let mut cols = columns(column_width.saturating_sub(reserved), namespaced);
-        if measured {
-            cols.push((Column::Cpu, 9));
-            cols.push((Column::Memory, 9));
+        // Every default column, windowed like a view's: Pods add usage,
+        // NODE and IP; wide mode (Ctrl-W) adds LABELS.
+        let kind = app.kind();
+        let mut all: Vec<Column> = Vec::new();
+        // As before scrolling: NAMESPACE and STATUS narrow on small screens,
+        // and NAMESPACE goes below 54 cells.
+        if namespaced && column_width >= 54 {
+            all.push(Column::Namespace);
         }
-        if node_columns {
-            cols.push((Column::Node, 22));
+        all.extend([
+            Column::Name,
+            Column::Ready,
+            Column::Status,
+            Column::Restarts,
+            Column::Age,
+        ]);
+        if matches!(kind.as_str(), "pods" | "nodes") {
+            all.extend([Column::Cpu, Column::Memory]);
         }
-        if ip_column {
-            cols.push((Column::Ip, 16));
+        if kind == "pods" {
+            all.extend([Column::Node, Column::Ip]);
         }
+        if app.wide {
+            all.push(Column::Labels);
+        }
+        let all = all
+            .into_iter()
+            .map(|column| {
+                let width = match column {
+                    Column::Namespace if column_width < 94 => 12,
+                    Column::Status if column_width < 46 => 12,
+                    Column::Status if column_width < 64 => 16,
+                    column => default_width(column),
+                };
+                (column, width)
+            })
+            .collect();
+        let (cols, hidden) = window(all, column_width, app.table_scroll.get(), name);
+        app.table_scroll.set(hidden.0);
+        app.table_hidden.set(hidden);
         cols
     };
     if style.long_age() {
@@ -990,7 +1119,6 @@ fn render_frame(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
     } else {
         0
     };
-    let title = screen_title(app, &app.modal);
     let help_width = if w >= 64 { 4 } else { 0 };
     // Identity spans in theme roles on the given surface.
     let identity = |width: u16, on: Color| {
@@ -1020,12 +1148,16 @@ fn render_frame(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
             mode_chip(out, mode_x, y, surface).map_err(|_| "draw failed")?;
         }
         (Some(y), _) if w >= 64 => {
+            let room = w.saturating_sub(14 + badge_width);
             cell(
                 out,
                 9 + badge_width,
                 y,
-                w.saturating_sub(14 + badge_width),
-                &format!(" {title}"),
+                room,
+                &format!(
+                    " {}",
+                    header_trail(app, &app.modal, usize::from(room.saturating_sub(1)))
+                ),
                 color("accent"),
                 surface,
             )
@@ -1230,8 +1362,17 @@ fn render_frame(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
             .kinds
             .get(app.kind_index)
             .is_some_and(|kind| kind.namespaced);
+        let column_width = usize::from(rect.width - 5);
+        let cols = table_columns(app, column_width);
+        // Columns that do not fit sit to the left or right: Left/Right show them.
+        let more = match app.table_hidden.get() {
+            (0, 0) => String::new(),
+            (0, right) => format!(" {right} more>"),
+            (left, 0) => format!(" <{left} more"),
+            (left, right) => format!(" <{left} | {right} more>"),
+        };
         let position = format!(
-            "[{}/{}]{}",
+            "[{}/{}]{}{more}",
             if visible.is_empty() {
                 0
             } else {
@@ -1300,10 +1441,8 @@ fn render_frame(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
                 .map_err(|_| "draw failed")?;
             }
         }
-        let column_width = usize::from(rect.width - 5);
         let view = app.current_view();
         let custom: &[crate::views::ColumnSpec] = view.map_or(&[], |view| view.columns.as_slice());
-        let cols = table_columns(app, column_width);
         let now = k8s_openapi::jiff::Timestamp::now().as_second();
         let sort_title = app.sort_title();
         // A click on a column title sorts by it; a second click reverses.
@@ -1340,6 +1479,9 @@ fn render_frame(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
         for (r, object) in visible.iter().skip(start).take(height).enumerate() {
             let selected = start + r == app.selected;
             let y = rect.y + 2 + r as u16 * layout.step;
+            if selected && matches!(app.modal, Modal::None) {
+                app.focus.set(Some((rect.x + 1, y)));
+            }
             let marked = object["metadata"]["uid"]
                 .as_str()
                 .is_some_and(|uid| app.marks.contains(uid));
@@ -1381,6 +1523,7 @@ fn render_frame(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
                         object,
                         now,
                         app.table_metrics.usage(object, Instant::now()),
+                        app.node_pods_text(object).as_deref(),
                         custom,
                         style
                     )
@@ -1632,6 +1775,7 @@ fn render_frame(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
                 Modal::Editor(..) => "EDIT CONTAINER / server dry-run and review required",
                 Modal::Export(_) => "EXPORT / review local file",
                 Modal::YamlEditor(_) => "YAML EDITOR",
+                Modal::SecretEditor(_) => "SECRET EDITOR / values shown / never written to disk",
                 Modal::WriteReview(review) if matches!(review.plan, WritePlan::Batch(_)) => {
                     "REVIEW BATCH / every marked object / approval required"
                 }
@@ -1676,6 +1820,7 @@ fn render_frame(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
             let height = usize::from(rect.height.saturating_sub(2));
             let lines = match modal {
                 Modal::YamlEditor(editor)=>editor.viewport(usize::from(rect.width.saturating_sub(2)),height),
+                Modal::SecretEditor(editor)=>editor.viewport(usize::from(rect.width.saturating_sub(2)),height),
                 Modal::WriteReview(review)=>review.view.lines(usize::from(rect.width.saturating_sub(2)),height),
                 Modal::WriteRunning=>vec!["Applying the approved operation...".into(),"Wait for the outcome before navigating or quitting.".into(),"No automatic retries. If interrupted, inspect cluster state.".into()],
                 Modal::Export(draft)=>wrap_text(&safety::review_display(&draft.review()).unwrap_or_else(|error| format!("REVIEW BLOCKED\n\n{error}\n\nEsc returns.")),usize::from(rect.width.saturating_sub(2))).lines().map(str::to_owned).collect(),
@@ -2068,8 +2213,12 @@ fn render_frame(app: &App, w: u16, h: u16, out: &mut impl Write) -> Result<()> {
                 )
                 .map_err(|_| "draw failed")?;
             }
-            if let Modal::YamlEditor(editor) = modal {
-                let (cx, cy) = editor.cursor();
+            let cursor = match modal {
+                Modal::YamlEditor(editor) => Some(editor.cursor()),
+                Modal::SecretEditor(editor) => Some(editor.cursor()),
+                _ => None,
+            };
+            if let Some((cx, cy)) = cursor {
                 queue!(
                     out,
                     cursor::MoveTo(

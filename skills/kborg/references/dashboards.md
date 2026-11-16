@@ -25,6 +25,7 @@ Check `kborg keymap --json` with `"view": "dashboard"` for the person's actual k
 | `L` on a warning | Follow that Pod's logs in a pane under the cards |
 | `t` | Tail Deployments or StatefulSets across every card's cluster (Space selects up to six) |
 | `G` | Trend charts for the focused card (15 minutes, one sample per 15 s) |
+| `H` | Chart range: last 15 minutes, 24 hours or 7 days. Real clusters keep 7 days of counts and percentages on this machine (`ui.yaml` `dashboard.history`) |
 | `s` | Save this dashboard (its contexts and namespace) under a name |
 | `B` | Open saved selections |
 | `?` | Legend and keys; the watches keep running |
@@ -51,6 +52,7 @@ dashboard:
   min_card_height: 9    # below this a grid shows only the focused card
   trend: true           # sparkline on expanded cards
   node_details: true    # busiest-Node lines under NODES
+  history: true         # keep 7 days of chart history on this machine
 charts:
   style: auto           # auto, braille, blocks or ascii
 ```

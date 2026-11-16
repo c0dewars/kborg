@@ -255,6 +255,8 @@ pub struct Dashboard {
     pub min_card_height: u16,
     pub trend: bool,
     pub node_details: bool,
+    /// Keep 7 days of chart history on this machine (`G`, then `H`).
+    pub history: bool,
 }
 impl Default for Dashboard {
     fn default() -> Self {
@@ -264,6 +266,7 @@ impl Default for Dashboard {
             min_card_height: 9,
             trend: true,
             node_details: true,
+            history: true,
         }
     }
 }
@@ -333,6 +336,10 @@ pub struct UiConfig {
     pub text: TextMode,
     /// Apply saved config files live (about 1 s after a save).
     pub reload: bool,
+    /// Screen-reader and low-motion mode: no animation, box drawing, logo,
+    /// zebra rows, braille charts or sparklines, and the terminal cursor sits
+    /// on the selected row. `KBORG_ACCESSIBLE=1` turns it on too.
+    pub accessible: bool,
 }
 impl Default for UiConfig {
     fn default() -> Self {
@@ -351,8 +358,30 @@ impl Default for UiConfig {
             charts: Charts::default(),
             text: TextMode::Auto,
             reload: true,
+            accessible: false,
         }
     }
+}
+impl UiConfig {
+    /// The settings accessible mode implies; they win over the file's own.
+    pub fn apply_accessible(&mut self) {
+        self.accessible = true;
+        self.splash = Some(false);
+        self.borders = Borders::None;
+        self.header.logo = false;
+        self.table.zebra = false;
+        self.charts.style = ChartStyle::Ascii;
+        self.dashboard.trend = false;
+    }
+}
+/// `KBORG_ACCESSIBLE=1` (or `true`, `yes`, `on`) asks for accessible mode.
+pub fn accessible_requested(value: Option<&std::ffi::OsStr>) -> bool {
+    value.and_then(|value| value.to_str()).is_some_and(|value| {
+        matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        )
+    })
 }
 
 /// Rows the resource table view gives to chrome, derived from `header`/`hints`.
@@ -569,6 +598,10 @@ pub fn parse(text: &str) -> Result<UiConfig> {
         )
     })?;
     config.validate()?;
+    let mut config = config;
+    if config.accessible {
+        config.apply_accessible();
+    }
     Ok(config)
 }
 
@@ -583,11 +616,16 @@ pub fn load() -> Result<UiConfig> {
 /// Load ui.yaml from an explicit path (live reload watches the config folder).
 pub fn load_from(path: &std::path::Path) -> Result<UiConfig> {
     safety::checked_path(path)?;
-    if !path.exists() {
-        return Ok(UiConfig::default());
+    let mut config = if path.exists() {
+        let bytes = safety::read_small(path, MAX_BYTES as u64)?;
+        parse(std::str::from_utf8(&bytes).map_err(|_| "ui.yaml must be UTF-8")?)?
+    } else {
+        UiConfig::default()
+    };
+    if accessible_requested(std::env::var_os("KBORG_ACCESSIBLE").as_deref()) {
+        config.apply_accessible();
     }
-    let bytes = safety::read_small(path, MAX_BYTES as u64)?;
-    parse(std::str::from_utf8(&bytes).map_err(|_| "ui.yaml must be UTF-8")?)
+    Ok(config)
 }
 
 /// Write the commented example; never replaces an existing file.
@@ -669,6 +707,10 @@ version: 1
 
 # Apply saved config files live. false: only :ui reload or a restart.
 reload: true
+# Screen readers and reduced motion: no animation, box drawing, logo, zebra
+# rows, braille charts or sparklines; the cursor follows the selected row.
+# KBORG_ACCESSIBLE=1 turns it on too.
+accessible: false
 
 # Theme id (kborg theme list). When set it wins over the picker's saved
 # choice; --theme still wins over this. Unset keeps the saved choice.
@@ -722,6 +764,7 @@ dashboard:
   min_card_height: 9    # 5..40; below it one focused card is shown
   trend: true           # sparkline trend line on cards
   node_details: true    # busiest-Node detail lines under NODES
+  history: true         # keep 7 days of chart history on this machine (G, then H)
 
 # :metrics chart mode (g) and the dashboard chart panel (G).
 charts:

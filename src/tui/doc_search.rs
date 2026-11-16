@@ -51,7 +51,24 @@ pub(super) fn overview_document(app: &App, object: &Value) -> String {
             )
         })
         .unwrap_or_default();
-    format!("{}{usage}", overview_text(object, &app.context))
+    // The view's key hint goes last, after the sections added below.
+    let full = overview_text(object, &app.context);
+    let overview: Vec<&str> = full
+        .lines()
+        .filter(|line| !line.starts_with("J JSON"))
+        .collect();
+    let uid = object["metadata"]["uid"].as_str().unwrap_or_default();
+    let events = app
+        .overview_events
+        .as_ref()
+        .filter(|(events_uid, _)| events_uid == uid)
+        .map(|(_, events)| events.as_deref().map_err(String::as_str));
+    let text = crate::describe::render(
+        &format!("{}{usage}", overview.join("\n").trim_end()),
+        object,
+        events,
+    );
+    format!("{text}\n\nJ JSON   y YAML   Esc close")
 }
 
 fn offset_mut(modal: &mut Modal) -> Option<&mut usize> {

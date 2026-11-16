@@ -29,6 +29,7 @@ pub(super) fn help_scope(modal: &Modal) -> Option<Scope> {
         // forms `?` is typed text.
         Modal::LiveOverview(..)
         | Modal::YamlEditor(..)
+        | Modal::SecretEditor(..)
         | Modal::Help(..)
         | Modal::HelmForm(..)
         | Modal::ForwardForm(..) => None,
@@ -64,7 +65,7 @@ pub(super) fn translated_scope(modal: &Modal) -> Option<Scope> {
         | Modal::HelmOutcome(..) => Scope::Detail,
         Modal::Overview(..) => Scope::Overview,
         Modal::Metrics(..) => Scope::Metrics,
-        Modal::YamlEditor(..) => Scope::Editor,
+        Modal::YamlEditor(..) | Modal::SecretEditor(..) => Scope::Editor,
         Modal::Help(view) if !view.typing => Scope::Help,
         Modal::Secrets(..) => Scope::Secrets,
         _ => return None,
@@ -212,6 +213,7 @@ pub(super) const TABLE_GROUPS: &[(&str, &[&str])] = &[
             "resources",
             "delete",
             "kill",
+            "undo",
             "scan",
         ],
     ),
@@ -277,6 +279,10 @@ pub(super) const TABLE_GROUPS: &[(&str, &[&str])] = &[
             "up",
             "page.down",
             "page.up",
+            "list.next",
+            "list.prev",
+            "columns.left",
+            "columns.right",
             "top",
             "bottom",
             "back",
@@ -599,6 +605,45 @@ fn key_of(app: &App, action: &str) -> String {
         .unwrap_or_else(|| "(unbound)".into())
 }
 
+/// The first key of `action` as the operator has it (for status lines).
+pub(super) fn key_label(app: &App, action: &str) -> String {
+    key_of(app, action)
+}
+
+/// How many tips the first-run tour shows.
+pub(super) const TOUR_TIPS: usize = 3;
+
+/// One tip of the first-run tour, with the operator's own keys.
+pub(super) fn tour_text(app: &App, step: usize) -> String {
+    let (title, body) = match step {
+        0 => (
+            "Go anywhere with :",
+            format!(
+                "Press {} and type a resource: :pods, :deploy, :svc, :nodes, or any CRD.\nAdd a namespace (:pods shop), a filter (:pods /api) or another context (:pods @prod).\nTab completes, Up and Down recall earlier commands.\n\n/ filters the rows of any table; Esc goes back.",
+                key_of(app, "command")
+            ),
+        ),
+        1 => (
+            "Every key is one press away",
+            format!(
+                "Press {} in any view to see the keys that work there, with your own bindings.\n:keymap TEXT searches every key of every view, and keymap.yaml changes any of them.\n\nEvery change (scale, delete, edit, apply) shows a review first: y or Enter applies it, n or Esc cancels.",
+                key_of(app, "help")
+            ),
+        ),
+        _ => (
+            "Find anything with the palette",
+            format!(
+                "Press {} to search every action, command and recently opened object by a few letters,\nand run it with Enter, whatever its key.\n\n:themes picks another look, and :tour shows these tips again.",
+                key_of(app, "palette")
+            ),
+        ),
+    };
+    format!(
+        "WELCOME TO KBORG / tip {} of {TOUR_TIPS}\n\n{title}\n\n{body}\n\nEnter next tip   Esc skip the tour",
+        step + 1
+    )
+}
+
 /// `key label` pairs for bound actions; unbound actions are omitted.
 fn pairs(app: &App, parts: &[(&str, &str)]) -> Vec<String> {
     parts
@@ -845,6 +890,7 @@ pub(super) fn modal_hint(app: &App, modal: &Modal) -> Option<String> {
                     parts.extend(pairs(
                         app,
                         &[
+                            ("secrets.edit-all", "edit all"),
                             ("secrets.add", "add key"),
                             ("secrets.create", "new Secret"),
                             ("secrets.delete", "delete"),
@@ -855,6 +901,7 @@ pub(super) fn modal_hint(app: &App, modal: &Modal) -> Option<String> {
                         app,
                         &[
                             ("secrets.edit", "set value"),
+                            ("secrets.edit-all", "edit all"),
                             ("secrets.add", "add key"),
                             ("secrets.delete", "remove key"),
                         ],
@@ -871,6 +918,12 @@ pub(super) fn modal_hint(app: &App, modal: &Modal) -> Option<String> {
             parts.extend(pairs(app, &[("help", "keys")]));
             parts.push("Esc back".into());
             parts.join(" | ")
+        }
+        Modal::SecretEditor(..) => {
+            let mut parts = vec!["Arrows move".to_owned(), "Tab indent".to_owned()];
+            parts.extend(pairs(app, &[("editor.review", "review")]));
+            parts.push("Esc cancel".into());
+            parts.join("  ")
         }
         Modal::YamlEditor(..) => {
             let mut parts = vec!["Arrows move".to_owned(), "Tab indent".to_owned()];
@@ -1103,6 +1156,10 @@ pub(super) fn dashboard_hint(app: &App, dashboard: &dashboard_ui::Dashboard) -> 
                     } else {
                         "charts"
                     },
+                ),
+                (
+                    "dashboard.range",
+                    if dashboard.chart { "range" } else { "history" },
                 ),
                 ("help", "keymap"),
             ],

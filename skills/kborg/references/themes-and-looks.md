@@ -2,7 +2,7 @@
 
 Three layers decide how KBorg looks, from bottom to top:
 
-1. **The theme:** 20 built-in palettes, or the person's own `themes/ID.json`.
+1. **The theme:** 22 built-in palettes (`okabe-ito-dark` and `okabe-ito-light` are color-blind safe, `k8borg-high-contrast` meets 7:1), or the person's own `themes/ID.json`.
 2. **`ui.yaml`:** layout and style, plus per-role color overrides on top of the theme.
 3. **Per run or per cluster:** `--theme ID` for one run, or `theme:` in `contexts/NAME.yaml` while that context is selected.
 
@@ -69,6 +69,7 @@ Sharing and managing themes:
 - **Update an installed theme:** `kborg theme replace FILE`. It keeps the original as `.json.bak` and refuses a second replace until that backup is archived.
 - **Export:** `kborg theme export ID --output FILE` writes every resolved color, and is a good way to start from a built-in theme. A built-in theme's export gets a `-custom` ID.
 - **Remove:** `kborg theme remove ID`.
+- **From a k9s skin:** `kborg theme import-k9s SKIN.yaml` saves the skin as a new theme, `k9s-` plus the file name (or `--id ID`), and never replaces one. It prints each role with the k9s color it came from. Colors the skin leaves to the terminal (`default`) come from KBorg Dark, and a color too faint to read keeps its hue but is lightened or darkened to 4.5:1; the output says so. Then `kborg theme use ID`, or pick it in `:themes`.
 
 Turning a terminal or editor palette (iTerm, VS Code, a colorscheme) into a KBorg theme:
 1. Map its background, foreground, comment or gray, blue or cyan, green, yellow and red to `background`, `text`, `muted`, `accent` and `focus`, `success`, `warning` and `danger`.
@@ -121,3 +122,4 @@ Other rules:
 - **Animation:** `kborg startup off` (or `on`, or `preview`) sets the preference. `--no-splash` skips it for one run, and `splash: false` in `ui.yaml` skips it always.
 - **Colors:** KBorg uses truecolor when the terminal reports it (`COLORTERM=truecolor`) and otherwise the nearest 256 or basic colors, so a theme can look slightly different in an old terminal. `--color=never` turns colors off, and `theme: terminal` uses the terminal's own palette.
 - **Copy mode:** Ctrl-Y, or `:mouse`, releases the mouse so the terminal can select text.
+- **Accessibility:** `accessible: true` in `ui.yaml` (or `KBORG_ACCESSIBLE=1`) is for screen readers and reduced motion: no animation, box drawing, logo, zebra rows, braille charts or sparklines, and the terminal cursor sits on the selected row so VoiceOver or Orca read it. For color vision deficiencies suggest `kborg theme use okabe-ito-dark` (or `okabe-ito-light`); for low vision `k8borg-high-contrast`. Status is always written as text too, never by color alone. For linear text, suggest the CLI (`kborg list pods`, `kborg describe pod NAME`).

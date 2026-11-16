@@ -99,6 +99,10 @@ impl App {
             "drilldown" => self.drilldown(),
             "owner" => self.owner(),
             "used.by" => self.used_by(),
+            "undo" => self.undo_last(),
+            "columns.left" | "columns.right" => self.scroll_columns(action == "columns.right"),
+            "list.next" => self.turn_list_page(true),
+            "list.prev" => self.turn_list_page(false),
             "filter" => {
                 self.modal = Modal::Filter(
                     self.filter.clone(),

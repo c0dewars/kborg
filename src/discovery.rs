@@ -8,8 +8,10 @@ use std::{collections::HashSet, time::Duration};
 
 const MAX_DOCUMENT: usize = 1024 * 1024;
 const MAX_TOTAL: usize = 16 * 1024 * 1024;
-const MAX_GROUPS: usize = 100;
-const MAX_KINDS: usize = 200;
+// Sized for clusters with hundreds of CRDs; the byte, request and time
+// budgets still bound the work.
+const MAX_GROUPS: usize = 300;
+const MAX_KINDS: usize = 2000;
 const MAX_REQUESTS: usize = MAX_GROUPS + 2;
 const BUDGET: Duration = Duration::from_secs(15);
 
@@ -220,6 +222,161 @@ pub(super) async fn collect(client: &Client) -> Result<Vec<Kind>> {
     Ok(found)
 }
 
+/// Discovery results kept on disk so a start on a custom resource needs no
+/// round trips: per API server and kubeconfig identity (a hash of server,
+/// cluster, user and context names), private to the user, 10 minutes. The
+/// TUI still rediscovers after connecting and replaces the cache. A cached
+/// catalog passes the same name checks as a discovered one and never holds
+/// Secrets.
+pub(super) mod cache {
+    use super::{Kind, MAX_KINDS, segment};
+    use crate::{Result, safety};
+    use serde::{Deserialize, Serialize};
+    use std::path::{Path, PathBuf};
+
+    pub const TTL: i64 = 600;
+    const MAX_BYTES: u64 = 2 * 1024 * 1024;
+
+    #[derive(Serialize, Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct File {
+        schema_version: u32,
+        saved_at: i64,
+        kinds: Vec<Kind>,
+    }
+
+    pub fn folder() -> Option<PathBuf> {
+        // Unit tests never read or write the developer's own cache.
+        if cfg!(test) {
+            return None;
+        }
+        safety::config_dir()
+            .ok()
+            .map(|root| root.join("cache").join("discovery"))
+    }
+    /// The file name for one server and identity.
+    pub fn key(server: &str, cluster: &str, user: &str, context: &str) -> String {
+        let text = format!("v1\0{server}\0{cluster}\0{user}\0{context}");
+        let digest = ring::digest::digest(&ring::digest::SHA256, text.as_bytes());
+        let hex: String = digest.as_ref()[..16]
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        format!("{hex}.json")
+    }
+    fn valid(kind: &Kind) -> bool {
+        segment(&kind.plural, false)
+            && (kind.group.is_empty() || segment(&kind.group, true))
+            && segment(&kind.version, false)
+            && !kind.kind.is_empty()
+            && kind.kind.len() <= 253
+            && kind.kind.bytes().all(|c| c.is_ascii_alphanumeric())
+            && kind.plural != "secrets"
+            && kind.kind != "Secret"
+            && kind.short_names.len() <= 64
+            && kind.short_names.iter().all(|name| segment(name, false))
+    }
+    /// A fresh cached catalog, or `None` (missing, stale, damaged or invalid).
+    pub fn load(folder: &Path, key: &str, now: i64) -> Option<Vec<Kind>> {
+        let bytes = safety::read_small(&folder.join(key), MAX_BYTES).ok()?;
+        let file: File = serde_json::from_slice(&bytes).ok()?;
+        let age = now - file.saved_at;
+        (file.schema_version == 1
+            && (0..=TTL).contains(&age)
+            && !file.kinds.is_empty()
+            && file.kinds.len() <= MAX_KINDS
+            && file.kinds.iter().all(valid))
+        .then_some(file.kinds)
+    }
+    pub fn save(folder: &Path, key: &str, kinds: &[Kind], now: i64) -> Result<()> {
+        if kinds.is_empty() || kinds.len() > MAX_KINDS || !kinds.iter().all(valid) {
+            return Err("discovery catalog not cached".into());
+        }
+        let file = File {
+            schema_version: 1,
+            saved_at: now,
+            kinds: kinds.to_vec(),
+        };
+        let bytes = serde_json::to_vec(&file).map_err(|_| "cannot encode discovery cache")?;
+        safety::atomic_write(&folder.join(key), &bytes)
+    }
+    pub fn now() -> i64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |elapsed| elapsed.as_secs() as i64)
+    }
+
+    #[cfg(all(test, unix))]
+    mod tests {
+        use super::*;
+
+        fn kind(plural: &str, kind: &str, group: &str) -> Kind {
+            Kind {
+                plural: plural.into(),
+                kind: kind.into(),
+                group: group.into(),
+                version: "v1".into(),
+                namespaced: true,
+                short_names: vec![],
+            }
+        }
+
+        #[test]
+        fn a_fresh_catalog_comes_back_for_the_same_identity_only() -> Result<()> {
+            let dir = crate::config_watch::tests::folder()?;
+            let kinds = vec![
+                kind("pods", "Pod", ""),
+                kind("crontabs", "CronTab", "stable.example.com"),
+            ];
+            let mine = key("https://10.0.0.1:6443", "prod", "alice", "prod");
+            save(&dir.0, &mine, &kinds, 1_000)?;
+            let loaded = load(&dir.0, &mine, 1_000 + TTL).ok_or("fresh")?;
+            assert_eq!(loaded.len(), 2);
+            assert_eq!(loaded[1].key(), "crontabs.stable.example.com");
+            // Stale, another user or another server: rediscover.
+            assert!(load(&dir.0, &mine, 1_000 + TTL + 1).is_none());
+            assert!(
+                load(
+                    &dir.0,
+                    &key("https://10.0.0.1:6443", "prod", "bob", "prod"),
+                    1_000
+                )
+                .is_none()
+            );
+            assert!(
+                load(
+                    &dir.0,
+                    &key("https://10.0.0.2:6443", "prod", "alice", "prod"),
+                    1_000
+                )
+                .is_none()
+            );
+            // The file name reveals no names.
+            assert!(!mine.contains("prod") && !mine.contains("alice"));
+            Ok(())
+        }
+
+        #[test]
+        fn a_tampered_cache_cannot_add_secrets_or_odd_names() -> Result<()> {
+            let dir = crate::config_watch::tests::folder()?;
+            let name = key("s", "c", "u", "x");
+            assert!(save(&dir.0, &name, &[kind("secrets", "Secret", "")], 1).is_err());
+            for kinds in [
+                serde_json::json!([{"plural":"secrets","kind":"Secret","group":"","version":"v1","namespaced":true}]),
+                serde_json::json!([{"plural":"x\u{1b}[2J","kind":"X","group":"","version":"v1","namespaced":true}]),
+                serde_json::json!([{"plural":"things","kind":"Thing","group":"Evil Group","version":"v1","namespaced":true}]),
+            ] {
+                let text =
+                    serde_json::json!({"schema_version":1,"saved_at":1,"kinds":kinds}).to_string();
+                let _ = std::fs::remove_file(dir.0.join(&name));
+                safety::write_new(&dir.0.join(&name), text.as_bytes())?;
+                assert!(load(&dir.0, &name, 1).is_none(), "{text}");
+            }
+            Ok(())
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -284,7 +441,7 @@ mod tests {
             assert!(preferred_paths(&json!({"groups":[group(invalid)]})).is_err());
         }
         assert!(preferred_paths(&json!({"groups":[group("apps"),group("apps")]})).is_err());
-        assert!(preferred_paths(&json!({"groups":(0..101).map(|n| group(&format!("g{n}.example"))).collect::<Vec<_>>()})).is_err());
+        assert!(preferred_paths(&json!({"groups":(0..=MAX_GROUPS).map(|n| group(&format!("g{n}.example"))).collect::<Vec<_>>()})).is_err());
     }
     #[test]
     fn mock_discovery_success_has_fixed_paths_and_excludes_secrets() {
@@ -348,7 +505,31 @@ mod tests {
             )
             .is_err()
         );
-        assert!(append_resources(&json!({"groupVersion":"v1","resources":(0..201).map(|n| resource(&format!("r{n}"))).collect::<Vec<_>>()}),"","v1",&mut found,&mut seen).is_err());
-        assert_eq!(found.len(), 200);
+        for part in 0..MAX_KINDS / 1000 {
+            let names = (0..1000)
+                .map(|n| resource(&format!("r{part}-{n}")))
+                .collect::<Vec<_>>();
+            assert!(
+                append_resources(
+                    &json!({"groupVersion":"v1","resources":names}),
+                    "",
+                    "v1",
+                    &mut found,
+                    &mut seen
+                )
+                .is_ok()
+            );
+        }
+        assert!(
+            append_resources(
+                &json!({"groupVersion":"v1","resources":[resource("one-more")]}),
+                "",
+                "v1",
+                &mut found,
+                &mut seen
+            )
+            .is_err()
+        );
+        assert_eq!(found.len(), MAX_KINDS);
     }
 }

@@ -1201,13 +1201,7 @@ if value["truncated"]==true {eprintln!("TRUNCATED: limit reached; narrow namespa
             "describe"=>{
                 if args.len()!=2{return Err("usage: describe <resource> <name>".into());}
                 let object=tokio::time::timeout(Duration::from_secs(15),gateway.get(&args[0],&ns,&args[1])).await.map_err(|_|"API timed out")??;
-                // Cluster-scoped objects (Nodes, PVs) report their events in default.
-                let events_ns=object["metadata"]["namespace"].as_str().unwrap_or("default").to_owned();
-                let events=match tokio::time::timeout(Duration::from_secs(15),gateway.list("events",&events_ns)).await{
-                    Ok(Ok(list))=>Ok(crate::describe::events_for(&object,list["items"].as_array().map_or(&[][..],Vec::as_slice))),
-                    Ok(Err(error))=>Err(error),
-                    Err(_)=>Err("the event list timed out".to_owned()),
-                };
+                let events=crate::describe::fetch_events(&gateway,&object).await;
                 if opts.json{
                     print_json(&match &events{
                         Ok(events)=>serde_json::json!({"object":object,"events":events}),
@@ -1215,7 +1209,7 @@ if value["truncated"]==true {eprintln!("TRUNCATED: limit reached; narrow namespa
                     })?;
                 }else{
                     let overview=crate::tui::describe_overview(&object,&gateway.context);
-                    outputln!("{}",crate::describe::render(&overview,&object,events.as_deref().map_err(String::as_str)));
+                    outputln!("{}",crate::describe::render(&overview,&object,Some(events.as_deref().map_err(String::as_str))));
                 }
             },
             "get"=>{if args.len()!=2{return Err("usage: get <resource> <name>".into());}let value=tokio::time::timeout(Duration::from_secs(15),gateway.get(&args[0],&ns,&args[1])).await.map_err(|_|"API timed out")??; if opts.yaml {output!("{}",crate::inspect::yaml(&value)?);}else{print_json(&value)?;}},
@@ -2174,6 +2168,31 @@ fn theme_command(opts: &Options) -> Result<()> {
         "remove" => {
             themes::remove(get(1)?)?;
             outputln!("Custom theme removed.");
+        }
+        "import-k9s" => {
+            let id = match args.get(2).map(String::as_str) {
+                Some("--id") => Some(get(3)?),
+                Some(_) => return Err("usage: theme import-k9s SKIN.yaml [--id ID]".into()),
+                None => None,
+            };
+            let imported = crate::k9s_skin::import(&PathBuf::from(get(1)?), id)?;
+            outputln!("Imported the k9s skin as theme {}:", imported.id);
+            for mapped in &imported.mapped {
+                let adjusted = mapped.adjusted_from.map_or_else(String::new, |from| {
+                    format!(" (skin {} made readable)", from.hex())
+                });
+                outputln!(
+                    "  {:<21} {}  {}{adjusted}",
+                    mapped.role,
+                    mapped.color.hex(),
+                    mapped.source
+                );
+            }
+            outputln!(
+                "Saved {}. Activate with: kborg theme use {} (or pick it in :themes)",
+                imported.path.display(),
+                imported.id
+            );
         }
         _ => return Err("unknown theme command; see --help".into()),
     }

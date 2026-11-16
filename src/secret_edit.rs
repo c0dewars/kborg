@@ -1,4 +1,5 @@
-//! Reviewed Secret changes: set or remove one key, or delete the Secret.
+//! Reviewed Secret changes: set or remove one key, edit the whole Secret in
+//! KBorg's editor, or delete the Secret.
 //!
 //! A value is never shown: not in the review, not in the audit record and not
 //! in an error. The review names the key, the sizes before and after, where
@@ -70,6 +71,72 @@ pub enum Change {
         value: SecretBytes,
         source: Source,
     },
+    /// The whole-Secret editor's document, before it is compared with the
+    /// Secret; the gateway turns it into `Edit`.
+    Document(crate::secret_document::Edited),
+    /// The keys the whole-Secret editor changes, and how many it leaves.
+    Edit {
+        changes: Vec<KeyChange>,
+        unchanged: usize,
+    },
+}
+
+/// One key of a whole-Secret edit: a new value (`old` is the size before,
+/// `None` for a new key) or, with no value, a removal.
+#[derive(Debug)]
+pub struct KeyChange {
+    pub key: String,
+    pub value: Option<SecretBytes>,
+    pub old: Option<usize>,
+}
+
+/// Compares the edited document with the Secret as it is now. The Secret
+/// must still be the version the editor opened.
+pub fn resolve(edited: crate::secret_document::Edited, current: &Secret) -> Result<Change> {
+    if current
+        .metadata
+        .resource_version
+        .as_deref()
+        .unwrap_or_default()
+        != edited.version
+    {
+        return Err("the Secret changed since you opened it in the editor, so this edit could undo someone else's change. Next: note your changes, Esc, and press E to edit the current version".into());
+    }
+    let empty = std::collections::BTreeMap::new();
+    let data = current.data.as_ref().unwrap_or(&empty);
+    if let Some(key) = edited.keep.iter().find(|key| !data.contains_key(*key)) {
+        return Err(format!(
+            "key {key} under keep: is not in the Secret; remove it from keep:"
+        ));
+    }
+    let edited_keys: std::collections::BTreeSet<String> =
+        edited.values.iter().map(|(key, _)| key.clone()).collect();
+    let mut changes = Vec::new();
+    let mut unchanged = edited.keep.len();
+    for (key, value) in edited.values {
+        match data.get(&key) {
+            Some(old) if old.0 == value.bytes() => unchanged += 1,
+            old => changes.push(KeyChange {
+                old: old.map(|old| old.0.len()),
+                key,
+                value: Some(value),
+            }),
+        }
+    }
+    for (key, old) in data {
+        if !edited_keys.contains(key) && !edited.keep.contains(key) {
+            changes.push(KeyChange {
+                key: key.clone(),
+                value: None,
+                old: Some(old.0.len()),
+            });
+        }
+    }
+    changes.sort_by(|a, b| a.key.cmp(&b.key));
+    if changes.is_empty() {
+        return Err("Nothing changed: the Secret is as you opened it.".into());
+    }
+    Ok(Change::Edit { changes, unchanged })
 }
 impl Change {
     /// The audit action name.
@@ -79,11 +146,12 @@ impl Change {
             Self::Set { .. } => "secret-set-key",
             Self::Remove { .. } => "secret-remove-key",
             Self::Create { .. } => "secret-create",
+            Self::Document(_) | Self::Edit { .. } => "secret-edit",
         }
     }
     fn key(&self) -> Option<&str> {
         match self {
-            Self::Delete => None,
+            Self::Delete | Self::Document(_) | Self::Edit { .. } => None,
             Self::Set { key, .. } | Self::Remove { key } | Self::Create { key, .. } => Some(key),
         }
     }
@@ -201,8 +269,30 @@ impl Prepared {
                 "Secret {target} created with key {key} ({} bytes). Pods waiting for it start on their next retry.",
                 value.len()
             ),
+            Change::Edit { changes, .. } => {
+                let (set, added, removed) = counts(changes);
+                format!(
+                    "Secret {target}: {} key{} changed ({set} set, {added} added, {removed} removed). Pods read environment values when they start; restart them to pick it up. Mounted files follow within about a minute.",
+                    changes.len(),
+                    if changes.len() == 1 { "" } else { "s" }
+                )
+            }
+            Change::Document(_) => format!("Secret {target}: not compared yet."),
         }
     }
+}
+
+/// (set, added, removed) keys of a whole-Secret edit.
+fn counts(changes: &[KeyChange]) -> (usize, usize, usize) {
+    changes
+        .iter()
+        .fold((0, 0, 0), |(set, added, removed), change| {
+            match (&change.value, change.old) {
+                (None, _) => (set, added, removed + 1),
+                (Some(_), Some(_)) => (set + 1, added, removed),
+                (Some(_), None) => (set, added + 1, removed),
+            }
+        })
 }
 
 /// A name the API accepts for a new Secret (DNS-1123 subdomain).
@@ -349,6 +439,24 @@ fn describe(value: &SecretBytes) -> String {
     }
 }
 
+/// Something about a new value worth a second look, never the value itself.
+fn value_warning(value: &SecretBytes) -> Option<&'static str> {
+    let bytes = value.bytes();
+    if value.is_empty() {
+        Some("The new value is empty.")
+    } else if bytes.ends_with(b"\n") {
+        Some(
+            "The value ends with a line break, and that is stored too. A password read from a file often should not have one.",
+        )
+    } else if bytes.first().is_some_and(u8::is_ascii_whitespace)
+        || bytes.last().is_some_and(u8::is_ascii_whitespace)
+    {
+        Some("The value starts or ends with a space; it is stored as it is.")
+    } else {
+        None
+    }
+}
+
 /// Refuses a change that cannot work before anything is sent.
 pub fn check(shape: &Shape, change: &Change) -> Result<()> {
     if let Some(key) = change.key()
@@ -369,6 +477,27 @@ pub fn check(shape: &Shape, change: &Change) -> Result<()> {
         }
         Change::Set { value, .. } | Change::Create { value, .. } if value.len() > MAX_VALUE => {
             Err("the value is larger than 512 KiB".into())
+        }
+        Change::Document(_) => Err("the edited Secret was not compared with the cluster".into()),
+        Change::Edit { changes, .. } => {
+            for change in changes {
+                if !valid_key(&change.key) {
+                    return Err(
+                        "a Secret key is 1 to 253 characters: letters, digits, '-', '_' and '.'"
+                            .into(),
+                    );
+                }
+                if change.value.as_ref().is_some_and(|v| v.len() > MAX_VALUE) {
+                    return Err(format!(
+                        "the value of {} is larger than 512 KiB",
+                        change.key
+                    ));
+                }
+                if change.value.is_none() && shape.size(&change.key).is_none() {
+                    return Err("the Secret has no such key; reopen :secrets".into());
+                }
+            }
+            Ok(())
         }
         _ => Ok(()),
     }
@@ -442,21 +571,45 @@ pub fn review(
                     safety::safe_text(&path.display().to_string(), 300)
                 ),
             });
-            let bytes = value.bytes();
-            if value.is_empty() {
-                lines.push("! The new value is empty.".into());
-            } else if bytes.ends_with(b"\n") {
-                lines.push(
-                    "! The value ends with a line break, and that is stored too. A password read from a file often should not have one."
-                        .into(),
-                );
-            } else if bytes.first().is_some_and(u8::is_ascii_whitespace)
-                || bytes.last().is_some_and(u8::is_ascii_whitespace)
-            {
-                lines
-                    .push("! The value starts or ends with a space; it is stored as it is.".into());
+            if let Some(warning) = value_warning(value) {
+                lines.push(format!("! {warning}"));
             }
         }
+        Change::Edit { changes, unchanged } => {
+            let (set, added, removed) = counts(changes);
+            lines.push(format!(
+                "EDIT the Secret {target}: {set} set, {added} added, {removed} removed, {unchanged} unchanged"
+            ));
+            for change in changes {
+                lines.push(match (&change.value, change.old) {
+                    (Some(value), Some(old)) => format!(
+                        "  SET key {}: {old} bytes -> {} bytes ({})",
+                        change.key,
+                        value.len(),
+                        describe(value)
+                    ),
+                    (Some(value), None) => format!(
+                        "  ADD key {}: {} bytes ({})",
+                        change.key,
+                        value.len(),
+                        describe(value)
+                    ),
+                    (None, old) => {
+                        format!("  REMOVE key {} ({} bytes)", change.key, old.unwrap_or(0))
+                    }
+                });
+            }
+            lines.push("The values are not shown. Source: KBorg's Secret editor.".into());
+            for change in changes {
+                if let Some(warning) = change.value.as_ref().and_then(value_warning) {
+                    lines.push(format!("! Key {}: {warning}", change.key));
+                }
+            }
+            if removed > 0 {
+                lines.push("! A Pod that needs a removed key fails at its next start.".into());
+            }
+        }
+        Change::Document(_) => lines.push("The edit was not compared with the Secret.".into()),
         Change::Remove { key } => {
             lines.push(format!(
                 "REMOVE key {key} ({} bytes)",
@@ -580,7 +733,30 @@ pub fn patch(prepared: &Prepared) -> Option<Value> {
         json!({"op":"test","path":"/metadata/resourceVersion","value":prepared.version}),
     ];
     match &prepared.change {
-        Change::Delete | Change::Create { .. } => return None,
+        Change::Delete | Change::Create { .. } | Change::Document(_) => return None,
+        Change::Edit { changes, .. } => {
+            use base64::Engine;
+            let encode = |value: &SecretBytes| {
+                base64::engine::general_purpose::STANDARD.encode(value.bytes())
+            };
+            if prepared.has_data {
+                for change in changes {
+                    operations.push(match &change.value {
+                        Some(value) => {
+                            json!({"op":"add","path":pointer(&change.key),"value":encode(value)})
+                        }
+                        None => json!({"op":"remove","path":pointer(&change.key)}),
+                    });
+                }
+            } else {
+                // A Secret without keys gets them in one data map.
+                let data: serde_json::Map<String, Value> = changes
+                    .iter()
+                    .filter_map(|c| Some((c.key.clone(), json!(encode(c.value.as_ref()?)))))
+                    .collect();
+                operations.push(json!({"op":"add","path":"/data","value":data}));
+            }
+        }
         Change::Set { key, value, .. } => {
             use base64::Engine;
             let encoded = base64::engine::general_purpose::STANDARD.encode(value.bytes());
@@ -598,6 +774,106 @@ pub fn patch(prepared: &Prepared) -> Option<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_whole_secret_edit_reviews_key_changes_and_patches_only_them() -> Result<()> {
+        use crate::secret_document::{parse, render};
+        let mut secret = Secret {
+            data: Some(
+                [("a", "one"), ("b", "two"), ("c", "three")]
+                    .into_iter()
+                    .map(|(k, v)| (k.to_owned(), k8s_openapi::ByteString(v.as_bytes().to_vec())))
+                    .collect(),
+            ),
+            ..Default::default()
+        };
+        secret.metadata.resource_version = Some("41".into());
+        let (_, text) = render("demo", "api", "uid-1", &secret)?;
+        let edited = format!(
+            "{}  d: \"canary-2\"\n",
+            text.as_str()
+                .replace("  a: \"one\"\n", "  a: \"canary-1\"\n")
+                .replace("  b: \"two\"\n", "")
+        );
+        let change = resolve(parse(&edited, "41")?, &secret)?;
+        let shape = Shape::of(&secret);
+        check(&shape, &change)?;
+        let usage = Usage {
+            users: Vec::new(),
+            pods: 0,
+            truncated: false,
+            unknown: None,
+        };
+        let summary = review(
+            "ctx",
+            "https://s",
+            "demo",
+            "api",
+            "uid-1",
+            &shape,
+            &change,
+            &usage,
+            false,
+        );
+        for line in [
+            "EDIT the Secret demo/api: 1 set, 1 added, 1 removed, 1 unchanged",
+            "  SET key a: 3 bytes -> 8 bytes (text, 1 line)",
+            "  ADD key d: 8 bytes (text, 1 line)",
+            "  REMOVE key b (3 bytes)",
+            "! A Pod that needs a removed key fails at its next start.",
+        ] {
+            assert!(summary.contains(line), "review line missing: {line}");
+        }
+        assert!(!summary.contains("canary"), "a value reached the review");
+        let prepared = Prepared::new("demo", "api", "uid-1", &shape, change, "s", summary)?;
+        assert!(
+            prepared
+                .outcome()
+                .contains("3 keys changed (1 set, 1 added, 1 removed)")
+        );
+        let patch = patch(&prepared).ok_or("no patch")?;
+        use base64::Engine;
+        let encode = |v: &str| base64::engine::general_purpose::STANDARD.encode(v);
+        assert_eq!(
+            patch,
+            json!([
+                {"op":"test","path":"/metadata/uid","value":"uid-1"},
+                {"op":"test","path":"/metadata/resourceVersion","value":"41"},
+                {"op":"add","path":"/data/a","value":encode("canary-1")},
+                {"op":"remove","path":"/data/b"},
+                {"op":"add","path":"/data/d","value":encode("canary-2")},
+            ])
+        );
+        // Opened at another version, unchanged, or keeping a key that is gone.
+        let stale = resolve(parse(text.as_str(), "40")?, &secret)
+            .err()
+            .unwrap_or_default();
+        assert!(stale.contains("changed since you opened it"));
+        let same = resolve(parse(text.as_str(), "41")?, &secret)
+            .err()
+            .unwrap_or_default();
+        assert!(same.contains("Nothing changed"));
+        let gone = resolve(parse("data:\n  a: one\nkeep:\n  - zzz\n", "41")?, &secret)
+            .err()
+            .unwrap_or_default();
+        assert!(gone.contains("under keep:"));
+        // A Secret without keys gets its new keys in one data map.
+        let mut empty = Secret::default();
+        empty.metadata.resource_version = Some("7".into());
+        let change = resolve(parse("data:\n  x: \"1\"\n", "7")?, &empty)?;
+        let shape = Shape::of(&empty);
+        let prepared = Prepared::new("demo", "e", "u", &shape, change, "s", "r".into())?;
+        assert_eq!(
+            patch_value(&prepared)?,
+            json!({"op":"add","path":"/data","value":{"x":encode("1")}})
+        );
+        Ok(())
+    }
+    fn patch_value(prepared: &Prepared) -> Result<Value> {
+        patch(prepared)
+            .and_then(|p| p.get(2).cloned())
+            .ok_or_else(|| "no patch".into())
+    }
 
     fn shape(keys: &[(&str, usize)]) -> Shape {
         Shape {

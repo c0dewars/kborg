@@ -843,6 +843,156 @@ fn repeated_pagination_token_stops_before_an_unbounded_loop() {
         assert_eq!(requests.load(std::sync::atomic::Ordering::SeqCst), 2);
     });
 }
+/// A server with 12,500 Pods in pages of 500 (`continue=pN`), and a 410 for
+/// the start token `expired`.
+fn paged_gateway(uris: LogRequests) -> Gateway {
+    let service = tower::service_fn(move |request: http::Request<kube::client::Body>| {
+        let uri = request.uri().to_string();
+        uris.lock()
+            .unwrap_or_else(|e| panic!("{e}"))
+            .push(uri.clone());
+        let token = uri
+            .split(['?', '&'])
+            .find_map(|part| part.strip_prefix("continue="))
+            .map(str::to_owned);
+        let (status, body) = if token.as_deref() == Some("expired") {
+            (
+                410,
+                json!({"apiVersion":"v1","kind":"Status","status":"Failure","code":410,"reason":"Expired","message":"too old resource version"}),
+            )
+        } else {
+            let page: usize = token
+                .and_then(|t| t.strip_prefix('p').and_then(|n| n.parse().ok()))
+                .unwrap_or(0);
+            let items: Vec<Value> = (page * 500..(page + 1) * 500)
+                .map(|i| json!({"metadata":{"name":format!("pod-{i:05}"),"namespace":"default"}}))
+                .collect();
+            let mut metadata = json!({"resourceVersion":"7"});
+            if page + 1 < 25 {
+                metadata["continue"] = json!(format!("p{}", page + 1));
+                metadata["remainingItemCount"] = json!((24 - page) * 500);
+            }
+            (
+                200,
+                json!({"apiVersion":"v1","kind":"PodList","metadata":metadata,"items":items}),
+            )
+        };
+        async move {
+            Ok::<_, std::convert::Infallible>(
+                http::Response::builder()
+                    .status(status)
+                    .body(http_body_util::Full::new(bytes::Bytes::from(
+                        body.to_string(),
+                    )))
+                    .unwrap_or_else(|e| panic!("{e}")),
+            )
+        }
+    });
+    Gateway::for_test_client(Client::new(service, "default"), "default")
+}
+#[test]
+fn large_lists_page_in_whole_pages_and_name_the_next_page() -> Result<()> {
+    runtime()?.block_on(async {
+        let uris: LogRequests = Default::default();
+        let g = paged_gateway(uris.clone());
+        let first = g.list_from("pods", "default", "", "", None).await?;
+        let names = |v: &Value| -> Vec<String> {
+            v["items"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|o| o["metadata"]["name"].as_str().map(str::to_owned))
+                .collect()
+        };
+        let one = names(&first);
+        assert_eq!(one.len(), 10_000);
+        assert_eq!(first["truncated"], true);
+        assert_eq!(first["continue"], "p20");
+        assert_eq!(first["remaining"], 2500);
+        assert_eq!(uris.lock().map_err(|_| "uris")?.len(), 20);
+        let second = g
+            .list_from("pods", "default", "", "", Some("p20".into()))
+            .await?;
+        let two = names(&second);
+        assert_eq!(two.len(), 2500);
+        assert_eq!(second["truncated"], false);
+        assert!(second.get("continue").is_none());
+        // Every object once, none skipped or shown twice.
+        let all: std::collections::BTreeSet<_> = one.iter().chain(&two).collect();
+        assert_eq!(all.len(), 12_500);
+        assert!(uris.lock().map_err(|_| "uris")?[20].contains("continue=p20"));
+        let expired = g
+            .list_from("pods", "default", "", "", Some("expired".into()))
+            .await;
+        assert!(expired.is_err_and(|e| e.contains("press < to go back to the first page")));
+        assert!(
+            g.list_from("pods", "default", "", "", Some(String::new()))
+                .await
+                .is_err()
+        );
+        Ok(())
+    })
+}
+fn crd_gateway(status: u16, body: Value, uris: LogRequests) -> Gateway {
+    let service = tower::service_fn(move |request: http::Request<kube::client::Body>| {
+        uris.lock()
+            .unwrap_or_else(|e| panic!("{e}"))
+            .push(request.uri().to_string());
+        let body = body.clone();
+        async move {
+            Ok::<_, std::convert::Infallible>(
+                http::Response::builder()
+                    .status(status)
+                    .body(http_body_util::Full::new(bytes::Bytes::from(
+                        body.to_string(),
+                    )))
+                    .unwrap_or_else(|e| panic!("{e}")),
+            )
+        }
+    });
+    let mut gateway = Gateway::for_test_client(Client::new(service, "default"), "default");
+    gateway.kinds.push(Kind {
+        plural: "nodeclaims".into(),
+        kind: "NodeClaim".into(),
+        group: "karpenter.sh".into(),
+        version: "v1".into(),
+        namespaced: false,
+        short_names: Vec::new(),
+    });
+    gateway
+}
+#[test]
+fn custom_resources_read_their_crd_printer_columns() -> Result<()> {
+    runtime()?.block_on(async {
+        let uris: LogRequests = Default::default();
+        let g = crd_gateway(200, crate::views::nodeclaim_crd(), uris.clone());
+        let view = g
+            .printer_columns("karpenter.sh/v1/nodeclaims")
+            .await?
+            .ok_or("no columns")?;
+        assert!(view.columns.iter().any(|c| c.title == "NODE"));
+        assert_eq!(
+            uris.lock().map_err(|_| "uris")?.as_slice(),
+            ["/apis/apiextensions.k8s.io/v1/customresourcedefinitions/nodeclaims.karpenter.sh"]
+        );
+        // Built-in kinds never ask.
+        assert!(g.printer_columns("pods").await?.is_none());
+        assert!(g.printer_columns("deployments.apps").await?.is_none());
+        assert_eq!(uris.lock().map_err(|_| "uris")?.len(), 1);
+        // An aggregated API has no CRD: generic columns, no error.
+        let g = crd_gateway(404, json!({"kind":"Status","code":404}), Default::default());
+        assert!(g.printer_columns("nodeclaims").await?.is_none());
+        // No permission to read CRDs, or another CRD in the answer: an error
+        // the table ignores.
+        let g = crd_gateway(403, json!({"kind":"Status","code":403}), Default::default());
+        assert!(g.printer_columns("nodeclaims").await.is_err());
+        let mut other = crate::views::nodeclaim_crd();
+        other["spec"]["group"] = json!("evil.example");
+        let g = crd_gateway(200, other, Default::default());
+        assert!(g.printer_columns("nodeclaims").await.is_err());
+        Ok(())
+    })
+}
 #[test]
 fn duplicate_kubeconfig_names_are_rejected_before_selection() {
     let path = std::env::temp_dir()
@@ -1051,6 +1201,35 @@ fn a_replicaset_scales_with_a_warning_about_its_deployment_and_nothing_else() ->
 }
 
 #[test]
+fn pods_per_node_counts_unfinished_demo_pods_by_node() -> Result<()> {
+    runtime()?.block_on(async {
+        let g = Gateway::connect(Connection {
+            demo: true,
+            ..Default::default()
+        })
+        .await?;
+        let (counts, truncated) = g.pods_per_node().await?;
+        assert!(!truncated);
+        let demo_pods = g.list("pods", "*").await?;
+        let unfinished = demo_pods["items"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|pod| {
+                !matches!(
+                    pod["status"]["phase"].as_str(),
+                    Some("Succeeded" | "Failed")
+                )
+            })
+            .filter(|pod| pod["spec"]["nodeName"].is_string())
+            .count();
+        assert!(unfinished > 0, "the demo cluster has scheduled Pods");
+        assert_eq!(counts.values().sum::<usize>(), unfinished);
+        Ok(())
+    })
+}
+
+#[test]
 fn a_new_secret_is_refused_when_the_name_is_taken_and_never_written_in_demo() -> Result<()> {
     use crate::secret_edit::{Change, SecretBytes, Source};
     let create = || Change::Create {
@@ -1105,6 +1284,67 @@ fn a_new_secret_is_refused_when_the_name_is_taken_and_never_written_in_demo() ->
     })
 }
 
+#[test]
+fn the_whole_secret_editor_opens_compares_and_reviews_without_values() -> Result<()> {
+    use crate::secret_edit::Change;
+    runtime()?.block_on(async {
+        let connect = |writable| {
+            Gateway::connect(Connection {
+                demo: true,
+                writable,
+                allow_secret_reveal: true,
+                allow_secret_edit: true,
+                ..Default::default()
+            })
+        };
+        let read_only = connect(false).await?;
+        assert!(
+            read_only
+                .secret_document("demo", "api-credentials", "demo-secret-uid")
+                .await
+                .is_err_and(|e| e.contains("READ ONLY"))
+        );
+        let g = connect(true).await?;
+        assert!(
+            g.secret_document("demo", "api-credentials", "other-uid")
+                .await
+                .is_err()
+        );
+        let (doc, text) = g
+            .secret_document("demo", "api-credentials", "demo-secret-uid")
+            .await?;
+        assert_eq!((doc.keys, doc.version.as_str()), (4, "1"));
+        assert!(
+            text.as_str()
+                .contains("  password: \"not-a-real-password\"")
+        );
+        assert!(text.as_str().contains("keep:\n  - blob.bin"));
+        let edited = text
+            .as_str()
+            .replace("not-a-real-password", "editor-canary");
+        let change = Change::Document(crate::secret_document::parse(&edited, &doc.version)?);
+        let prepared = g
+            .prepare_secret("demo", "api-credentials", "demo-secret-uid", change)
+            .await?;
+        let review = prepared.summary().to_owned();
+        assert!(
+            review.contains(
+                "EDIT the Secret demo/api-credentials: 1 set, 0 added, 0 removed, 3 unchanged"
+            ) && review.contains("SET key password: 19 bytes -> 13 bytes"),
+            "review text did not match"
+        );
+        assert!(
+            !review.contains("canary") && !review.contains("not-a-real"),
+            "a value reached the review"
+        );
+        let outcome = g.execute_secret(prepared, "demo/api-credentials").await?;
+        assert!(
+            outcome.contains("no cluster contacted"),
+            "unexpected outcome"
+        );
+        Ok(())
+    })
+}
 #[test]
 fn secret_changes_need_write_access_their_own_switch_and_a_review() -> Result<()> {
     use crate::secret_edit::{Change, SecretBytes, Source};

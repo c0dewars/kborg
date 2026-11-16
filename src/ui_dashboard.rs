@@ -146,6 +146,45 @@ pub(super) struct Trend {
     /// Timed samples for the chart panel (`G`), same cap and interval.
     timed: std::collections::VecDeque<TrendPoint>,
     restarts: Option<u64>,
+    /// The saved 7-day series (`H` in the chart panel), when kept.
+    pub history: Option<crate::dashboard_history::History>,
+}
+/// The chart panel's time range, cycled with `H`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) enum Range {
+    #[default]
+    Live,
+    Day,
+    Week,
+}
+impl Range {
+    fn next(self) -> Self {
+        match self {
+            Self::Live => Self::Day,
+            Self::Day => Self::Week,
+            Self::Week => Self::Live,
+        }
+    }
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Live => "last 15 minutes",
+            Self::Day => "last 24 hours",
+            Self::Week => "last 7 days",
+        }
+    }
+    pub fn seconds(self) -> i64 {
+        match self {
+            Self::Live => TREND_WINDOW.as_secs() as i64,
+            Self::Day => 24 * 3600,
+            Self::Week => crate::dashboard_history::KEEP,
+        }
+    }
+}
+/// Unix seconds now, for the saved history.
+pub(super) fn unix_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_secs() as i64)
 }
 /// One dashboard trend sample; `None` values are unknown, never zero.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -204,7 +243,7 @@ impl Trend {
         if self.timed.len() == TREND_SAMPLES {
             self.timed.pop_front();
         }
-        self.timed.push_back(TrendPoint {
+        let point = TrendPoint {
             at: now,
             attention: attention as u64,
             restarts_delta: restarts
@@ -212,8 +251,22 @@ impl Trend {
                 .map(|(current, previous)| current.saturating_sub(previous)),
             cpu: nodes.and_then(|nodes| nodes.cpu_percent),
             memory: nodes.and_then(|nodes| nodes.memory_percent),
-        });
+        };
+        self.timed.push_back(point);
         self.restarts = restarts;
+        if let Some(history) = self.history.as_mut() {
+            let wall = unix_now();
+            history.record(
+                wall,
+                point.attention,
+                point.restarts_delta,
+                point.cpu,
+                point.memory,
+            );
+            // Best effort: a full disk or a read-only config folder only
+            // loses history, never the dashboard.
+            let _ = history.save_if_due(wall);
+        }
     }
     /// Samples inside the trend window, oldest first.
     pub fn points(&self, now: std::time::Instant) -> Vec<TrendPoint> {
@@ -268,6 +321,10 @@ pub(super) struct Dashboard {
     pub focus: bool,
     /// `G`: the focused card's trend charts replace the card grid.
     pub chart: bool,
+    /// `H`: the chart panel's time range.
+    pub range: Range,
+    /// Where each context's chart history is saved; `None` keeps none.
+    history: Option<std::path::PathBuf>,
 }
 impl Dashboard {
     pub fn new(names: &[String], demo: bool) -> Self {
@@ -286,7 +343,14 @@ impl Dashboard {
             picker: None,
             focus: false,
             chart: false,
+            range: Range::Live,
+            history: None,
         }
+    }
+    /// Keep each context's chart history in `folder` (never for demo data).
+    pub fn with_history(mut self, folder: Option<std::path::PathBuf>) -> Self {
+        self.history = folder;
+        self
     }
     pub fn selected(&self) -> Option<&ContextSummary> {
         self.rows.get(self.selected)
@@ -309,10 +373,21 @@ impl Dashboard {
             .map(|w| (w.namespace.clone(), w.uid.clone(), w.reason.clone()));
         self.rows = rows;
         let now = std::time::Instant::now();
+        let folder = self.history.clone();
         for row in &self.rows {
             self.trends
                 .entry(row.context.clone())
-                .or_default()
+                .or_insert_with(|| Trend {
+                    history: Some(match &folder {
+                        Some(folder) => crate::dashboard_history::History::load(
+                            folder,
+                            &row.context,
+                            unix_now(),
+                        ),
+                        None => crate::dashboard_history::History::memory(&row.context),
+                    }),
+                    ..Trend::default()
+                })
                 .sample(row, now);
         }
         self.trends
@@ -335,6 +410,11 @@ impl Dashboard {
         }
         if key == KeyCode::Char('G') {
             self.chart = !self.chart;
+            return;
+        }
+        if key == KeyCode::Char('H') {
+            self.chart = true;
+            self.range = self.range.next();
             return;
         }
         if key == KeyCode::Char('w') {
@@ -1093,6 +1173,7 @@ pub(super) fn render(
                     rect,
                     dashboard.trends.get(context),
                     context,
+                    dashboard.range,
                     bg,
                 )?;
                 Vec::new()
@@ -1204,6 +1285,45 @@ mod tests {
             "{line}"
         );
         assert!(line.is_ascii());
+    }
+    #[cfg(unix)]
+    #[test]
+    fn chart_history_is_saved_for_real_clusters_and_h_cycles_the_range() -> crate::Result<()> {
+        let dir = crate::config_watch::tests::folder()?;
+        let mut summary = with_warnings("prod", &[]);
+        summary.unhealthy = Some(3);
+        let mut dashboard =
+            Dashboard::new(&["prod".into()], false).with_history(Some(dir.0.clone()));
+        dashboard.update(vec![summary.clone()]);
+        // A later dashboard (or a restart) reads the saved point back.
+        let saved = crate::dashboard_history::History::load(&dir.0, "prod", unix_now());
+        assert_eq!(
+            saved
+                .points(unix_now(), 24 * 3600)
+                .last()
+                .map(|p| p.attention),
+            Some(3)
+        );
+        assert_eq!(dashboard.range, Range::Live);
+        for expected in [Range::Day, Range::Week, Range::Live] {
+            dashboard.key(KeyCode::Char('H'));
+            assert!(dashboard.chart, "H opens the charts");
+            assert_eq!(dashboard.range, expected);
+        }
+        // Demo data keeps its series in memory only.
+        let mut demo = Dashboard::new(&["demo".into()], true);
+        let mut row = with_warnings("demo", &[]);
+        row.unhealthy = Some(1);
+        demo.update(vec![row]);
+        assert!(
+            demo.trends["demo"]
+                .history
+                .as_ref()
+                .is_some_and(|history| !history.saves())
+        );
+        let files = std::fs::read_dir(&dir.0).map_err(|_| "read")?.count();
+        assert_eq!(files, 1, "only the real cluster's file");
+        Ok(())
     }
     #[test]
     fn chart_points_keep_time_restart_deltas_and_unknowns() {

@@ -22,17 +22,17 @@ views:
     columns: [NAME, READY, IMAGES, AGE]
 ```
 
-- **Resource keys:** `v1/pods`, `apps/v1/deployments`, `deployments.apps` or `deployments`. Custom resources work too.
+- **Resource keys:** `v1/pods`, `apps/v1/deployments`, `deployments.apps` or `deployments`. Custom resources work too. Without a `views.yaml` entry, a custom resource shows the columns its CRD defines (`additionalPrinterColumns`, like `kubectl get`), with priority columns in wide mode (Ctrl-W).
 - **Predefined columns** (used by name alone):
   - Any table: `NAMESPACE NAME READY STATUS RSTS AGE NODE IP CPU MEM LABELS IMAGES`
-  - Nodes: `ROLE ARCH TAINTS VERSION OS-IMAGE KERNEL RUNTIME INTERNAL-IP EXTERNAL-IP PODS-MAX %CPU %MEM CPU/A MEM/A`
+  - Nodes: `ROLE ARCH TAINTS VERSION PODS OS-IMAGE KERNEL RUNTIME INTERNAL-IP EXTERNAL-IP PODS-MAX %CPU %MEM CPU/A MEM/A`
   - Pods: `%CPU/R %CPU/L %MEM/R %MEM/L` (usage against requests or limits), `QOS SA HOST-IP`
   - Workloads: `UP-TO-DATE AVAILABLE DESIRED CURRENT COMPLETIONS SUCCEEDED SCHEDULE SUSPEND LAST-SCHEDULE`
   - Other: `TYPE CLUSTER-IP PORTS CAPACITY VOLUME STORAGECLASS DATA CLASS HOSTS`
-- **Custom columns:** `TITLE:.json.path` takes dotted fields, `[N]`, `[*]` for every element, and `['key.with.dots']` for labels and annotations. Paths are read, never evaluated.
+- **Custom columns:** `TITLE:.json.path` takes dotted fields, `[N]`, `[*]` for every element, `['key.with.dots']` for labels and annotations, and filters such as `[?(@.type=="Ready")]` (or `!=`) to pick array elements, for example a condition's status. Paths are read, never evaluated.
 - **Attributes** after `|`: `W` shows the column only in wide mode (Ctrl-W), `H` hides it, `N` sorts it as a number, `T` shows a timestamp as an age.
 - **`sortColumn`:** a column and `asc` or `desc`, applied when the resource opens.
-- **Narrow terminals:** columns are dropped from the right, and NAME always stays.
+- **Narrow terminals:** columns that do not fit wait to the right of the window; Left/Right, Ctrl or Shift with the mouse wheel, or a sideways wheel scroll them while NAMESPACE and NAME stay, and the table title shows how many are hidden (`<2 | 3 more>`). Every table scrolls, Pods included.
 - **Limits:** 128 views, 24 columns per view, 64 KiB.
 - **Speed:** for ConfigMaps, ServiceAccounts, RBAC objects and similar kinds, KBorg normally downloads only metadata. A custom column that reads more than name, namespace, labels and timestamps makes that table download full objects, which is a little slower on big clusters.
 
@@ -63,6 +63,8 @@ Check `kborg keymap --json` for the person's actual sort keys.
 | Ctrl-Z or `:faults` | Only objects that need attention |
 | Ctrl-W | Wide columns |
 | Space | Mark rows (for a batch delete, restart, suspend or resume) |
+| Left / Right, Ctrl/Shift + wheel | Scroll the columns that do not fit (NAMESPACE and NAME stay) |
+| `>` / `<` | Next / previous 10,000 objects of a scope too large to watch live (the status line shows `Page N: objects A–B of C`); sort and `/` apply to the page shown |
 
 ## Saving a view
 

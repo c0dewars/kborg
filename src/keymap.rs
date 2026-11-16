@@ -450,6 +450,12 @@ pub const ACTIONS: &[Action] = &[
         &["w"],
         "Switch to the selected object's namespace",
     ),
+    act(
+        "undo",
+        Table,
+        &["z"],
+        "Undo the last scale, image or suspend change, reviewed (:revert)",
+    ),
     act("ns.all", Table, &["0"], "All namespaces"),
     act(
         "ns.recent",
@@ -599,6 +605,30 @@ pub const ACTIONS: &[Action] = &[
     act("up", Table, &["k", "Up"], "Move up"),
     act("page.down", Table, &["PgDown"], "Page down"),
     act("page.up", Table, &["PgUp"], "Page up"),
+    act(
+        "columns.left",
+        Table,
+        &["Left"],
+        "Show the columns to the left when they do not all fit",
+    ),
+    act(
+        "columns.right",
+        Table,
+        &["Right"],
+        "Show the columns to the right when they do not all fit",
+    ),
+    act(
+        "list.next",
+        Table,
+        &[">"],
+        "Next 10,000 objects of a scope too large to watch",
+    ),
+    act(
+        "list.prev",
+        Table,
+        &["<"],
+        "Previous 10,000 objects of a scope too large to watch",
+    ),
     act("top", Table, &["Home"], "First row"),
     act("bottom", Table, &["End"], "Last row"),
     act("view.back", Table, &["["], "Previous view"),
@@ -728,6 +758,12 @@ pub const ACTIONS: &[Action] = &[
         Dashboard,
         &["G"],
         "Charts for the focused card: attention, restarts, Node CPU and memory",
+    ),
+    act(
+        "dashboard.range",
+        Dashboard,
+        &["H"],
+        "Chart range: last 15 minutes, 24 hours or 7 days (saved locally)",
     ),
     act(
         "dashboard.close",
@@ -1203,6 +1239,12 @@ pub const ACTIONS: &[Action] = &[
         Secrets,
         &["e"],
         "Set a new value for the selected key (reviewed)",
+    ),
+    act(
+        "secrets.edit-all",
+        Secrets,
+        &["E"],
+        "Edit the whole Secret, every key and value, in KBorg's editor (reviewed)",
     ),
     act(
         "secrets.add",
@@ -2255,6 +2297,7 @@ mod tests {
             "secrets.yaml",
             "secrets.reveal",
             "secrets.edit",
+            "secrets.edit-all",
             "secrets.add",
             "secrets.create",
             "secrets.used-by",

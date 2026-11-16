@@ -32,7 +32,7 @@
 - **Every cluster at once.** A dashboard of up to nine clusters side by side: Pod health, restarts, OOM kills, Node usage, degraded workloads and recent warnings. Tail one workload across all of them in a single pane.
 - **Nothing changes without a review.** Scale, delete, edit, apply, drain: each shows exactly what it will do, checks it with a server dry run where Kubernetes supports one, and waits for `y`. `--read-only` turns changes off entirely.
 - **Works out of the box.** No flags to learn. Your kubeconfig works as it does in kubectl, including `aws`, `gcloud` and `kubelogin` helpers. KBorg shows the context it is about to connect to and asks first.
-- **Yours to shape.** 20 themes, every key remappable, columns per resource, per-cluster settings such as a red `PROD` badge, all in small YAML files that apply the moment you save.
+- **Yours to shape.** 22 themes (two of them color-blind safe), every key remappable, columns per resource, per-cluster settings such as a red `PROD` badge, all in small YAML files that apply the moment you save.
 
 ## Install
 
@@ -148,7 +148,7 @@ Everything lives in KBorg's configuration folder (macOS `~/Library/Application S
 
 | File | Controls |
 |---|---|
-| Themes | 20 built in with live preview (`:themes`), each tested for readable contrast; `kborg theme new` for your own — [guide](docs/themes.md) |
+| Themes | 22 built in with live preview (`:themes`), each tested for readable contrast; `kborg theme new` for your own — [guide](docs/themes.md) |
 | `ui.yaml` | Header style, borders, density, colors, charts, dashboard layout (`kborg ui init`) — [reference](docs/themes.md#uiyaml) |
 | `keymap.yaml` | Any key on any screen — [format](docs/K9S_COMPATIBILITY.md#custom-keymap) |
 | `views.yaml` | Columns and sort per resource, by predefined name (`ROLE`, `%CPU`, `QOS`) or any `TITLE:.json.path`. `kborg views init` writes the defaults to edit; `:columns` lists what is available — [format](docs/K9S_COMPATIBILITY.md#custom-views-columns-and-sort) |

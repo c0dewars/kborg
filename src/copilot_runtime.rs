@@ -44,8 +44,16 @@ fn profile(executables: &[&Path], state: &Path, port: u16) -> Result<String> {
         .collect::<Result<Vec<_>>>()?
         .join(" ");
     Ok(format!(
-        "(version 1)(deny default)(import \"system.sb\")(deny mach-lookup)(deny network*)(deny process-fork)(deny file-read*)(deny file-write*)(deny file-map-executable)\n(allow process-exec {literals})(allow file-map-executable {literals} (subpath \"/System/Library\") (subpath \"/usr/lib\") (subpath {}))(allow sysctl-read)\n(allow file-read* {literals} (subpath \"/System/Library\") (subpath \"/usr/lib\") (subpath \"/usr/share/locale\") (subpath \"/private/var/db/timezone\") (literal \"/dev/null\") (literal \"/dev/random\") (literal \"/dev/urandom\") (subpath {}))\n(allow file-read-metadata {metadata} (path-ancestors {}))\n(allow file-write* (subpath {}))(allow network-outbound (remote tcp \"localhost:{port}\"))\n",
-        quote(&state.join("Library/Caches/copilot/pkg/darwin-arm64/1.0.91"))?,
+        "(version 1)(deny default)(import \"system.sb\")(deny mach-lookup)(deny network*)(deny process-fork)(deny file-read*)(deny file-write*)(deny file-map-executable)\n(allow process-exec {literals})(allow file-map-executable {literals} (subpath \"/System/Library\") (subpath \"/usr/lib\") (subpath {}))(allow sysctl-read)\n(allow file-read* {literals} (subpath \"/System/Library\") (subpath \"/usr/lib\") (subpath \"/usr/share/locale\") (subpath \"/private/var/db/timezone\") (literal \"/dev/null\") (literal \"/dev/random\") (literal \"/dev/urandom\") (subpath {}))\n(allow file-read-metadata {metadata} (path-ancestors {}))\n(allow file-write* (subpath {}))(allow network-outbound (remote tcp \"localhost:{port}\"))\n(allow mach-lookup (global-name \"com.apple.SecurityServer\"))\n",
+        // Copilot CLI 1.0.112 and later verify TLS through the Security
+        // framework, which needs securityd (`com.apple.SecurityServer`). It
+        // is the only system service allowed. Keychain files stay unreadable
+        // and the data-protection keychain (`com.apple.securityd.xpc`) and
+        // trustd stay denied, so no keychain item is reachable (checked with
+        // `security dump-keychain` under this profile: zero items).
+        // The CLI unpacks its runtime per version under its private cache;
+        // any version it unpacks there may be mapped, nothing outside.
+        quote(&state.join("Library/Caches/copilot/pkg/darwin-arm64"))?,
         quote(state)?,
         quote(state)?,
         quote(state)?
@@ -248,7 +256,40 @@ fn policy_checks(
     }
     Ok(())
 }
-fn version(native: &Path, policy: &Path, state: &Path, stop: Arc<AtomicBool>) -> Result<()> {
+/// The switch that keeps a Copilot session from leaving this machine, as the
+/// CLI's own `--help` lists it: `--no-remote` up to 1.0.9x; later versions
+/// removed it (passing it is an error) and use `--sync-session=off` to keep
+/// the conversation out of the account's history. A CLI with neither is
+/// refused.
+pub fn local_session_switch(help: &str) -> Result<&'static str> {
+    // The first word of a help line names the switch; `--no-remote-export`
+    // is a different switch from `--no-remote`.
+    let listed = |name: &str| {
+        help.lines().any(|line| {
+            line.split_whitespace().next().is_some_and(|word| {
+                word == name
+                    || word.starts_with(&format!("{name}["))
+                    || word.starts_with(&format!("{name}="))
+            })
+        })
+    };
+    if listed("--no-remote") {
+        Ok("--no-remote")
+    } else if listed("--sync-session") {
+        Ok("--sync-session=off")
+    } else {
+        Err("This Copilot CLI has no switch to keep the session local (--no-remote or --sync-session); KBorg will not send to it".into())
+    }
+}
+
+/// Checks the pinned native under the OS policy before any credential is
+/// read, and returns the switch that keeps its session local.
+fn version(
+    native: &Path,
+    policy: &Path,
+    state: &Path,
+    stop: Arc<AtomicBool>,
+) -> Result<&'static str> {
     let version = process::invoke(
         sandbox(policy, native, &["--no-auto-update", "--version"], state),
         vec![],
@@ -263,15 +304,7 @@ fn version(native: &Path, policy: &Path, state: &Path, stop: Arc<AtomicBool>) ->
         ));
     }
     let text = String::from_utf8_lossy(&version.stdout);
-    if !text
-        .lines()
-        .any(|line| line.trim() == "GitHub Copilot CLI 1.0.91.")
-    {
-        return Err(format!(
-            "Reviewed Copilot runtime version1.0.91 required; token-free version output: {}",
-            safety::safe_text(&text, 512)
-        ));
-    }
+    accepted_version(&text)?;
     let help = process::invoke(
         sandbox(policy, native, &["--help"], state),
         vec![],
@@ -283,11 +316,11 @@ fn version(native: &Path, policy: &Path, state: &Path, stop: Arc<AtomicBool>) ->
         return Err("Pinned native Copilot full startup failed under OS policy before credential access; no fallback".into());
     }
     let help = String::from_utf8_lossy(&help.stdout);
+    let local = local_session_switch(&help)?;
     for flag in [
         "--available-tools",
         "--disable-builtin-mcps",
         "--no-custom-instructions",
-        "--no-remote",
         "--no-ask-user",
     ] {
         if !help.contains(flag) {
@@ -317,8 +350,40 @@ fn version(native: &Path, policy: &Path, state: &Path, stop: Arc<AtomicBool>) ->
     if !parsed.success {
         return Err("Pinned native rejected required hidden authentication/tool switches before credential access".into());
     }
-    Ok(())
+    Ok(local)
 }
+/// The oldest Copilot CLI the containment was validated with. Later versions
+/// are accepted when they also pass the switch checks that follow.
+pub const MIN_VERSION: (u32, u32, u32) = (1, 0, 91);
+
+/// The version a `copilot --version` output reports, when it is
+/// `MIN_VERSION` or later: `GitHub Copilot CLI 1.0.112-0.` gives `1.0.112-0`.
+pub fn accepted_version(output: &str) -> Result<String> {
+    let reported = output.lines().find_map(|line| {
+        line.trim()
+            .strip_prefix("GitHub Copilot CLI ")
+            .map(|rest| rest.trim_end_matches('.').to_owned())
+    });
+    let (major, minor, patch) = (MIN_VERSION.0, MIN_VERSION.1, MIN_VERSION.2);
+    let needed = || {
+        format!(
+            "KBorg needs GitHub Copilot CLI {major}.{minor}.{patch} or later; this installation reports: {}",
+            safety::safe_text(output.lines().next().unwrap_or("nothing"), 200)
+        )
+    };
+    let reported = reported.ok_or_else(needed)?;
+    let core = reported.split(['-', '+']).next().unwrap_or_default();
+    let mut parts = core.split('.').map(str::parse::<u32>);
+    let parsed = match (parts.next(), parts.next(), parts.next(), parts.next()) {
+        (Some(Ok(a)), Some(Ok(b)), Some(Ok(c)), None) => (a, b, c),
+        _ => return Err(needed()),
+    };
+    if parsed < MIN_VERSION {
+        return Err(needed());
+    }
+    Ok(safety::safe_text(&reported, 40))
+}
+
 pub(super) fn validate_native(options: &Options) -> Result<()> {
     let workspace = create_workspace()?;
     let (native, state) = snapshot(options, &workspace)?;
@@ -331,7 +396,7 @@ pub(super) fn validate_native(options: &Options) -> Result<()> {
         &policy,
         profile(&[&native], &state, broker.port)?.as_bytes(),
     )?;
-    version(&native, &policy, &state, stop)
+    version(&native, &policy, &state, stop).map(drop)
 }
 pub(super) fn execute(prepared: PreparedAdvice, stop: Arc<AtomicBool>) -> Result<AdviceOutput> {
     if !cfg!(all(target_os = "macos", target_arch = "aarch64")) {
@@ -352,7 +417,7 @@ pub(super) fn execute(prepared: PreparedAdvice, stop: Arc<AtomicBool>) -> Result
             &policy,
             profile(&[&native], &state, broker.port)?.as_bytes(),
         )?;
-        version(&native, &policy, &state, stop.clone())?;
+        let local = version(&native, &policy, &state, stop.clone())?;
         let (credential, hash) = super::selected_credential(&prepared.options, stop.clone())?;
         if hash != prepared.credential_hash
             || credential.account != prepared.account
@@ -366,7 +431,7 @@ pub(super) fn execute(prepared: PreparedAdvice, stop: Arc<AtomicBool>) -> Result
         // whole-process policy. All dynamic values are positional arguments.
         let mut command = Command::new("/bin/sh");
         command.args(["-c","ulimit -t \"$1\" || exit 120; ulimit -c 0 || exit 120; ulimit -f 131072 || exit 120; ulimit -n 1024 || exit 120; shift; exec /usr/bin/sandbox-exec \"$@\"","kborg-contained-copilot",&prepared.options.seconds.to_string(),"-f"])
-        .arg(&policy).arg(&native).args(["--no-auto-login","--auth-token-env","KBORG_COPILOT_SELECTED_TOKEN","--available-tools=","--disable-builtin-mcps","--no-custom-instructions","--no-ask-user","--no-auto-update","--no-remote","--no-remote-export","--no-bash-env","--no-color","--stream","off","--silent","--log-level","none","--model",&prepared.options.model]);
+        .arg(&policy).arg(&native).args(["--no-auto-login","--auth-token-env","KBORG_COPILOT_SELECTED_TOKEN","--available-tools=","--disable-builtin-mcps","--no-custom-instructions","--no-ask-user","--no-auto-update",local,"--no-remote-export","--no-bash-env","--no-color","--stream","off","--silent","--log-level","none","--model",&prepared.options.model]);
         environment(&mut command, &state);
         deployment_environment(
             &mut command,
@@ -498,6 +563,99 @@ pub(super) fn execute(prepared: PreparedAdvice, stop: Arc<AtomicBool>) -> Result
     drop(broker);
     workspace.cleanup()?;
     result
+}
+
+#[cfg(test)]
+mod version_tests {
+    use super::*;
+
+    #[test]
+    fn copilot_cli_1_0_91_or_later_is_accepted_and_older_or_odd_output_is_not() {
+        for (output, version) in [
+            ("GitHub Copilot CLI 1.0.91.\n", "1.0.91"),
+            (
+                "GitHub Copilot CLI 1.0.112-0.\nRun 'copilot update' to check for updates.\n",
+                "1.0.112-0",
+            ),
+            ("GitHub Copilot CLI 1.1.0.", "1.1.0"),
+            ("GitHub Copilot CLI 2.0.0+build.7.", "2.0.0+build.7"),
+        ] {
+            assert_eq!(
+                accepted_version(output).ok().as_deref(),
+                Some(version),
+                "{output}"
+            );
+        }
+        for output in [
+            "GitHub Copilot CLI 1.0.90.",
+            "GitHub Copilot CLI 0.9.200.",
+            "GitHub Copilot CLI 1.0.",
+            "GitHub Copilot CLI 1.0.x.",
+            "Copilot 1.0.112",
+            "",
+        ] {
+            let error = accepted_version(output).err().unwrap_or_default();
+            assert!(
+                error.starts_with(
+                    "KBorg needs GitHub Copilot CLI 1.0.91 or later; this installation reports: "
+                ),
+                "refused with a readable message"
+            );
+        }
+    }
+
+    #[test]
+    fn the_sandbox_allows_one_system_service_and_no_keychain_files() -> Result<()> {
+        let text = profile(
+            &[Path::new("/opt/copilot/copilot")],
+            Path::new("/private/tmp/kborg-state"),
+            40_000,
+        )?;
+        let allowed: Vec<&str> = text
+            .match_indices("(allow mach-lookup")
+            .map(|(at, _)| &text[at..at + text[at..].find(')').unwrap_or(0) + 1])
+            .collect();
+        assert_eq!(allowed.len(), 1, "{allowed:?}");
+        assert!(text.contains("(allow mach-lookup (global-name \"com.apple.SecurityServer\"))"));
+        assert!(text.contains("(deny mach-lookup)"));
+        for absent in [
+            "securityd.xpc",
+            "trustd",
+            "Keychains",
+            "/Library/Security",
+            "/private/var/db/mds",
+        ] {
+            assert!(
+                !text.contains(absent),
+                "{absent} must stay outside the sandbox"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn the_local_session_switch_follows_what_the_cli_lists() {
+        // 1.0.91 lists --no-remote; 1.0.112 removed it (passing it is an error)
+        // but still lists --no-remote-export, which must not count.
+        let old = "      --no-remote\n          Disable remote\n      --no-remote-export\n";
+        let new = "      --no-remote-export\n          Disable export\n      --sync-session[=<on|off>]\n          Enable or disable sync\n";
+        assert_eq!(local_session_switch(old), Ok("--no-remote"));
+        assert_eq!(local_session_switch(new), Ok("--sync-session=off"));
+        let neither = "      --no-remote-export\n      --silent\n";
+        assert!(local_session_switch(neither).is_err_and(|error| error.contains("will not send")));
+    }
+
+    #[test]
+    fn the_sandbox_maps_code_only_from_copilots_own_cache_for_any_version() -> Result<()> {
+        let state = Path::new("/private/var/folders/x/kborg-copilot-state");
+        let profile = profile(&[Path::new("/opt/copilot/copilot")], state, 4242)?;
+        assert!(profile.contains(
+            "(subpath \"/private/var/folders/x/kborg-copilot-state/Library/Caches/copilot/pkg/darwin-arm64\")"
+        ));
+        assert!(!profile.contains("1.0.91"), "no version is hard-coded");
+        assert!(profile.contains("(deny default)") && profile.contains("(deny network*)"));
+        Ok(())
+    }
 }
 
 #[cfg(all(test, target_os = "macos"))]
