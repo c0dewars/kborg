@@ -1,6 +1,6 @@
 # KBorg current implementation status
 
-Updated 2026-11-16 for the 0.8.2 release. This file and [REMAINING_WORK.md](REMAINING_WORK.md) supersede older progress notes. Historical acceptance reports keep their original scope and evidence.
+Updated 2026-11-16 for the 0.8.3 release. This file and [REMAINING_WORK.md](REMAINING_WORK.md) supersede older progress notes. Historical acceptance reports keep their original scope and evidence.
 
 ## Implemented
 
